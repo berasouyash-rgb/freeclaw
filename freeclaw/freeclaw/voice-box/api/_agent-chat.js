@@ -42,16 +42,6 @@ const INTENTS = [
     },
   },
   {
-    patterns: /\b(recent|latest|new|posts?|show)\s*(posts?|content|feedback)?\b/i,
-    handler: async () => {
-      const { data } = await supabase.from('posts').select('id,title,category,status,created_at,deleted').order('created_at', { ascending: false }).limit(10);
-      const active = (data || []).filter((p) => !p.deleted);
-      if (!active.length) return { reply: 'No posts found.', actions: [] };
-      const list = active.map((p, i) => `${i + 1}. **${p.title}** [${p.category}] — ${p.status} (${new Date(p.created_at).toLocaleDateString()})`).join('\n');
-      return { reply: `📝 **Recent Posts** (last 10)\n\n${list}`, actions: [] };
-    },
-  },
-  {
     patterns: /\b(report|reported|flag|flagged|complaint|complaints)\b/i,
     handler: async () => {
       const { data } = await supabase.from('reports').select('*').order('created_at', { ascending: false }).limit(20);
@@ -61,7 +51,7 @@ const INTENTS = [
     },
   },
   {
-    patterns: /\b(analy|break|category|categor|by cat|per cat)\b/i,
+    patterns: /\b(category|categor|by cat|per cat|breakdown)\b/i,
     handler: async () => {
       const { data } = await supabase.from('posts').select('category,deleted').eq('deleted', false);
       const cats = {};
@@ -74,6 +64,16 @@ const INTENTS = [
         return `  ${cat.padEnd(12)} ${bar} ${count} (${pct}%)`;
       }).join('\n');
       return { reply: `📂 **Posts by Category**\n\n${bars || 'No posts yet'}`, actions: [] };
+    },
+  },
+  {
+    patterns: /\b(recent|latest|newest)\s*(posts?|content|feedback|items)?\b/i,
+    handler: async () => {
+      const { data } = await supabase.from('posts').select('id,title,category,status,created_at,deleted').order('created_at', { ascending: false }).limit(10);
+      const active = (data || []).filter((p) => !p.deleted);
+      if (!active.length) return { reply: 'No posts found.', actions: [] };
+      const list = active.map((p, i) => `${i + 1}. **${p.title}** [${p.category}] — ${p.status} (${new Date(p.created_at).toLocaleDateString()})`).join('\n');
+      return { reply: `📝 **Recent Posts** (last 10)\n\n${list}`, actions: [] };
     },
   },
   {
@@ -98,11 +98,23 @@ const INTENTS = [
     },
   },
   {
+    patterns: /\b(create|make|new)\s*(?:a\s*)?(?:poll|survey|vote)\s*:?\s*(.+)/i,
+    handler: async (msg) => {
+      const match = msg.match(/\b(create|make|new)\s*(?:a\s*)?(?:poll|survey|vote)\s*:?\s*(.+)/i);
+      const title = match?.[2]?.trim();
+      if (!title) return { reply: 'Usage: "create poll: [title]"', actions: [] };
+      return {
+        reply: `📊 **Create Poll**\n\nTitle: **${title}**\nOptions: Yes / No\nType: yesno\n\nClick Execute to create this poll.`,
+        actions: [{ tool: 'create_poll', args: { title, options: ['Yes', 'No'], ptype: 'yesno' }, reason: `Create poll: ${title}`, destructive: false }],
+      };
+    },
+  },
+  {
     patterns: /\b(poll|polls?|vote|voting|survey|survey)\b/i,
     handler: async () => {
-      const { data } = await supabase.from('polls').select('id,title,total_votes,archived,created_at').order('created_at', { ascending: false });
+      const { data } = await supabase.from('polls').select('id,title,archived,created_at').order('created_at', { ascending: false });
       if (!data?.length) return { reply: 'No polls found.', actions: [] };
-      const list = data.map((p, i) => `${i + 1}. **${p.title}** — ${p.total_votes || 0} votes ${p.archived ? '(archived)' : '(active)'}`).join('\n');
+      const list = data.map((p, i) => `${i + 1}. **${p.title}** ${p.archived ? '(archived)' : '(active)'}`).join('\n');
       return { reply: `📊 **Polls** (${data.length})\n\n${list}`, actions: [] };
     },
   },
@@ -173,6 +185,21 @@ const INTENTS = [
     },
   },
   {
+    patterns: /\b(unban|unblock|restore)\s*(user|account)?\s*(\w+)?/i,
+    handler: async (msg) => {
+      const match = msg.match(/\b(unban|unblock|restore)\s*(?:user|account)?\s*(\w+)/i);
+      const anonId = match?.[2];
+      if (!anonId) return { reply: 'Usage: "unban user [anonymous_id]"', actions: [] };
+      const { data: user } = await supabase.from('users_meta').select('*').eq('anon_id', anonId.toLowerCase()).maybeSingle();
+      if (!user) return { reply: `User \`${anonId}\` not found.`, actions: [] };
+      if (!user.banned) return { reply: `User \`${anonId}\` is not banned.`, actions: [] };
+      return {
+        reply: `✅ **Unban User**\n\nUser: \`${anonId}\`\n\nReady to unban — click Execute to confirm.`,
+        actions: [{ tool: 'unban_user', args: { anon_id: anonId }, reason: `Unban user ${anonId}` }],
+      };
+    },
+  },
+  {
     patterns: /\b(warn|warning)\s*(user|account)?\s*(\w+)?(?:\s*(?:for|because|reason)[:\s]+(.+))?/i,
     handler: async (msg) => {
       const match = msg.match(/\b(warn|warning)\s*(?:user|account)?\s*(\w+)?(?:\s*(?:for|because|reason)[:\s]+(.+))?/i);
@@ -213,18 +240,6 @@ const INTENTS = [
       return {
         reply: `🗑️ **Delete Post**\n\nTitle: **${post.title}**\nCategory: ${post.category}\n\n⚠️ This is a soft-delete — the post will be hidden but not removed from the database. Click Execute to confirm.`,
         actions: [{ tool: 'delete_post', args: { post_id: postId, reason: 'Deleted via admin agent' }, reason: `Delete post: ${post.title}`, destructive: true }],
-      };
-    },
-  },
-  {
-    patterns: /\b(create|make|new)\s*(?:a\s*)?(?:poll|survey|vote)\s*:?\s*(.+)/i,
-    handler: async (msg) => {
-      const match = msg.match(/\b(create|make|new)\s*(?:a\s*)?(?:poll|survey|vote)\s*:?\s*(.+)/i);
-      const title = match?.[1]?.trim();
-      if (!title) return { reply: 'Usage: "create poll: [title]"', actions: [] };
-      return {
-        reply: `📊 **Create Poll**\n\nTitle: **${title}**\nOptions: Yes / No\nType: yesno\n\nClick Execute to create this poll.`,
-        actions: [{ tool: 'create_poll', args: { title, options: ['Yes', 'No'], ptype: 'yesno' }, reason: `Create poll: ${title}`, destructive: false }],
       };
     },
   },
@@ -312,16 +327,23 @@ async function executeTool(toolName, args) {
       return { warned: true, anon_id: args.anon_id, total_warnings: warnings.length };
     }
     case 'ban_user': {
-      const { error } = await supabase.from('users_meta').update({ banned: true, ban_reason: clean(args.reason, 500) }).eq('anon_id', args.anon_id.toLowerCase());
+      const { error } = await supabase.from('users_meta').update({ banned: true, notes: clean(args.reason, 500) }).eq('anon_id', args.anon_id.toLowerCase());
       if (error) throw error;
       return { banned: true, anon_id: args.anon_id };
+    }
+    case 'unban_user': {
+      const { error } = await supabase.from('users_meta').update({ banned: false, notes: '' }).eq('anon_id', args.anon_id.toLowerCase());
+      if (error) throw error;
+      return { unbanned: true, anon_id: args.anon_id };
     }
     case 'get_user_posts': {
       const { data } = await supabase.from('posts').select('*').eq('author_id', args.anon_id.toLowerCase()).order('created_at', { ascending: false });
       return data || [];
     }
     case 'create_poll': {
+      const pollId = `poll_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
       const { data, error } = await supabase.from('polls').insert({
+        id: pollId,
         title: clean(args.title, 200),
         options: args.options || ['Yes', 'No'],
         ptype: args.ptype || 'yesno',
@@ -491,6 +513,27 @@ export default async function handler(req, res) {
       return res.status(200).json({ results });
     }
 
+    // reject — discard proposed actions
+    if (action === 'reject') {
+      const { actions: actionList, session_id } = b;
+      if (!Array.isArray(actionList) || !actionList.length) return res.status(400).json({ error: 'No actions to reject' });
+
+      const results = actionList.map((act) => ({
+        id: act.id, success: false, result: { rejected: true },
+      }));
+
+      if (session_id) {
+        const summary = actionList.map((a) => `${a.id}: ${a.tool} rejected`).join('; ');
+        await supabase.from('agent_conversations').insert({
+          session_id: clean(session_id, 60),
+          role: 'system',
+          content: `Actions rejected: ${summary}`,
+        });
+      }
+
+      return res.status(200).json({ results });
+    }
+
     // history — get conversation history
     if (action === 'history') {
       const sid = clean(b.session_id || req.query.session_id || '', 60);
@@ -558,6 +601,7 @@ const TOOL_DEFS = [
   { name: 'delete_post', description: 'Soft-delete a post', parameters: { type: 'object', properties: { post_id: { type: 'string' }, reason: { type: 'string' } }, required: ['post_id', 'reason'] } },
   { name: 'warn_user', description: 'Issue a warning to an anonymous user', parameters: { type: 'object', properties: { anon_id: { type: 'string' }, reason: { type: 'string' } }, required: ['anon_id', 'reason'] } },
   { name: 'ban_user', description: 'Ban an anonymous user (prevents posting)', parameters: { type: 'object', properties: { anon_id: { type: 'string' }, reason: { type: 'string' } }, required: ['anon_id', 'reason'] } },
+  { name: 'unban_user', description: 'Unban an anonymous user (restores posting)', parameters: { type: 'object', properties: { anon_id: { type: 'string' } }, required: ['anon_id'] } },
   { name: 'get_user_posts', description: 'Get all posts from a specific anonymous user', parameters: { type: 'object', properties: { anon_id: { type: 'string' } }, required: ['anon_id'] } },
   { name: 'create_poll', description: 'Create a new poll', parameters: { type: 'object', properties: { title: { type: 'string' }, options: { type: 'array', items: { type: 'string' } }, ptype: { type: 'string', enum: ['yesno', 'choice', 'rating'] } }, required: ['title'] } },
   { name: 'close_poll', description: 'Close a poll to new votes', parameters: { type: 'object', properties: { poll_id: { type: 'integer' } }, required: ['poll_id'] } },
