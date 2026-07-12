@@ -1,9 +1,8 @@
-// AI Analysis — NVIDIA NIM (default) → Anthropic Claude (fallback) → built-in heuristics.
-// All keys live server-side in environment variables. Structured JSON responses only.
+// AI Analysis — uses configurable provider chain from _providers.js.
+// No hardcoded providers. Admin configures default + failover order in the UI.
+// Built-in heuristic fallback when no provider is available.
 import { cors, isAdmin } from './_auth.js';
-
-const NIM_MODEL = process.env.NVIDIA_MODEL || 'meta/llama-3.1-70b-instruct';
-const CLAUDE_MODEL = process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-6';
+import { callLLMChain } from './_providers.js';
 
 function parseJson(text) {
   try {
@@ -11,55 +10,11 @@ function parseJson(text) {
   } catch { return null; }
 }
 
-/** NVIDIA NIM (OpenAI-compatible endpoint) */
-async function callNim(system, user) {
-  const key = process.env.NVIDIA_API_KEY;
-  if (!key) return null;
-  try {
-    const resp = await fetch('https://integrate.api.nvidia.com/v1/chat/completions', {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: NIM_MODEL, max_tokens: 2048, temperature: 0.2,
-        messages: [
-          { role: 'system', content: system + '\nRespond with STRICT valid JSON only. No markdown, no prose.' },
-          { role: 'user', content: user },
-        ],
-      }),
-    });
-    if (!resp.ok) { console.error('NIM error', resp.status, await resp.text()); return null; }
-    const data = await resp.json();
-    return parseJson(data?.choices?.[0]?.message?.content);
-  } catch (e) { console.error('NIM fetch failed', e); return null; }
-}
-
-/** Anthropic Claude fallback */
-async function callClaude(system, user) {
-  const key = process.env.ANTHROPIC_API_KEY;
-  if (!key) return null;
-  try {
-    const resp = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
-      body: JSON.stringify({
-        model: CLAUDE_MODEL, max_tokens: 2048,
-        system: system + '\nRespond with STRICT valid JSON only. No markdown, no prose.',
-        messages: [{ role: 'user', content: user }],
-      }),
-    });
-    if (!resp.ok) { console.error('Claude error', resp.status, await resp.text()); return null; }
-    const data = await resp.json();
-    return parseJson(data?.content?.[0]?.text);
-  } catch (e) { console.error('Claude fetch failed', e); return null; }
-}
-
-/** Try NIM first, then Claude. Returns { engine, result } or null. */
-async function callLLM(system, user) {
-  const nim = await callNim(system, user);
-  if (nim) return { engine: `nvidia:${NIM_MODEL}`, result: nim };
-  const claude = await callClaude(system, user);
-  if (claude) return { engine: `anthropic:${CLAUDE_MODEL}`, result: claude };
-  return null;
+/** Call LLM via the shared provider chain. Returns parsed JSON or null. */
+async function callLLMJson(system, user) {
+  const result = await callLLMChain(system + '\nRespond with STRICT valid JSON only. No markdown, no prose.', user);
+  if (!result) return null;
+  return { engine: `${result.provider}:${result.model}`, result: parseJson(result.text) };
 }
 
 // ---------- Deterministic heuristic fallback (no API key needed) ----------
@@ -151,11 +106,11 @@ export default async function handler(req, res) {
     const { task, posts, text, poll } = req.body || {};
 
     if (task === 'moderate') {
-      const ai = await callLLM(
+      const ai = await callLLMJson(
         'You are a school-content moderator. Analyze the text for abuse, bullying, spam, and safety risks.',
         `Text: """${String(text || '').slice(0, 1500)}"""\nReturn JSON: {"abuse":bool,"bullying":bool,"spam":bool,"safety_risk":bool,"action":"allow|review|escalate","reason":string,"confidence":0-1}`
       );
-      return res.status(200).json(ai ? { engine: ai.engine, ...ai.result } : heuristicModeration(String(text || '')));
+      return res.status(200).json(ai && ai.result ? { engine: ai.engine, ...ai.result } : heuristicModeration(String(text || '')));
     }
 
     if (task === 'analyze') {
@@ -165,16 +120,15 @@ export default async function handler(req, res) {
         category: p.category, priority: p.priority, status: p.status,
         reactions: p.reactions, comments: p.comment_count, created_at: p.created_at,
       }));
-      const ai = await callLLM(
+      const ai = await callLLMJson(
         'You are an analyst for an anonymous school feedback platform. Cluster duplicates, detect urgency, rank issues using votes, support ratio, severity, recurrence, comment volume and growth rate. Detect abuse/spam/bullying/safety risks.',
         `Feedback items JSON:\n${JSON.stringify(items)}\n\nReturn JSON with keys: summary (string), ranked_issues (array of {id,title,category,urgency_score:0-100,rank_score,support_ratio,flags:[],recommended_action,confidence:0-1}), duplicate_clusters (array of {topic,post_ids,count}), safety_alerts (array of {id,title,reason}), weekly_insights ({total,high_urgency,trending_category,recommendation}).`
       );
-      if (ai) return res.status(200).json({ engine: ai.engine, generated_at: new Date().toISOString(), ...ai.result });
+      if (ai && ai.result) return res.status(200).json({ engine: ai.engine, generated_at: new Date().toISOString(), ...ai.result });
       return res.status(200).json(heuristicAnalysis(posts || []));
     }
 
     if (task === 'categorize') {
-      // AI category suggestion while typing — instant heuristic + optional Claude refinement
       const input = String(text || '').slice(0, 600).toLowerCase();
       const KEYWORDS = {
         Academics: ['exam', 'homework', 'class', 'lesson', 'grade', 'test', 'study', 'curriculum', 'syllabus', 'timetable'],
@@ -197,21 +151,20 @@ export default async function handler(req, res) {
         const score = words.reduce((a, w) => a + (input.includes(w) ? 1 : 0), 0);
         if (score > bestScore) { best = cat; bestScore = score; }
       }
-      // Try Claude for higher accuracy when a key is configured
-      const ai = bestScore > 0 ? null : await callClaude(
+      const ai = bestScore > 0 ? null : await callLLMJson(
         'Classify school feedback into exactly one category.',
         `Text: """${input}"""\nCategories: Academics, Facilities, Food, Bullying, Teachers, Events, Transport, Sports, Technology, Library, Hostel, Security, Cleanliness, Medical, Other.\nReturn JSON: {"category": string, "confidence": 0-1}`
       );
-      const category = ai?.category && Object.keys(KEYWORDS).concat('Other').includes(ai.category) ? ai.category : best;
+      const category = ai?.result?.category && Object.keys(KEYWORDS).concat('Other').includes(ai.result.category) ? ai.result.category : best;
       return res.status(200).json({
-        engine: ai ? MODEL : 'heuristic-keywords',
+        engine: ai ? ai.engine : 'heuristic-keywords',
         category,
-        confidence: ai?.confidence ?? Math.min(0.95, 0.4 + bestScore * 0.18),
+        confidence: ai?.result?.confidence ?? Math.min(0.95, 0.4 + bestScore * 0.18),
       });
     }
 
     if (task === 'summarize') {
-      const ai = await callLLM(
+      const ai = await callLLMJson(
         'Summarize this school feedback item in 1-2 neutral sentences for administrators.',
         `Item: ${JSON.stringify({ title: req.body.title, description: req.body.description })}\nReturn JSON: {"summary": string}`
       );
@@ -221,12 +174,11 @@ export default async function handler(req, res) {
     }
 
     if (task === 'poll_insight') {
-      const ai = await callLLM(
+      const ai = await callLLMJson(
         'You analyze school poll results and give one short, neutral insight for students and staff.',
         `Poll: ${JSON.stringify(poll)}\nReturn JSON: {"insight": string}`
       );
       if (ai?.result?.insight) return res.status(200).json({ engine: ai.engine, insight: ai.result.insight });
-      // heuristic insight
       const counts = poll?.vote_counts || {};
       const total = poll?.total_votes || 0;
       const top = Object.entries(counts).sort((a, b) => b[1] - a[1])[0];
@@ -234,7 +186,7 @@ export default async function handler(req, res) {
       const opt = poll?.options?.[Number(top?.[0])] || 'the leading option';
       return res.status(200).json({
         engine: 'heuristic-fallback',
-        insight: total === 0 ? 'No votes yet — share the poll to gather opinions.' : `“${opt}” leads with ${pct}% of ${total} vote${total !== 1 ? 's' : ''}${pct >= 70 ? ' — a strong consensus.' : pct >= 50 ? ' — a clear majority.' : ' — opinions are split.'}`,
+        insight: total === 0 ? 'No votes yet — share the poll to gather opinions.' : `"${opt}" leads with ${pct}% of ${total} vote${total !== 1 ? 's' : ''}${pct >= 70 ? ' — a strong consensus.' : pct >= 50 ? ' — a clear majority.' : ' — opinions are split.'}`,
       });
     }
 

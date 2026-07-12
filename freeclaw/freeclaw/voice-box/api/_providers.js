@@ -1,6 +1,7 @@
 // Multi-provider API key management with failover chain.
 // Keys stored in DB (settings.api_providers) with env vars as fallback.
 // Priority: DB keys → env vars → heuristic fallback.
+// is_default provider goes FIRST in chain, then priority order.
 import supabase from './_db-client.js';
 import { cors, isAdmin, auditLog, clean } from './_auth.js';
 
@@ -30,7 +31,7 @@ const PROVIDER_DEFS = {
   },
   gemini: {
     name: 'Google Gemini',
-    defaultModel: 'gemini-2.5-pro',
+    defaultModel: 'gemini-2.5-flash',
     baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai/',
     buildHeaders: (key) => ({ Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' }),
     buildBody: (model, messages) => ({ model, max_tokens: 2048, temperature: 0.2, messages }),
@@ -93,19 +94,51 @@ function maskKey(key) {
   return '••••••' + key.slice(-4);
 }
 
+// ─── Get the current default provider ID from DB ──────────────────
+export async function getDefaultProviderId() {
+  const db = await getProviders();
+  for (const [id, cfg] of Object.entries(db)) {
+    if (cfg.is_default && cfg.enabled && cfg.key) return id;
+  }
+  // If none explicitly marked, first enabled+keyed provider by priority
+  const sorted = Object.entries(db)
+    .filter(([, cfg]) => cfg.enabled && cfg.key)
+    .sort((a, b) => (a[1].priority || 99) - (b[1].priority || 99));
+  return sorted[0]?.[0] || null;
+}
+
 // ─── Build priority-ordered chain from DB + env vars ──────────────
-async function buildChain() {
+// is_default provider goes first, then priority order.
+export async function buildChain() {
   const db = await getProviders();
   const chain = [];
-  // DB-configured providers first (sorted by priority)
+
+  // Find the default provider
+  let defaultId = null;
+  for (const [id, cfg] of Object.entries(db)) {
+    if (cfg.is_default && cfg.enabled && cfg.key) { defaultId = id; break; }
+  }
+
+  // DB-configured providers (enabled + have key)
   const dbEntries = Object.entries(db)
     .filter(([id, cfg]) => cfg.enabled && cfg.key)
     .sort((a, b) => (a[1].priority || 99) - (b[1].priority || 99));
+
+  // Default provider first
+  if (defaultId) {
+    const def = PROVIDER_DEFS[defaultId];
+    const cfg = db[defaultId];
+    if (def) chain.push({ id: defaultId, ...def, key: cfg.key, model: cfg.model || def.defaultModel, isDefault: true });
+  }
+
+  // Then the rest in priority order (skip default since it's already first)
   for (const [id, cfg] of dbEntries) {
+    if (id === defaultId) continue;
     const def = PROVIDER_DEFS[id];
     if (!def) continue;
     chain.push({ id, ...def, key: cfg.key, model: cfg.model || def.defaultModel });
   }
+
   // Env var fallbacks (only if not already added from DB)
   const dbIds = new Set(dbEntries.map(([id]) => id));
   for (const [id, def] of Object.entries(PROVIDER_DEFS)) {
@@ -113,7 +146,28 @@ async function buildChain() {
     const key = process.env[def.envKey];
     if (key) chain.push({ id, ...def, key, model: def.defaultModel });
   }
+
   return chain;
+}
+
+// ─── Get full provider config for a specific provider ─────────────
+export async function getProviderConfig(id) {
+  const db = await getProviders();
+  const cfg = db[id] || {};
+  const def = PROVIDER_DEFS[id];
+  if (!def) return null;
+  return {
+    id,
+    name: def.name,
+    model: cfg.model || def.defaultModel,
+    enabled: !!cfg.enabled,
+    key: cfg.key || process.env[def.envKey] || null,
+    isDefault: !!cfg.is_default,
+    baseUrl: def.baseUrl,
+    buildHeaders: def.buildHeaders,
+    buildBody: def.buildBody,
+    parseResponse: def.parseResponse,
+  };
 }
 
 // ─── Call one provider ────────────────────────────────────────────
@@ -183,6 +237,7 @@ export default async function handler(req, res) {
           model: cfg.model || def.defaultModel,
           enabled: !!cfg.enabled,
           priority: cfg.priority || Object.keys(PROVIDER_DEFS).indexOf(id) + 1,
+          is_default: !!cfg.is_default,
           status: cfg.status || 'untested',
           last_tested: cfg.last_tested || null,
           key_masked: cfg.key ? maskKey(cfg.key) : (process.env[def.envKey] ? maskKey(process.env[def.envKey]) : ''),
@@ -192,8 +247,25 @@ export default async function handler(req, res) {
       return res.status(200).json(result);
     }
 
-    // POST /api/providers → update, test, reorder
+    // POST /api/providers → update, test, reorder, set_default
     if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
+
+    // set_default — make one provider the default (clears is_default on all others)
+    if (action === 'set_default') {
+      const { provider: pid } = b;
+      if (!pid || !PROVIDER_DEFS[pid]) return res.status(400).json({ error: 'Invalid provider' });
+      const db = await getProviders();
+      // Clear all defaults
+      for (const id of Object.keys(db)) {
+        if (db[id].is_default) db[id].is_default = false;
+      }
+      // Set new default
+      if (!db[pid]) db[pid] = {};
+      db[pid].is_default = true;
+      await saveProviders(db);
+      await auditLog('admin', 'set_default_provider', `Default provider set to ${pid}`);
+      return res.status(200).json({ ok: true, default: pid });
+    }
 
     // update_provider
     if (action === 'update_provider') {
