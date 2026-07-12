@@ -1,0 +1,673 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Voice Box Admin — UI Preview</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif; background: #0a0a0f; color: #e8e8ed; min-height: 100vh; }
+
+    /* Layout */
+    .app { display: flex; min-height: 100vh; }
+    .sidebar { width: 240px; background: #12121a; border-right: 1px solid #1e1e2e; padding: 20px 12px; position: fixed; height: 100vh; overflow-y: auto; }
+    .main { flex: 1; margin-left: 240px; padding: 24px 32px; max-width: 1100px; }
+
+    /* Sidebar */
+    .brand { display: flex; align-items: center; gap: 10px; padding: 0 8px; margin-bottom: 28px; }
+    .brand-icon { width: 32px; height: 32px; background: linear-gradient(135deg, #6366f1, #8b5cf6); border-radius: 8px; display: grid; place-items: center; font-size: 14px; }
+    .brand-text { font-weight: 700; font-size: 14px; }
+    .brand-sub { font-size: 10px; color: #666; display: block; }
+
+    .nav-item { display: flex; align-items: center; gap: 10px; padding: 9px 12px; border-radius: 8px; font-size: 13px; font-weight: 500; color: #888; cursor: pointer; transition: all 0.15s; margin-bottom: 2px; }
+    .nav-item:hover { background: #1a1a28; color: #ccc; }
+    .nav-item.active { background: rgba(99,102,241,0.12); color: #818cf8; }
+    .nav-item svg { width: 16px; height: 16px; opacity: 0.7; }
+    .nav-item.active svg { opacity: 1; }
+
+    /* Tabs */
+    .tab-header { display: flex; gap: 4px; margin-bottom: 24px; background: #12121a; padding: 4px; border-radius: 12px; width: fit-content; }
+    .tab-btn { padding: 8px 18px; border-radius: 8px; font-size: 12px; font-weight: 600; color: #666; cursor: pointer; transition: all 0.15s; border: none; background: none; }
+    .tab-btn.active { background: #1a1a28; color: #818cf8; box-shadow: 0 1px 3px rgba(0,0,0,0.3); }
+    .tab-btn:hover:not(.active) { color: #aaa; }
+
+    .tab-content { display: none; }
+    .tab-content.active { display: block; }
+
+    /* Cards */
+    .card { background: #12121a; border: 1px solid #1e1e2e; border-radius: 12px; padding: 20px; margin-bottom: 16px; }
+    .card-title { font-size: 13px; font-weight: 600; display: flex; align-items: center; gap: 8px; margin-bottom: 16px; }
+    .card-title svg { width: 16px; height: 16px; }
+
+    /* Provider List */
+    .provider-row { display: grid; grid-template-columns: 40px 1fr 1fr 100px 80px; align-items: center; gap: 12px; padding: 12px 0; border-bottom: 1px solid #1a1a28; }
+    .provider-row:last-child { border-bottom: none; }
+    .provider-priority { font-size: 11px; font-weight: 700; color: #555; text-align: center; width: 28px; height: 28px; border-radius: 50%; background: #1a1a28; display: grid; place-items: center; }
+    .provider-name { font-size: 13px; font-weight: 600; }
+    .provider-model { font-size: 12px; color: #666; font-family: 'SF Mono', monospace; }
+    .provider-status { display: flex; align-items: center; gap: 6px; font-size: 11px; }
+    .status-dot { width: 8px; height: 8px; border-radius: 50%; }
+    .status-dot.green { background: #22c55e; box-shadow: 0 0 6px rgba(34,197,94,0.4); }
+    .status-dot.red { background: #ef4444; }
+    .status-dot.gray { background: #444; }
+    .status-dot.yellow { background: #eab308; }
+
+    .provider-actions { display: flex; gap: 6px; }
+    .btn-sm { padding: 5px 10px; border-radius: 6px; font-size: 11px; font-weight: 500; cursor: pointer; border: 1px solid #2a2a3a; background: #1a1a28; color: #aaa; transition: all 0.15s; }
+    .btn-sm:hover { background: #22223a; color: #fff; }
+    .btn-sm.primary { background: rgba(99,102,241,0.15); color: #818cf8; border-color: rgba(99,102,241,0.3); }
+    .btn-sm.primary:hover { background: rgba(99,102,241,0.25); }
+    .btn-sm.danger { background: rgba(239,68,68,0.1); color: #f87171; border-color: rgba(239,68,68,0.2); }
+    .btn-sm.success { background: rgba(34,197,94,0.1); color: #4ade80; border-color: rgba(34,197,94,0.2); }
+
+    /* Toggle */
+    .toggle { position: relative; width: 36px; height: 20px; background: #333; border-radius: 10px; cursor: pointer; transition: all 0.2s; }
+    .toggle.on { background: #6366f1; }
+    .toggle::after { content: ''; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; background: #fff; border-radius: 50%; transition: all 0.2s; }
+    .toggle.on::after { left: 18px; }
+
+    /* Chat */
+    .chat-container { display: flex; flex-direction: column; height: calc(100vh - 160px); }
+    .chat-messages { flex: 1; overflow-y: auto; padding: 16px 0; display: flex; flex-direction: column; gap: 16px; }
+    .chat-input-area { display: flex; gap: 8px; padding: 16px 0; border-top: 1px solid #1e1e2e; }
+    .chat-input { flex: 1; background: #1a1a28; border: 1px solid #2a2a3a; border-radius: 10px; padding: 12px 16px; color: #e8e8ed; font-size: 13px; outline: none; resize: none; font-family: inherit; }
+    .chat-input:focus { border-color: #6366f1; }
+    .chat-send { background: linear-gradient(135deg, #6366f1, #8b5cf6); border: none; border-radius: 10px; padding: 12px 20px; color: #fff; font-size: 13px; font-weight: 600; cursor: pointer; transition: all 0.15s; }
+    .chat-send:hover { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(99,102,241,0.3); }
+
+    /* Messages */
+    .msg { max-width: 80%; display: flex; flex-direction: column; gap: 6px; }
+    .msg.user { align-self: flex-end; }
+    .msg.assistant { align-self: flex-start; }
+    .msg-bubble { padding: 12px 16px; border-radius: 12px; font-size: 13px; line-height: 1.6; }
+    .msg.user .msg-bubble { background: linear-gradient(135deg, #6366f1, #8b5cf6); color: #fff; border-bottom-right-radius: 4px; }
+    .msg.assistant .msg-bubble { background: #1a1a28; border: 1px solid #1e1e2e; border-bottom-left-radius: 4px; }
+    .msg-label { font-size: 10px; color: #555; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
+    .msg.user .msg-label { text-align: right; }
+
+    /* Action Cards */
+    .action-card { background: #12121a; border: 1px solid #1e1e2e; border-radius: 10px; padding: 14px; margin-top: 8px; }
+    .action-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+    .action-type { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; color: #818cf8; }
+    .action-target { font-size: 12px; color: #888; }
+    .action-diff { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+    .diff-before { background: rgba(239,68,68,0.1); color: #f87171; padding: 4px 8px; border-radius: 4px; font-size: 11px; font-family: 'SF Mono', monospace; text-decoration: line-through; }
+    .diff-after { background: rgba(34,197,94,0.1); color: #4ade80; padding: 4px 8px; border-radius: 4px; font-size: 11px; font-family: 'SF Mono', monospace; }
+    .diff-arrow { color: #555; font-size: 14px; }
+    .action-reason { font-size: 11px; color: #666; margin-bottom: 10px; font-style: italic; }
+    .action-buttons { display: flex; gap: 6px; }
+    .btn-execute { background: rgba(34,197,94,0.15); color: #4ade80; border: 1px solid rgba(34,197,94,0.3); padding: 6px 14px; border-radius: 6px; font-size: 11px; font-weight: 600; cursor: pointer; transition: all 0.15s; }
+    .btn-execute:hover { background: rgba(34,197,94,0.25); }
+    .btn-cancel { background: rgba(239,68,68,0.1); color: #f87171; border: 1px solid rgba(239,68,68,0.2); padding: 6px 14px; border-radius: 6px; font-size: 11px; font-weight: 600; cursor: pointer; transition: all 0.15s; }
+    .btn-cancel:hover { background: rgba(239,68,68,0.2); }
+    .btn-execute-all { background: linear-gradient(135deg, #22c55e, #16a34a); color: #fff; border: none; padding: 8px 18px; border-radius: 8px; font-size: 12px; font-weight: 600; cursor: pointer; transition: all 0.15s; margin-top: 8px; }
+    .btn-execute-all:hover { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(34,197,94,0.3); }
+
+    /* Modal */
+    .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.6); display: grid; place-items: center; z-index: 100; opacity: 0; pointer-events: none; transition: opacity 0.2s; }
+    .modal-overlay.show { opacity: 1; pointer-events: auto; }
+    .modal { background: #12121a; border: 1px solid #1e1e2e; border-radius: 16px; padding: 24px; width: 420px; max-width: 90vw; }
+    .modal-title { font-size: 15px; font-weight: 700; margin-bottom: 16px; }
+    .modal-input { width: 100%; background: #1a1a28; border: 1px solid #2a2a3a; border-radius: 8px; padding: 10px 14px; color: #e8e8ed; font-size: 13px; outline: none; margin-bottom: 12px; font-family: 'SF Mono', monospace; }
+    .modal-input:focus { border-color: #6366f1; }
+    .modal-hint { font-size: 11px; color: #555; margin-bottom: 16px; }
+    .modal-buttons { display: flex; gap: 8px; justify-content: flex-end; }
+
+    /* Utilities */
+    .flex { display: flex; }
+    .items-center { align-items: center; }
+    .justify-between { justify-content: space-between; }
+    .gap-2 { gap: 8px; }
+    .gap-3 { gap: 12px; }
+    .mt-4 { margin-top: 16px; }
+    .mb-4 { margin-bottom: 16px; }
+    .text-xs { font-size: 11px; }
+    .text-muted { color: #666; }
+    .font-mono { font-family: 'SF Mono', monospace; }
+    .skeleton { background: linear-gradient(90deg, #1a1a28 25%, #22223a 50%, #1a1a28 75%); background-size: 200% 100%; animation: shimmer 1.5s infinite; border-radius: 8px; }
+    @keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+    .typing-dots { display: flex; gap: 4px; padding: 8px 0; }
+    .typing-dots span { width: 6px; height: 6px; background: #666; border-radius: 50%; animation: bounce 1.4s infinite; }
+    .typing-dots span:nth-child(2) { animation-delay: 0.2s; }
+    .typing-dots span:nth-child(3) { animation-delay: 0.4s; }
+    @keyframes bounce { 0%, 80%, 100% { transform: translateY(0); } 40% { transform: translateY(-6px); } }
+
+    /* Scrollbar */
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: #333; border-radius: 3px; }
+    ::-webkit-scrollbar-thumb:hover { background: #555; }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <!-- Sidebar -->
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-icon">📢</div>
+        <div><span class="brand-text">Voice Box</span><span class="brand-sub">Admin console</span></div>
+      </div>
+      <nav>
+        <div class="nav-item" onclick="showTab('overview')">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+          Dashboard
+        </div>
+        <div class="nav-item active" onclick="showTab('agent')">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 8V4H8"/><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M4 12H2v4a2 2 0 002 2h4"/></svg>
+          Admin Agent
+        </div>
+        <div class="nav-item" onclick="showTab('ai')">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+          AI Analysis
+        </div>
+        <div class="nav-item">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><path d="M14 2v6h6"/></svg>
+          Complaints
+        </div>
+        <div class="nav-item">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>
+          Chat
+        </div>
+        <div class="nav-item" onclick="showTab('settings')">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-2 2 2 2 0 01-2-2v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83 0 2 2 0 010-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 01-2-2 2 2 0 012-2h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 010-2.83 2 2 0 012.83 0l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 012-2 2 2 0 012 2v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 0 2 2 0 010 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 012 2 2 2 0 01-2 2h-.09a1.65 1.65 0 00-1.51 1z"/></svg>
+          Settings
+        </div>
+      </nav>
+    </aside>
+
+    <!-- Main Content -->
+    <div class="main">
+      <!-- Tab: Agent Chat -->
+      <div id="tab-agent" class="tab-content active">
+        <div class="flex items-center justify-between mb-4">
+          <div>
+            <h1 style="font-size: 20px; font-weight: 700; display: flex; align-items: center; gap: 8px;">
+              <span style="color: #818cf8;">🤖</span> Admin Agent
+            </h1>
+            <p class="text-xs text-muted" style="margin-top: 4px;">Natural language admin assistant — approves every action before executing</p>
+          </div>
+        </div>
+
+        <div class="chat-container">
+          <div class="chat-messages" id="chatMessages">
+            <!-- Welcome message -->
+            <div class="msg assistant">
+              <div class="msg-label">AGENT</div>
+              <div class="msg-bubble">
+                Hi! I'm your admin assistant. I can help you manage posts, users, polls, and analytics.<br><br>
+                Try commands like:<br>
+                • "Show me all spam posts"<br>
+                • "Hide post about homework"<br>
+                • "How many posts this week?"<br>
+                • "Create a poll about library hours"<br><br>
+                What would you like to do?
+              </div>
+            </div>
+
+            <!-- User message -->
+            <div class="msg user">
+              <div class="msg-label">YOU</div>
+              <div class="msg-bubble">Hide all spam posts</div>
+            </div>
+
+            <!-- Agent response with actions -->
+            <div class="msg assistant">
+              <div class="msg-label">AGENT</div>
+              <div class="msg-bubble">
+                I found <strong>3 spam posts</strong>. Here's what I'll do:
+              </div>
+            </div>
+
+            <!-- Action Card 1 -->
+            <div class="msg assistant" style="max-width: 85%;">
+              <div class="action-card">
+                <div class="action-header">
+                  <div>
+                    <span class="action-type">🔇 Hide Post</span>
+                    <div class="action-target">post_abc123 · reported 2h ago</div>
+                  </div>
+                  <span style="font-size: 11px; color: #ef4444; font-weight: 600;">SPAM</span>
+                </div>
+                <p style="font-size: 13px; margin-bottom: 8px; font-weight: 500;">"Buy cheap followers for your school account!!!"</p>
+                <div class="action-diff">
+                  <span class="diff-before">hidden: false</span>
+                  <span class="diff-arrow">→</span>
+                  <span class="diff-after">hidden: true</span>
+                </div>
+                <div class="action-reason">📋 Reason: Promotional spam with external link — violates community guidelines</div>
+                <div class="action-buttons">
+                  <button class="btn-execute" onclick="executeAction(this)">✓ Execute</button>
+                  <button class="btn-cancel" onclick="cancelAction(this)">✕ Cancel</button>
+                </div>
+              </div>
+            </div>
+
+            <!-- Action Card 2 -->
+            <div class="msg assistant" style="max-width: 85%;">
+              <div class="action-card">
+                <div class="action-header">
+                  <div>
+                    <span class="action-type">🔇 Hide Post</span>
+                    <div class="action-target">post_def456 · reported 5h ago</div>
+                  </div>
+                  <span style="font-size: 11px; color: #ef4444; font-weight: 600;">SPAM</span>
+                </div>
+                <p style="font-size: 13px; margin-bottom: 8px; font-weight: 500;">"FREE CRYPTO AIRDROP! Claim your tokens now 🚀"</p>
+                <div class="action-diff">
+                  <span class="diff-before">hidden: false</span>
+                  <span class="diff-arrow">→</span>
+                  <span class="diff-after">hidden: true</span>
+                </div>
+                <div class="action-reason">📋 Reason: Cryptocurrency scam — phishing attempt targeting students</div>
+                <div class="action-buttons">
+                  <button class="btn-execute" onclick="executeAction(this)">✓ Execute</button>
+                  <button class="btn-cancel" onclick="cancelAction(this)">✕ Cancel</button>
+                </div>
+              </div>
+            </div>
+
+            <!-- Action Card 3 -->
+            <div class="msg assistant" style="max-width: 85%;">
+              <div class="action-card">
+                <div class="action-header">
+                  <div>
+                    <span class="action-type">🔇 Hide Post</span>
+                    <div class="action-target">post_ghi789 · reported 1d ago</div>
+                  </div>
+                  <span style="font-size: 11px; color: #ef4444; font-weight: 600;">SPAM</span>
+                </div>
+                <p style="font-size: 13px; margin-bottom: 8px; font-weight: 500;">"Click here to win a free iPhone! Limited time offer!"</p>
+                <div class="action-diff">
+                  <span class="diff-before">hidden: false</span>
+                  <span class="diff-arrow">→</span>
+                  <span class="diff-after">hidden: true</span>
+                </div>
+                <div class="action-reason">📋 Reason: Phishing attempt — external link to suspicious domain</div>
+                <div class="action-buttons">
+                  <button class="btn-execute" onclick="executeAction(this)">✓ Execute</button>
+                  <button class="btn-cancel" onclick="cancelAction(this)">✕ Cancel</button>
+                </div>
+              </div>
+            </div>
+
+            <!-- Execute All button -->
+            <div class="msg assistant" style="max-width: 85%;">
+              <button class="btn-execute-all" onclick="executeAll()">⚡ Execute All 3 Actions</button>
+            </div>
+
+            <!-- Typing indicator -->
+            <div class="msg assistant" id="typingIndicator" style="display: none;">
+              <div class="msg-label">AGENT</div>
+              <div class="msg-bubble">
+                <div class="typing-dots">
+                  <span></span><span></span><span></span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Input -->
+          <div class="chat-input-area">
+            <textarea class="chat-input" id="chatInput" placeholder="Type a command... (e.g., 'Show me all reported posts')" rows="1" onkeydown="handleKeyDown(event)"></textarea>
+            <button class="chat-send" onclick="sendMessage()">Send ↑</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Tab: Settings / Providers -->
+      <div id="tab-settings" class="tab-content">
+        <h1 style="font-size: 20px; font-weight: 700; margin-bottom: 4px;">Settings</h1>
+        <p class="text-xs text-muted mb-4">Manage API providers, admin password, and system configuration</p>
+
+        <!-- Provider Section -->
+        <div class="card">
+          <div class="card-title">
+            <svg viewBox="0 0 24 24" fill="none" stroke="#818cf8" stroke-width="2" width="16" height="16"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+            API Providers
+            <span style="margin-left: auto; font-size: 11px; color: #555; font-weight: 400;">7 providers · 2 active</span>
+          </div>
+
+          <!-- Provider: OpenAI -->
+          <div class="provider-row">
+            <div class="provider-priority">1</div>
+            <div>
+              <div class="provider-name">OpenAI</div>
+              <div class="provider-model">gpt-4o</div>
+            </div>
+            <div class="provider-model" style="font-size: 11px; color: #555;">sk-...3f8a</div>
+            <div class="provider-status">
+              <span class="status-dot green"></span>
+              <span style="color: #4ade80;">Active</span>
+            </div>
+            <div class="provider-actions">
+              <button class="btn-sm primary" onclick="openEditModal('openai')">Edit</button>
+              <button class="btn-sm" onclick="testProvider('openai')">Test</button>
+            </div>
+          </div>
+
+          <!-- Provider: Anthropic -->
+          <div class="provider-row">
+            <div class="provider-priority">2</div>
+            <div>
+              <div class="provider-name">Anthropic</div>
+              <div class="provider-model">claude-sonnet-4-6</div>
+            </div>
+            <div class="provider-model" style="font-size: 11px; color: #555;">sk-ant-...b2c1</div>
+            <div class="provider-status">
+              <span class="status-dot green"></span>
+              <span style="color: #4ade80;">Active</span>
+            </div>
+            <div class="provider-actions">
+              <button class="btn-sm primary" onclick="openEditModal('anthropic')">Edit</button>
+              <button class="btn-sm" onclick="testProvider('anthropic')">Test</button>
+            </div>
+          </div>
+
+          <!-- Provider: Gemini -->
+          <div class="provider-row">
+            <div class="provider-priority">3</div>
+            <div>
+              <div class="provider-name">Google Gemini</div>
+              <div class="provider-model">gemini-2.5-pro</div>
+            </div>
+            <div class="provider-model" style="font-size: 11px; color: #555;">Not configured</div>
+            <div class="provider-status">
+              <span class="status-dot gray"></span>
+              <span style="color: #666;">Off</span>
+            </div>
+            <div class="provider-actions">
+              <button class="btn-sm primary" onclick="openEditModal('gemini')">Edit</button>
+              <button class="btn-sm">Test</button>
+            </div>
+          </div>
+
+          <!-- Provider: NVIDIA NIM -->
+          <div class="provider-row">
+            <div class="provider-priority">4</div>
+            <div>
+              <div class="provider-name">NVIDIA NIM</div>
+              <div class="provider-model">meta/llama-3.1-70b-instruct</div>
+            </div>
+            <div class="provider-model" style="font-size: 11px; color: #555;">nvapi-...9d2e</div>
+            <div class="provider-status">
+              <span class="status-dot green"></span>
+              <span style="color: #4ade80;">Active</span>
+            </div>
+            <div class="provider-actions">
+              <button class="btn-sm primary" onclick="openEditModal('nvidia')">Edit</button>
+              <button class="btn-sm" onclick="testProvider('nvidia')">Test</button>
+            </div>
+          </div>
+
+          <!-- Provider: Mistral -->
+          <div class="provider-row">
+            <div class="provider-priority">5</div>
+            <div>
+              <div class="provider-name">Mistral</div>
+              <div class="provider-model">mistral-large-latest</div>
+            </div>
+            <div class="provider-model" style="font-size: 11px; color: #555;">Not configured</div>
+            <div class="provider-status">
+              <span class="status-dot gray"></span>
+              <span style="color: #666;">Off</span>
+            </div>
+            <div class="provider-actions">
+              <button class="btn-sm primary" onclick="openEditModal('mistral')">Edit</button>
+              <button class="btn-sm">Test</button>
+            </div>
+          </div>
+
+          <!-- Provider: DeepSeek -->
+          <div class="provider-row">
+            <div class="provider-priority">6</div>
+            <div>
+              <div class="provider-name">DeepSeek</div>
+              <div class="provider-model">deepseek-chat</div>
+            </div>
+            <div class="provider-model" style="font-size: 11px; color: #555;">Not configured</div>
+            <div class="provider-status">
+              <span class="status-dot gray"></span>
+              <span style="color: #666;">Off</span>
+            </div>
+            <div class="provider-actions">
+              <button class="btn-sm primary" onclick="openEditModal('deepseek')">Edit</button>
+              <button class="btn-sm">Test</button>
+            </div>
+          </div>
+
+          <!-- Provider: Groq -->
+          <div class="provider-row">
+            <div class="provider-priority">7</div>
+            <div>
+              <div class="provider-name">Groq</div>
+              <div class="provider-model">llama-3.3-70b-versatile</div>
+            </div>
+            <div class="provider-model" style="font-size: 11px; color: #555;">Not configured</div>
+            <div class="provider-status">
+              <span class="status-dot gray"></span>
+              <span style="color: #666;">Off</span>
+            </div>
+            <div class="provider-actions">
+              <button class="btn-sm primary" onclick="openEditModal('groq')">Edit</button>
+              <button class="btn-sm">Test</button>
+            </div>
+          </div>
+
+          <div style="display: flex; gap: 8px; margin-top: 16px; padding-top: 16px; border-top: 1px solid #1e1e2e;">
+            <button class="btn-sm primary" onclick="testAllProviders()">🧪 Test All</button>
+            <button class="btn-sm" onclick="resetProviders()">↺ Reset to Defaults</button>
+          </div>
+
+          <p class="text-xs text-muted mt-4" style="line-height: 1.6;">
+            ℹ️ Providers are tried in priority order (1→7). If one fails (timeout, bad key, rate limit), the next is used automatically.
+            Environment variables (<code style="background: #1a1a28; padding: 2px 4px; border-radius: 3px;">NVIDIA_API_KEY</code>, <code style="background: #1a1a28; padding: 2px 4px; border-radius: 3px;">ANTHROPIC_API_KEY</code>) are used as fallback if no DB keys are configured.
+          </p>
+        </div>
+
+        <!-- Password Section -->
+        <div class="card">
+          <div class="card-title">
+            <svg viewBox="0 0 24 24" fill="none" stroke="#22c55e" stroke-width="2" width="16" height="16"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
+            Change Admin Password
+          </div>
+          <input class="modal-input" type="password" placeholder="New password (min 6 chars)" style="margin-bottom: 8px;">
+          <input class="modal-input" type="password" placeholder="Confirm new password">
+          <button class="btn-sm primary" style="padding: 8px 16px;">Update Password</button>
+          <p class="text-xs text-muted mt-4">Passwords are hashed with SHA-256 in your browser before transmission.</p>
+        </div>
+
+        <!-- Security Section -->
+        <div class="card">
+          <div class="card-title">
+            <svg viewBox="0 0 24 24" fill="none" stroke="#22c55e" stroke-width="2" width="16" height="16"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+            Security Posture
+          </div>
+          <ul style="font-size: 12px; color: #888; line-height: 2; list-style: disc; padding-left: 16px;">
+            <li>Sessions expire automatically after 60 minutes.</li>
+            <li>Anonymous IDs are the only identifiers — no personal data in database.</li>
+            <li>All user input sanitized server-side; profanity masked automatically.</li>
+            <li>Rate limits: 3 posts/min, 5 comments/30s, 2 polls/2min per anonymous ID.</li>
+            <li>AI moderation uses configured provider with heuristic fallback.</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Edit Provider Modal -->
+  <div class="modal-overlay" id="editModal">
+    <div class="modal">
+      <div class="modal-title" id="modalTitle">Edit OpenAI</div>
+      <label style="font-size: 11px; font-weight: 600; color: #888; display: block; margin-bottom: 6px;">API Key</label>
+      <input class="modal-input" id="modalKey" type="password" placeholder="sk-...">
+      <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 12px;">
+        <button class="btn-sm" onclick="toggleKeyVisibility()" style="font-size: 10px;">👁 Show</button>
+        <span id="modalKeyStatus" style="font-size: 11px; color: #555;"></span>
+      </div>
+      <label style="font-size: 11px; font-weight: 600; color: #888; display: block; margin-bottom: 6px;">Model</label>
+      <select class="modal-input" id="modalModel" style="cursor: pointer;">
+        <option>gpt-4o</option>
+        <option>gpt-4o-mini</option>
+        <option>gpt-4.1</option>
+        <option>o3-mini</option>
+      </select>
+      <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px;">
+        <span style="font-size: 12px; color: #888;">Enabled</span>
+        <div class="toggle on" id="modalToggle" onclick="this.classList.toggle('on')"></div>
+      </div>
+      <div class="modal-buttons">
+        <button class="btn-sm" onclick="closeModal()">Cancel</button>
+        <button class="btn-sm" onclick="testFromModal()" style="margin-right: auto;">🧪 Test Connection</button>
+        <button class="btn-sm primary" onclick="saveProvider()">Save Changes</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // Tab switching
+    function showTab(tab) {
+      document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
+      document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+      document.getElementById('tab-' + tab).classList.add('active');
+      event.currentTarget.classList.add('active');
+    }
+
+    // Chat functionality
+    function sendMessage() {
+      const input = document.getElementById('chatInput');
+      const msg = input.value.trim();
+      if (!msg) return;
+
+      const messages = document.getElementById('chatMessages');
+      const typing = document.getElementById('typingIndicator');
+
+      // Add user message
+      const userDiv = document.createElement('div');
+      userDiv.className = 'msg user';
+      userDiv.innerHTML = `<div class="msg-label">YOU</div><div class="msg-bubble">${escapeHtml(msg)}</div>`;
+      messages.insertBefore(userDiv, typing);
+
+      input.value = '';
+      messages.scrollTop = messages.scrollHeight;
+
+      // Show typing
+      typing.style.display = 'flex';
+      messages.scrollTop = messages.scrollHeight;
+
+      // Simulate agent response
+      setTimeout(() => {
+        typing.style.display = 'none';
+        const agentDiv = document.createElement('div');
+        agentDiv.className = 'msg assistant';
+        agentDiv.innerHTML = `<div class="msg-label">AGENT</div><div class="msg-bubble">I'll help you with that. Let me analyze the request and prepare the actions.</div>`;
+        messages.insertBefore(agentDiv, typing);
+        messages.scrollTop = messages.scrollHeight;
+      }, 1500);
+    }
+
+    function handleKeyDown(e) {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        sendMessage();
+      }
+    }
+
+    function escapeHtml(text) {
+      const div = document.createElement('div');
+      div.textContent = text;
+      return div.innerHTML;
+    }
+
+    // Action execution
+    function executeAction(btn) {
+      const card = btn.closest('.action-card');
+      card.style.borderColor = 'rgba(34,197,94,0.3)';
+      card.style.background = 'rgba(34,197,94,0.05)';
+      btn.textContent = '✓ Executed';
+      btn.disabled = true;
+      btn.style.opacity = '0.5';
+      card.querySelector('.btn-cancel').style.display = 'none';
+    }
+
+    function cancelAction(btn) {
+      const card = btn.closest('.action-card');
+      card.style.borderColor = 'rgba(239,68,68,0.3)';
+      card.style.background = 'rgba(239,68,68,0.05)';
+      card.querySelector('.btn-execute').style.display = 'none';
+      btn.textContent = '✕ Cancelled';
+      btn.disabled = true;
+      btn.style.opacity = '0.5';
+    }
+
+    function executeAll() {
+      document.querySelectorAll('.action-card .btn-execute:not([disabled])').forEach(btn => {
+        executeAction(btn);
+      });
+    }
+
+    // Modal
+    function openEditModal(provider) {
+      document.getElementById('editModal').classList.add('show');
+      document.getElementById('modalTitle').textContent = 'Edit ' + provider.charAt(0).toUpperCase() + provider.slice(1);
+    }
+
+    function closeModal() {
+      document.getElementById('editModal').classList.remove('show');
+    }
+
+    function toggleKeyVisibility() {
+      const input = document.getElementById('modalKey');
+      input.type = input.type === 'password' ? 'text' : 'password';
+    }
+
+    function testProvider(provider) {
+      const btn = event.currentTarget;
+      btn.textContent = '...';
+      btn.disabled = true;
+      setTimeout(() => {
+        btn.textContent = Math.random() > 0.3 ? '✓ OK' : '✕ Fail';
+        btn.style.color = Math.random() > 0.3 ? '#4ade80' : '#f87171';
+        setTimeout(() => {
+          btn.textContent = 'Test';
+          btn.style.color = '';
+          btn.disabled = false;
+        }, 2000);
+      }, 1000);
+    }
+
+    function testAllProviders() {
+      document.querySelectorAll('.provider-row .btn-sm:not(.primary)').forEach((btn, i) => {
+        if (btn.textContent === 'Test') {
+          setTimeout(() => testProvider(null), i * 300);
+        }
+      });
+    }
+
+    function testFromModal() {
+      const btn = event.currentTarget;
+      btn.textContent = 'Testing...';
+      setTimeout(() => {
+        btn.textContent = '✓ Connected!';
+        btn.style.color = '#4ade80';
+        setTimeout(() => { btn.textContent = '🧪 Test Connection'; btn.style.color = ''; }, 2000);
+      }, 1200);
+    }
+
+    function saveProvider() {
+      closeModal();
+      // Show toast
+      const toast = document.createElement('div');
+      toast.style.cssText = 'position:fixed;bottom:24px;right:24px;background:#1a1a28;border:1px solid rgba(34,197,94,0.3);color:#4ade80;padding:12px 20px;border-radius:10px;font-size:13px;z-index:200;animation:fadeIn 0.2s;';
+      toast.textContent = '✓ Provider saved successfully';
+      document.body.appendChild(toast);
+      setTimeout(() => toast.remove(), 3000);
+    }
+
+    function resetProviders() {
+      if (confirm('Reset all providers to defaults? This will disable all custom API keys.')) {
+        alert('Providers reset to defaults');
+      }
+    }
+  </script>
+</body>
+</html>
