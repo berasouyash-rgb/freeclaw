@@ -34,7 +34,7 @@ const routes = {
   chat,
   reports,
   admin,
-  announcement,
+  announcements: announcement,
   upload,
   users,
   agent,

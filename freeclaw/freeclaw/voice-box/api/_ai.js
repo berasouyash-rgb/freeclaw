@@ -21,16 +21,18 @@ async function callLLMJson(system, user) {
 function heuristicAnalysis(posts) {
   const urgentWords = /\b(urgent|danger|unsafe|injur|threat|bully|harass|broken|emergency|health|fire|leak|assault)\b/i;
   const scored = posts.map((p) => {
+    const title = p.title || '';
+    const desc = p.description || '';
     const support = p.reactions?.support || 0;
     const disagree = p.reactions?.disagree || 0;
     const comments = p.comment_count || 0;
     const ageDays = Math.max(0.2, (Date.now() - new Date(p.created_at).getTime()) / 86400000);
     const severity = { low: 1, medium: 2, high: 3, critical: 4 }[p.priority] || 2;
-    const textUrgency = urgentWords.test(p.title + ' ' + p.description) ? 2 : 0;
+    const textUrgency = urgentWords.test(title + ' ' + desc) ? 2 : 0;
     const growth = (support + comments) / ageDays;
     const score = support * 3 + comments * 2 - disagree + severity * 3 + textUrgency * 4 + growth * 2;
     return {
-      id: p.id, title: p.title, category: p.category,
+      id: p.id, title, category: p.category,
       urgency_score: Math.min(100, Math.round(score * 2.2)),
       rank_score: Math.round(score * 10) / 10,
       support_ratio: support + disagree > 0 ? Math.round((support / (support + disagree)) * 100) : 100,
@@ -52,16 +54,16 @@ function heuristicAnalysis(posts) {
   for (let i = 0; i < posts.length; i++) {
     if (used.has(posts[i].id)) continue;
     const group = [posts[i].id];
-    const wi = words(posts[i].title + ' ' + posts[i].description);
+    const wi = words((posts[i].title || '') + ' ' + (posts[i].description || ''));
     for (let j = i + 1; j < posts.length; j++) {
       if (used.has(posts[j].id)) continue;
-      const wj = words(posts[j].title + ' ' + posts[j].description);
+      const wj = words((posts[j].title || '') + ' ' + (posts[j].description || ''));
       const overlap = [...wi].filter((w) => wj.has(w)).length;
       if ((posts[i].category === posts[j].category && overlap >= 3) || overlap >= 5) {
         group.push(posts[j].id); used.add(posts[j].id);
       }
     }
-    if (group.length > 1) clusters.push({ topic: posts[i].title, post_ids: group, count: group.length });
+    if (group.length > 1) clusters.push({ topic: posts[i].title || 'Untitled', post_ids: group, count: group.length });
   }
 
   const catCount = {};
@@ -124,7 +126,13 @@ export default async function handler(req, res) {
         'You are an analyst for an anonymous school feedback platform. Cluster duplicates, detect urgency, rank issues using votes, support ratio, severity, recurrence, comment volume and growth rate. Detect abuse/spam/bullying/safety risks.',
         `Feedback items JSON:\n${JSON.stringify(items)}\n\nReturn JSON with keys: summary (string), ranked_issues (array of {id,title,category,urgency_score:0-100,rank_score,support_ratio,flags:[],recommended_action,confidence:0-1}), duplicate_clusters (array of {topic,post_ids,count}), safety_alerts (array of {id,title,reason}), weekly_insights ({total,high_urgency,trending_category,recommendation}).`
       );
-      if (ai && ai.result) return res.status(200).json({ engine: ai.engine, generated_at: new Date().toISOString(), ...ai.result });
+      if (ai && ai.result) {
+        // Validate LLM result — fall back to heuristic if summary is empty/undefined
+        const result = ai.result;
+        if (result.summary && typeof result.summary === 'string' && result.summary.trim().length > 10 && !result.summary.includes('undefined')) {
+          return res.status(200).json({ engine: ai.engine, generated_at: new Date().toISOString(), ...result });
+        }
+      }
       return res.status(200).json(heuristicAnalysis(posts || []));
     }
 
