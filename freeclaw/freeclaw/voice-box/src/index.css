@@ -1,0 +1,207 @@
+/* Fonts are loaded via <link> in index.html (lightningcss cannot resolve remote @imports) */
+@import "tailwindcss";
+
+@theme {
+  --font-display: "Fraunces", Georgia, "Times New Roman", serif;
+  --font-body: "Albert Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+
+  --color-bg: var(--vb-bg);
+  --color-surface: var(--vb-surface);
+  --color-surface2: var(--vb-surface2);
+  --color-border: var(--vb-border);
+  --color-ink: var(--vb-ink);
+  --color-ink2: var(--vb-ink2);
+  --color-ink3: var(--vb-ink3);
+  --color-accent: var(--vb-accent);
+  --color-accent2: var(--vb-accent2);
+  --color-accent-soft: var(--vb-accent-soft);
+  --color-good: var(--vb-good);
+  --color-warn: var(--vb-warn);
+  --color-bad: var(--vb-bad);
+}
+
+:root {
+  --vb-bg: #f6f6f9;
+  --vb-surface: #ffffff;
+  --vb-surface2: #f0f0f5;
+  --vb-border: #e4e4ee;
+  --vb-ink: #171724;
+  --vb-ink2: #55556b;
+  --vb-ink3: #8e8ea5;
+  --vb-accent: #5652d6;
+  --vb-accent2: #7a6ff0;
+  --vb-accent-soft: #edecfc;
+  --vb-good: #16a06a;
+  --vb-warn: #d98a0b;
+  --vb-bad: #dc4b4b;
+  color-scheme: light;
+}
+
+.dark {
+  --vb-bg: #0e0e16;
+  --vb-surface: #16161f;
+  --vb-surface2: #1d1d2a;
+  --vb-border: #262637;
+  --vb-ink: #f0f0f7;
+  --vb-ink2: #a7a7c0;
+  --vb-ink3: #6e6e88;
+  --vb-accent: #8b85f5;
+  --vb-accent2: #a89dff;
+  --vb-accent-soft: #232043;
+  --vb-good: #35c68d;
+  --vb-warn: #eaa93c;
+  --vb-bad: #f06d6d;
+  color-scheme: dark;
+}
+
+html { scroll-behavior: smooth; }
+body {
+  font-family: var(--font-body);
+  background: var(--vb-bg);
+  color: var(--vb-ink);
+  -webkit-font-smoothing: antialiased;
+  transition: background-color .3s ease, color .3s ease;
+}
+h1,h2,h3,h4 { font-family: var(--font-display); letter-spacing: -0.01em; }
+.font-display { letter-spacing: -0.01em; }
+
+::selection { background: var(--vb-accent); color: #fff; }
+
+*:focus-visible {
+  outline: 2px solid var(--vb-accent);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+/* scrollbar */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb { background: var(--vb-border); border-radius: 8px; border: 2px solid var(--vb-bg); }
+::-webkit-scrollbar-track { background: transparent; }
+
+@keyframes vb-rise { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: none; } }
+@keyframes vb-pop { 0% { transform: scale(.85); } 60% { transform: scale(1.08); } 100% { transform: scale(1); } }
+@keyframes vb-bar { from { width: 0; } }
+@keyframes vb-pulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
+@keyframes vb-shimmer { 0% { background-position: -400px 0; } 100% { background-position: 400px 0; } }
+
+.vb-rise { animation: vb-rise .45s cubic-bezier(.22,.9,.3,1) both; }
+.vb-pop { animation: vb-pop .28s ease both; }
+.vb-bar-anim { animation: vb-bar .9s cubic-bezier(.22,.9,.3,1) both; }
+
+@keyframes vb-trend-bounce {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-1.5px); }
+}
+.vb-trend-bounce { animation: vb-trend-bounce 1.6s ease-in-out infinite; }
+
+@keyframes vb-draw { from { stroke-dashoffset: 1; } to { stroke-dashoffset: 0; } }
+.vb-draw { stroke-dasharray: 1; animation: vb-draw 1.2s cubic-bezier(.22,.9,.3,1) both; }
+
+@keyframes vb-ring { from { stroke-dashoffset: var(--ring-circ); } }
+.vb-ring { animation: vb-ring 1.2s cubic-bezier(.22,.9,.3,1) both; }
+
+@keyframes vb-glow-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(86, 82, 214, 0.25); }
+  50% { box-shadow: 0 0 0 6px transparent; }
+}
+.vb-glow { animation: vb-glow-pulse 2.4s ease-in-out infinite; }
+
+/* ---------- State-change animations: pipeline slides, text appears ---------- */
+@keyframes vb-slide-in-right { from { opacity: 0; transform: translateX(18px); } to { opacity: 1; transform: none; } }
+.vb-slide-in { animation: vb-slide-in-right .5s cubic-bezier(.22,.9,.3,1) both; }
+
+@keyframes vb-typewriter { from { clip-path: inset(0 100% 0 0); } to { clip-path: inset(0 0 0 0); } }
+.vb-text-appear { animation: vb-typewriter .8s steps(40) both; }
+
+@keyframes vb-stage-fill {
+  0% { transform: scale(0.6); opacity: 0; }
+  60% { transform: scale(1.25); }
+  100% { transform: scale(1); opacity: 1; }
+}
+.vb-stage-pop { animation: vb-stage-fill .5s cubic-bezier(.22,.9,.3,1) both; }
+
+@keyframes vb-status-flash {
+  0% { background: rgba(86,82,214,0.18); }
+  100% { background: transparent; }
+}
+.vb-status-flash { animation: vb-status-flash 1.4s ease both; }
+
+@keyframes vb-connector { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+.vb-connector { transform-origin: left; animation: vb-connector .6s cubic-bezier(.22,.9,.3,1) both; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
+}
+
+.skeleton {
+  background: linear-gradient(90deg, var(--vb-surface2) 25%, var(--vb-border) 50%, var(--vb-surface2) 75%);
+  background-size: 800px 100%;
+  animation: vb-shimmer 1.4s infinite linear;
+  border-radius: 8px;
+}
+
+.card {
+  background: var(--vb-surface);
+  border: 1px solid var(--vb-border);
+  border-radius: 16px;
+  transition: border-color .2s ease, box-shadow .2s ease, transform .2s ease;
+}
+.card-hover:hover {
+  border-color: var(--vb-accent);
+  box-shadow: 0 8px 30px -12px rgba(86, 82, 214, 0.22);
+  transform: translateY(-2px);
+}
+
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: .45rem;
+  border-radius: 12px; font-weight: 600; font-size: .875rem;
+  padding: .55rem 1rem; cursor: pointer; border: 1px solid transparent;
+  transition: all .18s ease; white-space: nowrap;
+}
+.btn:disabled { opacity: .5; cursor: not-allowed; }
+.btn-primary { background: var(--vb-accent); color: #fff; }
+.btn-primary:hover:not(:disabled) { background: var(--vb-accent2); box-shadow: 0 6px 20px -6px rgba(86, 82, 214, 0.55); }
+.btn-ghost { background: transparent; color: var(--vb-ink2); border-color: var(--vb-border); }
+.btn-ghost:hover:not(:disabled) { border-color: var(--vb-accent); color: var(--vb-accent); }
+.btn-soft { background: var(--vb-accent-soft); color: var(--vb-accent); }
+.btn-soft:hover:not(:disabled) { filter: brightness(0.96); }
+.btn-danger { background: rgba(220, 75, 75, 0.12); color: var(--vb-bad); }
+.btn-danger:hover:not(:disabled) { background: rgba(220, 75, 75, 0.22); }
+
+.input {
+  width: 100%; background: var(--vb-surface); border: 1px solid var(--vb-border);
+  border-radius: 12px; padding: .6rem .85rem; font-size: .9rem; color: var(--vb-ink);
+  transition: border-color .18s ease, box-shadow .18s ease;
+}
+.input:focus { outline: none; border-color: var(--vb-accent); box-shadow: 0 0 0 3px rgba(86, 82, 214, 0.18); }
+.input::placeholder { color: var(--vb-ink3); }
+
+.chip {
+  display: inline-flex; align-items: center; gap: .3rem;
+  font-size: .72rem; font-weight: 600; padding: .22rem .6rem;
+  border-radius: 999px; background: var(--vb-surface2); color: var(--vb-ink2);
+  border: 1px solid var(--vb-border);
+}
+
+/* ---------- Agent action visual previews ---------- */
+@keyframes vb-fade-in { from { opacity: 0; transform: scale(0.96); } to { opacity: 1; transform: none; } }
+.vb-action-preview { animation: vb-fade-in .35s cubic-bezier(.22,.9,.3,1) both; }
+.vb-action-card { transition: border-color .25s ease, box-shadow .25s ease, background .25s ease; }
+.vb-action-card:hover { box-shadow: 0 4px 20px -6px rgba(86,82,214,0.15); }
+.vb-action-result { animation: vb-fade-in .3s cubic-bezier(.22,.9,.3,1) both; }
+
+/* ---------- 7-day cleanup badge pulse ---------- */
+@keyframes vb-cleanup-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.6; transform: scale(1.05); }
+}
+.vb-cleanup-pulse { animation: vb-cleanup-pulse 2s ease-in-out infinite; }
+
+/* ---------- Pagination shimmer ---------- */
+@keyframes vb-page-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+.vb-page-in { animation: vb-page-in .3s ease both; }
+
+.tooltip { position: relative; }
+
+.prose-desc { white-space: pre-wrap; word-break: break-word; }

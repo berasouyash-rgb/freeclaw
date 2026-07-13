@@ -20,6 +20,7 @@ export function clearAdminSession() { sessionStorage.removeItem('vb:adminAuth');
 
 const TIMEOUT_MS = 8000; // hard ceiling — no request may hang forever
 const UPLOAD_TIMEOUT_MS = 30000; // uploads need more time
+const AGENT_TIMEOUT_MS = 25000; // agent chat does multiple DB queries + intent matching
 
 async function request(method: string, path: string, body?: unknown, timeoutMs = TIMEOUT_MS) {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
@@ -60,7 +61,25 @@ async function uploadImage(fileBase64: string, contentType: string, author_id: s
 export const api = {
   get: (path: string) => request('GET', path),
   post: (path: string, body: unknown) => request('POST', path, body),
+  postLong: (path: string, body: unknown) => request('POST', path, body, AGENT_TIMEOUT_MS),
   put: (path: string, body: unknown) => request('PUT', path, body),
   del: (path: string, body: unknown) => request('DELETE', path, body),
   uploadImage,
+  /**
+   * Cursor-based paginated request.
+   * Returns { data: T[], nextCursor: string | null, total: number }
+   */
+  paginated: <T = any>(path: string, params: { cursor?: string | null; limit?: number } = {}): Promise<{ data: T[]; nextCursor: string | null; total: number }> => {
+    const url = new URL(path, window.location.origin);
+    url.searchParams.set('paginate', '1');
+    if (params.cursor) url.searchParams.set('cursor', params.cursor);
+    if (params.limit) url.searchParams.set('limit', String(params.limit));
+    return request('GET', url.pathname + url.search) as Promise<any>;
+  },
+  /**
+   * Paginated POST request (for admin actions like users).
+   */
+  postPaginated: <T = any>(path: string, body: unknown): Promise<{ data: T[]; nextCursor: string | null; total: number }> => {
+    return request('POST', path, { ...(body as object), paginate: true }) as Promise<any>;
+  },
 };
