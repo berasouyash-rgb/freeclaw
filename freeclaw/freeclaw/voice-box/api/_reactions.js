@@ -61,13 +61,20 @@ export default async function handler(req, res) {
       }
 
       // Return fresh counts AND the caller's own reactions so the UI stays in perfect sync
-      const [{ data: rows }, { data: mineRows }] = await Promise.all([
-        supabase.from('reactions').select('kind').eq('target_id', target_id),
-        supabase.from('reactions').select('kind').eq('target_id', target_id).eq('author_id', author_id),
-      ]);
-      const counts = {};
-      (rows || []).forEach((r) => { counts[r.kind] = (counts[r.kind] || 0) + 1; });
-      return res.status(200).json({ toggled: !existing, counts, mine: (mineRows || []).map((r) => r.kind) });
+      let counts = {};
+      let mine: string[] = [];
+      try {
+        const [{ data: rows }, { data: mineRows }] = await Promise.all([
+          supabase.from('reactions').select('kind').eq('target_id', target_id),
+          supabase.from('reactions').select('kind').eq('target_id', target_id).eq('author_id', author_id),
+        ]);
+        (rows || []).forEach((r) => { counts[r.kind] = (counts[r.kind] || 0) + 1; });
+        mine = (mineRows || []).map((r) => r.kind);
+      } catch (countErr) {
+        console.error('reactions count query error:', countErr);
+        // Still return success — the toggle itself worked
+      }
+      return res.status(200).json({ toggled: !existing, counts, mine });
     }
 
     return res.status(405).json({ error: 'Method not allowed' });

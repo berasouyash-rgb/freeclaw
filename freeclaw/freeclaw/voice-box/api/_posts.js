@@ -11,8 +11,15 @@ const READY_THRESHOLD = 10;
 // Any reaction or comment bumps updated_at and resets the countdown.
 const PURGE_MS = 5 * 24 * 60 * 60 * 1000;
 
-/** Lazy sweep: permanently remove solved/archived posts inactive for 5+ days */
+// Throttle: run purge at most once per hour to avoid unnecessary DB queries on every GET
+let _lastPurgeAt = 0;
+const PURGE_COOLDOWN_MS = 60 * 60 * 1000; // 1 hour
+
+/** Lazy sweep: permanently remove solved/archived posts inactive for 5+ days (throttled to 1/hour) */
 async function purgeExpired() {
+  const now = Date.now();
+  if (now - _lastPurgeAt < PURGE_COOLDOWN_MS) return;
+  _lastPurgeAt = now;
   try {
     const cutoff = new Date(Date.now() - PURGE_MS).toISOString();
     const { data: expired } = await supabase.from('posts').select('id')
@@ -129,7 +136,7 @@ export default async function handler(req, res) {
       const priority = ['low', 'medium', 'high', 'critical'].includes(b.priority) ? b.priority : 'medium';
       const tags = Array.isArray(b.tags) ? b.tags.slice(0, 6).map((t) => clean(t, 24)).filter(Boolean) : [];
       const post = {
-        id: b.id || `${type === 'suggestion' ? 'sug' : 'post'}_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`,
+        id: `${type === 'suggestion' ? 'sug' : 'post'}_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`,
         type, title, description, category, priority, tags,
         image_url: clean(b.image_url, 500) || null,
         author_id, status: 'reported', progress: 0,

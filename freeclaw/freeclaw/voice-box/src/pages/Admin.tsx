@@ -105,7 +105,7 @@ export default function Admin() {
           <input id="admin-pw" type="password" className="input" placeholder="••••••••" value={password}
             onChange={(e) => setPassword(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && login()} autoFocus />
           <button className="btn btn-primary w-full mt-4" onClick={login} disabled={busy || !password}>{busy ? 'Verifying…' : 'Sign in'}</button>
-          <p className="text-[11px] text-ink3 text-center mt-4">Demo password: <code className="font-mono text-accent">admin123</code></p>
+          <p className="text-[11px] text-ink3 text-center mt-4">Enter your admin password to access the dashboard.</p>
           <Link to="/" className="block text-center text-xs text-ink3 hover:text-accent mt-3">← Back to Voice Box</Link>
         </div>
       </div>

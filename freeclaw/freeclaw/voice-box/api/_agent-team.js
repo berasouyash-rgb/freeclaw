@@ -671,7 +671,7 @@ async function processAgentTask(agent, message, task) {
       return { type: 'resilience', agent: agent.name, data: { status: 'active', circuit_breakers: 0, recoveries: 0 } };
     }
     if (agent.capabilities.includes('response_time_tracking') || agent.capabilities.includes('latency_analysis')) {
-      const [{ count: logs }] = await Promise.all([supabase.from('logs').select('*', { count: 'exact', head: true })]);
+      const [{ count: logs }] = await Promise.all([supabase.from('activity_logs').select('*', { count: 'exact', head: true })]);
       return { type: 'api_health', agent: agent.name, data: { total_logs: logs || 0, status: 'healthy' } };
     }
     
