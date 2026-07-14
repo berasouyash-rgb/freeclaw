@@ -8,16 +8,43 @@ export default async function handler(req, res) {
 
   try {
     if (req.method === 'GET') {
-      const { post_id, all, author, viewer } = req.query;
+      const { post_id, all, author, viewer, cursor, limit: limitParam, paginate } = req.query;
       const admin = all === '1' ? await isAdmin(req) : false;
-      let q = supabase.from('comments').select('*').order('created_at', { ascending: true });
+      const isPaginated = paginate === '1' || paginate === 'true';
+      const PAGE_LIMIT = Math.min(parseInt(limitParam) || 30, 100);
+
+      let q = supabase.from('comments').select('*').order('created_at', { ascending: false });
       if (post_id) q = q.eq('post_id', post_id);
       if (author) q = q.eq('author_id', clean(author, 40));
       if (!admin) q = q.eq('hidden', false);
-      if (!post_id && !author) q = q.limit(500).order('created_at', { ascending: false });
+
+      // Support cursor pagination for ALL query types (post_id, author, general)
+      if (isPaginated) {
+        if (cursor) q = q.lt('created_at', cursor);
+        q = q.limit(PAGE_LIMIT + 1);
+      } else {
+        q = q.limit(500);
+      }
       const { data, error } = await q;
       if (error) throw error;
-      // Mask author IDs (bearer-token semantics) except for admin/owner
+
+      if (isPaginated) {
+        const rows = data || [];
+        const hasMore = rows.length > PAGE_LIMIT;
+        const sliced = hasMore ? rows.slice(0, PAGE_LIMIT) : rows;
+        const nextCursor = hasMore ? sliced[sliced.length - 1]?.created_at : null;
+        const v = clean(viewer, 40);
+        const masked = (sliced || []).map((c) => {
+          const is_mine = !!v && c.author_id === v;
+          return { ...c, is_mine, author_id: admin || is_mine || author || c.author_id === 'ADMIN' ? c.author_id : c.author_id.slice(0, 9) + '…' };
+        });
+        let totalQ = supabase.from('comments').select('id', { count: 'exact', head: true });
+        if (post_id) totalQ = totalQ.eq('post_id', post_id);
+        if (!admin) totalQ = totalQ.eq('hidden', false);
+        const { count } = await totalQ;
+        return res.status(200).json({ data: masked, nextCursor, total: count || 0 });
+      }
+
       const v = clean(viewer, 40);
       const masked = (data || []).map((c) => {
         const is_mine = !!v && c.author_id === v;

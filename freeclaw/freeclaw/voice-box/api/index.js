@@ -3,6 +3,7 @@
 // Individual handlers live as _prefixed modules (private, no separate function).
 
 import { cors as corsFn } from './_auth.js';
+import { triggerAutoCleanup, cleanupHandler } from './_cleanup.js';
 
 import posts from './_posts.js';
 import comments from './_comments.js';
@@ -20,11 +21,16 @@ import assist from './_assist.js';
 import me from './_me.js';
 import providers from './_providers.js';
 import agentChat from './_agent-chat.js';
+import metaAgent from './_meta-agent.js';
+import agentTeam from './_agent-team.js';
 
 // upload.js needs a 4 MB body limit; the rest are fine with the default.
 export const config = {
   api: { bodyParser: { sizeLimit: '4mb' } },
 };
+
+// Auto-cleanup on cold start (7-day retention, runs once per instance)
+triggerAutoCleanup();
 
 const routes = {
   posts,
@@ -43,6 +49,9 @@ const routes = {
   me,
   providers,
   'agent-chat': agentChat,
+  'meta-agent': metaAgent,
+  'agent-team': agentTeam,
+  cleanup: cleanupHandler,
 };
 
 export default async function handler(req, res) {

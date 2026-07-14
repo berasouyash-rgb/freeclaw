@@ -33,12 +33,20 @@ const TOOL_TEMPLATES = {
     build: (args) => ({
       execute: async (args) => {
         const { table, filter = {}, updates = {} } = args;
-        if (!table || !Object.keys(updates).length) throw new Error('table and updates required');
+        const VALID_TABLES = ['posts', 'comments', 'reactions', 'users_meta', 'polls', 'reports', 'chat_messages', 'activity_logs'];
+        if (!table || !VALID_TABLES.includes(table)) throw new Error(`Invalid table: ${table}. Allowed: ${VALID_TABLES.join(', ')}`);
+        if (!Object.keys(updates).length) throw new Error('updates object required');
+        // Block dangerous column updates
+        const BLOCKED_COLS = ['id', 'created_at', 'anon_id', 'author_id'];
+        for (const col of BLOCKED_COLS) {
+          if (col in updates) throw new Error(`Cannot update protected column: ${col}`);
+        }
         let query = supabase.from(table).update(updates);
         if (filter.status) query = query.eq('status', filter.status);
         if (filter.category) query = query.eq('category', filter.category);
         if (filter.deleted !== undefined) query = query.eq('deleted', filter.deleted);
-        const { data, error, count } = await query.select();
+        query = query.limit(500); // safety cap
+        const { data, error } = await query.select();
         if (error) throw error;
         return { updated: data?.length || 0, table };
       },
@@ -393,22 +401,23 @@ export default async function handler(req, res) {
   try {
     if (!(await isAdmin(req))) return res.status(403).json({ error: 'Admin only' });
     const b = req.body || {};
+    const action = req.method === 'GET' ? (req.query.action || 'capabilities') : b.action;
 
-    if (req.method === 'GET' && b.action === 'capabilities') {
+    if (req.method === 'GET' && action === 'capabilities') {
       return res.status(200).json({
         tools: Object.entries(TOOL_TEMPLATES).map(([id, t]) => ({ id, description: t.description })),
         subagents: Object.entries(SUBAGENT_TYPES).map(([id, s]) => ({ id, name: s.name, description: s.description, icon: s.icon })),
       });
     }
 
-    if (req.method === 'POST' && b.action === 'coordinate') {
+    if (req.method === 'POST' && action === 'coordinate') {
       if (!b.message) return res.status(400).json({ error: 'message required' });
       const result = await coordinate(clean(b.message, 500));
       await auditLog('admin', 'meta_agent_coordinate', `Coordinated: "${b.message.slice(0, 80)}" → ${result.type} in ${result.execution_time}ms`);
       return res.status(200).json(result);
     }
 
-    return res.status(400).json({ error: 'Unknown action. Use POST { action: "coordinate", message: "..." }' });
+    return res.status(400).json({ error: 'Unknown action. GET ?action=capabilities or POST { action: "coordinate", message: "..." }' });
   } catch (err) {
     console.error('meta-agent error:', err);
     return res.status(500).json({ error: err.message });

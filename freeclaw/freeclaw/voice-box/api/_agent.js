@@ -98,7 +98,7 @@ export default async function handler(req, res) {
     const b = req.body || {};
 
     if (req.method === 'POST' && b.action === 'generate') {
-      const { data: posts } = await supabase.from('posts').select('*');
+      const { data: posts } = await supabase.from('posts').select('*').limit(1000);
       // enrich with counts
       const ids = (posts || []).map((p) => p.id);
       const [{ data: reactions }, { data: comments }] = await Promise.all([

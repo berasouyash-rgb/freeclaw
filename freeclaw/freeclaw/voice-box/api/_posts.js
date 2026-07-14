@@ -61,8 +61,11 @@ export default async function handler(req, res) {
   try {
     if (req.method === 'GET') {
       await purgeExpired(); // lazy cleanup on every read
-      const { id, ids, type, all, viewer, author } = req.query;
+      const { id, ids, type, all, viewer, author, cursor, limit: limitParam, paginate } = req.query;
       const admin = all === '1' ? await isAdmin(req) : false;
+      const isPaginated = paginate === '1' || paginate === 'true';
+      const PAGE_LIMIT = Math.min(parseInt(limitParam) || 30, 100);
+
       let q = supabase.from('posts').select('*').order('created_at', { ascending: false });
       if (id) q = q.eq('id', id);
       else if (ids) q = q.in('id', String(ids).split(',').slice(0, 100));
@@ -70,13 +73,37 @@ export default async function handler(req, res) {
       else {
         if (type) q = q.eq('type', type);
         if (!admin) q = q.eq('hidden', false).eq('deleted', false);
-        q = q.limit(300);
+        if (isPaginated) {
+          // Cursor-based pagination: cursor is ISO timestamp of last item
+          if (cursor) q = q.lt('created_at', cursor);
+          q = q.limit(PAGE_LIMIT + 1); // fetch one extra to detect hasMore
+        } else {
+          q = q.limit(300);
+        }
       }
       const { data, error } = await q;
       if (error) throw error;
+
+      if (isPaginated) {
+        const rows = data || [];
+        const hasMore = rows.length > PAGE_LIMIT;
+        const sliced = hasMore ? rows.slice(0, PAGE_LIMIT) : rows;
+        const nextCursor = hasMore ? sliced[sliced.length - 1]?.created_at : null;
+        const out = await attachCounts(sliced);
+        const v = clean(viewer, 40);
+        const masked = out.map((p) => {
+          const is_mine = !!v && p.author_id === v;
+          return { ...p, is_mine, author_id: admin || is_mine || author ? p.author_id : p.author_id.slice(0, 9) + '…' };
+        });
+        // Get total count (separate query, lightweight)
+        let totalQ = supabase.from('posts').select('id', { count: 'exact', head: true });
+        if (type) totalQ = totalQ.eq('type', type);
+        if (!admin) totalQ = totalQ.eq('hidden', false).eq('deleted', false);
+        const { count } = await totalQ;
+        return res.status(200).json({ data: masked, nextCursor, total: count || 0 });
+      }
+
       const out = await attachCounts(data || []);
-      // SECURITY: never expose full anonymous IDs publicly — they act as bearer
-      // tokens for edit/delete. Mask for everyone except admin and the owner.
       const v = clean(viewer, 40);
       const masked = out.map((p) => {
         const is_mine = !!v && p.author_id === v;
@@ -162,9 +189,13 @@ export default async function handler(req, res) {
     if (req.method === 'DELETE') {
       if (!(await isAdmin(req))) return res.status(403).json({ error: 'Admin only' });
       const { id } = req.body || {};
-      const { error } = await supabase.from('posts').delete().eq('id', id);
-      if (error) throw error;
-      await supabase.from('comments').delete().eq('post_id', id);
+      // Clean up all related data in parallel: post, comments, reactions, linked polls
+      await Promise.all([
+        supabase.from('posts').delete().eq('id', id),
+        supabase.from('comments').delete().eq('post_id', id),
+        supabase.from('reactions').delete().eq('target_id', id),
+        supabase.from('polls').delete().eq('post_id', id),
+      ]);
       await auditLog('admin', 'hard_delete_post', id);
       return res.status(200).json({ ok: true });
     }

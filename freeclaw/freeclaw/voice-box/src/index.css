@@ -191,6 +191,23 @@ h1,h2,h3,h4 { font-family: var(--font-display); letter-spacing: -0.01em; }
 .vb-action-card:hover { box-shadow: 0 4px 20px -6px rgba(86,82,214,0.15); }
 .vb-action-result { animation: vb-fade-in .3s cubic-bezier(.22,.9,.3,1) both; }
 
+/* ---------- Approval flash — visible glow when action succeeds/fails ---------- */
+@keyframes vb-approval-flash {
+  0%   { box-shadow: 0 0 0 0 transparent; }
+  15%  { box-shadow: 0 0 18px 2px var(--vb-flash-color, rgba(74,222,128,0.35)); }
+  50%  { box-shadow: 0 0 6px 1px var(--vb-flash-color, rgba(74,222,128,0.15)); }
+  100% { box-shadow: 0 0 0 0 transparent; }
+}
+.vb-approval-flash {
+  animation: vb-approval-flash .8s cubic-bezier(.22,.9,.3,1) both;
+}
+.vb-approval-flash.vb-flash-success {
+  --vb-flash-color: rgba(74,222,128,0.4);
+}
+.vb-approval-flash.vb-flash-error {
+  --vb-flash-color: rgba(248,113,113,0.4);
+}
+
 /* ---------- 7-day cleanup badge pulse ---------- */
 @keyframes vb-cleanup-pulse {
   0%, 100% { opacity: 1; transform: scale(1); }
@@ -205,3 +222,148 @@ h1,h2,h3,h4 { font-family: var(--font-display); letter-spacing: -0.01em; }
 .tooltip { position: relative; }
 
 .prose-desc { white-space: pre-wrap; word-break: break-word; }
+
+/* ═══════════════════════════════════════════════════════════════
+   PREMIUM CHAT UI — ChatGPT/Claude-tier animations & styles
+   ═══════════════════════════════════════════════════════════════ */
+
+/* Message slide-in */
+@keyframes chat-msg-in {
+  from { opacity: 0; transform: translateY(12px) scale(0.98); }
+  to { opacity: 1; transform: none; }
+}
+.chat-msg-anim { animation: chat-msg-in .35s cubic-bezier(.22,.9,.3,1) both; }
+
+/* Typing indicator dots */
+@keyframes typing-dot {
+  0%, 60%, 100% { opacity: 0.3; transform: translateY(0); }
+  30% { opacity: 1; transform: translateY(-4px); }
+}
+.typing-dot:nth-child(1) { animation: typing-dot 1.4s ease-in-out infinite 0s; }
+.typing-dot:nth-child(2) { animation: typing-dot 1.4s ease-in-out infinite .2s; }
+.typing-dot:nth-child(3) { animation: typing-dot 1.4s ease-in-out infinite .4s; }
+
+/* Code block styling */
+.chat-msg pre {
+  background: var(--vb-bg);
+  border: 1px solid var(--vb-border);
+  border-radius: 8px;
+  padding: 12px 14px;
+  margin: 8px 0;
+  overflow-x: auto;
+  font-size: 12px;
+  line-height: 1.6;
+}
+.chat-msg code {
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+  background: var(--vb-surface2);
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+.chat-msg pre code {
+  background: transparent;
+  padding: 0;
+  font-size: 12px;
+}
+
+/* Inline list styling */
+.chat-msg ul, .chat-msg ol {
+  padding-left: 1.2em;
+  margin: 4px 0;
+}
+.chat-msg li {
+  margin: 2px 0;
+  font-size: 0.875rem;
+  line-height: 1.5;
+}
+
+/* Bold/strong */
+.chat-msg strong { font-weight: 700; color: var(--vb-ink); }
+
+/* Blockquote */
+.chat-msg blockquote {
+  border-left: 3px solid var(--vb-accent);
+  padding-left: 12px;
+  margin: 8px 0;
+  color: var(--vb-ink2);
+  font-style: italic;
+}
+
+/* Smooth thread sidebar hover */
+.thread-item {
+  transition: all .18s ease;
+}
+.thread-item:hover {
+  background: var(--vb-surface2);
+  transform: translateX(2px);
+}
+.thread-item.active {
+  background: var(--vb-accent-soft);
+  border-color: var(--vb-accent);
+}
+
+/* Copy button fade */
+.copy-btn {
+  opacity: 0;
+  transition: opacity .15s ease;
+}
+.chat-msg-wrap:hover .copy-btn {
+  opacity: 1;
+}
+
+/* Message hover actions */
+.msg-actions {
+  opacity: 0;
+  transition: opacity .15s ease, transform .15s ease;
+  transform: translateY(4px);
+}
+.chat-msg-wrap:hover .msg-actions {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+/* Smooth input focus ring */
+.chat-input-wrap {
+  transition: box-shadow .2s ease, border-color .2s ease;
+}
+.chat-input-wrap:focus-within {
+  box-shadow: 0 0 0 3px rgba(86, 82, 214, 0.12);
+  border-color: var(--vb-accent);
+}
+
+/* Scroll to bottom button */
+@keyframes scroll-btn-in {
+  from { opacity: 0; transform: scale(0.8); }
+  to { opacity: 1; transform: scale(1); }
+}
+.scroll-btn-anim { animation: scroll-btn-in .2s ease both; }
+
+/* Agent desk hover lift */
+.agent-desk {
+  transition: all .22s cubic-bezier(.22,.9,.3,1);
+}
+.agent-desk:hover {
+  transform: translateY(-3px) scale(1.03);
+  box-shadow: 0 8px 25px -8px rgba(86, 82, 214, 0.2);
+}
+
+/* Smooth panel slide */
+@keyframes panel-slide {
+  from { opacity: 0; transform: translateX(24px); }
+  to { opacity: 1; transform: none; }
+}
+.panel-slide { animation: panel-slide .4s cubic-bezier(.22,.9,.3,1) both; }
+
+/* Toast notification slide */
+@keyframes toast-in {
+  from { opacity: 0; transform: translateX(20px) scale(0.95); }
+  to { opacity: 1; transform: none; }
+}
+.toast-anim { animation: toast-in .3s cubic-bezier(.22,.9,.3,1) both; }
+
+/* Auto-dismiss progress bar */
+@keyframes shrink {
+  from { width: 100%; }
+  to { width: 0%; }
+}

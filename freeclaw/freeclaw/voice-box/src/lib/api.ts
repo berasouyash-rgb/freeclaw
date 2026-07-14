@@ -1,4 +1,6 @@
-/** Thin fetch wrapper for Voice Box API routes */
+/** Thin fetch wrapper for Voice Box API routes with offline queue for failed writes. */
+
+import { queueAction, flushQueue, queuedCount } from './offline';
 
 function adminToken(): string | null {
   try {
@@ -18,9 +20,27 @@ export function setAdminSession(token: string, exp: number) {
 
 export function clearAdminSession() { sessionStorage.removeItem('vb:adminAuth'); }
 
+export { queuedCount } from './offline';
+
 const TIMEOUT_MS = 8000; // hard ceiling — no request may hang forever
 const UPLOAD_TIMEOUT_MS = 30000; // uploads need more time
 const AGENT_TIMEOUT_MS = 25000; // agent chat does multiple DB queries + intent matching
+
+/** Flush offline queue on startup and after successful writes. */
+let flushScheduled = false;
+function scheduleFlush() {
+  if (flushScheduled) return;
+  flushScheduled = true;
+  setTimeout(async () => {
+    flushScheduled = false;
+    try { await flushQueue(); } catch { /* best effort */ }
+  }, 500);
+}
+
+// Flush on page load (if there are queued items from a previous session)
+if (typeof window !== 'undefined' && queuedCount() > 0) {
+  scheduleFlush();
+}
 
 async function request(method: string, path: string, body?: unknown, timeoutMs = TIMEOUT_MS) {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
@@ -33,8 +53,15 @@ async function request(method: string, path: string, body?: unknown, timeoutMs =
     const res = await fetch(path, { method, headers, body: body ? JSON.stringify(body) : undefined, signal: ctrl.signal });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`);
+    // After successful write, flush any queued offline actions
+    if (method !== 'GET') scheduleFlush();
     return data;
   } catch (err: any) {
+    // Auto-queue failed writes (POST/PUT/DELETE) on network/timeout errors
+    const isNetworkError = err?.name === 'AbortError' || err?.message?.includes('Failed to fetch') || err?.message?.includes('NetworkError');
+    if (isNetworkError && method !== 'GET' && body) {
+      queueAction(method, path, body);
+    }
     if (err?.name === 'AbortError') throw new Error('Request timed out — check your connection and retry.');
     throw err;
   } finally {

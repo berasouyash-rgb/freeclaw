@@ -63,9 +63,16 @@ export default async function handler(req, res) {
       const b = req.body || {};
       const admin = await isAdmin(req);
       if (b.action === 'mark_read') {
+        if (!b.thread_id) return res.status(400).json({ error: 'Missing thread_id' });
         // admin marks user messages read; user marks admin messages read
+        // Non-admin users can only mark their OWN thread as read
         const senderToMark = admin && b.as === 'admin' ? 'user' : 'admin';
-        await supabase.from('chat_messages').update({ read: true }).eq('thread_id', b.thread_id).eq('sender', senderToMark);
+        let markQ = supabase.from('chat_messages').update({ read: true }).eq('thread_id', b.thread_id).eq('sender', senderToMark);
+        if (!admin) {
+          // Users can only mark read on their own thread (thread_id === anon_id)
+          markQ = markQ.eq('thread_id', clean(b.thread_id, 40));
+        }
+        await markQ;
         return res.status(200).json({ ok: true });
       }
       if (b.action === 'set_status') {

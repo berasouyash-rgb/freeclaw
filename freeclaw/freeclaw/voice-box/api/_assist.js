@@ -1,7 +1,7 @@
 // Real-time AI writing assistance: category detection, tag suggestions,
 // title improvement, and contextual chat replies. Uses Claude when
 // ANTHROPIC_API_KEY is set; otherwise a fast keyword engine (always works).
-import { cors, isAdmin } from './_auth.js';
+import { cors, isAdmin, rateLimited } from './_auth.js';
 
 const MODEL = process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-6';
 
@@ -94,6 +94,10 @@ export default async function handler(req, res) {
     if (task === 'suggest') {
       const input = String(text || '').slice(0, 800);
       if (input.trim().length < 8) return res.status(200).json({ engine: 'none', category: null, tags: [], priority: null });
+      // Rate limit: max 30 suggestions per IP per 5 minutes
+      if (await rateLimited('assist_suggest', req.headers['x-forwarded-for'] || 'anon', 300, 30)) {
+        return res.status(429).json({ error: 'Too many requests — please wait a moment.' });
+      }
       const fallback = keywordAssist(input);
       // Only call the LLM for longer text to keep latency low
       if (input.length > 60) {
@@ -110,6 +114,10 @@ export default async function handler(req, res) {
     // ---- AI chat reply (admin side) ----
     if (task === 'chat_reply') {
       if (!(await isAdmin(req))) return res.status(403).json({ error: 'Admin only' });
+      // Rate limit: max 20 chat replies per admin per 5 minutes
+      if (await rateLimited('assist_chat', req.headers['x-admin-token'] || 'anon', 300, 20)) {
+        return res.status(429).json({ error: 'Too many requests — please wait a moment.' });
+      }
       const history = (messages || []).slice(-8).map((m) => `${m.sender === 'admin' ? 'Admin' : 'Student'}: ${String(m.body || '').slice(0, 300)}`).join('\n');
       const lastUser = [...(messages || [])].reverse().find((m) => m.sender === 'user');
       const ai = await callClaude(

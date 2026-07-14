@@ -64,7 +64,29 @@ export default async function handler(req, res) {
     }
 
     if (action === 'logs') {
-      const { data } = await supabase.from('activity_logs').select('*').order('created_at', { ascending: false }).limit(300);
+      const { cursor, limit: limitParam, paginate } = req.query;
+      const isPaginated = paginate === '1' || paginate === 'true';
+      const PAGE_LIMIT = Math.min(parseInt(limitParam) || 30, 100);
+
+      let q = supabase.from('activity_logs').select('*').order('created_at', { ascending: false });
+      if (isPaginated) {
+        if (cursor) q = q.lt('created_at', cursor);
+        q = q.limit(PAGE_LIMIT + 1);
+      } else {
+        q = q.limit(300);
+      }
+      const { data, error } = await q;
+      if (error) throw error;
+
+      if (isPaginated) {
+        const rows = data || [];
+        const hasMore = rows.length > PAGE_LIMIT;
+        const sliced = hasMore ? rows.slice(0, PAGE_LIMIT) : rows;
+        const nextCursor = hasMore ? sliced[sliced.length - 1]?.created_at : null;
+        const { count } = await supabase.from('activity_logs').select('id', { count: 'exact', head: true });
+        return res.status(200).json({ data: sliced, nextCursor, total: count || 0 });
+      }
+
       return res.status(200).json(data || []);
     }
 
@@ -75,19 +97,63 @@ export default async function handler(req, res) {
 
     // ---------- USER MANAGEMENT ----------
     if (action === 'users') {
-      const { data: users } = await supabase.from('users_meta').select('*').order('created_at', { ascending: false }).limit(500);
-      // attach activity counts
-      const [{ data: posts }, { data: comments }, { data: reactions }] = await Promise.all([
-        supabase.from('posts').select('author_id'),
-        supabase.from('comments').select('author_id'),
-        supabase.from('reactions').select('author_id'),
+      const { cursor, limit: limitParam, paginate } = b;
+      const isPaginated = !!paginate;
+      const PAGE_LIMIT = Math.min(parseInt(limitParam) || 30, 100);
+
+      let q = supabase.from('users_meta').select('*').order('created_at', { ascending: false });
+      if (isPaginated && cursor) q = q.lt('created_at', cursor);
+      if (isPaginated) q = q.limit(PAGE_LIMIT + 1);
+      else q = q.limit(500);
+      const { data: users, error } = await q;
+      if (error) throw error;
+
+      const rows = users || [];
+
+      if (isPaginated) {
+        const hasMore = rows.length > PAGE_LIMIT;
+        const sliced = hasMore ? rows.slice(0, PAGE_LIMIT) : rows;
+        const nextCursor = hasMore ? sliced[sliced.length - 1]?.created_at : null;
+        const anonIds = sliced.map((u) => u.anon_id);
+        const [{ data: posts }, { data: comments }, { data: reactions }] = await Promise.all([
+          supabase.from('posts').select('author_id').in('author_id', anonIds),
+          supabase.from('comments').select('author_id').in('author_id', anonIds),
+          supabase.from('reactions').select('author_id').in('author_id', anonIds),
+        ]);
+        const count = (rows2, id) => (rows2 || []).filter((r) => r.author_id === id).length;
+        const { count: total } = await supabase.from('users_meta').select('anon_id', { count: 'exact', head: true });
+        return res.status(200).json({
+          data: sliced.map((u) => ({
+            ...u,
+            post_count: count(posts, u.anon_id),
+            comment_count: count(comments, u.anon_id),
+            reaction_count: count(reactions, u.anon_id),
+          })),
+          nextCursor,
+          total: total || 0,
+        });
+      }
+
+      // Non-paginated: fetch user counts per-user without loading all reactions/comments into memory
+      const anonIds = (rows || []).map((u) => u.anon_id);
+      const countForUser = async (table, ids) => {
+        if (!ids.length) return {};
+        // Batch count per user using select + groupby equivalent
+        const { data } = await supabase.from(table).select('author_id').in('author_id', ids);
+        const map = {};
+        (data || []).forEach((r) => { map[r.author_id] = (map[r.author_id] || 0) + 1; });
+        return map;
+      };
+      const [postCounts, commentCounts, reactionCounts] = await Promise.all([
+        countForUser('posts', anonIds),
+        countForUser('comments', anonIds),
+        countForUser('reactions', anonIds),
       ]);
-      const count = (rows, id) => (rows || []).filter((r) => r.author_id === id).length;
-      return res.status(200).json((users || []).map((u) => ({
+      return res.status(200).json((rows || []).map((u) => ({
         ...u,
-        post_count: count(posts, u.anon_id),
-        comment_count: count(comments, u.anon_id),
-        reaction_count: count(reactions, u.anon_id),
+        post_count: postCounts[u.anon_id] || 0,
+        comment_count: commentCounts[u.anon_id] || 0,
+        reaction_count: reactionCounts[u.anon_id] || 0,
       })));
     }
 

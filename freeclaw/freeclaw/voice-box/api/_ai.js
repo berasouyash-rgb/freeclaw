@@ -117,7 +117,9 @@ export default async function handler(req, res) {
 
     if (task === 'analyze') {
       if (!(await isAdmin(req))) return res.status(403).json({ error: 'Admin only' });
-      const items = (posts || []).slice(0, 60).map((p) => ({
+      // Defensively coerce posts to array (body parser may deliver as string or object)
+      const postList = Array.isArray(posts) ? posts : (typeof posts === 'string' ? (() => { try { return JSON.parse(posts); } catch { return []; } })() : []);
+      const items = postList.slice(0, 60).map((p) => ({
         id: p.id, title: p.title, description: (p.description || '').slice(0, 240),
         category: p.category, priority: p.priority, status: p.status,
         reactions: p.reactions, comments: p.comment_count, created_at: p.created_at,
@@ -133,7 +135,7 @@ export default async function handler(req, res) {
           return res.status(200).json({ engine: ai.engine, generated_at: new Date().toISOString(), ...result });
         }
       }
-      return res.status(200).json(heuristicAnalysis(posts || []));
+      return res.status(200).json(heuristicAnalysis(postList));
     }
 
     if (task === 'categorize') {

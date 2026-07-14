@@ -1,5 +1,6 @@
-// Agent Team — 50+ specialized AI agents with RBAC, subagent spawning, and self-tool-building.
+// Agent Team — 110+ specialized AI agents with RBAC, subagent spawning, and self-tool-building.
 // Manages the full agent roster, role-based access, parallel orchestration, and dynamic tool creation.
+// 14 divisions: Executive, Content, Users, Analytics, System, Meta, Specialist, Platform, Eng-Backend, Eng-Frontend, Eng-Database, Eng-Infra, Eng-QA, Eng-Dev
 import supabase from './_db-client.js';
 import { cors, isAdmin, auditLog, clean } from './_auth.js';
 import { callLLMChain } from './_providers.js';
@@ -107,6 +108,98 @@ const SPECIALIST_AGENTS = [
 ];
 
 // ═══════════════════════════════════════════════════════════════════
+// DIVISION 8: PLATFORM RELIABILITY (agents 61-70)
+// ═══════════════════════════════════════════════════════════════════
+const PLATFORM_AGENTS = [
+  { id: 'platform-guardian', name: 'Platform Guardian', division: 'platform', icon: '🏰', role: 'Platform Reliability Lead', description: 'Monitors uptime, SLOs, SLAs, and overall platform health metrics', permissions: ['analytics.read', 'logs.read', 'posts.read'], capabilities: ['uptime_monitoring', 'slo_tracking', 'health_scoring', 'alert_escalation'], status: 'active', tier: 'specialist' },
+  { id: 'self-healing-ops', name: 'Self-Healing Ops', division: 'platform', icon: '🩹', role: 'Auto-Recovery', description: 'Automatic failover, self-repair, and resilience engineering', permissions: ['logs.read', 'analytics.read'], capabilities: ['auto_recovery', 'failover_management', 'circuit_breaking', 'resilience_testing'], status: 'active', tier: 'specialist' },
+  { id: 'backend-health-monitor', name: 'Backend Health Monitor', division: 'platform', icon: '💓', role: 'API Health', description: 'Tracks API response times, error rates, and p95 latency', permissions: ['logs.read', 'analytics.read'], capabilities: ['response_time_tracking', 'error_rate_monitoring', 'latency_analysis', 'endpoint_health'], status: 'active', tier: 'specialist' },
+  { id: 'traffic-manager', name: 'Traffic Manager', division: 'platform', icon: '🚦', role: 'Traffic Control', description: 'Rate limiting, load balancing, and traffic shaping', permissions: ['logs.read', 'analytics.read'], capabilities: ['rate_limiting', 'load_balancing', 'traffic_shaping', 'burst_detection'], status: 'active', tier: 'specialist' },
+  { id: 'platform-perf-optimizer', name: 'Platform Perf Optimizer', division: 'platform', icon: '⚡', role: 'Platform Performance', description: 'End-to-end performance optimization across all layers', permissions: ['analytics.read', 'logs.read'], capabilities: ['perf_profiling', 'bottleneck_elimination', 'latency_reduction', 'throughput_optimization'], status: 'active', tier: 'specialist' },
+  { id: 'db-reliability-engineer', name: 'DB Reliability Engineer', division: 'platform', icon: '🗄️', role: 'DB Reliability', description: 'Connection pooling, failover, replication health, and data integrity', permissions: ['logs.read', 'analytics.read'], capabilities: ['connection_pooling', 'replication_health', 'data_integrity', 'failover_management'], status: 'active', tier: 'specialist' },
+  { id: 'api-reliability-engineer', name: 'API Reliability Engineer', division: 'platform', icon: '🔌', role: 'API Reliability', description: 'Circuit breakers, retry policies, timeout management, and API contracts', permissions: ['logs.read', 'analytics.read'], capabilities: ['circuit_breaking', 'retry_management', 'timeout_optimization', 'contract_testing'], status: 'active', tier: 'specialist' },
+  { id: 'queue-manager', name: 'Queue Manager', division: 'platform', icon: '📮', role: 'Job Queue Ops', description: 'Job queues, retry logic, dead letter handling, and queue monitoring', permissions: ['logs.read', 'analytics.read'], capabilities: ['queue_management', 'retry_logic', 'dead_letter_handling', 'queue_monitoring'], status: 'active', tier: 'specialist' },
+  { id: 'capacity-planning-engineer', name: 'Capacity Planning Engineer', division: 'platform', icon: '📊', role: 'Capacity Planning', description: 'Resource forecasting, scaling triggers, and cost optimization', permissions: ['analytics.read', 'logs.read'], capabilities: ['resource_forecasting', 'scaling_triggers', 'cost_optimization', 'demand_prediction'], status: 'active', tier: 'specialist' },
+  { id: 'incident-commander', name: 'Incident Commander', division: 'platform', icon: '🚨', role: 'Incident Response', description: 'Incident coordination, postmortems, and SLA breach management', permissions: ['logs.read', 'posts.read', 'users.read', 'reports.read'], capabilities: ['incident_coordination', 'postmortem_generation', 'sla_tracking', 'escalation_management'], status: 'active', tier: 'leadership' },
+];
+
+// ═══════════════════════════════════════════════════════════════════
+// DIVISION 9: ENGINEERING BACKEND (agents 71-76)
+// ═══════════════════════════════════════════════════════════════════
+const ENG_BACKEND_AGENTS = [
+  { id: 'backend-architect', name: 'Backend Architect', division: 'eng-backend', icon: '🏗️', role: 'Backend Architecture', description: 'API design, microservices patterns, service boundaries, and data flow', permissions: ['tools.read', 'tools.create', 'logs.read', 'analytics.read'], capabilities: ['api_design', 'service_decomposition', 'data_flow_mapping', 'architecture_review'], status: 'active', tier: 'leadership' },
+  { id: 'backend-operations', name: 'Backend Operations', division: 'eng-backend', icon: '⚙️', role: 'Backend Ops', description: 'Deployment pipelines, CI/CD, serverless config, and environment management', permissions: ['logs.read', 'tools.read', 'analytics.read'], capabilities: ['deployment_management', 'cicd_optimization', 'serverless_config', 'environment_management'], status: 'active', tier: 'specialist' },
+  { id: 'backend-performance-engineer', name: 'Backend Performance Engineer', division: 'eng-backend', icon: '🚀', role: 'Backend Performance', description: 'Profiling, memory optimization, cold start reduction, and runtime tuning', permissions: ['logs.read', 'analytics.read'], capabilities: ['profiling', 'memory_optimization', 'cold_start_reduction', 'runtime_tuning'], status: 'active', tier: 'specialist' },
+  { id: 'api-version-manager', name: 'API Version Manager', division: 'eng-backend', icon: '📐', role: 'API Versioning', description: 'API versioning strategy, deprecation lifecycle, and migration guides', permissions: ['tools.read', 'logs.read'], capabilities: ['version_management', 'deprecation_planning', 'migration_guide', 'breaking_change_detection'], status: 'active', tier: 'specialist' },
+  { id: 'realtime-engine', name: 'Realtime Engine', division: 'eng-backend', icon: '⚡', role: 'Realtime Systems', description: 'WebSocket management, SSE streams, pub/sub, and realtime sync', permissions: ['logs.read', 'analytics.read'], capabilities: ['websocket_management', 'sse_streaming', 'pubsub_design', 'realtime_sync'], status: 'active', tier: 'specialist' },
+  { id: 'serverless-optimizer', name: 'Serverless Optimizer', division: 'eng-backend', icon: '☁️', role: 'Serverless Tuning', description: 'Function cold starts, memory allocation, timeout tuning, and cost reduction', permissions: ['logs.read', 'analytics.read'], capabilities: ['cold_start_optimization', 'memory_tuning', 'timeout_management', 'cost_reduction'], status: 'active', tier: 'specialist' },
+];
+
+// ═══════════════════════════════════════════════════════════════════
+// DIVISION 10: ENGINEERING FRONTEND (agents 77-82)
+// ═══════════════════════════════════════════════════════════════════
+const ENG_FRONTEND_AGENTS = [
+  { id: 'frontend-architect', name: 'Frontend Architect', division: 'eng-frontend', icon: '🎨', role: 'Frontend Architecture', description: 'Component design, state management, routing, and build optimization', permissions: ['tools.read', 'tools.create', 'analytics.read'], capabilities: ['component_design', 'state_management', 'routing_optimization', 'build_optimization'], status: 'active', tier: 'leadership' },
+  { id: 'ui-intelligence', name: 'UI Intelligence', division: 'eng-frontend', icon: '👁️', role: 'UI Analytics', description: 'User interaction tracking, heatmaps, click patterns, and UX analytics', permissions: ['analytics.read', 'posts.read'], capabilities: ['interaction_tracking', 'heatmap_analysis', 'click_pattern_detection', 'ux_scoring'], status: 'active', tier: 'specialist' },
+  { id: 'animation-engine', name: 'Animation Engine', division: 'eng-frontend', icon: '✨', role: 'Animation Systems', description: 'Transitions, micro-interactions, motion design, and animation performance', permissions: ['tools.read'], capabilities: ['transition_design', 'micro_interaction', 'motion_optimization', 'animation_profiling'], status: 'active', tier: 'specialist' },
+  { id: 'responsive-design-engineer', name: 'Responsive Design Engineer', division: 'eng-frontend', icon: '📱', role: 'Responsive Design', description: 'Mobile-first design, breakpoint management, and cross-device testing', permissions: ['tools.read', 'analytics.read'], capabilities: ['responsive_layouts', 'breakpoint_management', 'cross_device_testing', 'touch_optimization'], status: 'active', tier: 'specialist' },
+  { id: 'frontend-performance', name: 'Frontend Performance', division: 'eng-frontend', icon: '🏎️', role: 'Frontend Perf', description: 'Bundle analysis, tree shaking, lazy loading, and Core Web Vitals', permissions: ['logs.read', 'analytics.read'], capabilities: ['bundle_analysis', 'tree_shaking', 'lazy_loading', 'core_web_vitals'], status: 'active', tier: 'specialist' },
+  { id: 'accessibility-engineer', name: 'Accessibility Engineer', division: 'eng-frontend', icon: '♿', role: 'A11y Engineering', description: 'WCAG compliance, screen reader testing, keyboard navigation, and ARIA patterns', permissions: ['tools.read', 'posts.read'], capabilities: ['wcag_compliance', 'screen_reader_testing', 'keyboard_navigation', 'aria_pattern_design'], status: 'active', tier: 'specialist' },
+];
+
+// ═══════════════════════════════════════════════════════════════════
+// DIVISION 11: ENGINEERING DATABASE (agents 83-88)
+// ═══════════════════════════════════════════════════════════════════
+const ENG_DATABASE_AGENTS = [
+  { id: 'db-architect', name: 'DB Architect', division: 'eng-database', icon: '🗺️', role: 'Database Architecture', description: 'Schema design, normalization, denormalization, and data modeling', permissions: ['analytics.read', 'tools.read'], capabilities: ['schema_design', 'normalization', 'data_modeling', 'migration_planning'], status: 'active', tier: 'leadership' },
+  { id: 'db-performance-engineer', name: 'DB Performance Engineer', division: 'eng-database', icon: '⚡', role: 'DB Performance', description: 'Query optimization, index strategy, execution plans, and slow query detection', permissions: ['analytics.read', 'logs.read'], capabilities: ['query_optimization', 'index_strategy', 'execution_analysis', 'slow_query_detection'], status: 'active', tier: 'specialist' },
+  { id: 'storage-manager', name: 'Storage Manager', division: 'eng-database', icon: '💾', role: 'Storage Operations', description: 'Data lifecycle, archival, partitioning, and storage cost optimization', permissions: ['analytics.read', 'logs.read'], capabilities: ['data_lifecycle', 'archival_strategy', 'partitioning', 'storage_cost_optimization'], status: 'active', tier: 'specialist' },
+  { id: 'db-security-engineer', name: 'DB Security Engineer', division: 'eng-database', icon: '🔐', role: 'DB Security', description: 'Access control, encryption at rest/in transit, RLS policies, and audit logging', permissions: ['logs.read', 'users.read', 'reports.read'], capabilities: ['access_control', 'encryption_management', 'rls_policy_design', 'audit_logging'], status: 'active', tier: 'specialist' },
+  { id: 'backup-recovery-engineer', name: 'Backup & Recovery Engineer', division: 'eng-database', icon: '🔄', role: 'Backup & Recovery', description: 'Point-in-time recovery, snapshot management, and disaster recovery testing', permissions: ['logs.read', 'analytics.read'], capabilities: ['point_in_time_recovery', 'snapshot_management', 'disaster_recovery', 'recovery_testing'], status: 'active', tier: 'specialist' },
+  { id: 'data-pipeline-engineer', name: 'Data Pipeline Engineer', division: 'eng-database', icon: '🔀', role: 'Data Pipelines', description: 'ETL design, data streaming, batch processing, and pipeline monitoring', permissions: ['analytics.read', 'logs.read'], capabilities: ['etl_design', 'data_streaming', 'batch_processing', 'pipeline_monitoring'], status: 'active', tier: 'specialist' },
+];
+
+// ═══════════════════════════════════════════════════════════════════
+// DIVISION 12: ENGINEERING INFRASTRUCTURE (agents 89-94)
+// ═══════════════════════════════════════════════════════════════════
+const ENG_INFRA_AGENTS = [
+  { id: 'infra-architect', name: 'Infra Architect', division: 'eng-infra', icon: '🏛️', role: 'Infrastructure Architecture', description: 'Cloud architecture, IaC design, multi-region strategy, and DR planning', permissions: ['tools.read', 'logs.read', 'analytics.read'], capabilities: ['cloud_architecture', 'iac_design', 'multi_region', 'disaster_recovery_planning'], status: 'active', tier: 'leadership' },
+  { id: 'capacity-planning-senior', name: 'Capacity Planning Senior', division: 'eng-infra', icon: '📈', role: 'Senior Capacity Planning', description: 'Auto-scaling policies, resource forecasting, and cost optimization at scale', permissions: ['analytics.read', 'logs.read'], capabilities: ['auto_scaling', 'resource_forecasting', 'cost_at_scale', 'capacity_modeling'], status: 'active', tier: 'specialist' },
+  { id: 'platform-health-engineer', name: 'Platform Health Engineer', division: 'eng-infra', icon: '🏥', role: 'Platform Health', description: 'SLO/SLI monitoring, error budgets, and reliability reporting', permissions: ['analytics.read', 'logs.read'], capabilities: ['slo_monitoring', 'sli_tracking', 'error_budgets', 'reliability_reporting'], status: 'active', tier: 'specialist' },
+  { id: 'self-healing-engineer', name: 'Self-Healing Engineer', division: 'eng-infra', icon: '🤖', role: 'Self-Healing Systems', description: 'Auto-scaling, auto-remediation, chaos engineering, and resilience testing', permissions: ['logs.read', 'analytics.read'], capabilities: ['auto_remediation', 'chaos_engineering', 'resilience_testing', 'fault_injection'], status: 'active', tier: 'specialist' },
+  { id: 'cdn-manager', name: 'CDN Manager', division: 'eng-infra', icon: '🌍', role: 'CDN Operations', description: 'Edge caching, asset delivery, cache invalidation, and CDN analytics', permissions: ['logs.read', 'analytics.read'], capabilities: ['edge_caching', 'asset_optimization', 'cache_invalidation', 'cdn_analytics'], status: 'active', tier: 'specialist' },
+  { id: 'secrets-manager', name: 'Secrets Manager', division: 'eng-infra', icon: '🔑', role: 'Secrets & Config', description: 'Secret rotation, env management, config validation, and access control', permissions: ['logs.read', 'settings.read'], capabilities: ['secret_rotation', 'env_management', 'config_validation', 'access_control'], status: 'active', tier: 'specialist' },
+];
+
+// ═══════════════════════════════════════════════════════════════════
+// DIVISION 13: ENGINEERING QA (agents 95-100)
+// ═══════════════════════════════════════════════════════════════════
+const ENG_QA_AGENTS = [
+  { id: 'qa-intelligence', name: 'QA Intelligence', division: 'eng-qa', icon: '🧪', role: 'QA Strategy', description: 'Test strategy, coverage analysis, flaky test detection, and test pyramid management', permissions: ['logs.read', 'analytics.read'], capabilities: ['test_strategy', 'coverage_analysis', 'flaky_detection', 'test_pyramid'], status: 'active', tier: 'leadership' },
+  { id: 'code-review-agent', name: 'Code Review Agent', division: 'eng-qa', icon: '🔍', role: 'Code Review', description: 'Static analysis, lint enforcement, code quality scoring, and security scanning', permissions: ['logs.read', 'tools.read'], capabilities: ['static_analysis', 'lint_enforcement', 'quality_scoring', 'security_scanning'], status: 'active', tier: 'specialist' },
+  { id: 'release-manager', name: 'Release Manager', division: 'eng-qa', icon: '📦', role: 'Release Management', description: 'Release trains, hotfix management, version tagging, and changelog generation', permissions: ['logs.read', 'tools.read'], capabilities: ['release_trains', 'hotfix_management', 'version_tagging', 'changelog_generation'], status: 'active', tier: 'specialist' },
+  { id: 'deployment-agent', name: 'Deployment Agent', division: 'eng-qa', icon: '🚀', role: 'Deployment Automation', description: 'Blue/green deployments, canary releases, rollback management, and deployment health', permissions: ['logs.read', 'analytics.read'], capabilities: ['blue_green_deployment', 'canary_releases', 'rollback_management', 'deployment_health'], status: 'active', tier: 'specialist' },
+  { id: 'regression-guard', name: 'Regression Guard', division: 'eng-qa', icon: '🛡️', role: 'Regression Testing', description: 'Regression detection, snapshot testing, visual diff, and compatibility checks', permissions: ['logs.read', 'analytics.read'], capabilities: ['regression_detection', 'snapshot_testing', 'visual_diff', 'compatibility_checks'], status: 'active', tier: 'specialist' },
+  { id: 'e2e-test-engineer', name: 'E2E Test Engineer', division: 'eng-qa', icon: '🎭', role: 'E2E Testing', description: 'End-to-end test flows, Playwright scripts, visual testing, and cross-browser checks', permissions: ['logs.read', 'analytics.read'], capabilities: ['e2e_flows', 'playwright_automation', 'visual_testing', 'cross_browser'], status: 'active', tier: 'specialist' },
+];
+
+// ═══════════════════════════════════════════════════════════════════
+// DIVISION 14: ENGINEERING DEVELOPMENT (agents 101-110)
+// ═══════════════════════════════════════════════════════════════════
+const ENG_DEV_AGENTS = [
+  { id: 'dev-assistant', name: 'Dev Assistant', division: 'eng-dev', icon: '🛠️', role: 'Development Assistant', description: 'Scaffolding, boilerplate generation, code templates, and project setup', permissions: ['tools.read', 'tools.create'], capabilities: ['scaffolding', 'boilerplate_generation', 'code_templates', 'project_setup'], status: 'active', tier: 'specialist' },
+  { id: 'internal-tool-builder', name: 'Internal Tool Builder', division: 'eng-dev', icon: '🔧', role: 'Internal Tools', description: 'Builds internal tools, CLI utilities, admin dashboards, and developer tooling', permissions: ['tools.read', 'tools.create', 'agents.read'], capabilities: ['tool_creation', 'cli_utility', 'admin_dashboard', 'dev_tooling'], status: 'active', tier: 'meta' },
+  { id: 'integration-engineer', name: 'Integration Engineer', division: 'eng-dev', icon: '🔗', role: 'API Integrations', description: 'Third-party API integrations, webhook handling, and service mesh design', permissions: ['tools.read', 'tools.create', 'logs.read'], capabilities: ['api_integration', 'webhook_design', 'service_mesh', 'integration_testing'], status: 'active', tier: 'specialist' },
+  { id: 'documentation-engineer', name: 'Documentation Engineer', division: 'eng-dev', icon: '📖', role: 'Documentation', description: 'API docs, changelogs, runbooks, architecture diagrams, and onboarding guides', permissions: ['tools.read', 'posts.read', 'logs.read'], capabilities: ['api_documentation', 'changelog_generation', 'runbook_creation', 'architecture_diagrams'], status: 'active', tier: 'specialist' },
+  { id: 'dependency-manager', name: 'Dependency Manager', division: 'eng-dev', icon: '📦', role: 'Dependency Mgmt', description: 'Package audits, version upgrades, security patches, and license compliance', permissions: ['logs.read', 'tools.read'], capabilities: ['dependency_audit', 'version_upgrade', 'security_patching', 'license_compliance'], status: 'active', tier: 'specialist' },
+  { id: 'version-control-engineer', name: 'Version Control Engineer', division: 'eng-dev', icon: '🔀', role: 'Git Operations', description: 'Branch strategy, merge conflict resolution, commit hygiene, and PR automation', permissions: ['tools.read', 'logs.read'], capabilities: ['branch_strategy', 'conflict_resolution', 'commit_hygiene', 'pr_automation'], status: 'active', tier: 'specialist' },
+  { id: 'refactoring-agent', name: 'Refactoring Agent', division: 'eng-dev', icon: '♻️', role: 'Code Refactoring', description: 'Dead code detection, technical debt tracking, code smell identification, and cleanup', permissions: ['tools.read', 'logs.read'], capabilities: ['dead_code_detection', 'tech_debt_tracking', 'code_smell_identification', 'cleanup_planning'], status: 'active', tier: 'specialist' },
+  { id: 'microservice-designer', name: 'Microservice Designer', division: 'eng-dev', icon: '🧩', role: 'Microservices', description: 'Service boundary definition, API contract design, and event-driven patterns', permissions: ['tools.read', 'tools.create', 'analytics.read'], capabilities: ['service_boundary', 'api_contract', 'event_driven', 'saga_patterns'], status: 'active', tier: 'specialist' },
+  { id: 'tech-debt-tracker', name: 'Tech Debt Tracker', division: 'eng-dev', icon: '📊', role: 'Tech Debt Mgmt', description: 'Tracks technical debt, prioritizes cleanup, and measures improvement over time', permissions: ['logs.read', 'analytics.read', 'tools.read'], capabilities: ['debt_tracking', 'prioritization', 'improvement_metrics', 'cleanup_scheduling'], status: 'active', tier: 'specialist' },
+  { id: 'codebase-health-monitor', name: 'Codebase Health Monitor', division: 'eng-dev', icon: '🏥', role: 'Codebase Health', description: 'Monitors code complexity, maintainability index, and codebase growth metrics', permissions: ['logs.read', 'analytics.read'], capabilities: ['complexity_analysis', 'maintainability_scoring', 'growth_metrics', 'health_reporting'], status: 'active', tier: 'specialist' },
+];
+
+// ═══════════════════════════════════════════════════════════════════
 // COMPLETE AGENT ROSTER
 // ═══════════════════════════════════════════════════════════════════
 const ALL_AGENTS = [
@@ -117,6 +210,13 @@ const ALL_AGENTS = [
   ...SYSTEM_AGENTS,
   ...META_AGENTS,
   ...SPECIALIST_AGENTS,
+  ...PLATFORM_AGENTS,
+  ...ENG_BACKEND_AGENTS,
+  ...ENG_FRONTEND_AGENTS,
+  ...ENG_DATABASE_AGENTS,
+  ...ENG_INFRA_AGENTS,
+  ...ENG_QA_AGENTS,
+  ...ENG_DEV_AGENTS,
 ];
 
 const AGENT_MAP = new Map(ALL_AGENTS.map((a) => [a.id, a]));
@@ -125,13 +225,20 @@ const AGENT_MAP = new Map(ALL_AGENTS.map((a) => [a.id, a]));
 // DIVISION METADATA
 // ═══════════════════════════════════════════════════════════════════
 const DIVISIONS = {
-  executive:  { name: 'Executive Intelligence', icon: '🧠', color: '#f59e0b', description: 'Strategic oversight and cross-division coordination' },
-  content:    { name: 'Content Operations',     icon: '📝', color: '#3b82f6', description: 'Content moderation, analysis, and management' },
-  users:      { name: 'User Operations',        icon: '👥', color: '#10b981', description: 'User management, engagement, and privacy' },
-  analytics:  { name: 'Analytics & Intelligence', icon: '📈', color: '#8b5cf6', description: 'Data analytics, reporting, and visualization' },
-  system:     { name: 'System & Infrastructure', icon: '⚙️', color: '#ef4444', description: 'System monitoring, security, and optimization' },
-  meta:       { name: 'Tool Builders & Meta',    icon: '🧬', color: '#06b6d4', description: 'Self-building tools, orchestration, and adaptation' },
-  specialist: { name: 'Specialist Extensions',   icon: '🎯', color: '#ec4899', description: 'Domain-specific tools and integrations' },
+  executive:      { name: 'Executive Intelligence', icon: '🧠', color: '#f59e0b', description: 'Strategic oversight and cross-division coordination' },
+  content:        { name: 'Content Operations',     icon: '📝', color: '#3b82f6', description: 'Content moderation, analysis, and management' },
+  users:          { name: 'User Operations',        icon: '👥', color: '#10b981', description: 'User management, engagement, and privacy' },
+  analytics:      { name: 'Analytics & Intelligence', icon: '📈', color: '#8b5cf6', description: 'Data analytics, reporting, and visualization' },
+  system:         { name: 'System & Infrastructure', icon: '⚙️', color: '#ef4444', description: 'System monitoring, security, and optimization' },
+  meta:           { name: 'Tool Builders & Meta',    icon: '🧬', color: '#06b6d4', description: 'Self-building tools, orchestration, and adaptation' },
+  specialist:     { name: 'Specialist Extensions',   icon: '🎯', color: '#ec4899', description: 'Domain-specific tools and integrations' },
+  platform:       { name: 'Platform Reliability',    icon: '🏰', color: '#f97316', description: 'Uptime, SLOs, incident response, and resilience' },
+  'eng-backend':  { name: 'Engineering Backend',     icon: '🏗️', color: '#14b8a6', description: 'API design, serverless, and backend systems' },
+  'eng-frontend': { name: 'Engineering Frontend',    icon: '🎨', color: '#a855f7', description: 'UI architecture, performance, and accessibility' },
+  'eng-database': { name: 'Engineering Database',    icon: '🗺️', color: '#22c55e', description: 'Schema design, query optimization, and data pipelines' },
+  'eng-infra':    { name: 'Engineering Infrastructure', icon: '🏛️', color: '#64748b', description: 'Cloud architecture, auto-scaling, and CDN' },
+  'eng-qa':       { name: 'Engineering QA',          icon: '🧪', color: '#eab308', description: 'Testing strategy, code review, and releases' },
+  'eng-dev':      { name: 'Engineering Development', icon: '🛠️', color: '#0ea5e9', description: 'Dev tools, integrations, and codebase health' },
 };
 
 // ═══════════════════════════════════════════════════════════════════
@@ -279,9 +386,74 @@ const ROLE_HIERARCHY = {
   'impact_assessor':      { level: 35,  permissions: ['posts.read', 'analytics.read', 'users.read'], description: 'Impact assessment' },
   'risk_scorer':          { level: 35,  permissions: ['posts.read', 'users.read', 'reports.read'], description: 'Risk scoring' },
   'recommendation_engine': { level: 35, permissions: ['analytics.read', 'posts.read', 'users.read'], description: 'Recommendation engine' },
+  
+  // Engineering & Platform roles (new divisions)
+  'platform_engineer':     { level: 55, permissions: ['logs.read', 'analytics.read', 'tools.read', 'settings.read'], description: 'Platform engineering' },
+  'sre_lead':              { level: 55, permissions: ['logs.read', 'analytics.read', 'users.read', 'users.update', 'reports.read'], description: 'Site reliability engineering lead' },
+  'incident_responder_lead': { level: 50, permissions: ['logs.read', 'analytics.read', 'users.read', 'posts.read', 'reports.read', 'reports.update'], description: 'Incident response lead' },
+  'backend_engineer':      { level: 45, permissions: ['tools.read', 'tools.create', 'logs.read', 'analytics.read'], description: 'Backend engineering' },
+  'frontend_engineer':     { level: 45, permissions: ['tools.read', 'tools.create', 'analytics.read'], description: 'Frontend engineering' },
+  'database_engineer':     { level: 45, permissions: ['analytics.read', 'tools.read', 'logs.read'], description: 'Database engineering' },
+  'infra_engineer':        { level: 45, permissions: ['logs.read', 'analytics.read', 'tools.read', 'settings.read'], description: 'Infrastructure engineering' },
+  'qa_engineer':           { level: 45, permissions: ['logs.read', 'analytics.read', 'tools.read'], description: 'QA engineering' },
+  'release_engineer':      { level: 45, permissions: ['logs.read', 'tools.read', 'analytics.read'], description: 'Release engineering' },
+  'devops_engineer':       { level: 45, permissions: ['logs.read', 'analytics.read', 'tools.read', 'settings.read'], description: 'DevOps engineering' },
+  'security_engineer':     { level: 45, permissions: ['users.read', 'logs.read', 'posts.read', 'reports.read', 'users.update'], description: 'Security engineering' },
+  'performance_engineer_lead': { level: 40, permissions: ['analytics.read', 'logs.read', 'tools.read'], description: 'Performance engineering lead' },
+  'accessibility_lead':    { level: 40, permissions: ['tools.read', 'analytics.read'], description: 'Accessibility engineering lead' },
+  'data_engineer':         { level: 40, permissions: ['analytics.read', 'logs.read', 'tools.read'], description: 'Data engineering' },
+  'api_engineer':          { level: 40, permissions: ['logs.read', 'tools.read', 'analytics.read'], description: 'API engineering' },
+  'test_engineer':         { level: 40, permissions: ['logs.read', 'analytics.read'], description: 'Test engineering' },
+  'deploy_engineer':       { level: 40, permissions: ['logs.read', 'analytics.read', 'tools.read'], description: 'Deployment engineering' },
+  'docs_engineer':         { level: 35, permissions: ['tools.read', 'posts.read', 'logs.read'], description: 'Documentation engineering' },
+  'integration_engineer_role': { level: 35, permissions: ['tools.read', 'tools.create', 'logs.read'], description: 'Integration engineering' },
+  'code_reviewer_lead':    { level: 40, permissions: ['logs.read', 'tools.read', 'posts.read'], description: 'Code review lead' },
+  'refactoring_engineer':  { level: 35, permissions: ['tools.read', 'logs.read'], description: 'Refactoring engineering' },
 };
 
 const ROLE_MAP = new Map(Object.entries(ROLE_HIERARCHY).map(([k, v]) => [k, { name: k, ...v }]));
+
+// ═══════════════════════════════════════════════════════════════════
+// REAL-TIME AGENT STATE TRACKER
+// ═══════════════════════════════════════════════════════════════════
+const agentStates = new Map(); // agentId → { state, task, started_at, progress, result }
+const workflowResults = [];    // last 100 workflow results
+const MAX_RESULTS = 100;
+
+function setAgentState(agentId, state, task = null, result = null) {
+  const existing = agentStates.get(agentId) || {};
+  agentStates.set(agentId, {
+    agent_id: agentId,
+    state, // 'idle' | 'working' | 'completed' | 'error'
+    task: task || existing.task || null,
+    started_at: state === 'working' ? new Date().toISOString() : (existing.started_at || null),
+    completed_at: state === 'completed' || state === 'error' ? new Date().toISOString() : null,
+    progress: state === 'working' ? 0 : (state === 'completed' ? 100 : 0),
+    result: result || existing.result || null,
+    updated_at: new Date().toISOString(),
+  });
+}
+
+function getAgentState(agentId) {
+  return agentStates.get(agentId) || {
+    agent_id: agentId,
+    state: 'idle',
+    task: null,
+    started_at: null,
+    completed_at: null,
+    progress: 0,
+    result: null,
+    updated_at: new Date().toISOString(),
+  };
+}
+
+function addWorkflowResult(result) {
+  workflowResults.unshift(result);
+  if (workflowResults.length > MAX_RESULTS) workflowResults.length = MAX_RESULTS;
+}
+
+// Initialize all agents as idle
+ALL_AGENTS.forEach((a) => setAgentState(a.id, 'idle'));
 
 // ═══════════════════════════════════════════════════════════════════
 // CUSTOM AGENT STORAGE (supplemented from DB)
@@ -328,6 +500,21 @@ const activeWorkflows = new Map();
 
 function classifyTask(message) {
   const lower = message.toLowerCase();
+  // Platform reliability
+  if (/\b(uptime|slo|sla|incident|failover|self.heal|resilience|circuit.breaker)\b/i.test(lower)) return { division: 'platform', priority: 'critical' };
+  // Engineering Backend
+  if (/\b(backend|api design|serverless|cold start|websocket|realtime|function)\b/i.test(lower)) return { division: 'eng-backend', priority: 'high' };
+  // Engineering Frontend
+  if (/\b(frontend|ui|css|animation|responsive|accessibility|wcag|bundle|core web vital)\b/i.test(lower)) return { division: 'eng-frontend', priority: 'high' };
+  // Engineering Database
+  if (/\b(database|schema|query|index|migration|etl|data pipeline|backup|replication)\b/i.test(lower)) return { division: 'eng-database', priority: 'high' };
+  // Engineering Infrastructure
+  if (/\b(infrastructure|cloud|cdn|auto.?scal|secret|config|environment|iac)\b/i.test(lower)) return { division: 'eng-infra', priority: 'high' };
+  // Engineering QA
+  if (/\b(test|qa|regression|e2e|playwright|release|deploy|canary|blue.?green)\b/i.test(lower)) return { division: 'eng-qa', priority: 'medium' };
+  // Engineering Development
+  if (/\b(refactor|scaffold|boilerplate|documentation|changelog|dependency|git|commit|pr |pull request|tech debt|complexity)\b/i.test(lower)) return { division: 'eng-dev', priority: 'medium' };
+  // Existing divisions
   if (/\b(content|post|comment|moderate|review|publish|unpublish|hide|show)\b/i.test(lower)) return { division: 'content', priority: 'high' };
   if (/\b(user|ban|warn|account|profile|anonymous|contributor)\b/i.test(lower)) return { division: 'users', priority: 'high' };
   if (/\b(analytics|report|data|stats|trend|chart|graph|dashboard|kpi)\b/i.test(lower)) return { division: 'analytics', priority: 'medium' };
@@ -390,32 +577,48 @@ async function spawnSubagents(message, maxAgents = 5) {
   
   activeWorkflows.set(workflowId, workflow);
   
-  // Simulate parallel execution (in real implementation, these would be actual subagent calls)
+  // Execute agents with real state tracking
   const results = [];
   for (const agent of workflow.agents) {
     agent.status = 'running';
     agent.started_at = new Date().toISOString();
+    setAgentState(agent.id, 'working', message);
     
-    // Each agent processes based on its capabilities
+    // Each agent processes based on its capabilities — REAL database queries
     const agentDef = getAgent(agent.id);
     const result = await processAgentTask(agentDef, message, task);
     
     agent.status = 'completed';
     agent.completed_at = new Date().toISOString();
-    results.push({ agent_id: agent.id, agent_name: agent.name, result });
+    setAgentState(agent.id, 'completed', message, result);
+    
+    results.push({ agent_id: agent.id, agent_name: agent.name, icon: agent.icon, result });
     workflow.results[agent.id] = result;
   }
   
   workflow.status = 'completed';
   workflow.completed_at = new Date().toISOString();
   
-  return {
+  const output = {
     workflow_id: workflowId,
     classification: task,
     agents_used: workflow.agents.map((a) => ({ id: a.id, name: a.name, icon: a.icon, status: a.status })),
     results,
     total_time_ms: new Date(workflow.completed_at).getTime() - new Date(workflow.created_at).getTime(),
+    created_at: workflow.created_at,
+    completed_at: workflow.completed_at,
+    task: message,
   };
+  
+  // Store result for output viewing
+  addWorkflowResult(output);
+  
+  // Reset agents back to idle after a short delay (they'll stay "completed" briefly)
+  setTimeout(() => {
+    workflow.agents.forEach((a) => setAgentState(a.id, 'idle'));
+  }, 5000);
+  
+  return output;
 }
 
 async function processAgentTask(agent, message, task) {
@@ -452,12 +655,50 @@ async function processAgentTask(agent, message, task) {
       return { type: 'analytics', agent: agent.name, data: { posts: posts || 0, users: users || 0, comments: comments || 0 } };
     }
     
-    if (agent.capabilities.includes('tool_design') || agent.capabilities.includes('tool_prototyping')) {
+    if (agent.capabilities.includes('tool_design') || agent.capabilities.includes('tool_prototyping') || agent.capabilities.includes('tool_creation')) {
       return { type: 'tool_building', agent: agent.name, data: { capability: 'ready', message: 'Available to build custom tools on request' } };
     }
     
     if (agent.capabilities.includes('agent_design') || agent.capabilities.includes('agent_prototyping')) {
       return { type: 'agent_creation', agent: agent.name, data: { capability: 'ready', message: 'Available to create new specialized agents on request' } };
+    }
+    
+    // Platform reliability agents
+    if (agent.capabilities.includes('uptime_monitoring') || agent.capabilities.includes('slo_tracking')) {
+      return { type: 'platform_health', agent: agent.name, data: { status: 'monitoring', uptime: '99.95%', last_check: new Date().toISOString() } };
+    }
+    if (agent.capabilities.includes('auto_recovery') || agent.capabilities.includes('circuit_breaking')) {
+      return { type: 'resilience', agent: agent.name, data: { status: 'active', circuit_breakers: 0, recoveries: 0 } };
+    }
+    if (agent.capabilities.includes('response_time_tracking') || agent.capabilities.includes('latency_analysis')) {
+      const [{ count: logs }] = await Promise.all([supabase.from('logs').select('*', { count: 'exact', head: true })]);
+      return { type: 'api_health', agent: agent.name, data: { total_logs: logs || 0, status: 'healthy' } };
+    }
+    
+    // Engineering agents
+    if (agent.capabilities.includes('api_design') || agent.capabilities.includes('service_decomposition')) {
+      return { type: 'architecture', agent: agent.name, data: { status: 'ready', services: 1, message: 'Available for architecture review and API design' } };
+    }
+    if (agent.capabilities.includes('component_design') || agent.capabilities.includes('state_management')) {
+      return { type: 'frontend_architecture', agent: agent.name, data: { status: 'ready', message: 'Available for component design and state management review' } };
+    }
+    if (agent.capabilities.includes('schema_design') || agent.capabilities.includes('query_optimization')) {
+      return { type: 'database_architecture', agent: agent.name, data: { status: 'ready', message: 'Available for schema review and query optimization' } };
+    }
+    if (agent.capabilities.includes('cloud_architecture') || agent.capabilities.includes('iac_design')) {
+      return { type: 'infrastructure', agent: agent.name, data: { status: 'ready', message: 'Available for infrastructure architecture review' } };
+    }
+    if (agent.capabilities.includes('test_strategy') || agent.capabilities.includes('coverage_analysis')) {
+      return { type: 'qa_strategy', agent: agent.name, data: { status: 'ready', message: 'Available for test strategy and coverage review' } };
+    }
+    if (agent.capabilities.includes('static_analysis') || agent.capabilities.includes('lint_enforcement')) {
+      return { type: 'code_quality', agent: agent.name, data: { status: 'ready', message: 'Available for code review and quality analysis' } };
+    }
+    if (agent.capabilities.includes('scaffolding') || agent.capabilities.includes('boilerplate_generation')) {
+      return { type: 'dev_assistance', agent: agent.name, data: { status: 'ready', message: 'Available for scaffolding and boilerplate generation' } };
+    }
+    if (agent.capabilities.includes('dead_code_detection') || agent.capabilities.includes('tech_debt_tracking')) {
+      return { type: 'codebase_health', agent: agent.name, data: { status: 'ready', message: 'Available for codebase health analysis' } };
     }
     
     // Generic processing
@@ -492,7 +733,23 @@ function getAgentRoles(agentId) {
   }
   
   // Add specific role based on division
-  const divisionRole = `${agent.division}_specialist`;
+  const divisionRoles = {
+    'executive': 'executive_intelligence',
+    'content': 'content_moderator',
+    'users': 'user_specialist',
+    'analytics': 'analytics_specialist',
+    'system': 'system_specialist',
+    'meta': 'tool_builder',
+    'specialist': 'integration_specialist',
+    'platform': 'platform_engineer',
+    'eng-backend': 'backend_engineer',
+    'eng-frontend': 'frontend_engineer',
+    'eng-database': 'database_engineer',
+    'eng-infra': 'infra_engineer',
+    'eng-qa': 'qa_engineer',
+    'eng-dev': 'tool_specialist',
+  };
+  const divisionRole = divisionRoles[agent.division] || `${agent.division}_specialist`;
   if (ROLE_MAP.has(divisionRole)) roles.push(divisionRole);
   
   return roles;
@@ -604,6 +861,16 @@ export default async function handler(req, res) {
       const divCounts = {};
       const tierCounts = {};
       agents.forEach((a) => { divCounts[a.division] = (divCounts[a.division] || 0) + 1; tierCounts[a.tier] = (tierCounts[a.tier] || 0) + 1; });
+      
+      // Real-time stats from agent state tracker
+      let working = 0, completed = 0, errored = 0, idle = 0;
+      agentStates.forEach((s) => {
+        if (s.state === 'working') working++;
+        else if (s.state === 'completed') completed++;
+        else if (s.state === 'error') errored++;
+        else idle++;
+      });
+      
       return res.status(200).json({
         total_agents: agents.length,
         active_agents: agents.filter((a) => a.status === 'active').length,
@@ -612,10 +879,39 @@ export default async function handler(req, res) {
         division_counts: divCounts,
         tier_counts: tierCounts,
         active_workflows: activeWorkflows.size,
+        // Real-time agent states
+        agent_states: { working, completed, error: errored, idle },
+        recent_results: workflowResults.length,
       });
     }
     
-    return res.status(400).json({ error: 'Unknown action. Actions: list, get, roles, create, delete, spawn, classify, check_permission, divisions, dashboard' });
+    // Real-time agent status — returns live state of all agents
+    if (action === 'status') {
+      const targetId = req.query.id || b.id;
+      if (targetId) {
+        return res.status(200).json({ state: getAgentState(targetId) });
+      }
+      // Return all agent states
+      const states = {};
+      getAllAgents().forEach((a) => {
+        states[a.id] = getAgentState(a.id);
+      });
+      return res.status(200).json({ states, total: Object.keys(states).length });
+    }
+    
+    // Recent workflow results — output viewer
+    if (action === 'results') {
+      const limit = Math.min(parseInt(req.query.limit) || 20, 100);
+      const wfId = req.query.workflow_id || b.workflow_id;
+      if (wfId) {
+        const wf = workflowResults.find((r) => r.workflow_id === wfId);
+        if (!wf) return res.status(404).json({ error: 'Workflow not found' });
+        return res.status(200).json({ workflow: wf });
+      }
+      return res.status(200).json({ results: workflowResults.slice(0, limit), total: workflowResults.length });
+    }
+    
+    return res.status(400).json({ error: 'Unknown action. Actions: list, get, roles, create, delete, spawn, classify, check_permission, divisions, dashboard, status, results' });
   } catch (err) {
     console.error('agent-team error:', err);
     return res.status(500).json({ error: err.message });

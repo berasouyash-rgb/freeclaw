@@ -1,12 +1,15 @@
-// 7-Day Auto-Cleanup Middleware
-// Automatically deletes data older than 7 days to conserve DB space.
-// Runs on API cold start (once per function instance) and can be triggered via POST /api/cleanup.
+// Auto-Cleanup Middleware
+// Soft-deleted posts after 14d, comments after 30d, activity logs after 30d.
+// Runs on API cold start (once per function instance) and via POST /api/cleanup (admin only).
+// NEVER auto-unbans — bans are admin-only decisions.
 // Designed for limited-memory Supabase instances — deletes in small batches to avoid timeouts.
 
 import supabase from './_db-client.js';
-import { cors, isAdmin } from './_auth.js';
+import { cors, isAdmin, auditLog } from './_auth.js';
 
-const RETENTION_DAYS = 7;
+const SOFT_DELETE_RETENTION_DAYS = 14;  // soft-deleted posts
+const COMMENT_RETENTION_DAYS = 30;      // comments
+const LOG_RETENTION_DAYS = 30;          // activity logs, chat messages
 const BATCH_SIZE = 50;
 
 let lastRunAt = 0;
@@ -18,8 +21,8 @@ function daysAgo(days) {
   return d.toISOString();
 }
 
-async function deleteBatch(table, filter, filterCol = 'created_at') {
-  const cutoff = daysAgo(RETENTION_DAYS);
+async function deleteBatch(table, filter, filterCol = 'created_at', retentionDays = SOFT_DELETE_RETENTION_DAYS) {
+  const cutoff = daysAgo(retentionDays);
   const { count } = await supabase
     .from(table)
     .select('*', { count: 'exact', head: true })
@@ -28,7 +31,6 @@ async function deleteBatch(table, filter, filterCol = 'created_at') {
 
   if (!count || count === 0) return 0;
 
-  // Delete in batches to avoid timeout
   let deleted = 0;
   while (deleted < count) {
     const { data: batch, error: fetchErr } = await supabase
@@ -49,7 +51,6 @@ async function deleteBatch(table, filter, filterCol = 'created_at') {
     if (delErr) break;
     deleted += batch.length;
 
-    // Safety: if batch was smaller than requested, we're done
     if (batch.length < BATCH_SIZE) break;
   }
 
@@ -63,9 +64,9 @@ async function runCleanup() {
 
   const results = {};
 
-  // 1. Soft-deleted posts older than 7 days (hard delete)
+  // 1. Soft-deleted posts older than 14 days (hard delete)
   try {
-    const cutoff = daysAgo(RETENTION_DAYS);
+    const cutoff = daysAgo(SOFT_DELETE_RETENTION_DAYS);
     const { count } = await supabase
       .from('posts')
       .select('*', { count: 'exact', head: true })
@@ -90,9 +91,9 @@ async function runCleanup() {
     }
   } catch { /* empty */ }
 
-  // 2. Comments on deleted posts or older than 7 days
+  // 2. Comments older than 30 days
   try {
-    const cutoff = daysAgo(RETENTION_DAYS);
+    const cutoff = daysAgo(COMMENT_RETENTION_DAYS);
     const { data: oldComments } = await supabase
       .from('comments')
       .select('id')
@@ -105,9 +106,9 @@ async function runCleanup() {
     }
   } catch { /* empty */ }
 
-  // 3. Reactions older than 7 days
+  // 3. Reactions older than 30 days
   try {
-    const cutoff = daysAgo(RETENTION_DAYS);
+    const cutoff = daysAgo(LOG_RETENTION_DAYS);
     const { data: oldReactions } = await supabase
       .from('reactions')
       .select('id')
@@ -120,9 +121,9 @@ async function runCleanup() {
     }
   } catch { /* empty */ }
 
-  // 4. Chat messages older than 7 days
+  // 4. Chat messages older than 30 days
   try {
-    const cutoff = daysAgo(RETENTION_DAYS);
+    const cutoff = daysAgo(LOG_RETENTION_DAYS);
     const { data: oldMessages } = await supabase
       .from('chat_messages')
       .select('id')
@@ -135,9 +136,9 @@ async function runCleanup() {
     }
   } catch { /* empty */ }
 
-  // 5. Activity logs older than 7 days
+  // 5. Activity logs older than 30 days
   try {
-    const cutoff = daysAgo(RETENTION_DAYS);
+    const cutoff = daysAgo(LOG_RETENTION_DAYS);
     const { data: oldLogs } = await supabase
       .from('activity_logs')
       .select('id')
@@ -150,24 +151,26 @@ async function runCleanup() {
     }
   } catch { /* empty */ }
 
-  // 6. Agent conversation history older than 7 days
+  // 6. Agent conversation history older than 30 days (safe: table may not exist)
   try {
-    const cutoff = daysAgo(RETENTION_DAYS);
-    const { data: oldConvos } = await supabase
+    const cutoff = daysAgo(LOG_RETENTION_DAYS);
+    const { data: oldConvos, error: convoErr } = await supabase
       .from('agent_conversations')
       .select('id')
       .lte('created_at', cutoff)
       .limit(BATCH_SIZE * 3);
 
-    if (oldConvos && oldConvos.length > 0) {
+    if (convoErr) {
+      // Table may not exist yet — skip silently
+    } else if (oldConvos && oldConvos.length > 0) {
       await supabase.from('agent_conversations').delete().in('id', oldConvos.map((c) => c.id));
       results.deleted_conversations = oldConvos.length;
     }
   } catch { /* empty */ }
 
-  // 7. Archived polls older than 7 days
+  // 7. Archived polls older than 30 days
   try {
-    const cutoff = daysAgo(RETENTION_DAYS);
+    const cutoff = daysAgo(LOG_RETENTION_DAYS);
     const { data: oldPolls } = await supabase
       .from('polls')
       .select('id')
@@ -181,28 +184,10 @@ async function runCleanup() {
     }
   } catch { /* empty */ }
 
-  // 8. Expired user suspensions (reset bans older than 7 days)
-  try {
-    const { data: bannedUsers } = await supabase
-      .from('users_meta')
-      .select('anon_id')
-      .eq('banned', true)
-      .lte('last_seen', daysAgo(RETENTION_DAYS))
-      .limit(50);
-
-    if (bannedUsers && bannedUsers.length > 0) {
-      for (const u of bannedUsers) {
-        await supabase
-          .from('users_meta')
-          .update({ banned: false, notes: '' })
-          .eq('anon_id', u.anon_id);
-      }
-      results.unbanned_inactive = bannedUsers.length;
-    }
-  } catch { /* empty */ }
+  // NOTE: Bans are NEVER auto-removed. Only admins can unban users.
 
   const total = Object.values(results).reduce((a, b) => a + b, 0);
-  return { cleaned: total, details: results, retention_days: RETENTION_DAYS };
+  return { cleaned: total, details: results, retention: { soft_deleted_posts: SOFT_DELETE_RETENTION_DAYS, comments: COMMENT_RETENTION_DAYS, logs: LOG_RETENTION_DAYS } };
 }
 
 // Auto-run on cold start (non-blocking)
@@ -225,6 +210,7 @@ export async function cleanupHandler(req, res) {
     if (!result) {
       return res.status(200).json({ message: 'Cleanup ran recently — skipping', cooldown_ms: COOLDOWN_MS });
     }
+    await auditLog('admin', 'cleanup', `Cleaned ${result.cleaned} records`);
     return res.status(200).json({ success: true, ...result });
   } catch (err) {
     console.error('Cleanup error:', err);
