@@ -46,7 +46,7 @@ const PROVIDER_DEFS = {
   groq:          openaiCompat('Groq', 'https://api.groq.com/openai/v1/', 'llama-3.3-70b-versatile', 'GROQ_API_KEY'),
   deepseek:      openaiCompat('DeepSeek', 'https://api.deepseek.com/', 'deepseek-chat', 'DEEPSEEK_API_KEY'),
   mistral:       openaiCompat('Mistral', 'https://api.mistral.ai/v1/', 'mistral-large-latest', 'MISTRAL_API_KEY'),
-  nvidia:        openaiCompat('NVIDIA NIM', 'https://integrate.api.nvidia.com/v1/', 'meta/llama-3.1-70b-instruct', 'NVIDIA_API_KEY'),
+  nvidia:        openaiCompat('NVIDIA NIM', 'https://integrate.api.nvidia.com/v1/', 'meta/llama-3.1-8b-instruct', 'NVIDIA_API_KEY'),
   xai:           openaiCompat('xAI', 'https://api.x.ai/v1/', 'grok-3', 'XAI_API_KEY'),
   cohere:        { name: 'Cohere', defaultModel: 'command-r-plus', baseUrl: 'https://api.cohere.ai/v2/chat', buildHeaders: (key) => ({ Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' }), buildBody: (model, messages) => ({ model, messages: messages.filter((m) => m.role !== 'system'), preamble: messages.find((m) => m.role === 'system')?.content }), parseResponse: (data) => data?.message?.content?.[0]?.text, envKey: 'COHERE_API_KEY', compat: 'cohere' },
   perplexity:    openaiCompat('Perplexity', 'https://api.perplexity.ai/', 'sonar', 'PERPLEXITY_API_KEY'),
@@ -205,7 +205,7 @@ export async function getProviderConfig(id) {
 }
 
 // ─── Call one provider ────────────────────────────────────────────
-async function callProvider(provider, messages, timeoutMs = 12000) {
+async function callProvider(provider, messages, timeoutMs = 20000) {
   if (!provider.baseUrl) return { ok: false, error: `Provider ${provider.name} requires manual configuration (${provider.note || 'no endpoint'})` };
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
