@@ -206,7 +206,7 @@ export async function getProviderConfig(id) {
 }
 
 // ─── Call one provider ────────────────────────────────────────────
-async function callProvider(provider, messages, timeoutMs = 10000) {
+async function callProvider(provider, messages, timeoutMs = 5000) {
   if (!provider.baseUrl) return { ok: false, error: `Provider ${provider.name} requires manual configuration (${provider.note || 'no endpoint'})` };
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
