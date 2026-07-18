@@ -600,46 +600,40 @@ async function spawnSubagents(message, maxAgents = 5) {
   
   activeWorkflows.set(workflowId, workflow);
   
-  // Execute agents with real state tracking
-  const results = [];
-  for (const agent of workflow.agents) {
+  // Execute agents in PARALLEL for speed (each has its own 20s timeout)
+  const agentPromises = workflow.agents.map(async (agent) => {
     agent.status = 'running';
     agent.started_at = new Date().toISOString();
     setAgentState(agent.id, 'working', message);
-    
-    // Each agent processes based on its capabilities — REAL database queries
-    // Wrapped in try/catch so one agent failure doesn't crash the entire workflow
     let result;
     try {
       const agentDef = getAgent(agent.id);
       result = await Promise.race([
         processAgentTask(agentDef, message, task),
-        new Promise((_, reject) => setTimeout(() => reject(new Error('Agent timeout after 28s')), 28000)),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('Agent timeout after 20s')), 20000)),
       ]);
     } catch (agentErr) {
       console.error(`[agent-team] Agent ${agent.id} failed:`, agentErr.message);
       result = { type: 'error', agent: agent.name, data: { error: agentErr.message } };
       setAgentState(agent.id, 'error', message, result);
     }
-    
     agent.status = 'completed';
     agent.completed_at = new Date().toISOString();
-    if (result?.type !== 'error') {
-      setAgentState(agent.id, 'completed', message, result);
-    }
-    
-    results.push({ agent_id: agent.id, agent_name: agent.name, icon: agent.icon, result });
-    workflow.results[agent.id] = result;
-  }
+    if (result?.type !== 'error') setAgentState(agent.id, 'completed', message, result);
+    return { agent_id: agent.id, agent_name: agent.name, icon: agent.icon, result };
+  });
+  const results = await Promise.allSettled(agentPromises);
+  const resolved = results.map((r) => r.status === 'fulfilled' ? r.value : { agent_id: 'unknown', agent_name: 'Unknown', icon: '❓', result: { type: 'error', data: { error: r.reason?.message || 'Promise rejected' } } });
   
   workflow.status = 'completed';
   workflow.completed_at = new Date().toISOString();
+  resolved.forEach((r) => { workflow.results[r.agent_id] = r.result; });
   
   const output = {
     workflow_id: workflowId,
     classification: task,
     agents_used: workflow.agents.map((a) => ({ id: a.id, name: a.name, icon: a.icon, status: a.status })),
-    results,
+    results: resolved,
     total_time_ms: new Date(workflow.completed_at).getTime() - new Date(workflow.created_at).getTime(),
     created_at: workflow.created_at,
     completed_at: workflow.completed_at,
