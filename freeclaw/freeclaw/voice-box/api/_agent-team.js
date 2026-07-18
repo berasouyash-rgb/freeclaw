@@ -610,7 +610,7 @@ async function spawnSubagents(message, maxAgents = 5) {
       const agentDef = getAgent(agent.id);
       result = await Promise.race([
         processAgentTask(agentDef, message, task),
-        new Promise((_, reject) => setTimeout(() => reject(new Error('Agent timeout after 25s')), 25000)),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('Agent timeout after 30s')), 30000)),
       ]);
     } catch (agentErr) {
       console.error(`[agent-team] Agent ${agent.id} failed:`, agentErr.message);
