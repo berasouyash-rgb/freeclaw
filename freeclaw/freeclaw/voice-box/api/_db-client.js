@@ -34,7 +34,24 @@ function getClient() {
           try {
             const res = await fetch(url, { ...options, signal: controller.signal });
             clearTimeout(timeout);
-            if (!res.ok && res.status >= 500) triggerRestore();
+            if (!res.ok && res.status >= 500) {
+              triggerRestore();
+              const ct = res.headers.get('content-type') || '';
+              if (!ct.includes('json')) {
+                console.warn('[db-client] Non-JSON response from Supabase (cold start?), retrying...');
+                clearTimeout(timeout);
+                const retryController = new AbortController();
+                const retryTimeout = setTimeout(() => retryController.abort(), 30000);
+                try {
+                  const retryRes = await fetch(url, { ...options, signal: retryController.signal });
+                  clearTimeout(retryTimeout);
+                  return retryRes;
+                } catch (retryErr) {
+                  clearTimeout(retryTimeout);
+                  throw retryErr;
+                }
+              }
+            }
             return res;
           } catch (err) {
             clearTimeout(timeout);
