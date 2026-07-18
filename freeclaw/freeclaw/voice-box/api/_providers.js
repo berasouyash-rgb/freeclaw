@@ -3,6 +3,7 @@
 // is_default provider goes FIRST in chain, then priority order.
 import supabase from './_db-client.js';
 import { cors, isAdmin, auditLog } from './_auth.js';
+import { sanitizeError } from './_error.js';
 
 // ─── OpenAI-compatible factory ─────────────────────────────────────
 function openaiCompat(name, baseUrl, defaultModel, envKey) {
@@ -205,7 +206,7 @@ export async function getProviderConfig(id) {
 }
 
 // ─── Call one provider ────────────────────────────────────────────
-async function callProvider(provider, messages, timeoutMs = 20000) {
+async function callProvider(provider, messages, timeoutMs = 10000) {
   if (!provider.baseUrl) return { ok: false, error: `Provider ${provider.name} requires manual configuration (${provider.note || 'no endpoint'})` };
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -231,50 +232,117 @@ async function callProvider(provider, messages, timeoutMs = 20000) {
   }
 }
 
+// ─── Hardcoded NIM fallback chain ────────────────────────────────
+// Used when DB-stored provider chain is empty (no keys configured).
+// These keys are user-provided and specific to this deployment.
+const NIM_FALLBACK_CHAIN = [
+  {
+    id: 'nvidia-nemotron-ultra',
+    name: 'NVIDIA Nemotron Ultra 550B',
+    defaultModel: 'nvidia/nemotron-3-ultra-550b-a55b',
+    baseUrl: 'https://integrate.api.nvidia.com/v1/chat/completions',
+    model: 'nvidia/nemotron-3-ultra-550b-a55b',
+    key: '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',
+    buildHeaders: (key) => ({ Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' }),
+    buildBody: (model, messages) => ({ model, max_tokens: 4096, temperature: 0.7, top_p: 0.95, messages }),
+    parseResponse: (data) => data?.choices?.[0]?.message?.content,
+    timeout: 25000,
+  },
+  {
+    id: 'zai-glm',
+    name: 'Z.AI GLM-5.2',
+    defaultModel: 'z-ai/glm-5.2',
+    baseUrl: 'https://integrate.api.nvidia.com/v1/chat/completions',
+    model: 'z-ai/glm-5.2',
+    key: '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',
+    buildHeaders: (key) => ({ Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' }),
+    buildBody: (model, messages) => ({ model, max_tokens: 4096, temperature: 0.7, top_p: 1, messages }),
+    parseResponse: (data) => data?.choices?.[0]?.message?.content,
+    timeout: 20000,
+  },
+  {
+    id: 'nvidia-llama',
+    name: 'NVIDIA Llama 3.1 8B',
+    defaultModel: 'meta/llama-3.1-8b-instruct',
+    baseUrl: 'https://integrate.api.nvidia.com/v1/chat/completions',
+    model: 'meta/llama-3.1-8b-instruct',
+    key: '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',
+    buildHeaders: (key) => ({ Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' }),
+    buildBody: (model, messages) => ({ model, max_tokens: 4096, temperature: 0.3, messages }),
+    parseResponse: (data) => data?.choices?.[0]?.message?.content,
+    timeout: 15000,
+  },
+];
+
 // ─── Failover chain call ─────────────────────────────────────────
 export async function callLLMChain(system, user, extraMessages = []) {
-  const chain = await buildChain();
   const messages = [{ role: 'system', content: system }, ...extraMessages, { role: 'user', content: user }];
+
+  // 1. Try DB-configured providers first
+  const chain = await buildChain();
   for (const provider of chain) {
     const result = await callProvider(provider, messages);
     if (result.ok) return { provider: result.provider, model: result.model, text: result.text };
-    console.warn(`Provider ${provider.id} failed:`, result.error);
+    console.warn(`[LLM] DB provider ${provider.id} failed:`, result.error);
   }
+
+  // 2. If DB chain was empty or all failed, use hardcoded NIM fallback
+  if (chain.length === 0) {
+    console.log('[LLM] No DB providers configured — using NIM fallback chain (3 models)');
+  }
+  for (const provider of NIM_FALLBACK_CHAIN) {
+    const result = await callProvider(provider, messages);
+    if (result.ok) {
+      console.log(`[LLM] NIM fallback ${provider.id} succeeded (${provider.model})`);
+      return { provider: provider.id, model: provider.model, text: result.text };
+    }
+    console.warn(`[LLM] NIM fallback ${provider.id} failed:`, result.error);
+  }
+
+  console.error('[LLM] ALL providers failed — returning null (built-in fallback will be used)');
   return null;
 }
 
 // ─── HTTP Handler ────────────────────────────────────────────────
 export default async function handler(req, res) {
-  cors(res);
+  cors(res, req);
   if (req.method === 'OPTIONS') return res.status(204).end();
   try {
-    if (!(await isAdmin(req))) return res.status(403).json({ error: 'Admin only' });
     const b = req.body || {};
     const action = req.method === 'GET' ? (req.query.action || 'list') : b.action;
 
-    // GET categories
+    // GET categories and list are public (no auth required) — frontend needs them
     if (req.method === 'GET' && action === 'categories') {
       return res.status(200).json({ categories: PROVIDER_CATEGORIES, names: CATEGORY_NAMES, total: Object.keys(PROVIDER_DEFS).length });
     }
 
-    // GET list
     if (req.method === 'GET' && action === 'list') {
       const db = await getProviders();
+      const filterCategory = req.query.category || null;
+      const filterEnabledOnly = req.query.enabled_only === 'true' || req.query.enabled_only === '1';
       const result = {};
       for (const [id, def] of Object.entries(PROVIDER_DEFS)) {
         const cfg = db[id] || {};
+        // FIX-L3: filter by category if provided
+        if (filterCategory && def.category !== filterCategory) continue;
+        // FIX-L3: filter to enabled-only if requested
+        if (filterEnabledOnly && !cfg.enabled) continue;
         result[id] = {
           id, name: def.name, model: cfg.model || def.defaultModel, enabled: !!cfg.enabled,
           priority: cfg.priority || Object.keys(PROVIDER_DEFS).indexOf(id) + 1,
           is_default: !!cfg.is_default, status: cfg.status || 'untested', last_tested: cfg.last_tested || null,
           key_masked: cfg.key ? maskKey(cfg.key) : (process.env[def.envKey] ? maskKey(process.env[def.envKey]) : ''),
           has_env_key: !!process.env[def.envKey], compat: def.compat || 'openai', note: def.note || null,
+          category: def.category || 'other',
         };
       }
       return res.status(200).json(result);
     }
 
     if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
+
+    // All POST actions require admin auth
+    if (!(await isAdmin(req))) return res.status(403).json({ error: 'Admin only' });
 
     if (action === 'set_default') {
       const { provider: pid } = b;
@@ -361,7 +429,6 @@ export default async function handler(req, res) {
 
     return res.status(400).json({ error: 'Unknown action' });
   } catch (err) {
-    console.error('providers API error:', err);
-    return res.status(500).json({ error: err.message });
+    return sanitizeError(res, err, 'providers');
   }
 }
