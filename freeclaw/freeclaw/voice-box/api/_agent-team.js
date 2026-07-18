@@ -726,7 +726,8 @@ async function processAgentTask(agent, message, task) {
       let totalUp = 0, totalDown = 0, totalComments = 0;
       list.forEach((p) => { cats[p.category] = (cats[p.category] || 0) + 1; prios[p.priority] = (prios[p.priority] || 0) + 1; totalUp += p.upvotes || 0; totalDown += p.downvotes || 0; totalComments += p.comment_count || 0; });
       const sentimentScore = totalUp + totalDown > 0 ? Math.round((totalUp / (totalUp + totalDown)) * 100) : 50;
-      return { type: 'analysis', agent: agent.name, data: { total: list.length, categories: cats, priorities: prios, sentiment_score: sentimentScore + '%', total_upvotes: totalUp, total_downvotes: totalDown, total_comments: totalComments, avg_comments_per_post: list.length ? (totalComments / list.length).toFixed(1) : 0, scan_time: new Date().toISOString() } };
+      const rawData = { total: list.length, categories: cats, priorities: prios, sentiment_score: sentimentScore + '%', total_upvotes: totalUp, total_downvotes: totalDown, total_comments: totalComments, avg_comments_per_post: list.length ? (totalComments / list.length).toFixed(1) : 0, scan_time: new Date().toISOString() };
+      return { type: 'analysis', agent: agent.name, data: await analyzeWithLLM(agent, 'content_analysis', rawData, message) };
     }
     // ── Trend analysis / identification ─────────────────────────
     if (hasCap(agent, 'trend_identification', 'trend_forecasting', 'trend_tracking', 'emergence_detection', 'topic_clustering')) {
@@ -741,7 +742,8 @@ async function processAgentTask(agent, message, task) {
       older.forEach((p) => { olderCats[p.category] = (olderCats[p.category] || 0) + 1; });
       const trending = Object.keys(recentCats).sort((a, b) => (recentCats[b] || 0) - (recentCats[a] || 0)).slice(0, 5);
       const topEngaged = [...list].sort((a, b) => ((b.upvotes || 0) + (b.comment_count || 0)) - ((a.upvotes || 0) + (a.comment_count || 0))).slice(0, 5).map((p) => ({ id: p.id, title: p.title?.slice(0, 60), engagement: (p.upvotes || 0) + (p.comment_count || 0) }));
-      return { type: 'trends', agent: agent.name, data: { total_posts: list.length, last_24h: recent.length, older: older.length, trending_categories: trending, recent_by_category: recentCats, older_by_category: olderCats, top_engaged: topEngaged, scan_time: new Date().toISOString() } };
+      const rawData = { total_posts: list.length, last_24h: recent.length, older: older.length, trending_categories: trending, recent_by_category: recentCats, older_by_category: olderCats, top_engaged: topEngaged, scan_time: new Date().toISOString() };
+      return { type: 'trends', agent: agent.name, data: await analyzeWithLLM(agent, 'trend_analysis', rawData, message) };
     }
     // ── Threat detection / security scanning ────────────────────
     if (hasCap(agent, 'threat_detection', 'anomaly_scoring', 'vulnerability_scanning', 'security_scoring', 'spam_detection', 'bot_detection', 'behavior_analysis')) {
@@ -829,7 +831,8 @@ async function processAgentTask(agent, message, task) {
     if (hasCap(agent, 'poll_design', 'vote_analysis', 'engagement_optimization', 'result_visualization')) {
       const { data: polls } = await supabase.from('polls').select('id,title,options,created_at,end_date').order('created_at', { ascending: false }).limit(20);
       const list = polls || [];
-      return { type: 'poll_analytics', agent: agent.name, data: { total_polls: list.length, active_polls: list.filter((p) => !p.end_date || new Date(p.end_date) > new Date()).length, expired_polls: list.filter((p) => p.end_date && new Date(p.end_date) <= new Date()).length, recent_polls: list.slice(0, 5).map((p) => ({ id: p.id, title: (p.title || '').slice(0, 50), options: Array.isArray(p.options) ? p.options.length : 0 })), scan_time: new Date().toISOString() } };
+      const rawData = { total_polls: list.length, active_polls: list.filter((p) => !p.end_date || new Date(p.end_date) > new Date()).length, expired_polls: list.filter((p) => p.end_date && new Date(p.end_date) <= new Date()).length, recent_polls: list.slice(0, 5).map((p) => ({ id: p.id, title: (p.title || '').slice(0, 50), options: Array.isArray(p.options) ? p.options.length : 0 })), scan_time: new Date().toISOString() };
+      return { type: 'poll_analytics', agent: agent.name, data: await analyzeWithLLM(agent, 'poll_analytics', rawData, message) };
     }
     // ── Privacy / anonymity ─────────────────────────────────────
     if (hasCap(agent, 'anonymity_verification', 'data_protection', 'privacy_compliance', 'leak_prevention')) {
@@ -838,7 +841,8 @@ async function processAgentTask(agent, message, task) {
       const usersList = users || [];
       const postsList = posts || [];
       const withIp = postsList.filter((p) => p.author_ip);
-      return { type: 'privacy_audit', agent: agent.name, data: { users_checked: usersList.length, posts_checked: postsList.length, posts_with_ip_exposed: withIp.length, all_anonymous: withIp.length === 0, banned_users: usersList.filter((u) => u.banned).length, scan_time: new Date().toISOString() } };
+      const rawData = { users_checked: usersList.length, posts_checked: postsList.length, posts_with_ip_exposed: withIp.length, all_anonymous: withIp.length === 0, banned_users: usersList.filter((u) => u.banned).length, scan_time: new Date().toISOString() };
+      return { type: 'privacy_audit', agent: agent.name, data: await analyzeWithLLM(agent, 'privacy_audit', rawData, message) };
     }
     // ── Anomaly detection ───────────────────────────────────────
     if (hasCap(agent, 'anomaly_detection', 'anomaly_scoring')) {
@@ -855,7 +859,8 @@ async function processAgentTask(agent, message, task) {
       const list = reports || [];
       const byReason = {};
       list.forEach((r) => { byReason[r.reason] = (byReason[r.reason] || 0) + 1; });
-      return { type: 'feedback', agent: agent.name, data: { total_feedback: list.length, by_reason: byReason, pending: list.filter((r) => r.status === 'pending').length, scan_time: new Date().toISOString() } };
+      const rawData = { total_feedback: list.length, by_reason: byReason, pending: list.filter((r) => r.status === 'pending').length, scan_time: new Date().toISOString() };
+      return { type: 'feedback', agent: agent.name, data: await analyzeWithLLM(agent, 'feedback_analysis', rawData, message) };
     }
     // ── Notification / escalation ───────────────────────────────
     if (hasCap(agent, 'notification_design', 'escalation_chains', 'escalation_detection', 'priority_routing', 'handler_matching', 'escalation_tracking')) {
@@ -875,7 +880,8 @@ async function processAgentTask(agent, message, task) {
         supabase.from('users_meta').select('id', { count: 'exact', head: true }),
         supabase.from('comments').select('id', { count: 'exact', head: true }),
       ]);
-      return { type: 'export_ready', agent: agent.name, data: { posts_exportable: postsRes.count || 0, users_exportable: usersRes.count || 0, comments_exportable: commentsRes.count || 0, total_records: (postsRes.count || 0) + (usersRes.count || 0) + (commentsRes.count || 0), status: 'ready_for_export', scan_time: new Date().toISOString() } };
+      const rawData = { posts_exportable: postsRes.count || 0, users_exportable: usersRes.count || 0, comments_exportable: commentsRes.count || 0, total_records: (postsRes.count || 0) + (usersRes.count || 0) + (commentsRes.count || 0), status: 'ready_for_export', scan_time: new Date().toISOString() };
+      return { type: 'export_ready', agent: agent.name, data: await analyzeWithLLM(agent, 'data_export', rawData, message) };
     }
     // ── Search optimization ─────────────────────────────────────
     if (hasCap(agent, 'relevance_scoring', 'search_indexing', 'result_ranking', 'query_optimization')) {
@@ -893,7 +899,8 @@ async function processAgentTask(agent, message, task) {
       const cats = {};
       list.forEach((p) => { cats[p.category] = (cats[p.category] || 0) + 1; });
       const avgBodyLength = list.length ? (list.reduce((s, p) => s + (p.body || '').length, 0) / list.length).toFixed(0) : 0;
-      return { type: 'nlp_analysis', agent: agent.name, data: { posts_analyzed: list.length, category_distribution: cats, avg_body_length: avgBodyLength, dominant_category: Object.entries(cats).sort(([, a], [, b]) => b - a)[0]?.[0] || 'none', scan_time: new Date().toISOString() } };
+      const rawData = { posts_analyzed: list.length, category_distribution: cats, avg_body_length: avgBodyLength, dominant_category: Object.entries(cats).sort(([, a], [, b]) => b - a)[0]?.[0] || 'none', scan_time: new Date().toISOString() };
+      return { type: 'nlp_analysis', agent: agent.name, data: await analyzeWithLLM(agent, 'nlp_analysis', rawData, message) };
     }
     // ── Audit trail / compliance ────────────────────────────────
     if (hasCap(agent, 'audit_logging', 'compliance_tracking', 'history_reconstruction', 'forensic_analysis')) {
@@ -902,7 +909,8 @@ async function processAgentTask(agent, message, task) {
         supabase.from('users_meta').select('anon_id,banned,created_at').limit(100),
         supabase.from('reports').select('id,status,created_at').limit(50),
       ]);
-      return { type: 'audit', agent: agent.name, data: { total_posts: postsRes.data?.length || 0, deleted_posts: (postsRes.data || []).filter((p) => p.deleted).length, total_users: usersRes.data?.length || 0, banned_users: (usersRes.data || []).filter((u) => u.banned).length, total_reports: reportsRes.data?.length || 0, open_reports: (reportsRes.data || []).filter((r) => r.status === 'pending').length, scan_time: new Date().toISOString() } };
+      const rawData = { total_posts: postsRes.data?.length || 0, deleted_posts: (postsRes.data || []).filter((p) => p.deleted).length, total_users: usersRes.data?.length || 0, banned_users: (usersRes.data || []).filter((u) => u.banned).length, total_reports: reportsRes.data?.length || 0, open_reports: (reportsRes.data || []).filter((r) => r.status === 'pending').length, scan_time: new Date().toISOString() };
+      return { type: 'audit', agent: agent.name, data: await analyzeWithLLM(agent, 'audit_analysis', rawData, message) };
     }
     // ── Platform health / uptime / SLO ──────────────────────────
     if (hasCap(agent, 'uptime_monitoring', 'slo_tracking', 'health_scoring', 'alert_generation', 'alert_escalation', 'slo_monitoring', 'sli_tracking', 'error_budgets', 'reliability_reporting', 'response_time_tracking', 'error_rate_monitoring', 'latency_analysis', 'endpoint_health')) {
@@ -911,7 +919,8 @@ async function processAgentTask(agent, message, task) {
         supabase.from('users_meta').select('id', { count: 'exact', head: true }),
         supabase.from('comments').select('id', { count: 'exact', head: true }),
       ]);
-      return { type: 'platform_health', agent: agent.name, data: { db_status: 'connected', api_status: 'healthy', posts_count: postsRes.count || 0, users_count: usersRes.count || 0, comments_count: commentsRes.count || 0, uptime: '99.95%', last_check: new Date().toISOString(), alerts: 0, scan_time: new Date().toISOString() } };
+      const rawData = { db_status: 'connected', api_status: 'healthy', posts_count: postsRes.count || 0, users_count: usersRes.count || 0, comments_count: commentsRes.count || 0, uptime: '99.95%', last_check: new Date().toISOString(), alerts: 0, scan_time: new Date().toISOString() };
+      return { type: 'platform_health', agent: agent.name, data: await analyzeWithLLM(agent, 'platform_health', rawData, message) };
     }
     // ── Resilience / self-healing / circuit breaking ─────────────
     if (hasCap(agent, 'auto_recovery', 'circuit_breaking', 'resilience_testing', 'failover_management', 'auto_remediation', 'chaos_engineering', 'fault_injection')) {
@@ -968,7 +977,8 @@ async function processAgentTask(agent, message, task) {
           counts[t] = count || 0;
         } catch { counts[t] = 'error'; }
       }
-      return { type: 'db_health', agent: agent.name, data: { tables_count: tables.length, table_counts: counts, total_rows: Object.values(counts).filter((v) => typeof v === 'number').reduce((a, b) => a + b, 0), index_status: 'healthy', migration_status: 'up_to_date', scan_time: new Date().toISOString() } };
+      const rawData = { tables_count: tables.length, table_counts: counts, total_rows: Object.values(counts).filter((v) => typeof v === 'number').reduce((a, b) => a + b, 0), index_status: 'healthy', migration_status: 'up_to_date', scan_time: new Date().toISOString() };
+      return { type: 'db_health', agent: agent.name, data: await analyzeWithLLM(agent, 'database_health', rawData, message) };
     }
     // ── Log analysis ────────────────────────────────────────────
     if (hasCap(agent, 'log_parsing', 'error_aggregation', 'pattern_detection', 'anomaly_flagging')) {
@@ -1029,43 +1039,53 @@ async function processAgentTask(agent, message, task) {
     }
     // ── Backend architecture ────────────────────────────────────
     if (hasCap(agent, 'api_design', 'service_decomposition', 'data_flow_mapping', 'architecture_review')) {
-      return { type: 'architecture', agent: agent.name, data: { architecture: 'serverless_monolith', framework: 'Vite + Express', runtime: 'Node.js (Vercel Functions)', database: 'Supabase (PostgreSQL)', api_style: 'REST', total_endpoints: 15, modules: ['auth', 'posts', 'comments', 'reactions', 'polls', 'reports', 'search', 'trends', 'admin', 'inbox', 'agent-team', 'pre-publish', 'assist', 'providers', 'health'], status: 'reviewed', scan_time: new Date().toISOString() } };
+      const rawData = { architecture: 'serverless_monolith', framework: 'Vite + Express', runtime: 'Node.js (Vercel Functions)', database: 'Supabase (PostgreSQL)', api_style: 'REST', total_endpoints: 15, modules: ['auth', 'posts', 'comments', 'reactions', 'polls', 'reports', 'search', 'trends', 'admin', 'inbox', 'agent-team', 'pre-publish', 'assist', 'providers', 'health'], status: 'reviewed', scan_time: new Date().toISOString() };
+      return { type: 'architecture', agent: agent.name, data: await analyzeWithLLM(agent, 'backend_architecture', rawData, message) };
     }
     // ── Frontend architecture ───────────────────────────────────
     if (hasCap(agent, 'component_design', 'state_management', 'routing_optimization', 'build_optimization')) {
-      return { type: 'frontend_architecture', agent: agent.name, data: { framework: 'React 19 + TypeScript', styling: 'Tailwind CSS v4', state: 'AppContext + Zustand', routing: 'React Router v6', build: 'Vite', bundle_size: '373KB (main)', lazy_loaded: ['Admin', 'Settings', 'Trends', 'Search'], status: 'reviewed', scan_time: new Date().toISOString() } };
+      const rawData = { framework: 'React 19 + TypeScript', styling: 'Tailwind CSS v4', state: 'AppContext + Zustand', routing: 'React Router v6', build: 'Vite', bundle_size: '373KB (main)', lazy_loaded: ['Admin', 'Settings', 'Trends', 'Search'], status: 'reviewed', scan_time: new Date().toISOString() };
+      return { type: 'frontend_architecture', agent: agent.name, data: await analyzeWithLLM(agent, 'frontend_architecture', rawData, message) };
     }
     // ── UI / animation / responsive ─────────────────────────────
     if (hasCap(agent, 'interaction_tracking', 'heatmap_analysis', 'click_pattern_detection', 'ux_scoring', 'transition_design', 'micro_interaction', 'motion_optimization', 'responsive_layouts', 'breakpoint_management', 'touch_optimization')) {
-      return { type: 'ui_health', agent: agent.name, data: { responsive: 'mobile_first', animations: 'framer_motion', breakpoints: ['sm:640px', 'md:768px', 'lg:1024px', 'xl:1280px'], touch_targets: 'compliant', layout: 'flex_grid', status: 'reviewed', scan_time: new Date().toISOString() } };
+      const rawData = { responsive: 'mobile_first', animations: 'framer_motion', breakpoints: ['sm:640px', 'md:768px', 'lg:1024px', 'xl:1280px'], touch_targets: 'compliant', layout: 'flex_grid', status: 'reviewed', scan_time: new Date().toISOString() };
+      return { type: 'ui_health', agent: agent.name, data: await analyzeWithLLM(agent, 'ui_analysis', rawData, message) };
     }
     // ── Frontend performance ────────────────────────────────────
     if (hasCap(agent, 'bundle_analysis', 'tree_shaking', 'lazy_loading', 'core_web_vitals')) {
-      return { type: 'frontend_perf', agent: agent.name, data: { main_bundle: '373KB', motion_chunk: '128KB', supabase_chunk: '176KB', react_chunk: '48KB', code_splitting: 'active', lazy_routes: ['Admin', 'Settings', 'Trends', 'Search'], tree_shaking: 'enabled', status: 'optimized', scan_time: new Date().toISOString() } };
+      const rawData = { main_bundle: '373KB', motion_chunk: '128KB', supabase_chunk: '176KB', react_chunk: '48KB', code_splitting: 'active', lazy_routes: ['Admin', 'Settings', 'Trends', 'Search'], tree_shaking: 'enabled', status: 'optimized', scan_time: new Date().toISOString() };
+      return { type: 'frontend_perf', agent: agent.name, data: await analyzeWithLLM(agent, 'frontend_performance', rawData, message) };
     }
     // ── Accessibility ───────────────────────────────────────────
     if (hasCap(agent, 'wcag_compliance', 'screen_reader_testing', 'keyboard_navigation', 'aria_pattern_design')) {
-      return { type: 'a11y', agent: agent.name, data: { wcag_level: 'AA', aria_labels: 'present', keyboard_nav: 'supported', focus_management: 'active', color_contrast: 'compliant', semantic_html: 'used', status: 'reviewed', scan_time: new Date().toISOString() } };
+      const rawData = { wcag_level: 'AA', aria_labels: 'present', keyboard_nav: 'supported', focus_management: 'active', color_contrast: 'compliant', semantic_html: 'used', status: 'reviewed', scan_time: new Date().toISOString() };
+      return { type: 'a11y', agent: agent.name, data: await analyzeWithLLM(agent, 'accessibility', rawData, message) };
     }
     // ── Deployment / CI-CD ──────────────────────────────────────
     if (hasCap(agent, 'deployment_management', 'cicd_optimization', 'serverless_config', 'environment_management', 'blue_green_deployment', 'canary_releases', 'rollback_management', 'deployment_health')) {
-      return { type: 'deployment', agent: agent.name, data: { platform: 'Vercel', runtime: 'Node.js 20.x', max_duration: '30s', env_vars: '10+ configured', deployment_target: 'production', last_deploy: new Date().toISOString(), status: 'active', scan_time: new Date().toISOString() } };
+      const rawData = { platform: 'Vercel', runtime: 'Node.js 20.x', max_duration: '60s', env_vars: '10+ configured', deployment_target: 'production', last_deploy: new Date().toISOString(), status: 'active', scan_time: new Date().toISOString() };
+      return { type: 'deployment', agent: agent.name, data: await analyzeWithLLM(agent, 'deployment_analysis', rawData, message) };
     }
     // ── Release management ──────────────────────────────────────
     if (hasCap(agent, 'release_trains', 'hotfix_management', 'version_tagging', 'changelog_generation')) {
-      return { type: 'release', agent: agent.name, data: { current_version: '2.0.0', release_cadence: 'continuous', hotfix_capacity: 'active', changelog: 'auto_generated', status: 'healthy', scan_time: new Date().toISOString() } };
+      const rawData = { current_version: '2.0.0', release_cadence: 'continuous', hotfix_capacity: 'active', changelog: 'auto_generated', status: 'healthy', scan_time: new Date().toISOString() };
+      return { type: 'release', agent: agent.name, data: await analyzeWithLLM(agent, 'release_management', rawData, message) };
     }
     // ── Regression / testing ────────────────────────────────────
     if (hasCap(agent, 'regression_detection', 'snapshot_testing', 'visual_diff', 'compatibility_checks', 'test_strategy', 'coverage_analysis', 'flaky_detection', 'test_pyramid', 'e2e_flows', 'playwright_automation', 'visual_testing', 'cross_browser')) {
-      return { type: 'qa_health', agent: agent.name, data: { test_framework: 'Vitest + Playwright', coverage_target: '80%', unit_tests: 'active', integration_tests: 'active', e2e_tests: 'available', flaky_tests: 0, status: 'green', scan_time: new Date().toISOString() } };
+      const rawData = { test_framework: 'Vitest + Playwright', coverage_target: '80%', unit_tests: 'active', integration_tests: 'active', e2e_tests: 'available', flaky_tests: 0, status: 'green', scan_time: new Date().toISOString() };
+      return { type: 'qa_health', agent: agent.name, data: await analyzeWithLLM(agent, 'testing_analysis', rawData, message) };
     }
     // ── Code quality / review ───────────────────────────────────
     if (hasCap(agent, 'static_analysis', 'lint_enforcement', 'quality_scoring', 'security_scanning')) {
-      return { type: 'code_quality', agent: agent.name, data: { linter: 'TypeScript strict', type_safety: 'strict', security_scan: 'passed', code_review: 'required', quality_score: 'A', status: 'compliant', scan_time: new Date().toISOString() } };
+      const rawData = { linter: 'TypeScript strict', type_safety: 'strict', security_scan: 'passed', code_review: 'required', quality_score: 'A', status: 'compliant', scan_time: new Date().toISOString() };
+      return { type: 'code_quality', agent: agent.name, data: await analyzeWithLLM(agent, 'code_quality', rawData, message) };
     }
     // ── Tool building ───────────────────────────────────────────
     if (hasCap(agent, 'tool_design', 'tool_prototyping', 'tool_testing', 'tool_deployment', 'tool_creation', 'cli_utility', 'admin_dashboard', 'dev_tooling')) {
-      return { type: 'tool_building', agent: agent.name, data: { tools_available: 15, api_endpoints: 15, admin_features: ['posts', 'comments', 'users', 'reports', 'polls', 'agents', 'inbox', 'analytics'], status: 'ready_for_request', scan_time: new Date().toISOString() } };
+      const rawData = { tools_available: 15, api_endpoints: 15, admin_features: ['posts', 'comments', 'users', 'reports', 'polls', 'agents', 'inbox', 'analytics'], status: 'ready_for_request', scan_time: new Date().toISOString() };
+      return { type: 'tool_building', agent: agent.name, data: await analyzeWithLLM(agent, 'tool_building', rawData, message) };
     }
     // ── Agent creation / orchestration ──────────────────────────
     if (hasCap(agent, 'agent_design', 'capability_specification', 'agent_prototyping', 'agent_deployment', 'agent_creation', 'workflow_synthesis', 'dynamic_routing', 'parallel_orchestration', 'result_merging', 'workflow_design', 'parallel_dispatch', 'result_aggregation', 'bottleneck_detection')) {
@@ -1074,47 +1094,58 @@ async function processAgentTask(agent, message, task) {
     }
     // ── RBAC / capability mapping ───────────────────────────────
     if (hasCap(agent, 'capability_analysis', 'gap_detection', 'task_mapping', 'recommendation_engine')) {
-      return { type: 'capability_map', agent: agent.name, data: { total_capabilities: 200, mapped_to_agents: 200, coverage: '100%', gap_count: 0, recommendations: [], scan_time: new Date().toISOString() } };
+      const rawData = { total_capabilities: 200, mapped_to_agents: 200, coverage: '100%', gap_count: 0, recommendations: [], scan_time: new Date().toISOString() };
+      return { type: 'capability_map', agent: agent.name, data: await analyzeWithLLM(agent, 'capability_analysis', rawData, message) };
     }
     // ── Knowledge curation / self-improvement ───────────────────
     if (hasCap(agent, 'knowledge_curation', 'pattern_extraction', 'best_practice_maintenance', 'performance_analysis', 'improvement_suggestion', 'benchmark_tracking', 'optimization_planning')) {
-      return { type: 'knowledge', agent: agent.name, data: { knowledge_base: 'active', patterns_extracted: 12, best_practices: 8, improvement_suggestions: 3, last_curation: new Date().toISOString(), scan_time: new Date().toISOString() } };
+      const rawData = { knowledge_base: 'active', patterns_extracted: 12, best_practices: 8, improvement_suggestions: 3, last_curation: new Date().toISOString(), scan_time: new Date().toISOString() };
+      return { type: 'knowledge', agent: agent.name, data: await analyzeWithLLM(agent, 'knowledge_curation', rawData, message) };
     }
     // ── Cross-domain analysis ───────────────────────────────────
     if (hasCap(agent, 'cross_domain_analysis', 'insight_fusion', 'compound_intelligence', 'correlation_engine', 'correlation_discovery')) {
-      return { type: 'cross_domain', agent: agent.name, data: { domains_connected: 5, insights_generated: 8, correlations_found: 3, compound_intelligence: 'active', scan_time: new Date().toISOString() } };
+      const rawData = { domains_connected: 5, insights_generated: 8, correlations_found: 3, compound_intelligence: 'active', scan_time: new Date().toISOString() };
+      return { type: 'cross_domain', agent: agent.name, data: await analyzeWithLLM(agent, 'cross_domain_analysis', rawData, message) };
     }
     // ── Adaptive coordination / workload ────────────────────────
     if (hasCap(agent, 'workload_balancing', 'priority_adjustment', 'resource_reallocation', 'adaptive_scheduling')) {
-      return { type: 'coordination', agent: agent.name, data: { agents_balanced: 110, workload_distribution: 'even', priority_adjustments: 0, last_rebalance: new Date().toISOString(), scan_time: new Date().toISOString() } };
+      const rawData = { agents_balanced: 110, workload_distribution: 'even', priority_adjustments: 0, last_rebalance: new Date().toISOString(), scan_time: new Date().toISOString() };
+      return { type: 'coordination', agent: agent.name, data: await analyzeWithLLM(agent, 'coordination_analysis', rawData, message) };
     }
     // ── Presentation / visualization ────────────────────────────
     if (hasCap(agent, 'presentation_design', 'slide_generation', 'data_storytelling', 'chart_generation', 'graph_design', 'interactive_dashboard', 'visual_storytelling')) {
-      return { type: 'visualization', agent: agent.name, data: { charts_available: 5, dashboards: 2, export_formats: ['JSON', 'CSV'], status: 'ready', scan_time: new Date().toISOString() } };
+      const rawData = { charts_available: 5, dashboards: 2, export_formats: ['JSON', 'CSV'], status: 'ready', scan_time: new Date().toISOString() };
+      return { type: 'visualization', agent: agent.name, data: await analyzeWithLLM(agent, 'visualization_analysis', rawData, message) };
     }
     // ── Documentation / changelogs ──────────────────────────────
     if (hasCap(agent, 'api_documentation', 'changelog_generation', 'runbook_creation', 'architecture_diagrams')) {
-      return { type: 'documentation', agent: agent.name, data: { api_docs: 'auto_generated', changelogs: 'versioned', runbooks: 'available', diagrams: 'architecture_map', status: 'current', scan_time: new Date().toISOString() } };
+      const rawData = { api_docs: 'auto_generated', changelogs: 'versioned', runbooks: 'available', diagrams: 'architecture_map', status: 'current', scan_time: new Date().toISOString() };
+      return { type: 'documentation', agent: agent.name, data: await analyzeWithLLM(agent, 'documentation_analysis', rawData, message) };
     }
     // ── Dependency management ───────────────────────────────────
     if (hasCap(agent, 'dependency_audit', 'version_upgrade', 'security_patching', 'license_compliance')) {
-      return { type: 'dependencies', agent: agent.name, data: { total_deps: 30, outdated: 2, vulnerable: 0, license_issues: 0, last_audit: new Date().toISOString(), status: 'clean', scan_time: new Date().toISOString() } };
+      const rawData = { total_deps: 30, outdated: 2, vulnerable: 0, license_issues: 0, last_audit: new Date().toISOString(), status: 'clean', scan_time: new Date().toISOString() };
+      return { type: 'dependencies', agent: agent.name, data: await analyzeWithLLM(agent, 'dependency_analysis', rawData, message) };
     }
     // ── Integration / webhooks ──────────────────────────────────
     if (hasCap(agent, 'integration_management', 'api_connector', 'webhook_handling', 'sync_management', 'api_integration', 'webhook_design', 'service_mesh', 'integration_testing')) {
-      return { type: 'integrations', agent: agent.name, data: { active_integrations: ['Supabase', 'Vercel', 'NVIDIA NIM'], webhook_count: 0, sync_status: 'healthy', status: 'operational', scan_time: new Date().toISOString() } };
+      const rawData = { active_integrations: ['Supabase', 'Vercel', 'NVIDIA NIM'], webhook_count: 0, sync_status: 'healthy', status: 'operational', scan_time: new Date().toISOString() };
+      return { type: 'integrations', agent: agent.name, data: await analyzeWithLLM(agent, 'integration_analysis', rawData, message) };
     }
     // ── Secrets / config management ─────────────────────────────
     if (hasCap(agent, 'secret_rotation', 'env_management', 'config_validation', 'access_control')) {
-      return { type: 'secrets', agent: agent.name, data: { secrets_count: 4, last_rotated: 'N/A (Vercel managed)', env_vars_configured: true, config_valid: true, status: 'secure', scan_time: new Date().toISOString() } };
+      const rawData = { secrets_count: 4, last_rotated: 'N/A (Vercel managed)', env_vars_configured: true, config_valid: true, status: 'secure', scan_time: new Date().toISOString() };
+      return { type: 'secrets', agent: agent.name, data: await analyzeWithLLM(agent, 'secrets_analysis', rawData, message) };
     }
     // ── Backup / recovery ───────────────────────────────────────
     if (hasCap(agent, 'point_in_time_recovery', 'snapshot_management', 'disaster_recovery', 'recovery_testing', 'disaster_recovery_planning')) {
-      return { type: 'backup', agent: agent.name, data: { backup_frequency: 'daily', last_backup: new Date().toISOString(), recovery_time_objective: '< 1 hour', recovery_point_objective: '< 24 hours', status: 'protected', scan_time: new Date().toISOString() } };
+      const rawData = { backup_frequency: 'daily', last_backup: new Date().toISOString(), recovery_time_objective: '< 1 hour', recovery_point_objective: '< 24 hours', status: 'protected', scan_time: new Date().toISOString() };
+      return { type: 'backup', agent: agent.name, data: await analyzeWithLLM(agent, 'backup_analysis', rawData, message) };
     }
     // ── ETL / data pipeline ─────────────────────────────────────
     if (hasCap(agent, 'etl_design', 'data_streaming', 'batch_processing', 'pipeline_monitoring')) {
-      return { type: 'data_pipeline', agent: agent.name, data: { pipeline_status: 'healthy', throughput: 'normal', error_rate: '0%', last_run: new Date().toISOString(), status: 'operational', scan_time: new Date().toISOString() } };
+      const rawData = { pipeline_status: 'healthy', throughput: 'normal', error_rate: '0%', last_run: new Date().toISOString(), status: 'operational', scan_time: new Date().toISOString() };
+      return { type: 'data_pipeline', agent: agent.name, data: await analyzeWithLLM(agent, 'data_pipeline', rawData, message) };
     }
     // ── Refactoring / tech debt ─────────────────────────────────
     if (hasCap(agent, 'dead_code_detection', 'tech_debt_tracking', 'code_smell_identification', 'cleanup_planning', 'debt_tracking', 'prioritization', 'improvement_metrics', 'cleanup_scheduling', 'complexity_analysis', 'maintainability_scoring', 'growth_metrics', 'health_reporting')) {
@@ -1123,15 +1154,18 @@ async function processAgentTask(agent, message, task) {
     }
     // ── Microservices / service boundaries ──────────────────────
     if (hasCap(agent, 'service_boundary', 'api_contract', 'event_driven', 'saga_patterns')) {
-      return { type: 'microservices', agent: agent.name, data: { current_architecture: 'serverless_monolith', recommended: 'serverless_functions', service_count: 15, api_contracts: 'REST', event_driven: false, status: 'reviewed', scan_time: new Date().toISOString() } };
+      const rawData = { current_architecture: 'serverless_monolith', recommended: 'serverless_functions', service_count: 15, api_contracts: 'REST', event_driven: false, status: 'reviewed', scan_time: new Date().toISOString() };
+      return { type: 'microservices', agent: agent.name, data: await analyzeWithLLM(agent, 'microservices_analysis', rawData, message) };
     }
     // ── Version control / git ───────────────────────────────────
     if (hasCap(agent, 'branch_strategy', 'conflict_resolution', 'commit_hygiene', 'pr_automation')) {
-      return { type: 'git_health', agent: agent.name, data: { branch_strategy: 'main_only', commit_convention: 'conventional', pr_automation: 'active', conflict_rate: 'low', status: 'healthy', scan_time: new Date().toISOString() } };
+      const rawData = { branch_strategy: 'main_only', commit_convention: 'conventional', pr_automation: 'active', conflict_rate: 'low', status: 'healthy', scan_time: new Date().toISOString() };
+      return { type: 'git_health', agent: agent.name, data: await analyzeWithLLM(agent, 'version_control', rawData, message) };
     }
     // ── Process / workflow optimization ─────────────────────────
     if (hasCap(agent, 'process_optimization', 'efficiency_scoring', 'automation_design', 'workflow_analysis')) {
-      return { type: 'process_health', agent: agent.name, data: { workflows_automated: 5, efficiency_score: '85%', bottlenecks: 0, last_review: new Date().toISOString(), status: 'optimized', scan_time: new Date().toISOString() } };
+      const rawData = { workflows_automated: 5, efficiency_score: '85%', bottlenecks: 0, last_review: new Date().toISOString(), status: 'optimized', scan_time: new Date().toISOString() };
+      return { type: 'process_health', agent: agent.name, data: await analyzeWithLLM(agent, 'process_optimization', rawData, message) };
     }
     // ── Risk assessment ─────────────────────────────────────────
     if (hasCap(agent, 'risk_scoring', 'escalation_triggering', 'mitigation_planning')) {
@@ -1139,7 +1173,8 @@ async function processAgentTask(agent, message, task) {
       const { data: reports } = await supabase.from('reports').select('id,status').limit(20);
       const list = users || [];
       const highRisk = list.filter((u) => (u.spam_score || 0) > 10 || u.banned);
-      return { type: 'risk_assessment', agent: agent.name, data: { total_users: list.length, high_risk_users: highRisk.length, pending_reports: (reports || []).filter((r) => r.status === 'pending').length, risk_level: highRisk.length > 5 ? 'elevated' : 'low', mitigation_actions: highRisk.length > 5 ? ['review_high_spam', 'check_bans'] : [], scan_time: new Date().toISOString() } };
+      const rawData = { total_users: list.length, high_risk_users: highRisk.length, pending_reports: (reports || []).filter((r) => r.status === 'pending').length, risk_level: highRisk.length > 5 ? 'elevated' : 'low', mitigation_actions: highRisk.length > 5 ? ['review_high_spam', 'check_bans'] : [], scan_time: new Date().toISOString() };
+      return { type: 'risk_assessment', agent: agent.name, data: await analyzeWithLLM(agent, 'risk_assessment', rawData, message) };
     }
     // ── Data science / predictive ───────────────────────────────
     if (hasCap(agent, 'predictive_modeling', 'statistical_analysis', 'data_visualization', 'outcome_modeling', 'risk_projection')) {
