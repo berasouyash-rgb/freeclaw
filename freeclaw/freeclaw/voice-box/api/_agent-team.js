@@ -883,7 +883,8 @@ async function processAgentTask(agent, message, task) {
       const list = posts || [];
       const avgTitleLength = list.length ? (list.reduce((s, p) => s + (p.title || '').length, 0) / list.length).toFixed(0) : 0;
       const withComments = list.filter((p) => (p.comment_count || 0) > 0).length;
-      return { type: 'search_health', agent: agent.name, data: { indexed_posts: list.length, avg_title_length: avgTitleLength, posts_with_engagement: withComments, engagement_ratio: list.length ? ((withComments / list.length) * 100).toFixed(0) + '%' : '0%', scan_time: new Date().toISOString() } };
+      const rawData = { indexed_posts: list.length, avg_title_length: avgTitleLength, posts_with_engagement: withComments, engagement_ratio: list.length ? ((withComments / list.length) * 100).toFixed(0) + '%' : '0%', scan_time: new Date().toISOString() };
+      return { type: 'search_health', agent: agent.name, data: await analyzeWithLLM(agent, 'search_health', rawData, message) };
     }
     // ── NLP / intent detection ──────────────────────────────────
     if (hasCap(agent, 'intent_detection', 'entity_extraction', 'language_analysis', 'context_understanding')) {
@@ -954,7 +955,8 @@ async function processAgentTask(agent, message, task) {
         supabase.from('comments').select('id', { count: 'exact', head: true }),
       ]);
       const totalRows = (postsRes.count || 0) + (usersRes.count || 0) + (commentsRes.count || 0);
-      return { type: 'capacity', agent: agent.name, data: { total_db_rows: totalRows, storage_used: `${(totalRows * 0.002).toFixed(1)} MB`, storage_limit: '500 MB (free tier)', utilization: `${((totalRows / 250000) * 100).toFixed(2)}%`, scaling_needed: totalRows > 200000, estimated_growth: `${(totalRows * 0.1).toFixed(0)} rows/month`, scan_time: new Date().toISOString() } };
+      const rawData = { total_db_rows: totalRows, storage_used: `${(totalRows * 0.002).toFixed(1)} MB`, storage_limit: '500 MB (free tier)', utilization: `${((totalRows / 250000) * 100).toFixed(2)}%`, scaling_needed: totalRows > 200000, estimated_growth: `${(totalRows * 0.1).toFixed(0)} rows/month`, scan_time: new Date().toISOString() };
+      return { type: 'capacity', agent: agent.name, data: await analyzeWithLLM(agent, 'capacity_planning', rawData, message) };
     }
     // ── Database schema / index / migration ─────────────────────
     if (hasCap(agent, 'schema_optimization', 'index_management', 'query_analysis', 'migration_planning', 'schema_design', 'normalization', 'data_modeling', 'connection_pooling', 'replication_health', 'data_integrity')) {
@@ -1067,7 +1069,8 @@ async function processAgentTask(agent, message, task) {
     }
     // ── Agent creation / orchestration ──────────────────────────
     if (hasCap(agent, 'agent_design', 'capability_specification', 'agent_prototyping', 'agent_deployment', 'agent_creation', 'workflow_synthesis', 'dynamic_routing', 'parallel_orchestration', 'result_merging', 'workflow_design', 'parallel_dispatch', 'result_aggregation', 'bottleneck_detection')) {
-      return { type: 'agent_ecosystem', agent: agent.name, data: { total_agents: 110, divisions: 14, active_agents: 110, orchestration: 'spawn_based', max_parallel: 5, status: 'operational', scan_time: new Date().toISOString() } };
+      const rawData = { total_agents: 110, divisions: 14, active_agents: 110, orchestration: 'spawn_based', max_parallel: 5, status: 'operational', scan_time: new Date().toISOString() };
+      return { type: 'agent_ecosystem', agent: agent.name, data: await analyzeWithLLM(agent, 'agent_ecosystem', rawData, message) };
     }
     // ── RBAC / capability mapping ───────────────────────────────
     if (hasCap(agent, 'capability_analysis', 'gap_detection', 'task_mapping', 'recommendation_engine')) {
@@ -1115,7 +1118,8 @@ async function processAgentTask(agent, message, task) {
     }
     // ── Refactoring / tech debt ─────────────────────────────────
     if (hasCap(agent, 'dead_code_detection', 'tech_debt_tracking', 'code_smell_identification', 'cleanup_planning', 'debt_tracking', 'prioritization', 'improvement_metrics', 'cleanup_scheduling', 'complexity_analysis', 'maintainability_scoring', 'growth_metrics', 'health_reporting')) {
-      return { type: 'codebase_health', agent: agent.name, data: { tech_debt_items: 3, dead_code: 0, code_smells: 1, maintainability_index: 'A', complexity: 'low', last_scan: new Date().toISOString(), status: 'healthy', scan_time: new Date().toISOString() } };
+      const rawData = { tech_debt_items: 3, dead_code: 0, code_smells: 1, maintainability_index: 'A', complexity: 'low', last_scan: new Date().toISOString(), status: 'healthy', scan_time: new Date().toISOString() };
+      return { type: 'codebase_health', agent: agent.name, data: await analyzeWithLLM(agent, 'codebase_health', rawData, message) };
     }
     // ── Microservices / service boundaries ──────────────────────
     if (hasCap(agent, 'service_boundary', 'api_contract', 'event_driven', 'saga_patterns')) {
