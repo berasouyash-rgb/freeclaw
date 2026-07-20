@@ -1,0 +1,74 @@
+name: Agent Activation (Hourly)
+
+on:
+  schedule:
+    # Run every hour at minute 0
+    - cron: '0 * * * *'
+  workflow_dispatch: # Allow manual trigger
+
+jobs:
+  activate-agents:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Trigger Agent Rotation
+        id: rotate
+        run: |
+          echo "[$(date -u)] Triggering agent rotation..."
+          
+          # Call the rotation endpoint (tier-based, runs ~8-12 agents per tick)
+          RESPONSE=$(curl -s -w "\n%{http_code}" \
+            "https://voice-box-psi.vercel.app/api/agents-cron?action=rotate" \
+            --max-time 55)
+          
+          HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+          BODY=$(echo "$RESPONSE" | head -n -1)
+          
+          echo "HTTP Status: $HTTP_CODE"
+          
+          if [ "$HTTP_CODE" = "200" ]; then
+            echo "✅ Rotation triggered successfully"
+            AGENTS_RUN=$(echo "$BODY" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('agents_run',0))" 2>/dev/null || echo "?")
+            SUCCEEDED=$(echo "$BODY" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('agents_succeeded',0))" 2>/dev/null || echo "?")
+            FAILED=$(echo "$BODY" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('agents_failed',0))" 2>/dev/null || echo "?")
+            STEP=$(echo "$BODY" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('step',0))" 2>/dev/null || echo "?")
+            echo "Step: $STEP | Run: $AGENTS_RUN | Succeeded: $SUCCEEDED | Failed: $FAILED"
+          else
+            echo "❌ Rotation failed with HTTP $HTTP_CODE"
+            echo "$BODY" | head -5
+            exit 1
+          fi
+
+      - name: Consume Pending Events
+        run: |
+          echo "[$(date -u)] Consuming pending agent events..."
+          
+          RESPONSE=$(curl -s -w "\n%{http_code}" \
+            "https://voice-box-psi.vercel.app/api/agents-cron?agent=consume-all" \
+            --max-time 55)
+          
+          HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+          BODY=$(echo "$RESPONSE" | head -n -1)
+          
+          if [ "$HTTP_CODE" = "200" ]; then
+            EVENTS=$(echo "$BODY" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('total_consumed',0))" 2>/dev/null || echo "?")
+            echo "✅ Events consumed: $EVENTS"
+          else
+            echo "⚠️ Event consumption returned HTTP $HTTP_CODE (non-critical)"
+          fi
+
+      - name: Health Check
+        run: |
+          echo "[$(date -u)] Running platform health check..."
+          
+          RESPONSE=$(curl -s -w "\n%{http_code}" \
+            "https://voice-box-psi.vercel.app/api/health" \
+            --max-time 10)
+          
+          HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+          
+          if [ "$HTTP_CODE" = "200" ]; then
+            echo "✅ Platform healthy"
+          else
+            echo "⚠️ Health check returned HTTP $HTTP_CODE"
+          fi
