@@ -1,6 +1,8 @@
 // Problems + Suggestions API
 import supabase from './_db-client.js';
-import { cors, isAdmin, checkUser, ensureUser, auditLog, clean, maskProfanity, rateLimited } from './_auth.js';
+import { cors, isAdmin, checkUser, ensureUser, auditLog, clean, maskProfanity, rateLimited, rateLimitResponse } from './_auth.js';
+import { emitEvent, EVENT_TYPES } from './_events.js';
+import { sanitizeError } from './_error.js';
 
 const CATEGORIES = ['Academics','Facilities','Food','Bullying','Teachers','Events','Transport','Sports','Technology','Library','Hostel','Security','Cleanliness','Medical','Other'];
 const STATUSES = ['reported','verified','in_progress','waiting','solved','archived'];
@@ -38,15 +40,31 @@ async function purgeExpired() {
 async function attachCounts(posts) {
   const ids = posts.map((p) => p.id);
   if (!ids.length) return posts;
-  const [{ data: reactions }, { data: comments }, { data: polls }] = await Promise.all([
-    supabase.from('reactions').select('target_id,kind').in('target_id', ids),
-    supabase.from('comments').select('post_id').in('post_id', ids).eq('deleted', false).eq('hidden', false),
-    supabase.from('polls').select('id,post_id').in('post_id', ids),
-  ]);
+
+  // Batch all 3 count queries in parallel; use .in() with chunked IDs for large sets
+  const chunkSize = 100;
+  const chunkedIds = [];
+  for (let i = 0; i < ids.length; i += chunkSize) chunkedIds.push(ids.slice(i, i + chunkSize));
+
+  const allReactions = [];
+  const allComments = [];
+  const allPolls = [];
+  for (const chunk of chunkedIds) {
+    const [reactRes, commRes, pollRes] = await Promise.all([
+      supabase.from('reactions').select('target_id,kind').in('target_id', chunk),
+      supabase.from('comments').select('post_id').in('post_id', chunk).eq('deleted', false).eq('hidden', false),
+      supabase.from('polls').select('id,post_id').in('post_id', chunk),
+    ]);
+    if (reactRes.data) allReactions.push(...reactRes.data);
+    if (commRes.data) allComments.push(...commRes.data);
+    if (pollRes.data) allPolls.push(...pollRes.data);
+  }
+
   const rMap = {}; const cMap = {}; const pMap = {};
-  (reactions || []).forEach((r) => { rMap[r.target_id] = rMap[r.target_id] || {}; rMap[r.target_id][r.kind] = (rMap[r.target_id][r.kind] || 0) + 1; });
-  (comments || []).forEach((c) => { cMap[c.post_id] = (cMap[c.post_id] || 0) + 1; });
-  (polls || []).forEach((p) => { pMap[p.post_id] = p.id; });
+  allReactions.forEach((r) => { rMap[r.target_id] = rMap[r.target_id] || {}; rMap[r.target_id][r.kind] = (rMap[r.target_id][r.kind] || 0) + 1; });
+  allComments.forEach((c) => { cMap[c.post_id] = (cMap[c.post_id] || 0) + 1; });
+  allPolls.forEach((p) => { pMap[p.post_id] = p.id; });
+
   return posts.map((p) => {
     const reactions = rMap[p.id] || {};
     const isClosed = ['solved', 'archived'].includes(p.status);
@@ -62,16 +80,24 @@ async function attachCounts(posts) {
 }
 
 export default async function handler(req, res) {
-  cors(res);
+  cors(res, req);
   if (req.method === 'OPTIONS') return res.status(204).end();
 
   try {
     if (req.method === 'GET') {
-      await purgeExpired(); // lazy cleanup on every read
+      purgeExpired(); // fire-and-forget: don't await, don't delay the response
       const { id, ids, type, all, viewer, author, cursor, limit: limitParam, paginate } = req.query;
       const admin = all === '1' ? await isAdmin(req) : false;
       const isPaginated = paginate === '1' || paginate === 'true';
       const PAGE_LIMIT = Math.min(parseInt(limitParam) || 30, 100);
+
+      // Cache headers for public reads (30s browser cache, 30s CDN, 10s stale-while-revalidate)
+      if (!admin && !viewer) {
+        res.setHeader('Cache-Control', 'public, max-age=30, s-maxage=30, stale-while-revalidate=10');
+        res.setHeader('X-Content-Type-Options', 'nosniff');
+      } else {
+        res.setHeader('Cache-Control', 'private, no-cache');
+      }
 
       let q = supabase.from('posts').select('*').order('created_at', { ascending: false });
       if (id) q = q.eq('id', id);
@@ -125,7 +151,7 @@ export default async function handler(req, res) {
       const gate = await checkUser(author_id);
       if (!gate.ok) return res.status(403).json({ error: gate.error });
       if (await rateLimited('posts', author_id, 60, 3)) {
-        return res.status(429).json({ error: 'Slow down — you can post at most 3 times per minute.' });
+        return rateLimitResponse(res, 60, 'Slow down — you can post at most 3 times per minute.');
       }
       const title = maskProfanity(clean(b.title, 120));
       const description = maskProfanity(clean(b.description, 500));
@@ -145,6 +171,8 @@ export default async function handler(req, res) {
       const { data, error } = await supabase.from('posts').insert(post).select().single();
       if (error) throw error;
       await ensureUser(author_id);
+      // Emit event for event-triggered agents
+      emitEvent(EVENT_TYPES.POST_CREATED, { post_id: data.id, type, category, priority, author_id }).catch((err) => console.warn('[posts] emit POST_CREATED failed:', err.message));
       return res.status(201).json(data);
     }
 
@@ -190,18 +218,20 @@ export default async function handler(req, res) {
       const { data, error } = await supabase.from('posts').update(patch).eq('id', id).select().single();
       if (error) throw error;
       if (admin) await auditLog('admin', 'update_post', `${id}: ${Object.keys(patch).join(', ')}`);
+      // Emit event for status changes
+      if (patch.status) emitEvent(EVENT_TYPES.POST_STATUS_CHANGED, { post_id: id, old_status: post.status, new_status: patch.status }).catch((err) => console.warn('[posts] emit POST_STATUS_CHANGED failed:', err.message));
       return res.status(200).json(data);
     }
 
     if (req.method === 'DELETE') {
       if (!(await isAdmin(req))) return res.status(403).json({ error: 'Admin only' });
       const { id } = req.body || {};
-      // Clean up all related data in parallel: post, comments, reactions, linked polls
+      // Null out post_id on linked polls (preserve votes + poll data), then delete post + comments + reactions
       await Promise.all([
+        supabase.from('polls').update({ post_id: null }).eq('post_id', id),
         supabase.from('posts').delete().eq('id', id),
         supabase.from('comments').delete().eq('post_id', id),
         supabase.from('reactions').delete().eq('target_id', id),
-        supabase.from('polls').delete().eq('post_id', id),
       ]);
       await auditLog('admin', 'hard_delete_post', id);
       return res.status(200).json({ ok: true });
@@ -209,7 +239,7 @@ export default async function handler(req, res) {
 
     return res.status(405).json({ error: 'Method not allowed' });
   } catch (err) {
-    console.error('posts API error:', err);
-    return res.status(500).json({ error: err.message });
+    console.error('[posts] Handler error:', err.message, err.stack?.split('\n').slice(0, 5).join('\n'));
+    return sanitizeError(res, err, 'posts');
   }
 }
