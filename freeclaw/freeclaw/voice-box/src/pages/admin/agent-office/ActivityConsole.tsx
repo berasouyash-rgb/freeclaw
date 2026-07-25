@@ -61,7 +61,7 @@ export default function ActivityConsole() {
                 agent: r2.agent_name,
                 message: r2.result?.error
                   ? `Error: ${String(r2.result.error).slice(0, 60)}`
-                  : `Completed — ${(r2.result?.type || 'processed').replace(/_/g, ' ')}`,
+                  : `Completed — ${String(r2.result?.type || 'processed').replace(/_/g, ' ')}`,
               });
             }
           }

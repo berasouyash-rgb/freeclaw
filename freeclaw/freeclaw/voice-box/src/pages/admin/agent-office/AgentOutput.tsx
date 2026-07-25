@@ -38,7 +38,7 @@ function DownloadBtn({ data, filename }: { data: Record<string, unknown> | strin
 /* ── Result detail renderer ──────────────────────────────────── */
 function ResultDetail({ result }: { result: WorkflowResult['results'][number]['result'] | null }) {
   if (!result) return <p className="text-xs text-ink3 italic">No data</p>;
-  if (result.error) return <p className="text-xs text-red-400">Error: {result.error}</p>;
+  if (result.error) return <p className="text-xs text-red-400">Error: {String(result.error)}</p>;
 
   const typeLabels: Record<string, { label: string; color: string }> = {
     analysis: { label: 'Analysis', color: 'text-blue-400 bg-blue-500/15' },
@@ -61,18 +61,19 @@ function ResultDetail({ result }: { result: WorkflowResult['results'][number]['r
     generic: { label: 'Processed', color: 'text-ink3 bg-surface2' },
   };
 
-  const typeInfo = typeLabels[result.type] ?? typeLabels.generic ?? { label: 'Processed', color: 'text-ink3 bg-surface2' };
-  const data = result.data || {};
+  const typeStr = String(result.type || 'generic');
+  const typeInfo = typeLabels[typeStr] ?? typeLabels.generic;
+  const data = (typeof result.data === 'object' && result.data !== null ? result.data : {}) as Record<string, unknown>;
   const resultText = safeStringify(data, 2);
 
   return (
     <div className="space-y-2">
       <div className="flex items-center gap-2">
-        <span className={`text-[9px] font-mono px-2 py-0.5 rounded-full font-bold ${typeInfo.color}`}>{typeInfo.label}</span>
-        <span className="text-[10px] text-ink3">{result.agent}</span>
+        <span className={`text-[9px] font-mono px-2 py-0.5 rounded-full font-bold ${typeInfo?.color ?? ''}`}>{typeInfo?.label ?? 'Processed'}</span>
+        <span className="text-[10px] text-ink3">{String(result.agent || '')}</span>
         <div className="ml-auto flex items-center gap-0.5">
           <CopyBtn text={resultText} />
-          <DownloadBtn data={data} filename={`${(result.agent || 'agent').toLowerCase().replace(/\s+/g, '-')}-output.json`} />
+          <DownloadBtn data={data} filename={`${String(result.agent || 'agent').toLowerCase().replace(/\s+/g, '-')}-output.json`} />
         </div>
       </div>
       <div className="bg-surface2/50 rounded-lg p-3 border border-border">

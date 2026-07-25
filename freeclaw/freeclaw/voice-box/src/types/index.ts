@@ -38,11 +38,19 @@ export interface PostData {
   locked?: boolean;
   deleted?: boolean;
   admin_reply?: string;
+  admin_notes?: string;
   ai_summary?: string;
   image_url?: string | null;
   merged_into?: string;
   is_mine?: boolean;
   status_history?: StatusHistoryEntry[];
+  status_note?: string;
+  assigned_to?: string;
+  eta?: string;
+  progress?: number;
+  purge_at?: string;
+  star?: { reactions?: Record<string, number> };
+  author_name?: string;
 }
 
 // ─── Comment ─────────────────────────────────────────
@@ -128,11 +136,18 @@ export interface ChatMessage {
   created_at?: string;
   read: boolean;
   attachment_url?: string;
+  [k: string]: unknown;
 }
 
 export interface ChatThread {
   thread_id: string;
   messages: ChatMessage[];
+  status?: string;
+  last_message?: string;
+  last_at?: string;
+  unread?: number;
+  updated_at?: string;
+  [k: string]: unknown;
 }
 
 // ─── Account / User ──────────────────────────────────

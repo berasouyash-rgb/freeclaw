@@ -17,7 +17,7 @@ export default function QuickActions({ posts, onStatusChange }: { posts: PostDat
   const [kind, setKind] = useState<'info' | 'success' | 'warning'>('info');
   const [busy, setBusy] = useState(false);
 
-  useEffect(() => { api.get('/api/announcement').then(setAnnouncement).catch((e: unknown) => { console.warn('[QuickActions] Failed to load announcement:', e instanceof Error ? e.message : e); }); }, []);
+  useEffect(() => { api.get<Announcement>('/api/announcement').then(setAnnouncement).catch((e: unknown) => { console.warn('[QuickActions] Failed to load announcement:', e instanceof Error ? e.message : e); }); }, []);
 
   const publish = async () => {
     if (!text.trim()) return;

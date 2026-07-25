@@ -236,7 +236,7 @@ export default function AdminAI() {
   const [ragLoading, setRagLoading] = useState(false);
 
   // ── Conversation history ──
-  const [conversations, setConversations] = useState<{ id: string; title?: string; agent_id?: string; created_at: string }[]>([]);
+  const [conversations, setConversations] = useState<{ id: string; title?: string; agent_id?: string; created_at: string; session_id?: string; updated_at?: string; last_message?: string; message_count?: number }[]>([]);
   const [conversationsLoading, setConversationsLoading] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
 
@@ -532,10 +532,10 @@ export default function AdminAI() {
   /* ─── Load conversation from history ───────────────────────── */
   const loadConversation = async (convId: string) => {
     try {
-      const data = await api.get<{ messages: ChatMessage[] }>(`/api/v3/stream?action=history&session_id=${convId}`);
+      const data = await api.get<{ messages: { role: string; content: string; agent_id?: string; created_at: string }[] }>(`/api/v3/stream?action=history&session_id=${convId}`);
       if (data.messages && data.messages.length > 0) {
-        setMessages(data.messages.map((m: { role: string; content: string; agent_id?: string; created_at: string }) => ({
-          role: m.role, content: m.content, agent: m.agent_id, timestamp: new Date(m.created_at).getTime(),
+        setMessages(data.messages.map((m) => ({
+          role: m.role as ChatMessage['role'], content: m.content, agent: m.agent_id, timestamp: new Date(m.created_at).getTime(),
         })));
         setShowHistory(false);
         toast('Conversation loaded', 'ok');
@@ -813,8 +813,8 @@ export default function AdminAI() {
                               </div>
                               <div className="flex-1 min-w-0">
                                 <p className="text-[10px] text-ink2 font-mono truncate">{ev.type}</p>
-                                {ev.type === 'tool_event' && ev.data.tool && <p className="text-[9px] text-ink3">{ev.data.tool} &middot; {ev.data.status}</p>}
-                                {ev.type === 'agent_routed' && ev.data.agent && <p className="text-[9px] text-ink3">&rarr; {ev.data.agent}</p>}
+                                {ev.type === 'tool_event' && !!ev.data.tool && <p className="text-[9px] text-ink3">{String(ev.data.tool)} &middot; {String(ev.data.status)}</p>}
+                                {ev.type === 'agent_routed' && !!ev.data.agent && <p className="text-[9px] text-ink3">&rarr; {String(ev.data.agent)}</p>}
                               </div>
                               <span className="text-[8px] text-ink3 whitespace-nowrap">{timeAgo(new Date(ev.timestamp).toISOString())}</span>
                             </div>
@@ -1008,10 +1008,10 @@ export default function AdminAI() {
                             <div key={i} className="p-2 rounded-lg bg-surface2/50 border border-border/30">
                               <div className="flex items-center gap-2 mb-1">
                                 <FileText size={10} className="text-blue-400" />
-                                <span className="text-[10px] font-mono text-ink2 truncate">{r.title || r.id || `Result ${i + 1}`}</span>
-                                {r.score !== undefined && <span className="text-[9px] text-accent ml-auto">{(r.score * 100).toFixed(0)}%</span>}
+                                <span className="text-[10px] font-mono text-ink2 truncate">{String(r.title || r.id || `Result ${i + 1}`)}</span>
+                                {r.score != null && <span className="text-[9px] text-accent ml-auto">{(Number(r.score) * 100).toFixed(0)}%</span>}
                               </div>
-                              <p className="text-[9px] text-ink3 line-clamp-3">{r.content || r.text || r.description}</p>
+                              <p className="text-[9px] text-ink3 line-clamp-3">{String(r.content || r.text || r.description)}</p>
                             </div>
                           ))}
                         </div>
@@ -1040,10 +1040,10 @@ export default function AdminAI() {
               {conversationsLoading && <div className="text-center py-8"><Loader2 size={16} className="animate-spin mx-auto text-ink3" /></div>}
               {!conversationsLoading && conversations.length === 0 && <div className="text-center py-8 text-[11px] text-ink3">No previous conversations</div>}
               {conversations.map((conv) => (
-                <button key={conv.id || conv.session_id} onClick={() => loadConversation(conv.id || conv.session_id)} className="w-full text-left p-3 rounded-xl border border-border hover:border-accent/30 hover:bg-accent/5 transition-colors">
+                <button key={conv.id || conv.session_id} onClick={() => loadConversation(conv.id || conv.session_id || '')} className="w-full text-left p-3 rounded-xl border border-border hover:border-accent/30 hover:bg-accent/5 transition-colors">
                   <div className="flex items-center justify-between">
                     <span className="text-[11px] font-mono text-ink">{(conv.id || conv.session_id || '').slice(0, 24)}</span>
-                    <span className="text-[9px] text-ink3">{timeAgo(conv.created_at || conv.updated_at)}</span>
+                    <span className="text-[9px] text-ink3">{timeAgo(conv.created_at || conv.updated_at || '')}</span>
                   </div>
                   <p className="text-[10px] text-ink3 mt-1 line-clamp-1">{conv.last_message || `${conv.message_count || 0} messages`}</p>
                 </button>

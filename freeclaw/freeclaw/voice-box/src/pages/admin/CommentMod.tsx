@@ -13,7 +13,7 @@ export default function CommentMod() {
   const [deleteId, setDeleteId] = useState<string | null>(null);
 
   const fetchComments = useCallback(async ({ cursor, limit }: { cursor: string | null; limit: number }) => {
-    const result = await api.paginated('/api/comments?all=1', { cursor, limit });
+    const result = await api.paginated<CommentData>('/api/comments?all=1', { cursor, limit });
     return { data: result.data || [], nextCursor: result.nextCursor, total: result.total || 0 };
   }, []);
 

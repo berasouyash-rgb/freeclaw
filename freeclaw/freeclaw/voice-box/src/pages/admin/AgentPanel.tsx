@@ -40,7 +40,7 @@ export default function AgentPanel() {
   const [mode, setMode] = useState<'chat' | 'suggestions'>('chat');
 
   const load = useCallback(async () => {
-    try { setSuggestions(await api.get<Record<string, unknown>[]>('/api/agent')); }
+    try { setSuggestions(await api.get<AgentSuggestion[]>('/api/agent')); }
     catch (e: unknown) { toast(e instanceof Error ? e.message : 'Failed to load', 'err'); }
     setLoading(false);
   }, [toast]);

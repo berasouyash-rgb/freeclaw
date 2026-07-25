@@ -23,6 +23,14 @@ interface PreReviewItem {
   body: string;
   author_id: string;
   created_at: string;
+  status?: string;
+  description?: string;
+  category?: string;
+  priority?: string;
+  content_type?: string;
+  risk_score?: number;
+  checks?: Record<string, { pass: boolean; issues: string[] }>;
+  summary?: string;
   [k: string]: unknown;
 }
 
@@ -35,7 +43,7 @@ function PostPreview({ targetId }: { targetId: string }) {
     let cancelled = false;
     (async () => {
       try {
-        const data = await api.get(`/api/posts?id=${targetId}`);
+        const data = await api.get<PostData>(`/api/posts?id=${targetId}`);
         if (!cancelled) setPost(data);
       } catch { /* target may not exist */ }
       if (!cancelled) setLoading(false);
@@ -297,7 +305,7 @@ export default function Reports() {
                     </div>
                     <p className="text-sm font-medium">🚩 {r.reason}</p>
                     <p className="text-[11px] text-ink3 mt-1 font-mono">
-                      target: {r.target_id} · by {r.author_id?.slice(0, 12)}… · {timeAgo(r.created_at)}
+                      target: {r.target_id} · by {String(r.author_id || '').slice(0, 12)}… · {timeAgo(r.created_at)}
                     </p>
                   </div>
                   <div className="flex items-center gap-2 shrink-0">

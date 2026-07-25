@@ -154,7 +154,7 @@ export default function Overview() {
       <div className="flex items-center justify-between flex-wrap gap-2">
         <h1 className="font-display font-bold text-xl">Dashboard</h1>
         <div className="flex gap-2">
-          <button className="btn btn-ghost !text-xs" onClick={() => downloadFile('voicebox-posts.csv', toCSV(posts), 'text/csv')}>Export CSV</button>
+          <button className="btn btn-ghost !text-xs" onClick={() => downloadFile('voicebox-posts.csv', toCSV(posts as unknown as Record<string, unknown>[]), 'text/csv')}>Export CSV</button>
           <button className="btn btn-ghost !text-xs" onClick={() => downloadFile('voicebox-export.json', safeStringify({ posts, comments, reports, exported: new Date().toISOString() }, 2))}>Export JSON</button>
           <button className="btn btn-ghost !text-xs" onClick={() => window.print()}>Print / PDF</button>
         </div>

@@ -27,8 +27,8 @@ export default function RecapCard({ posts }: { posts: PostData[] }) {
         <span className="flex items-center gap-1.5"><CheckCircle2 size={14} className="text-good" /> <b>{recap.solvedCount}</b>&nbsp;solved</span>
         {recap.topCat && <span>{CAT_EMOJI[recap.topCat]} <b>{recap.topCat}</b> most active ({recap.topCatN})</span>}
       </div>
-      {recap.star && (recap.star.reactions?.support || 0) > 0 && (
-        <p className="text-xs text-ink2 mt-2">⭐ Most supported: “{recap.star.title}” ({recap.star.reactions.support} supports)</p>
+      {recap.star && recap.star.reactions && (recap.star.reactions.support || 0) > 0 && (
+        <p className="text-xs text-ink2 mt-2">⭐ Most supported: "{recap.star.title}" ({recap.star.reactions.support} supports)</p>
       )}
     </section>
   );

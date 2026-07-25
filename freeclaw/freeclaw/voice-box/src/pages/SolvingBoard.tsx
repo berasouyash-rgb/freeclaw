@@ -62,9 +62,10 @@ export default function SolvingBoard() {
                         {p.eta && <span className="text-[10px] text-ink3">⏳ {p.eta}</span>}
                         {p.purge_at && <PurgeCountdown purgeAt={p.purge_at} />}
                       </div>
-                      {(p.status_history?.length || 0) > 1 && (
-                        <p className="text-[10px] text-ink3 mt-1">Last: {p.status_history[p.status_history.length - 1].note || STATUS_META[p.status_history[p.status_history.length - 1].status]?.label}</p>
-                      )}
+                      {p.status_history && p.status_history.length > 1 && (() => {
+                        const last = p.status_history![p.status_history!.length - 1];
+                        return last && <p className="text-[10px] text-ink3 mt-1">Last: {last.note || STATUS_META[last.status]?.label}</p>;
+                      })()}
                     </Link>
                   ))}
                 </div>

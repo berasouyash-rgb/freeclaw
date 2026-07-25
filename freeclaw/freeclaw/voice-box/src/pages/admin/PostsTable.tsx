@@ -6,7 +6,7 @@ import { CATEGORIES, STATUS_META, timeAgo, sanitize } from '../../lib/utils';
 import { ConfirmDialog, PromptDialog, StatusDialog } from '../../components/ui';
 import { fireConfetti } from '../../components/Confetti';
 import { useInfiniteScroll } from '../../hooks/useInfiniteScroll';
-import type { PostData } from '../../types';
+import type { PostData, Priority, PostStatus } from '../../types';
 
 export default function PostsTable({ type }: { type: 'problem' | 'suggestion' }) {
   const { toast } = useApp();
@@ -14,11 +14,11 @@ export default function PostsTable({ type }: { type: 'problem' | 'suggestion' })
   const [statusF, setStatusF] = useState('all');
   const [catF, setCatF] = useState('All');
   const [selected, setSelected] = useState<PostData | null>(null);
-  const [dialog, setDialog] = useState<{ kind: 'delete' | 'merge' | 'poll'; payload?: string } | null>(null);
+  const [dialog, setDialog] = useState<{ kind: 'delete' | 'merge' | 'poll'; payload?: string | PostData } | null>(null);
   const [statusDialog, setStatusDialog] = useState<{ id: string; status: string } | null>(null);
 
   const fetchPosts = useCallback(async ({ cursor, limit }: { cursor: string | null; limit: number }) => {
-    const result = await api.paginated(`/api/posts?all=1&type=${type}`, { cursor, limit });
+    const result = await api.paginated<PostData>(`/api/posts?all=1&type=${type}`, { cursor, limit });
     return { data: result.data || [], nextCursor: result.nextCursor, total: result.total || 0 };
   }, [type]);
 
@@ -172,7 +172,7 @@ export default function PostsTable({ type }: { type: 'problem' | 'suggestion' })
               </label>
               <label className="text-xs">
                 <span className="font-semibold text-ink2">Priority</span>
-                <select className="input !py-1.5 mt-1" value={selected.priority} onChange={(e) => update(selected.id, { priority: e.target.value })}>
+                <select className="input !py-1.5 mt-1" value={selected.priority} onChange={(e) => update(selected.id, { priority: e.target.value as Priority })}>
                   {['low', 'medium', 'high', 'critical'].map((p) => <option key={p} value={p}>{p}</option>)}
                 </select>
               </label>
@@ -219,19 +219,19 @@ export default function PostsTable({ type }: { type: 'problem' | 'suggestion' })
       )}
 
       <ConfirmDialog open={dialog?.kind === 'delete'} onClose={() => setDialog(null)}
-        onConfirm={() => hardDelete(dialog!.payload)} title="Permanently delete?"
+        onConfirm={() => hardDelete(dialog!.payload as string)} title="Permanently delete?"
         message="This will permanently remove the post and all of its comments. This action cannot be undone."
         confirmLabel="Delete forever" danger />
       <ConfirmDialog open={dialog?.kind === 'poll'} onClose={() => setDialog(null)}
-        onConfirm={() => convertToPoll(dialog!.payload)} title="Convert to poll"
-        message={`Create a linked Yes/No poll asking the community whether they agree with "${dialog?.payload?.title}"?`}
+        onConfirm={() => convertToPoll(dialog!.payload as PostData)} title="Convert to poll"
+        message={`Create a linked Yes/No poll asking the community whether they agree with "${(dialog?.payload as PostData)?.title ?? ''}"?`}
         confirmLabel="Create poll" />
       <PromptDialog open={dialog?.kind === 'merge'} onClose={() => setDialog(null)}
-        onSubmit={(v) => merge(dialog!.payload, v)} title="Merge duplicate"
+        onSubmit={(v) => merge(dialog!.payload as string, v)} title="Merge duplicate"
         label="Merge into post ID" placeholder="post_abc123 (the canonical post)" submitLabel="Merge" />
       <StatusDialog open={!!statusDialog} onClose={() => setStatusDialog(null)}
         status={statusDialog?.status || ''} statusLabel={STATUS_META[statusDialog?.status || '']?.label || ''}
-        onSubmit={(note) => statusDialog && update(statusDialog.id, { status: statusDialog.status, status_note: note || undefined })} />
+        onSubmit={(note) => statusDialog && update(statusDialog.id, { status: statusDialog.status as PostStatus, status_note: note || undefined })} />
     </div>
   );
 }

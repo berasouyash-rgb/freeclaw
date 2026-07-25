@@ -154,7 +154,7 @@ function MessageBubble({ msg, isAdmin }: { msg: ChatMessage & { id: string }; is
 
           {/* Timestamp + actions */}
           <div className={`flex items-center gap-1.5 ${isAdmin ? 'justify-end' : 'justify-start'}`}>
-            <span className="text-[10px] text-ink3 opacity-0 group-hover:opacity-100 transition-opacity">{fmtDate(msg.created_at)}</span>
+            <span className="text-[10px] text-ink3 opacity-0 group-hover:opacity-100 transition-opacity">{fmtDate(msg.created_at || msg.at || '')}</span>
             <div className="msg-actions flex items-center gap-0.5">
               <CopyButton text={msg.body || ''} />
               {msg.attachment_url && <DownloadButton url={msg.attachment_url} />}
@@ -203,13 +203,13 @@ export default function AdminChat() {
   }, []);
 
   const loadThreads = useCallback(async () => {
-    try { setThreads(await api.get<Record<string, unknown>[]>('/api/chat?threads=1')); } catch (e: unknown) { console.warn('[AdminChat] Failed to load threads:', e instanceof Error ? e.message : e); }
+    try { setThreads(await api.get<(ChatThread & { status?: string; last_message?: string; last_at?: string; unread?: number })[]>('/api/chat?threads=1')); } catch (e: unknown) { console.warn('[AdminChat] Failed to load threads:', e instanceof Error ? e.message : e); }
     setLoading(false);
   }, []);
 
   const loadMessages = useCallback(async (tid: string) => {
     try {
-      const data = await api.get<{ messages: Record<string, unknown>[]; thread: Record<string, unknown> }>(`/api/chat?thread_id=${tid}`);
+      const data = await api.get<{ messages: (ChatMessage & { id: string })[]; thread: (ChatThread & { status?: string }) | null }>(`/api/chat?thread_id=${tid}`);
       setMessages(data.messages); setThread(data.thread);
       await api.put<unknown>('/api/chat', { action: 'mark_read', thread_id: tid, as: 'admin' });
       loadThreads();
@@ -306,7 +306,7 @@ export default function AdminChat() {
     if (!id) return;
     setActive(id);
     if (!threads.some((t) => t.thread_id === id)) {
-      setThreads((prev) => [{ thread_id: id, status: 'open', updated_at: new Date().toISOString(), last_message: '', last_at: new Date().toISOString(), unread: 0 }, ...prev]);
+      setThreads((prev) => [{ thread_id: id, messages: [], status: 'open', updated_at: new Date().toISOString(), last_message: '', last_at: new Date().toISOString(), unread: 0 }, ...prev]);
     }
   };
 
@@ -336,7 +336,7 @@ export default function AdminChat() {
     if (!messages.length) return;
     const lines = messages.map((m) => {
       const sender = m.sender === 'admin' ? 'Admin' : 'User';
-      const time = fmtDate(m.created_at);
+      const time = fmtDate(m.created_at || m.at || '');
       return `[${time}] ${sender}: ${m.body || '(attachment)'}`;
     });
     const blob = new Blob([lines.join('\n')], { type: 'text/plain' });
@@ -425,8 +425,8 @@ export default function AdminChat() {
                       <p className="text-[11px] text-ink3 truncate mt-0.5">{t.last_message || 'No messages yet'}</p>
                     </div>
                     <div className="flex flex-col items-end gap-1">
-                      <span className="text-[9px] text-ink3">{timeAgo(t.last_at)}</span>
-                      {t.unread > 0 && (
+                      <span className="text-[9px] text-ink3">{timeAgo(t.last_at || '')}</span>
+                      {(t.unread ?? 0) > 0 && (
                         <span className="w-5 h-5 rounded-full bg-accent text-white text-[9px] font-bold flex items-center justify-center">
                           {t.unread}
                         </span>

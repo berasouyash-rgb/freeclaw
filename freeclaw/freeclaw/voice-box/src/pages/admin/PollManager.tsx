@@ -63,7 +63,7 @@ export default function PollManager() {
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
                   <p className="font-semibold text-sm">{p.title} {p.archived && <span className="chip !text-[10px] ml-1">archived</span>}</p>
-                  <p className="text-xs text-ink3 mt-0.5">{p.ptype} · {p.total_votes} votes · created {timeAgo(p.created_at)} {p.post_id && '· linked to complaint'}</p>
+                  <p className="text-xs text-ink3 mt-0.5">{p.ptype} · {p.total_votes ?? 0} votes · created {timeAgo(p.created_at ?? '')} {p.post_id && '· linked to complaint'}</p>
                 </div>
                 <div className="flex gap-1 shrink-0">
                   <button className="btn btn-ghost !p-2" onClick={() => setArchived(p.id, !p.archived)} title={p.archived ? 'Restore' : 'Archive'}>{p.archived ? <RotateCcw size={14} /> : <Archive size={14} />}</button>

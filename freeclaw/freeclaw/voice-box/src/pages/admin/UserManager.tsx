@@ -12,6 +12,12 @@ interface UserSummary {
   last_seen?: string;
   post_count?: number;
   comment_count?: number;
+  reaction_count?: number;
+  strikes?: number;
+  spam_score?: number;
+  banned?: boolean;
+  suspended_until?: string;
+  created_at?: string;
   [k: string]: unknown;
 }
 
@@ -21,6 +27,11 @@ interface UserDetail {
     anon_id: string;
     notes?: string;
     warnings?: { text: string; at: string }[];
+    created_at?: string;
+    strikes?: number;
+    spam_score?: number;
+    banned?: boolean;
+    suspended_until?: string;
     [k: string]: unknown;
   };
   posts: (PostData & { created_at: string; deleted?: boolean })[];
@@ -40,7 +51,7 @@ export default function UserManager() {
   const [dialog, setDialog] = useState<{ kind: 'warn' | 'spam' | 'ban' } | null>(null);
 
   const fetchUsers = useCallback(async ({ cursor, limit }: { cursor: string | null; limit: number }) => {
-    const result = await api.postPaginated('/api/admin', { action: 'users', cursor, limit });
+    const result = await api.postPaginated<UserSummary>('/api/admin', { action: 'users', cursor, limit });
     return { data: result.data || [], nextCursor: result.nextCursor, total: result.total || 0 };
   }, []);
 
@@ -127,7 +138,7 @@ export default function UserManager() {
                 <div className="flex items-start justify-between mb-4">
                   <div>
                     <h2 className="font-display font-bold font-mono text-sm">{meta.anon_id}</h2>
-                    <p className="text-[11px] text-ink3">First seen {timeAgo(meta.created_at)} · {meta.strikes || 0} strike(s) · spam score {meta.spam_score || 0}</p>
+                    <p className="text-[11px] text-ink3">First seen {timeAgo(meta.created_at ?? '')} · {meta.strikes || 0} strike(s) · spam score {meta.spam_score || 0}</p>
                   </div>
                   <button className="btn btn-ghost !p-2" onClick={() => setDetail(null)}><X size={16} /></button>
                 </div>
@@ -158,7 +169,7 @@ export default function UserManager() {
                 {(meta.warnings || []).length > 0 && (
                   <div className="mb-4">
                     <h3 className="text-xs font-bold uppercase text-ink3 mb-2">Warnings issued</h3>
-                    {meta.warnings.map((w, i) => (
+                    {meta.warnings?.map((w, i) => (
                       <p key={i} className="text-xs text-ink2 py-1 border-b border-border">{w.text} <span className="text-ink3">· {timeAgo(w.at)}</span></p>
                     ))}
                   </div>

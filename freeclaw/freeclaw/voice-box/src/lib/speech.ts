@@ -139,15 +139,19 @@ export function startDictation(opts: {
     let interim = '';
     for (let i = e.resultIndex; i < e.results.length; i++) {
       const result = e.results[i];
+      if (!result) continue;
       if (result.isFinal) {
         // choose highest-confidence alternative
         let best = result[0];
+        if (!best) continue;
         for (let a = 1; a < result.length; a++) {
-          if (result[a].confidence > best.confidence) best = result[a];
+          const alt = result[a];
+          if (alt && alt.confidence > best.confidence) best = alt;
         }
         opts.onFinal(cleanTranscript(best.transcript.trim()) + ' ');
       } else {
-        interim += result[0].transcript;
+        const first = result[0];
+        if (first) interim += first.transcript;
       }
     }
     opts.onInterim(cleanTranscript(interim));

@@ -21,6 +21,7 @@ interface ThreadSummary {
   updated_at?: string;
   last_at?: string;
   ai_agent?: string;
+  unread?: number;
   emotion?: { level?: string };
   state?: { agent?: string; emotion?: { level?: string }; emotion_history?: { level: string }[]; handoff?: boolean };
   [k: string]: unknown;
@@ -181,7 +182,7 @@ function MessageBubble({ msg, isAdmin }: { msg: ChatMessage; isAdmin: boolean })
 
           <div className={`flex items-center gap-1.5 ${isAdmin ? 'justify-end' : 'justify-start'}`}>
             <span className="text-[10px] text-ink3 opacity-0 group-hover:opacity-100 transition-opacity">
-              {fmtDate(msg.created_at)}
+              {fmtDate(msg.created_at || '')}
             </span>
             <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
               <CopyButton text={msg.body || ''} />
@@ -240,7 +241,7 @@ function ThreadItem({ t, active, onClick, onDelete }: {
             </div>
             <p className="text-[11px] text-ink3 truncate mt-0.5">{t.last_message || t.summary || 'No messages yet'}</p>
             <div className="flex items-center gap-1.5 mt-1">
-              <span className="text-[10px] text-ink3">{timeAgo(t.updated_at || t.last_at)}</span>
+              <span className="text-[10px] text-ink3">{timeAgo((t.updated_at || t.last_at) ?? '')}</span>
               {agent !== 'admin' && agent !== 'direct' && (
                 <span className="text-[10px] text-accent/70 flex items-center gap-0.5">
                   <Bot size={9} /> {agent === 'emotional' ? 'Emotional' : 'AI'} active
@@ -250,8 +251,8 @@ function ThreadItem({ t, active, onClick, onDelete }: {
           </div>
 
           <div className="flex flex-col items-end gap-1">
-            {t.unread > 0 && (
-              <span className="w-5 h-5 rounded-full bg-accent text-white text-[9px] font-bold flex items-center justify-center">{t.unread}</span>
+            {(t.unread ?? 0) > 0 && (
+              <span className="w-5 h-5 rounded-full bg-accent text-white text-[9px] font-bold flex items-center justify-center">{String(t.unread)}</span>
             )}
           </div>
         </div>
@@ -511,7 +512,7 @@ export default function UnifiedInbox() {
     if (!messages.length) return;
     const lines = messages.map((m) => {
       const sender = m.sender === 'admin' ? 'Admin' : m.sender === 'ai' ? 'AI' : 'User';
-      return `[${fmtDate(m.created_at)}] ${sender}: ${m.body || '(attachment)'}`;
+      return `[${fmtDate(m.created_at || '')}] ${sender}: ${m.body || '(attachment)'}`;
     });
     const blob = new Blob([lines.join('\n')], { type: 'text/plain' });
     const a = document.createElement('a');

@@ -34,6 +34,8 @@ interface DuplicateCluster {
 interface WeeklyInsights {
   trending_category?: string;
   recommendation?: string;
+  total?: number;
+  high_urgency?: number;
 }
 
 interface AnalysisResult {
@@ -42,6 +44,8 @@ interface AnalysisResult {
   safety_alerts: SafetyAlert[];
   duplicate_clusters: DuplicateCluster[];
   weekly_insights?: WeeklyInsights;
+  generated_at?: string;
+  summary?: string;
 }
 
 interface AgentExecution {
@@ -156,7 +160,7 @@ export default function AiPanel() {
       .then((data) => {
         const execs = data.executions || [];
         const relevant = execs.filter((e) => 
-          ['analytics', 'content', 'specialist'].includes(e.division) ||
+          ['analytics', 'content', 'specialist'].includes(e.division ?? '') ||
           (e.agent_id && (e.agent_id.includes('duplicate') || e.agent_id.includes('sentiment') ||
            e.agent_id.includes('nlp') || e.agent_id.includes('problem')))
         );
@@ -371,7 +375,7 @@ export default function AiPanel() {
               {analysis.duplicate_clusters.map((c, i) => (
                 <div key={i} className="py-2 border-b border-border last:border-0">
                   <p className="text-sm font-medium">{c.topic} <span className="chip !text-[10px] ml-1">{c.count} similar</span></p>
-                  {c.shared_words?.length > 0 && <p className="text-[10px] text-ink3 mt-0.5">Shared words: {c.shared_words.map((w: string) => `“${w}”`).join(', ')}</p>}
+                  {c.shared_words && c.shared_words.length > 0 && <p className="text-[10px] text-ink3 mt-0.5">Shared words: {c.shared_words.map((w: string) => `“${w}”`).join(', ')}</p>}
                   <p className="text-[10px] font-mono text-ink3 mt-0.5 truncate">{(c.post_ids || []).join(' · ')}</p>
                 </div>
               ))}

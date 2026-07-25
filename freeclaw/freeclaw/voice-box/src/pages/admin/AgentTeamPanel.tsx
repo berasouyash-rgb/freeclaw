@@ -162,14 +162,14 @@ function SpawnPanel({ agents, onClose, onResult }: { agents: Agent[]; onClose: (
                     <p className="text-xs font-bold text-ink1">{r.agent_name || agent?.name || r.agent_id}</p>
                     {hasData ? (
                       <div className="mt-1 space-y-0.5">
-                        {Object.entries(r.result.data).slice(0, 3).map(([k, v]) => (
+                        {Object.entries(r.result.data as Record<string, unknown>).slice(0, 3).map(([k, v]) => (
                           <p key={k} className="text-[10px] text-ink3 font-mono truncate">
                             <span className="text-ink2 uppercase">{k}:</span> {typeof v === 'object' ? safeStringify(v).slice(0, 40) : String(v).slice(0, 60)}
                           </p>
                         ))}
                       </div>
                     ) : (
-                      <p className="text-[11px] text-ink3 mt-0.5">{r.result?.message || r.result?.type || 'Processed'}</p>
+                      <p className="text-[11px] text-ink3 mt-0.5">{String((r.result as Record<string, unknown>)?.message || (r.result as Record<string, unknown>)?.type || 'Processed')}</p>
                     )}
                   </div>
                   <span className="text-[9px] font-mono px-2 py-0.5 rounded-full flex-shrink-0 bg-emerald-500/15 text-emerald-400">done</span>
