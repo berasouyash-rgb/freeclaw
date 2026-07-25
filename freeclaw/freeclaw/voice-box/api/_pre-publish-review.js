@@ -12,21 +12,28 @@ export default async function handler(req, res) {
   if (req.method === 'OPTIONS') return res.status(204).end();
 
   if (!(await isAdmin(req))) {
+    console.warn('[pre-review] Auth rejected — token missing or expired. Header:', req.headers['x-admin-token'] ? 'present' : 'MISSING');
     return res.status(403).json({ error: 'Admin only' });
   }
 
   if (req.method === 'GET') {
     try {
-      const { data } = await supabase.from('settings')
+      const { data, error } = await supabase.from('settings')
         .select('key, value')
         .like('key', 'pre_publish_review:%')
         .order('key', { ascending: false });
+
+      if (error) {
+        console.error('[pre-review] Supabase query error:', error.message);
+        return res.status(500).json({ error: 'Failed to query review queue' });
+      }
 
       const items = (data || []).map((row) => ({
         key: row.key,
         ...row.value,
       }));
 
+      console.log(`[pre-review] Returning ${items.length} review items`);
       return res.status(200).json({ items, total: items.length });
     } catch (err) {
       console.error('review-queue GET error:', err);

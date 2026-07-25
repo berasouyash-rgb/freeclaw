@@ -2,6 +2,7 @@
 import supabase from './_db-client.js';
 import { cors, isAdmin, auditLog, clean } from './_auth.js';
 import crypto from 'crypto';
+import { sanitizeError } from './_error.js';
 
 const SESSION_MS = 60 * 60 * 1000; // 60 minute session timeout
 
@@ -16,7 +17,7 @@ async function setSetting(key, value) {
 }
 
 export default async function handler(req, res) {
-  cors(res);
+  cors(res, req);
   if (req.method === 'OPTIONS') return res.status(204).end();
 
   try {
@@ -27,7 +28,18 @@ export default async function handler(req, res) {
     if (action === 'login') {
       const stored = await getSetting('admin_password');
       const hash = clean(b.password_hash, 128);
-      if (!stored?.hash || stored.hash !== hash) {
+      // Timing-safe comparison to prevent timing attacks on password hash
+      let hashMatch = false;
+      if (stored?.hash && hash && stored.hash.length === hash.length) {
+        try {
+          const storedBuf = Buffer.from(stored.hash, 'hex');
+          const inputBuf = Buffer.from(hash, 'hex');
+          if (storedBuf.length === inputBuf.length) {
+            hashMatch = crypto.timingSafeEqual(storedBuf, inputBuf);
+          }
+        } catch { /* hex parse failure = no match */ }
+      }
+      if (!hashMatch) {
         await auditLog('system', 'failed_login', 'Bad password attempt');
         return res.status(401).json({ error: 'Incorrect password.' });
       }
@@ -193,7 +205,6 @@ export default async function handler(req, res) {
 
     return res.status(400).json({ error: 'Unknown action' });
   } catch (err) {
-    console.error('admin API error:', err);
-    return res.status(500).json({ error: err.message });
+    return sanitizeError(res, err, 'admin');
   }
 }
