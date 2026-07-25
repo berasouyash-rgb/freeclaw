@@ -4,6 +4,29 @@
 import supabase from './_db-client.js';
 import { cors, isAdmin, auditLog, clean, maskProfanity } from './_auth.js';
 import { callLLMChain } from './_providers.js';
+import { sanitizeError } from './_error.js';
+
+/** Escape LIKE metacharacters for Supabase .or() string interpolation */
+function esc(v) {
+  if (v == null) return '';
+  return String(v).replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_');
+}
+
+// ─── Post Enrichment Helper ───────────────────────────────────────
+// comment_count and reactions are NOT real DB columns — they must be computed.
+async function enrichPosts(posts) {
+  if (!posts || !posts.length) return posts || [];
+  const ids = posts.map((p) => p.id);
+  const [{ data: allReactions }, { data: allComments }] = await Promise.all([
+    supabase.from('reactions').select('target_id, kind').in('target_id', ids),
+    supabase.from('comments').select('post_id').in('post_id', ids),
+  ]);
+  const rMap = {};
+  (allReactions || []).forEach((r) => { rMap[r.target_id] = rMap[r.target_id] || {}; rMap[r.target_id][r.kind] = (rMap[r.target_id][r.kind] || 0) + 1; });
+  const cMap = {};
+  (allComments || []).forEach((c) => { cMap[c.post_id] = (cMap[c.post_id] || 0) + 1; });
+  return posts.map((p) => ({ ...p, reactions: rMap[p.id] || {}, comment_count: cMap[p.id] || 0 }));
+}
 
 // ─── Built-in Intent Engine ───────────────────────────────────────
 // Pattern-matches user intent and queries DB directly. No LLM needed.
@@ -52,14 +75,21 @@ const INTENTS = [
     patterns: /\b(analytics?|stats?|dashboard|overview|summary|numbers?|count|how many|status|health|system)\b/i,
     handler: async () => {
       try {
-        const [{ data: posts }, { data: users }, { data: comments }, { data: reactions }, { data: polls }, { data: chatThreads }] = await Promise.all([
+        const [postsRes, usersRes, commentsRes, reactionsRes, pollsRes] = await Promise.all([
           supabase.from('posts').select('id,category,status,created_at,deleted'),
           supabase.from('users_meta').select('anon_id,created_at,banned'),
           supabase.from('comments').select('id,created_at'),
           supabase.from('reactions').select('id,kind'),
           supabase.from('polls').select('id,title,archived'),
-          supabase.from('chat_threads').select('id,created_at').catch(() => ({ data: [] })),
         ]);
+        let chatThreadsRes;
+        try { chatThreadsRes = await supabase.from('chat_threads').select('id,created_at'); } catch (_) { chatThreadsRes = {}; }
+        const chatThreads = chatThreadsRes?.data || [];
+        const { data: posts } = postsRes;
+        const { data: users } = usersRes;
+        const { data: comments } = commentsRes;
+        const { data: reactions } = reactionsRes;
+        const { data: polls } = pollsRes;
         const active = (posts || []).filter((p) => !p.deleted);
         const cats = {};
         active.forEach((p) => { cats[p.category] = (cats[p.category] || 0) + 1; });
@@ -154,7 +184,7 @@ const INTENTS = [
         const query = match?.[2]?.trim();
         if (!query || query.length < 2) return { reply: 'Usage: "find post cricket"', actions: [] };
         const { data } = await supabase.from('posts').select('id,title,category,status,description,created_at,deleted,hidden')
-          .or(`title.ilike.%${query}%,description.ilike.%${query}%`)
+          .or(`title.ilike.%${esc(query)}%,description.ilike.%${esc(query)}%`)
           .order('created_at', { ascending: false }).limit(10);
         const active = (data || []).filter((p) => !p.deleted);
         if (!active.length) return { reply: `No posts found matching "**${query}**".`, actions: [] };
@@ -244,7 +274,7 @@ const INTENTS = [
 
       // Search for matching posts by title
       const { data } = await supabase.from('posts').select('id,title,category,status,locked,deleted')
-        .or(`title.ilike.%${postQuery}%,description.ilike.%${postQuery}%`)
+          .or(`title.ilike.%${esc(postQuery)}%,description.ilike.%${esc(postQuery)}%`)
         .order('created_at', { ascending: false }).limit(5);
       const active = (data || []).filter((p) => !p.deleted);
       if (!active.length) return { reply: `No posts found matching "**${postQuery}**". Try "find ${postQuery}" to search, or use the post ID directly.`, actions: [] };
@@ -493,7 +523,7 @@ const INTENTS = [
       const match = msg.match(/\b(search|find|look|who)\s*(?:is\s+)?(?:user|account|people|anonymous)\s*(.+)/i);
       const query = match?.[2]?.trim();
       if (!query || query.length < 2) return { reply: 'Usage: "search user [anonymous_id or keyword]"', actions: [] };
-      const { data } = await supabase.from('users_meta').select('*').or(`anon_id.ilike.%${query}%`).order('last_seen', { ascending: false }).limit(10);
+      const { data } = await supabase.from('users_meta').select('*').or(`anon_id.ilike.%${esc(query)}%`).order('last_seen', { ascending: false }).limit(10);
       if (!data?.length) return { reply: `No users found matching "**${query}**".`, actions: [] };
       const list = data.map((u, i) => `${i + 1}. \`${u.anon_id}\` — ${u.banned ? '🔴 BANNED' : '🟢 Active'} · strikes: ${u.strikes || 0} · spam: ${u.spam_score || 0}`).join('\n');
       return { reply: `👤 **Users matching "${query}"**\n\n${list}`, actions: [] };
@@ -620,8 +650,9 @@ const INTENTS = [
   {
     patterns: /\b(what\s+(should|can|do)\s+(I|we)|priorit|urgent|urgent|need.?attention|what.?s?\s+(important|critical|hot|pending)|which\s+(posts?|issues?|problems?)\s+(need|require| deserve))\b/i,
     handler: async () => {
-      const { data: posts } = await supabase.from('posts').select('id,title,category,status,priority,created_at,deleted,hidden,reactions,comment_count')
+      const { data: rawPosts } = await supabase.from('posts').select('id,title,category,status,priority,created_at,deleted,hidden,admin_reply')
         .eq('deleted', false).order('created_at', { ascending: false });
+      const posts = await enrichPosts(rawPosts);
       const active = (posts || []).filter((p) => !p.hidden);
       if (!active.length) return { reply: '✅ No active posts right now. The platform is quiet.', actions: [] };
 
@@ -755,12 +786,13 @@ const INTENTS = [
   {
     patterns: /\b(what do you think|recommend|suggestion|advice|best\s+(way|approach)|should I|opinion|your thoughts|what'?s?\s+your\s+take|any\s+(ideas?|suggestions?|tips?))\b/i,
     handler: async () => {
-      const [{ data: posts }, { data: reports }, { data: users }] = await Promise.all([
-        supabase.from('posts').select('id,title,category,status,priority,created_at,deleted,hidden,reactions,comment_count,admin_reply')
+      const [{ data: rawPosts }, { data: reports }, { data: users }] = await Promise.all([
+        supabase.from('posts').select('id,title,category,status,priority,created_at,deleted,hidden,admin_reply')
           .eq('deleted', false).order('created_at', { ascending: false }),
         supabase.from('reports').select('*').order('created_at', { ascending: false }).limit(10),
         supabase.from('users_meta').select('anon_id,banned,strikes,spam_score,last_seen'),
       ]);
+      const posts = await enrichPosts(rawPosts);
 
       const active = (posts || []).filter((p) => !p.hidden);
       const tips = [];
@@ -842,8 +874,8 @@ const INTENTS = [
 
       // Try to search posts about this topic
       const { data } = await supabase.from('posts').select('id,title,category,status')
-        .or(`title.ilike.%${topic}%,description.ilike.%${topic}%`)
-        .eq('deleted', false).order('created_at', { ascending: false }).limit(5);
+          .or(`title.ilike.%${esc(topic)}%,description.ilike.%${esc(topic)}%`)
+          .eq('deleted', false).order('created_at', { ascending: false }).limit(5);
 
       if (data?.length) {
         const list = data.map((p) => `  • **${p.title}** [${p.category}] — ${p.status}`).join('\n');
@@ -1001,43 +1033,175 @@ const INTENTS = [
 // ─── Default fallback — context-aware smart response ──────────────
 async function fallbackHandler(message, ctx = {}) {
   const { postCount = 0, userCount = 0, commentCount = 0, activePosts = [], recentActivity = [] } = ctx;
+  const msg = message.toLowerCase().trim();
 
-  // If we have context, give a smart response
+  // ── Smart keyword-based fallback: actually query the DB ────────
+  try {
+    // Posts about a topic
+    const searchMatch = msg.match(/\b(posts?|feedback|complaints?|issues?|topics?|about|related)\s+(?:to\s+|about\s+|for\s+)?(.+)/i);
+    if (searchMatch) {
+      const query = searchMatch[2]?.replace(/[?!.,]/g, '').trim();
+      if (query && query.length > 1) {
+        const { data } = await supabase.from('posts').select('id,title,category,status,created_at,deleted')
+          .or(`title.ilike.%${esc(query)}%,description.ilike.%${esc(query)}%`)
+          .order('created_at', { ascending: false }).limit(8);
+        const active = (data || []).filter((p) => !p.deleted);
+        if (active.length > 0) {
+          const list = active.map((p, i) => `${i + 1}. **${p.title}** [${p.category}] — ${p.status} (${new Date(p.created_at).toLocaleDateString()})`).join('\n');
+          return { reply: `🔍 Found **${active.length} posts** related to "${query}":\n\n${list}`, actions: [] };
+        }
+      }
+    }
+
+    // Count / how many
+    if (/\b(how many|count|number of|total|what's the)\b/.test(msg)) {
+      const [{ data: posts }, { data: users }, { data: comments }] = await Promise.all([
+        supabase.from('posts').select('id,deleted').eq('deleted', false),
+        supabase.from('users_meta').select('anon_id'),
+        supabase.from('comments').select('id'),
+      ]);
+      const parts = [];
+      if (/\b(post|feedback|complaint|issue)\b/.test(msg)) parts.push(`**${(posts || []).length} posts** on the platform`);
+      if (/\b(user|member|contributor|anon)\b/.test(msg)) parts.push(`**${(users || []).length} users** registered`);
+      if (/\b(comment|reply|response)\b/.test(msg)) parts.push(`**${(comments || []).length} comments** total`);
+      if (!parts.length) parts.push(`**${(posts || []).length} posts**, **${(users || []).length} users**, **${(comments || []).length} comments**`);
+      return { reply: `📊 Here's what I found:\n\n${parts.join('\n')}`, actions: [] };
+    }
+
+    // Show / list posts
+    if (/\b(show|list|display|see|view|get)\s*(?:me\s+)?(?:all\s+)?(?:the\s+)?(posts?|feedback|complaints?|issues?|recent|latest|new)\b/.test(msg)) {
+      const { data } = await supabase.from('posts').select('id,title,category,status,priority,created_at,deleted,hidden')
+        .order('created_at', { ascending: false }).limit(10);
+      const active = (data || []).filter((p) => !p.deleted);
+      if (active.length > 0) {
+        const list = active.map((p, i) => `${i + 1}. **${p.title}** [${p.category}] — ${p.status} (priority: ${p.priority}) ${p.hidden ? '🫥' : ''}`).join('\n');
+        return { reply: `📝 **Recent Posts** (showing ${active.length})\n\n${list}`, actions: [] };
+      }
+      return { reply: '📝 No posts found on the platform yet.', actions: [] };
+    }
+
+    // Show comments
+    if (/\b(show|list|display|see|view|get)\s*(?:me\s+)?(?:all\s+)?(?:the\s+)?comment/i.test(msg)) {
+      const { data } = await supabase.from('comments').select('id,post_id,body,author_id,is_admin,created_at').order('created_at', { ascending: false }).limit(10);
+      if (data?.length) {
+        const list = data.map((c, i) => `${i + 1}. Post \`${c.post_id}\` — ${c.body?.slice(0, 80) || '(empty)'} (${c.is_admin ? 'admin' : 'user'})`).join('\n');
+        return { reply: `💬 **Recent Comments** (${data.length})\n\n${list}`, actions: [] };
+      }
+      return { reply: '💬 No comments yet.', actions: [] };
+    }
+
+    // Show users
+    if (/\b(show|list|display|see|view|get|who)\s*(?:me\s+)?(?:all\s+)?(?:the\s+)?(user|member|contributor|people|anon)/i.test(msg)) {
+      const { data } = await supabase.from('users_meta').select('anon_id,created_at,banned,spam_score').order('created_at', { ascending: false }).limit(10);
+      if (data?.length) {
+        const list = data.map((u, i) => `${i + 1}. \`${u.anon_id.slice(0, 20)}\` — ${u.banned ? '🚫 banned' : '✅ active'} (spam: ${u.spam_score || 0})`).join('\n');
+        return { reply: `👥 **Users** (${data.length})\n\n${list}`, actions: [] };
+      }
+      return { reply: '👥 No users found.', actions: [] };
+    }
+
+    // Show polls
+    if (/\b(show|list|display|see|view|get)\s*(?:me\s+)?(?:all\s+)?(?:the\s+)?poll/i.test(msg)) {
+      const { data } = await supabase.from('polls').select('id,title,total_votes,archived').order('created_at', { ascending: false }).limit(10);
+      if (data?.length) {
+        const list = data.map((p, i) => `${i + 1}. **${p.title}** — ${p.total_votes || 0} votes ${p.archived ? '(archived)' : ''}`).join('\n');
+        return { reply: `📊 **Polls** (${data.length})\n\n${list}`, actions: [] };
+      }
+      return { reply: '📊 No polls created yet.', actions: [] };
+    }
+
+    // Show reports
+    if (/\b(show|list|display|see|view|get|any|pending|all)\s*(?:me\s+)?(?:the\s+)?(?:all\s+)?report/i.test(msg)) {
+      const { data } = await supabase.from('reports').select('*').order('created_at', { ascending: false }).limit(10);
+      if (data?.length) {
+        const list = data.map((r, i) => `${i + 1}. Post \`${r.post_id?.slice(0, 8)}\` — ${r.reason || 'no reason'} (${r.status || 'pending'})`).join('\n');
+        return { reply: `🚨 **Reports** (${data.length})\n\n${list}`, actions: [] };
+      }
+      return { reply: '✅ No reports found. Platform is clean.', actions: [] };
+    }
+
+    // Activity / logs
+    if (/\b(activity|log|audit|history|what happened|recent)/i.test(msg)) {
+      const { data } = await supabase.from('activity_logs').select('actor,action,detail,created_at').order('created_at', { ascending: false }).limit(8);
+      if (data?.length) {
+        const list = data.map((l, i) => `${i + 1}. **${l.actor}** ${l.action} — ${l.detail?.slice(0, 80) || ''} (${new Date(l.created_at).toLocaleString()})`).join('\n');
+        return { reply: `📋 **Recent Activity** (${data.length})\n\n${list}`, actions: [] };
+      }
+      return { reply: '📋 No activity logged yet.', actions: [] };
+    }
+
+    // Status / health check
+    if (/\b(status|health|how are things|how's it going|what's up|check|system)/i.test(msg)) {
+      const [{ data: posts }, { data: users }, { data: comments }, { data: reports }] = await Promise.all([
+        supabase.from('posts').select('id,status,deleted').eq('deleted', false),
+        supabase.from('users_meta').select('anon_id'),
+        supabase.from('comments').select('id'),
+        supabase.from('reports').select('id,status'),
+      ]);
+      const statuses = {};
+      (posts || []).forEach((p) => { statuses[p.status] = (statuses[p.status] || 0) + 1; });
+      const pending = (reports || []).filter((r) => r.status === 'pending').length;
+      const statusLines = Object.entries(statuses).map(([k, v]) => `  ${k}: ${v}`).join('\n');
+      return {
+        reply: `✅ **System Health**\n\n` +
+          `**Posts:** ${(posts || []).length} (${statusLines})\n` +
+          `**Users:** ${(users || []).length}\n` +
+          `**Comments:** ${(comments || []).length}\n` +
+          `**Pending reports:** ${pending}\n\n` +
+          `Everything looks operational.`,
+        actions: [],
+      };
+    }
+
+    // Unresolved / what needs attention
+    if (/\b(what should|priorities|needs? attention|unresolved|pending|open|backlog|todo|to-do)/i.test(msg)) {
+      const { data } = await supabase.from('posts').select('id,title,category,status,priority,created_at,deleted')
+        .eq('deleted', false).order('created_at', { ascending: false });
+      const unresolved = (data || []).filter((p) => !['solved', 'archived'].includes(p.status));
+      const urgent = unresolved.filter((p) => p.priority === 'high');
+      if (unresolved.length === 0) return { reply: '🎉 Everything is resolved! No pending items.', actions: [] };
+
+      let reply = `📋 **What Needs Attention** (${unresolved.length} unresolved)\n\n`;
+      if (urgent.length) {
+        reply += `🔴 **High priority (${urgent.length}):**\n`;
+        urgent.slice(0, 5).forEach((p, i) => { reply += `${i + 1}. **${p.title}** [${p.category}] — ${p.status}\n`; });
+        reply += '\n';
+      }
+      const byStatus = {};
+      unresolved.forEach((p) => { byStatus[p.status] = (byStatus[p.status] || 0) + 1; });
+      reply += `**By status:** ${Object.entries(byStatus).map(([k, v]) => `${k}: ${v}`).join(', ')}`;
+      return { reply, actions: [] };
+    }
+  } catch (e) {
+    console.error('Smart fallback query failed:', e.message);
+  }
+
+  // ── Final fallback: context-aware if available ───────────────
   if (postCount > 0 || userCount > 0) {
-    const unresolved = activePosts.filter((p) => p.status !== 'solved' && p.status !== 'archived');
-    const urgentWords = /\b(urgent|danger|unsafe|injur|threat|bully|harass|emergency|fire|leak|abuse)\b/i;
-    const urgent = activePosts.filter((p) => urgentWords.test(p.title));
-
-    let guidance = '';
-    if (urgent.length) {
-      guidance += `⚠️ **${urgent.length} urgent safety-related posts detected.** Say "show urgent posts" to review them.\n\n`;
-    }
-    if (unresolved.length > 5) {
-      guidance += `📊 **${unresolved.length} unresolved posts.** Say "what should I do" for priorities.\n\n`;
-    }
-
     return {
       reply: `I understand you're asking about "${message.slice(0, 80)}".\n\n` +
-        `**Platform snapshot:** ${postCount} posts, ${userCount} users, ${commentCount} comments\n\n` +
-        guidance +
-        `I can help you with:\n` +
-        `• **Analytics** — "show analytics", "trends this week", "category breakdown"\n` +
-        `• **Posts** — "find [keyword]", "show recent", "view post [id]"\n` +
-        `• **Actions** — "hide [id]", "comment on [id]: message", "set status [id] to solved"\n` +
-        `• **Users** — "show top contributors", "search user [name]", "ban [user]"\n` +
-        `• **Reports** — "show reports", "pending reports"\n` +
-        `• **Tools** — "create poll: title", "set announcement: text", "generate presentation"\n` +
-        `• **Database** — "list tables", "show table posts", "run SQL: SELECT..."\n` +
-        `• **Anything else** — just ask, I'll figure out the best tool`,
+        `**Quick stats:** ${postCount} posts, ${userCount} users, ${commentCount} comments\n\n` +
+        `Here's what I can do right now:\n` +
+        `• **"show recent posts"** — see latest feedback\n` +
+        `• **"show analytics"** — platform overview\n` +
+        `• **"find [topic]"** — search posts\n` +
+        `• **"what needs attention"** — unresolved items\n` +
+        `• **"show users"** — registered users\n` +
+        `• **"show comments"** — recent comments\n` +
+        `• **"help"** — full command list`,
       actions: [],
     };
   }
 
-  // No context available — basic fallback
   return {
-    reply: `I'm processing your request: "${message.slice(0, 80)}".\n\n` +
-      `Let me check what's available on the platform and get you the best answer.\n\n` +
-      `Try asking about: analytics, posts, users, reports, polls, announcements, or say "help" for all commands.`,
+    reply: `Got it — let me look into that for you.\n\n` +
+      `Try asking naturally:\n` +
+      `• "show recent posts"\n` +
+      `• "find posts about [topic]"\n` +
+      `• "how many users are there"\n` +
+      `• "what needs attention"\n` +
+      `• "show analytics"\n` +
+      `• "help" — for all commands`,
     actions: [],
   };
 }
@@ -1090,10 +1254,13 @@ async function executeTool(toolName, args) {
     }
     case 'create_poll': {
       const pollId = `poll_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      // Convert string options to proper { text, votes: 0 } format for DB
+      const rawOptions = args.options || ['Yes', 'No'];
+      const pollOptions = rawOptions.map((o) => (typeof o === 'string' ? { text: o, votes: 0 } : o));
       const { data, error } = await supabase.from('polls').insert({
         id: pollId,
         title: clean(args.title, 200),
-        options: args.options || ['Yes', 'No'],
+        options: pollOptions,
         ptype: args.ptype || 'yesno',
         author_id: 'ADMIN',
       }).select().single();
@@ -1176,7 +1343,7 @@ async function executeTool(toolName, args) {
       return { post_id: fp.id, title: fp.title, featured: fp.featured };
     }
     case 'search_users': {
-      const { data: su } = await supabase.from('users_meta').select('*').or(`anon_id.ilike.%${args.query}%`).order('last_seen', { ascending: false }).limit(args.limit || 20);
+      const { data: su } = await supabase.from('users_meta').select('*').or(`anon_id.ilike.%${esc(args.query)}%`).order('last_seen', { ascending: false }).limit(args.limit || 20);
       return (su || []).map((u) => ({ anon_id: u.anon_id, banned: u.banned, strikes: u.strikes || 0, spam_score: u.spam_score || 0, last_seen: u.last_seen }));
     }
     case 'clear_announcement': {
@@ -1203,7 +1370,7 @@ async function executeTool(toolName, args) {
       // Fetch posts based on period or specific IDs
       let posts;
       if (postIds.length > 0) {
-        const { data } = await supabase.from('posts').select('id,title,category,status,priority,description,admin_reply,created_at,reactions,eta,assigned_to,locked,hidden,deleted,author_id')
+        const { data } = await supabase.from('posts').select('id,title,category,status,priority,description,admin_reply,created_at,eta,assigned_to,locked,hidden,deleted,author_id')
           .in('id', postIds);
         posts = (data || []).filter((p) => !p.deleted);
       } else {
@@ -1211,11 +1378,12 @@ async function executeTool(toolName, args) {
         if (period === 'week') since.setDate(since.getDate() - 7);
         else if (period === 'month') since.setMonth(since.getMonth() - 1);
         else if (period === 'day') since.setDate(since.getDate() - 1);
-        const { data } = await supabase.from('posts').select('id,title,category,status,priority,description,admin_reply,created_at,reactions,eta,assigned_to,locked,hidden,deleted,author_id')
+        const { data } = await supabase.from('posts').select('id,title,category,status,priority,description,admin_reply,created_at,eta,assigned_to,locked,hidden,deleted,author_id')
           .gte('created_at', since.toISOString())
           .order('created_at', { ascending: false });
         posts = (data || []).filter((p) => !p.deleted);
       }
+      posts = await enrichPosts(posts);
 
       if (!posts?.length) {
         return { presentation_html: null, message: `No posts found for the selected period (${period}).`, post_count: 0 };
@@ -1540,7 +1708,7 @@ showSlide(1);
 
 // ─── HTTP Handler ────────────────────────────────────────────────
 export default async function handler(req, res) {
-  cors(res);
+  cors(res, req);
   if (req.method === 'OPTIONS') return res.status(204).end();
 
   try {
@@ -1549,8 +1717,11 @@ export default async function handler(req, res) {
     const b = req.body || {};
     const action = req.method === 'GET' ? req.query.action : b.action;
 
+    // If POST with a message but no explicit action, treat as chat
+    const effectiveAction = action || (req.method === 'POST' && b.message ? 'chat' : action);
+
     // chat — send message, get response with real data
-    if (action === 'chat') {
+    if (effectiveAction === 'chat') {
       const { message, session_id } = b;
       if (!message) return res.status(400).json({ error: 'Message required' });
       const sid = clean(session_id, 60) || `s_${Date.now()}`;
@@ -1578,10 +1749,10 @@ export default async function handler(req, res) {
         reportCount = counts[3].count || 0;
 
         const lists = await Promise.all([
-          supabase.from('posts').select('id,title,category,status,priority,created_at,deleted,hidden,reactions,comment_count').eq('deleted', false).order('created_at', { ascending: false }).limit(10),
+          supabase.from('posts').select('id,title,category,status,priority,created_at,deleted,hidden').eq('deleted', false).order('created_at', { ascending: false }).limit(10),
           supabase.from('activity_logs').select('actor,action,detail,created_at').order('created_at', { ascending: false }).limit(5),
         ]);
-        recentPosts = lists[0].data || [];
+        recentPosts = await enrichPosts(lists[0].data || []);
         recentActivity = lists[1].data || [];
       } catch (ctxErr) {
         console.error('Context gathering failed:', ctxErr.message);
@@ -1617,54 +1788,69 @@ Session: ${sid}`;
         : '';
       const toolDefsText = builtInToolDefs + customToolDefs;
 
-      // ── INTENT-FIRST: Built-in intents always run before LLM ────────
-      // Intent handlers return structured { reply, actions } objects.
-      // LLMs return natural language that rarely includes valid JSON actions.
-      // Running intents first ensures action cards always appear in the UI.
+      // ── LLM-FIRST: External model answers every query ──────────
+      // The NVIDIA LLM (via provider chain) is the primary responder.
+      // Built-in intents only serve as fast-path for structured action cards
+      // and as fallback when the LLM is slow or unavailable.
       let reply = '';
       let actions = [];
       let providerUsed = 'builtin';
       let matched = false;
 
-      for (const intent of INTENTS) {
-        if (intent.patterns.test(message)) {
-          try {
-            const result = await intent.handler(message);
-            if (result && result.reply) {
-              reply = result.reply;
-              actions = result.actions || [];
-              matched = true;
-              break;
+      // Always call the LLM first — it gives varied, intelligent, data-driven answers
+      const systemWithTools = SYSTEM_PROMPT + `\n\n${platformContext}\n\nAVAILABLE TOOLS:\n${toolDefsText}\n\nWhen you need data, use the tools. When you need to act, propose actions. When you need to create something, build it. Never guess — query the database.`;
+      const historyMessages = (history || []).slice(-20).map((h) => ({ role: h.role, content: h.content }));
+      
+      let llmResult = null;
+      try {
+        llmResult = await callLLMChain(systemWithTools, message, historyMessages);
+      } catch (llmErr) {
+        console.error('LLM chain failed, falling back to intents:', llmErr.message);
+      }
+
+      if (llmResult && llmResult.text) {
+        const parsed = parseAgentResponse(llmResult.text);
+        reply = parsed.reply;
+        actions = parsed.actions || [];
+        providerUsed = `${llmResult.provider}:${llmResult.model}`;
+        matched = true;
+      }
+
+      // ── INTENT FALLBACK: Only when LLM fails or returns empty ──
+      // Built-in intents catch common queries when the LLM is down or too slow.
+      // Also used as fast-path for structured action cards (approve/hide/ban)
+      // where we need guaranteed JSON action objects.
+      if (!matched || !reply) {
+        for (const intent of INTENTS) {
+          if (intent.patterns.test(message)) {
+            try {
+              const result = await intent.handler(message);
+              if (result && result.reply) {
+                // If LLM gave a partial reply, prefer the intent's structured actions
+                if (actions.length === 0 && result.actions?.length > 0) {
+                  actions = result.actions;
+                }
+                // Use intent reply only if LLM gave nothing useful
+                if (!reply || reply.length < 10) {
+                  reply = result.reply;
+                  providerUsed = 'builtin';
+                }
+                matched = true;
+                break;
+              }
+            } catch (e) {
+              console.error(`Intent [${String(intent.patterns).slice(0, 60)}] failed for "${message.slice(0, 50)}":`, e.message);
             }
-          } catch (e) {
-            console.error(`Intent [${String(intent.patterns).slice(0, 60)}] failed for "${message.slice(0, 50)}":`, e.message);
-            // Continue to next intent — don't let one handler's DB error kill the whole chain
           }
         }
       }
 
-      // ── LLM fallback: only when no intent matched ───────────────
-      // Handles open-ended questions, complex analysis, creative tasks,
-      // and anything the intent engine doesn't cover.
-      if (!matched) {
-        const systemWithTools = SYSTEM_PROMPT + `\n\n${platformContext}\n\nAVAILABLE TOOLS:\n${toolDefsText}\n\nWhen you need data, use the tools. When you need to act, propose actions. When you need to create something, build it. Never guess — query the database.`;
-
-        // Pass history as extraMessages and the actual user message as the user param.
-        // Previously this passed '' as user, creating a trailing empty message that confused the LLM.
-        const historyMessages = (history || []).slice(-20).map((h) => ({ role: h.role, content: h.content }));
-        const llmResult = await callLLMChain(systemWithTools, message, historyMessages);
-
-        if (llmResult) {
-          const parsed = parseAgentResponse(llmResult.text);
-          reply = parsed.reply;
-          actions = parsed.actions || [];
-          providerUsed = `${llmResult.provider}:${llmResult.model}`;
-        } else {
-          // Neither intent nor LLM — smart fallback
-          const fb = await fallbackHandler(message, { postCount, userCount, commentCount, activePosts, recentActivity });
-          reply = fb.reply;
-          actions = fb.actions || [];
-        }
+      // ── LAST RESORT: Smart keyword fallback ────────────────────
+      if (!reply) {
+        const fb = await fallbackHandler(message, { postCount, userCount, commentCount, activePosts, recentActivity });
+        reply = fb.reply;
+        actions = fb.actions || [];
+        providerUsed = 'builtin-fallback';
       }
 
       // Save user message
@@ -1772,8 +1958,7 @@ Session: ${sid}`;
 
     return res.status(400).json({ error: 'Unknown action' });
   } catch (err) {
-    console.error('agent-chat API error:', err);
-    return res.status(500).json({ error: err.message });
+    return sanitizeError(res, err, 'agent-chat');
   }
 }
 
@@ -1829,15 +2014,17 @@ For pure information queries (no actions needed), just reply normally with the d
 
 ## DATABASE SCHEMA
 The platform uses Supabase (PostgreSQL). Key tables:
-- posts: id, title, description, category, status, priority, author_id, reactions, comment_count, admin_reply, hidden, deleted, locked, pinned, featured, assigned_to, eta, created_at, updated_at
+- posts: id, title, description, category, status, priority, author_id, admin_reply, hidden, deleted, locked, pinned, featured, assigned_to, eta, created_at, updated_at
 - users_meta: anon_id, banned, warnings, strikes, spam_score, notes, last_seen, created_at
 - comments: id, post_id, parent_id, author_id, body, is_admin, created_at
-- reactions: id, post_id, kind, author_id
+- reactions: id, target_id, kind, author_id (computed reactions per post — NOT a column on posts)
 - polls: id, title, options, ptype, total_votes, archived, author_id
 - activity_logs: id, actor, action, detail, created_at
 - settings: key, value (JSONB)
 - reports: id, post_id, reason, status, created_at
 - agent_conversations: id, session_id, role, content, actions, created_at
+
+NOTE: comment_count and reactions are computed server-side from the comments and reactions tables, NOT stored as columns on posts.
 
 Categories: General, Facilities, Academic, Bullying, Security, Medical, Technology, Transport, Food, Staff, Events, Other
 Statuses: reported, verified, in_progress, waiting, solved, archived
@@ -1874,7 +2061,7 @@ const TOOL_DEFS = [
   { name: 'ban_user', description: 'Ban an anonymous user (prevents posting)', parameters: { type: 'object', properties: { anon_id: { type: 'string' }, reason: { type: 'string' } }, required: ['anon_id', 'reason'] } },
   { name: 'unban_user', description: 'Unban an anonymous user', parameters: { type: 'object', properties: { anon_id: { type: 'string' } }, required: ['anon_id'] } },
   // ── Polls ───────────────────────────────────────────────────────
-  { name: 'create_poll', description: 'Create a new poll (yesno/choice/rating)', parameters: { type: 'object', properties: { title: { type: 'string' }, options: { type: 'array', items: { type: 'string' } }, ptype: { type: 'string', enum: ['yesno', 'choice', 'rating'] } }, required: ['title'] } },
+  { name: 'create_poll', description: 'Create a new poll (yesno/single/multi)', parameters: { type: 'object', properties: { title: { type: 'string' }, options: { type: 'array', items: { type: 'string' } }, ptype: { type: 'string', enum: ['yesno', 'single', 'multi'] } }, required: ['title'] } },
   { name: 'close_poll', description: 'Close a poll to new votes', parameters: { type: 'object', properties: { poll_id: { type: 'string' } }, required: ['poll_id'] } },
   // ── Announcements ───────────────────────────────────────────────
   { name: 'set_announcement', description: 'Set or update a site-wide announcement', parameters: { type: 'object', properties: { text: { type: 'string' }, enabled: { type: 'boolean' } } } },
