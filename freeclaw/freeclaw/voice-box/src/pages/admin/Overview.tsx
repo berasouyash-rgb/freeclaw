@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from 'react';
-import { Megaphone, CheckCircle2, Clock, Users, TrendingUp, Flag, Lightbulb, MessageCircle, Play } from 'lucide-react';
+import { Megaphone, CheckCircle2, Clock, Users, TrendingUp, Flag, Lightbulb, MessageCircle, Play, type LucideIcon } from 'lucide-react';
 import { api } from '../../lib/api';
 import { useApp } from '../../contexts/AppContext';
 import { downloadFile, toCSV, trendingScore, CAT_EMOJI, STATUS_META, safeStringify } from '../../lib/utils';
@@ -7,23 +7,27 @@ import CountUp from '../../components/CountUp';
 import Trend, { Sparkline } from '../../components/Trend';
 import QuickActions from './QuickActions';
 import { StatusDialog } from '../../components/ui';
+import type { PostData, CommentData } from '../../types';
 
 const DAY = 86400000;
 
+interface ReportRow { id: string; target_type: string; reason: string; created_at: string; [k: string]: unknown; }
+interface UserRow { id: string; name: string; email: string; role?: string; [k: string]: unknown; }
+
 export default function Overview() {
   const { toast } = useApp();
-  const [posts, setPosts] = useState<any[]>([]);
-  const [comments, setComments] = useState<any[]>([]);
-  const [reports, setReports] = useState<any[]>([]);
-  const [users, setUsers] = useState<any[]>([]);
+  const [posts, setPosts] = useState<PostData[]>([]);
+  const [comments, setComments] = useState<CommentData[]>([]);
+  const [reports, setReports] = useState<ReportRow[]>([]);
+  const [users, setUsers] = useState<UserRow[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     Promise.all([
-      api.get<any[]>('/api/posts?all=1').catch(() => []),
-      api.get<any[]>('/api/comments?all=1').catch(() => []),
-      api.get<any[]>('/api/reports').catch(() => []),
-      api.post<any[]>('/api/admin', { action: 'users' }).catch(() => []),
+      api.get<PostData[]>('/api/posts?all=1').catch(() => []),
+      api.get<CommentData[]>('/api/comments?all=1').catch(() => []),
+      api.get<ReportRow[]>('/api/reports').catch(() => []),
+      api.post<UserRow[]>('/api/admin', { action: 'users' }).catch(() => []),
     ]).then(([p, c, r, u]) => { setPosts(p); setComments(c); setReports(r); setUsers(u); setLoading(false); })
       .catch(() => setLoading(false));
   }, []);
@@ -40,7 +44,7 @@ export default function Overview() {
     } catch (e: unknown) { toast(e instanceof Error ? e.message : 'Unknown error', 'err'); }
   };
 
-  const inWindow = (rows: any[], from: number, to: number) =>
+  const inWindow = (rows: { created_at: string }[], from: number, to: number) =>
     rows.filter((r) => { const t = +new Date(r.created_at); return t >= from && t < to; }).length;
 
   const stats = useMemo(() => {
@@ -48,21 +52,21 @@ export default function Overview() {
     const problems = posts.filter((p) => p.type === 'problem' && !p.deleted);
     const solved = problems.filter((p) => p.status === 'solved');
     const solveTimes = solved.map((p) => {
-      const h = (p.status_history || []).find((x: any) => x.status === 'solved');
+      const h = (p.status_history || []).find((x) => x.status === 'solved');
       return h ? (+new Date(h.at) - +new Date(p.created_at)) / DAY : null;
     }).filter((x): x is number => x !== null);
     const catCount: Record<string, number> = {};
     problems.forEach((p) => { catCount[p.category] = (catCount[p.category] || 0) + 1; });
 
-    const reactionsTotal = posts.reduce((a, p) => a + Object.values(p.reactions || {}).reduce((x: number, y: any) => x + y, 0), 0);
+    const reactionsTotal = posts.reduce((a, p) => a + Object.values(p.reactions || {}).reduce((x: number, y) => x + (y as number), 0), 0);
     const engagement = reactionsTotal + comments.length;
 
     // this week vs previous week for trend arrows
     const wk = { posts: inWindow(posts, now - 7 * DAY, now), postsPrev: inWindow(posts, now - 14 * DAY, now - 7 * DAY),
       comments: inWindow(comments, now - 7 * DAY, now), commentsPrev: inWindow(comments, now - 14 * DAY, now - 7 * DAY),
       reports: inWindow(reports, now - 7 * DAY, now), reportsPrev: inWindow(reports, now - 14 * DAY, now - 7 * DAY) };
-    const solvedThisWeek = solved.filter((p) => (p.status_history || []).some((h: any) => h.status === 'solved' && now - +new Date(h.at) < 7 * DAY)).length;
-    const solvedPrevWeek = solved.filter((p) => (p.status_history || []).some((h: any) => { const t = +new Date(h.at); return h.status === 'solved' && now - t >= 7 * DAY && now - t < 14 * DAY; })).length;
+    const solvedThisWeek = solved.filter((p) => (p.status_history || []).some((h) => h.status === 'solved' && now - +new Date(h.at) < 7 * DAY)).length;
+    const solvedPrevWeek = solved.filter((p) => (p.status_history || []).some((h) => { const t = +new Date(h.at); return h.status === 'solved' && now - t >= 7 * DAY && now - t < 14 * DAY; })).length;
 
     const health = Math.min(100, Math.round(
       (problems.length ? (solved.length / problems.length) * 50 : 25) +
@@ -89,7 +93,7 @@ export default function Overview() {
 
   // daily series for sparklines + main chart (last 14 days)
   const series = useMemo(() => {
-    const mk = (rows: any[]) => {
+    const mk = (rows: { created_at: string }[]) => {
       const out: number[] = [];
       for (let i = 13; i >= 0; i--) {
         const d = new Date(); d.setHours(0, 0, 0, 0); d.setDate(d.getDate() - i);
@@ -134,7 +138,7 @@ export default function Overview() {
 
   const ringCirc = 2 * Math.PI * 34;
 
-  const CARDS: { label: string; value: number; suffix?: string; sub: string; icon: any; color: string; trend?: { cur: number; prev: number; invert?: boolean }; spark?: number[] }[] = [
+  const CARDS: { label: string; value: number; suffix?: string; sub: string; icon: LucideIcon; color: string; trend?: { cur: number; prev: number; invert?: boolean }; spark?: number[] }[] = [
     { label: 'Posts this week', value: stats.week, sub: `${stats.today} today · ${stats.month} this month`, icon: Megaphone, color: 'text-accent', trend: { cur: stats.wk.posts, prev: stats.wk.postsPrev }, spark: series.posts },
     { label: 'Resolution rate', value: stats.resolution, suffix: '%', sub: `avg solve ${stats.avgSolve} days`, icon: CheckCircle2, color: 'text-good', trend: { cur: stats.solvedThisWeek, prev: stats.solvedPrevWeek } },
     { label: 'Engagement', value: stats.engagement, sub: `${stats.reactionsTotal} reactions · ${comments.length} comments`, icon: TrendingUp, color: 'text-accent', trend: { cur: stats.wk.comments, prev: stats.wk.commentsPrev }, spark: series.comments },
@@ -169,7 +173,7 @@ export default function Overview() {
                 strokeDasharray={ringCirc}
                 strokeDashoffset={ringCirc * (1 - stats.health / 100)}
                 transform="rotate(-90 42 42)"
-                className="vb-ring" style={{ ['--ring-circ' as any]: ringCirc }} />
+                className="vb-ring" style={{ ['--ring-circ' as string]: ringCirc }} />
             </svg>
             <span className="absolute inset-0 grid place-items-center font-display font-bold text-xl"><CountUp value={stats.health} /></span>
           </div>

@@ -65,8 +65,8 @@ export function useInfiniteScroll<T>(
       .then((result) => {
         if (!mountedRef.current) return;
         setItems((prev) => {
-          const existing = new Set(prev.map((p: any) => p.id || JSON.stringify(p)));
-          const newItems = (result.data || []).filter((p: any) => !existing.has(p.id || JSON.stringify(p)));
+          const existing = new Set(prev.map((p: T) => (p as unknown as { id?: string }).id || JSON.stringify(p)));
+          const newItems = (result.data || []).filter((p: T) => !existing.has((p as unknown as { id?: string }).id || JSON.stringify(p)));
           return [...prev, ...newItems];
         });
         cursorRef.current = result.nextCursor;
@@ -134,7 +134,7 @@ export function useInfiniteScroll<T>(
       });
 
     return () => { mountedRef.current = false; };
-  }, [limit, trigger]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [limit, trigger]);
 
   // IntersectionObserver for auto-loading
   useEffect(() => {

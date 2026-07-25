@@ -4,12 +4,36 @@ import {
   Shield, SmilePlus, CloudRain, Meh, AlertTriangle, Phone,
   Lock, Unlock, Sparkles, Plus, MessageSquare, Search, Copy, Check,
   Download, ArrowDown, X, Image as ImageIcon, Trash2,
+  type LucideIcon,
 } from 'lucide-react';
 import { PromptDialog } from '../../components/ui';
 import { api } from '../../lib/api';
 import { useApp } from '../../contexts/AppContext';
 import { timeAgo, fmtDate } from '../../lib/utils';
 import { useRealtime } from '../../lib/useRealtime';
+import type { ChatMessage } from '../../types';
+
+interface ThreadSummary {
+  thread_id: string;
+  source?: 'inbox' | 'chat';
+  last_message?: string;
+  summary?: string;
+  updated_at?: string;
+  last_at?: string;
+  ai_agent?: string;
+  emotion?: { level?: string };
+  state?: { agent?: string; emotion?: { level?: string }; emotion_history?: { level: string }[]; handoff?: boolean };
+  [k: string]: unknown;
+}
+
+interface ThreadState {
+  agent?: string;
+  emotion?: { level?: string };
+  emotion_history?: { level: string }[];
+  handoff?: boolean;
+  source?: string;
+  [k: string]: unknown;
+}
 
 /* ═══════════════════════════════════════════════════════════════
    HELPERS — Markdown, copy, download
@@ -85,7 +109,7 @@ function DownloadButton({ url, filename }: { url: string; filename?: string }) {
    EMOTION CONSTANTS
    ═══════════════════════════════════════════════════════════════ */
 
-const EMOTION_ICONS: Record<string, any> = {
+const EMOTION_ICONS: Record<string, LucideIcon> = {
   critical: AlertTriangle, high: Phone, moderate: CloudRain, mild: Meh, none: SmilePlus,
 };
 const EMOTION_COLORS: Record<string, string> = {
@@ -103,7 +127,7 @@ const EMOTION_LABELS: Record<string, string> = {
    MESSAGE BUBBLE
    ═══════════════════════════════════════════════════════════════ */
 
-function MessageBubble({ msg, isAdmin }: { msg: any; isAdmin: boolean }) {
+function MessageBubble({ msg, isAdmin }: { msg: ChatMessage; isAdmin: boolean }) {
   const htmlBody = useMemo(() => msg.body ? renderMarkdown(msg.body) : '', [msg.body]);
 
   return (
@@ -175,7 +199,7 @@ function MessageBubble({ msg, isAdmin }: { msg: any; isAdmin: boolean }) {
    ═══════════════════════════════════════════════════════════════ */
 
 function ThreadItem({ t, active, onClick, onDelete }: {
-  t: any; active: boolean; onClick: () => void; onDelete: () => void;
+  t: ThreadSummary; active: boolean; onClick: () => void; onDelete: () => void;
 }) {
   const agent = t.source === 'inbox' ? (t.ai_agent || t.state?.agent || 'ai') : 'direct';
   const emotion = t.emotion?.level || t.state?.emotion?.level || 'none';
@@ -259,10 +283,10 @@ const QUICK_REPLIES = [
 export default function UnifiedInbox() {
   const { toast } = useApp();
 
-  const [threads, setThreads] = useState<any[]>([]);
+  const [threads, setThreads] = useState<ThreadSummary[]>([]);
   const [active, setActive] = useState<string | null>(null);
-  const [messages, setMessages] = useState<any[]>([]);
-  const [threadState, setThreadState] = useState<any>(null);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [threadState, setThreadState] = useState<ThreadState | null>(null);
   const [loading, setLoading] = useState(true);
 
   const [text, setText] = useState('');
@@ -278,7 +302,7 @@ export default function UnifiedInbox() {
   const bottomRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
-  const threadsRef = useRef<any[]>([]);
+  const threadsRef = useRef<ThreadSummary[]>([]);
   threadsRef.current = threads;
 
   const agent = threadState?.agent || 'ai';
@@ -301,8 +325,8 @@ export default function UnifiedInbox() {
   const loadThreads = useCallback(async () => {
     try {
       const [inboxRes, chatRes] = await Promise.allSettled([
-        api.get<any>('/api/inbox?threads=1'),
-        api.get<any>('/api/chat?threads=1'),
+        api.get<ThreadSummary[] | { threads: ThreadSummary[] }>('/api/inbox?threads=1'),
+        api.get<ThreadSummary[] | { threads: ThreadSummary[] }>('/api/chat?threads=1'),
       ]);
 
       const inboxThreads = inboxRes.status === 'fulfilled'
@@ -312,7 +336,7 @@ export default function UnifiedInbox() {
         ? (Array.isArray(chatRes.value) ? chatRes.value : [])
         : [];
 
-      const merged = new Map<string, any>();
+      const merged = new Map<string, ThreadSummary>();
       for (const t of chatThreads) merged.set(t.thread_id, { ...t, source: 'chat' });
       for (const t of inboxThreads) merged.set(t.thread_id, { ...t, source: 'inbox' });
 
@@ -334,12 +358,12 @@ export default function UnifiedInbox() {
 
     try {
       if (source === 'chat') {
-        const data = await api.get<{ messages: any[]; thread: any }>(`/api/chat?thread_id=${threadId}`);
+        const data = await api.get<{ messages: ChatMessage[]; thread: ThreadState }>(`/api/chat?thread_id=${threadId}`);
         setMessages(data.messages || []);
         setThreadState({ ...data.thread, source: 'chat' });
         await api.put('/api/chat', { action: 'mark_read', thread_id: threadId, as: 'admin' });
       } else {
-        const data = await api.get<{ messages?: any[]; state?: any }>(`/api/inbox?thread_id=${threadId}`);
+        const data = await api.get<{ messages?: ChatMessage[]; state?: ThreadState }>(`/api/inbox?thread_id=${threadId}`);
         setMessages(data.messages || []);
         setThreadState({ ...(data.state || {}), source: 'inbox' });
       }
@@ -412,7 +436,7 @@ export default function UnifiedInbox() {
   };
 
   /* ── Actions (inbox) ──────────────────────────────────── */
-  const doAction = async (action: string, extra?: any) => {
+  const doAction = async (action: string, extra?: Record<string, unknown>) => {
     if (!active) return;
     setActionBusy(action);
     try {
@@ -442,7 +466,7 @@ export default function UnifiedInbox() {
     try {
       const r = await api.post<{ reply?: string; engine?: string }>('/api/assist', {
         task: 'chat_reply',
-        messages: messages.map((m: any) => ({ sender: m.sender, body: m.body })),
+        messages: messages.map((m) => ({ sender: m.sender, body: m.body })),
       });
       if (r.reply) {
         setText(r.reply);
@@ -485,7 +509,7 @@ export default function UnifiedInbox() {
   /* ── Export ────────────────────────────────────────────── */
   const exportChat = () => {
     if (!messages.length) return;
-    const lines = messages.map((m: any) => {
+    const lines = messages.map((m) => {
       const sender = m.sender === 'admin' ? 'Admin' : m.sender === 'ai' ? 'AI' : 'User';
       return `[${fmtDate(m.created_at)}] ${sender}: ${m.body || '(attachment)'}`;
     });
@@ -663,8 +687,8 @@ export default function UnifiedInbox() {
                 </div>
               )}
               {messages
-                .filter((m: any) => !search || (m.body || '').toLowerCase().includes(search.toLowerCase()))
-                .map((m: any) => <MessageBubble key={m.id} msg={m} isAdmin={m.sender === 'admin'} />)
+                .filter((m) => !search || (m.body || '').toLowerCase().includes(search.toLowerCase()))
+                .map((m) => <MessageBubble key={m.id} msg={m} isAdmin={m.sender === 'admin'} />)
               }
               <div ref={bottomRef} />
             </div>

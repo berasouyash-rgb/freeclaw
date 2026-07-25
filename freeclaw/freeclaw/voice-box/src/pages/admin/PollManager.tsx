@@ -4,10 +4,11 @@ import { api } from '../../lib/api';
 import { useApp } from '../../contexts/AppContext';
 import { timeAgo } from '../../lib/utils';
 import { ConfirmDialog } from '../../components/ui';
+import type { PollData } from '../../types';
 
 export default function PollManager() {
   const { toast } = useApp();
-  const [polls, setPolls] = useState<any[]>([]);
+  const [polls, setPolls] = useState<PollData[]>([]);
   const [loading, setLoading] = useState(true);
   const [showNew, setShowNew] = useState(false);
   const [title, setTitle] = useState('');
@@ -16,7 +17,7 @@ export default function PollManager() {
   const [deleteId, setDeleteId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
-    try { setPolls(await api.get('/api/polls')); } catch (e: any) { toast(e.message, 'err'); }
+    try { setPolls(await api.get('/api/polls')); } catch (e: unknown) { toast(e instanceof Error ? e.message : 'Failed to load polls', 'err'); }
     setLoading(false);
   }, [toast]);
   useEffect(() => { load(); }, [load]);
@@ -25,14 +26,14 @@ export default function PollManager() {
     try {
       await api.post('/api/polls', { title, ptype, options: opts.split('\n').map((o) => o.trim()).filter(Boolean), author_id: 'ADMIN' });
       setShowNew(false); setTitle(''); setOpts(''); load(); toast('Poll created', 'ok');
-    } catch (e: any) { toast(e.message, 'err'); }
+    } catch (e: unknown) { toast(e instanceof Error ? e.message : 'Failed to create poll', 'err'); }
   };
 
   const setArchived = async (id: string, archived: boolean) => {
-    try { await api.put('/api/polls', { id, archived }); load(); } catch (e: any) { toast(e.message, 'err'); }
+    try { await api.put('/api/polls', { id, archived }); load(); } catch (e: unknown) { toast(e instanceof Error ? e.message : 'Failed to archive poll', 'err'); }
   };
   const del = async (id: string) => {
-    try { await api.del('/api/polls', { id }); load(); toast('Deleted', 'ok'); } catch (e: any) { toast(e.message, 'err'); }
+    try { await api.del('/api/polls', { id }); load(); toast('Deleted', 'ok'); } catch (e: unknown) { toast(e instanceof Error ? e.message : 'Failed to delete poll', 'err'); }
   };
 
   return (

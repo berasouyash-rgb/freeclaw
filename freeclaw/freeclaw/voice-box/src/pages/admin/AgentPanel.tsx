@@ -6,8 +6,22 @@ import { timeAgo } from '../../lib/utils';
 import { safeStringify } from '../../lib/utils';
 import { Modal } from '../../components/ui';
 import AgentChat from './AgentChat';
+import type { LucideIcon } from 'lucide-react';
 
-const KIND_META: Record<string, { label: string; icon: any; color: string }> = {
+interface AgentSuggestion {
+  id: number;
+  kind: string;
+  title: string;
+  reasoning: string;
+  content?: Record<string, string>;
+  critical?: boolean;
+  status: 'pending' | 'approved' | 'dismissed';
+  confidence?: number;
+  outcome?: string;
+  created_at: string;
+}
+
+const KIND_META: Record<string, { label: string; icon: LucideIcon; color: string }> = {
   status_change: { label: 'Status change', icon: Activity, color: 'var(--vb-accent)' },
   solved_confirm: { label: 'Confirm solved', icon: Check, color: 'var(--vb-good)' },
   escalation: { label: 'Escalation', icon: Flag, color: 'var(--vb-bad)' },
@@ -17,10 +31,10 @@ const KIND_META: Record<string, { label: string; icon: any; color: string }> = {
 
 export default function AgentPanel() {
   const { toast } = useApp();
-  const [suggestions, setSuggestions] = useState<any[]>([]);
+  const [suggestions, setSuggestions] = useState<AgentSuggestion[]>([]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
-  const [confirming, setConfirming] = useState<any>(null);
+  const [confirming, setConfirming] = useState<AgentSuggestion | null>(null);
   const [editText, setEditText] = useState('');
   const [tab, setTab] = useState<'pending' | 'history'>('pending');
   const [mode, setMode] = useState<'chat' | 'suggestions'>('chat');
@@ -48,7 +62,7 @@ export default function AgentPanel() {
     catch (e: unknown) { toast(e instanceof Error ? e.message : 'Dismiss failed', 'err'); }
   };
 
-  const approve = async (sug: any, confirmed = false, edited?: string) => {
+  const approve = async (sug: AgentSuggestion, confirmed = false, edited?: string) => {
     if (sug.critical && !confirmed) { setConfirming(sug); setEditText(sug.content?.to || sug.content?.reply || ''); return; }
     try {
       await api.put<unknown>('/api/agent', { id: sug.id, action: 'approve', confirmed: true, edited_text: edited });
@@ -73,7 +87,7 @@ export default function AgentPanel() {
       {/* Mode switcher */}
       <div className="inline-flex rounded-xl bg-surface2 p-1 gap-0.5">
         {([['chat', 'Chat'], ['suggestions', 'Suggestions']] as const).map(([k, label]) => (
-          <button key={k} onClick={() => setMode(k as any)}
+          <button key={k} onClick={() => setMode(k)}
             className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-all ${mode === k ? 'bg-surface shadow-sm text-accent' : 'text-ink3'}`}>
             {label}
           </button>

@@ -5,6 +5,65 @@ import { safeStringify } from '../../lib/utils';
 import { useApp } from '../../contexts/AppContext';
 import { lsGet, lsSet } from '../../lib/identity';
 import CountUp from '../../components/CountUp';
+import type { PostData } from '../../types';
+
+interface RankedIssue {
+  id: string;
+  title: string;
+  category: string;
+  status?: string;
+  flags?: string[];
+  evidence?: string;
+  recommended_action?: string;
+  urgency_score: number;
+}
+
+interface SafetyAlert {
+  id: string;
+  title: string;
+  reason: string;
+}
+
+interface DuplicateCluster {
+  topic: string;
+  count: number;
+  shared_words?: string[];
+  post_ids?: string[];
+}
+
+interface WeeklyInsights {
+  trending_category?: string;
+  recommendation?: string;
+}
+
+interface AnalysisResult {
+  engine: string;
+  ranked_issues: RankedIssue[];
+  safety_alerts: SafetyAlert[];
+  duplicate_clusters: DuplicateCluster[];
+  weekly_insights?: WeeklyInsights;
+}
+
+interface AgentExecution {
+  id: string;
+  agent_id?: string;
+  agent_name: string;
+  division?: string;
+  status: string;
+  duration_ms?: number;
+  output?: string;
+  [k: string]: unknown;
+}
+
+interface Suggestion {
+  id: string;
+  title: string;
+  description: string;
+  priority: string;
+  confidence?: number;
+  suggestedActions?: string[];
+  [k: string]: unknown;
+}
 
 /** Rank movement arrow: compares an issue's position vs the previous analysis run */
 function RankMove({ id, index, prevRanks }: { id: string; index: number; prevRanks: Record<string, number> }) {
@@ -19,12 +78,12 @@ function RankMove({ id, index, prevRanks }: { id: string; index: number; prevRan
 
 export default function AiPanel() {
   const { toast } = useApp();
-  const [analysis, setAnalysis] = useState<any>(() => lsGet('vb:aiAnalysis', null));
+  const [analysis, setAnalysis] = useState<AnalysisResult | null>(() => lsGet('vb:aiAnalysis', null));
   const [prevRanks, setPrevRanks] = useState<Record<string, number>>(() => lsGet('vb:aiPrevRanks', {}));
   const [busy, setBusy] = useState(false);
   const [digest, setDigest] = useState<string>(() => lsGet('vb:aiDigest', ''));
   const [digestBusy, setDigestBusy] = useState(false);
-  const [agentIntel, setAgentIntel] = useState<any[]>([]);
+  const [agentIntel, setAgentIntel] = useState<AgentExecution[]>([]);
 
   // ── Floating panel state ──
   const [isFloating, setIsFloating] = useState(() => lsGet('vb:aiPanelFloating', false));
@@ -35,12 +94,12 @@ export default function AiPanel() {
   const panelRef = useRef<HTMLDivElement>(null);
 
   // ── Proactive suggestions state ──
-  const [suggestions, setSuggestions] = useState<any[]>([]);
+  const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
   const [suggestionsBusy, setSuggestionsBusy] = useState(false);
   const [suggestionsExpanded, setSuggestionsExpanded] = useState(true);
 
   /** One-click: turn a ranked issue into a linked Yes/No poll */
-  const issueToPoll = async (r: any) => {
+  const issueToPoll = async (r: RankedIssue) => {
     try {
       await api.post('/api/polls', { title: `Do you agree: ${r.title}?`, ptype: 'yesno', post_id: r.id, author_id: 'ADMIN' });
       toast('Poll created and linked to the issue 📊', 'ok');
@@ -51,16 +110,16 @@ export default function AiPanel() {
   const generateDigest = async () => {
     setDigestBusy(true);
     try {
-      const posts = await api.get<any[]>('/api/posts?all=1');
-      const week = posts.filter((p: any) => Date.now() - +new Date(p.created_at) < 7 * 86400000);
-      const solved = posts.filter((p: any) => (p.status_history || []).some((h: any) => h.status === 'solved' && Date.now() - +new Date(h.at) < 7 * 86400000));
+      const posts = await api.get<PostData[]>('/api/posts?all=1');
+      const week = posts.filter((p) => Date.now() - +new Date(p.created_at) < 7 * 86400000);
+      const solved = posts.filter((p) => (p.status_history || []).some((h) => h.status === 'solved' && Date.now() - +new Date(h.at) < 7 * 86400000));
       const cats: Record<string, number> = {};
-      week.forEach((p: any) => { cats[p.category] = (cats[p.category] || 0) + 1; });
+      week.forEach((p) => { cats[p.category] = (cats[p.category] || 0) + 1; });
       const topCat = Object.entries(cats).sort((a, b) => b[1] - a[1])[0];
       const result = await api.post<{ summary: string }>('/api/ai', {
         task: 'summarize',
         title: 'Weekly staff digest',
-        description: `This week: ${week.length} new submissions, ${solved.length} issues solved. Most active category: ${topCat?.[0] || 'none'} (${topCat?.[1] || 0} posts). Top items: ${week.slice(0, 5).map((p: any) => p.title).join('; ')}`,
+        description: `This week: ${week.length} new submissions, ${solved.length} issues solved. Most active category: ${topCat?.[0] || 'none'} (${topCat?.[1] || 0} posts). Top items: ${week.slice(0, 5).map((p) => p.title).join('; ')}`,
       });
       const text = `📅 Week of ${new Date().toLocaleDateString(undefined, { month: 'long', day: 'numeric' })}\n\n• ${week.length} new submissions · ${solved.length} solved\n• Most active: ${topCat?.[0] || 'N/A'} (${topCat?.[1] || 0} posts)\n\n${result.summary}`;
       setDigest(text);
@@ -74,15 +133,15 @@ export default function AiPanel() {
     setBusy(true);
     try {
       // snapshot current ranking so we can show ▲/▼ movement after the new run
-      const old = lsGet<any>('vb:aiAnalysis', null);
+      const old = lsGet<AnalysisResult | null>('vb:aiAnalysis', null);
       if (old?.ranked_issues) {
         const ranks: Record<string, number> = {};
-        old.ranked_issues.forEach((r: any, i: number) => { ranks[r.id] = i; });
+        old.ranked_issues.forEach((r, i) => { ranks[r.id] = i; });
         setPrevRanks(ranks);
         lsSet('vb:aiPrevRanks', ranks);
       }
-      const posts = await api.get<any[]>('/api/posts?all=1');
-      const result = await api.postSlow<{ engine: string }>('/api/ai', { task: 'analyze', posts });
+      const posts = await api.get<PostData[]>('/api/posts?all=1');
+      const result = await api.postSlow<AnalysisResult>('/api/ai', { task: 'analyze', posts });
       setAnalysis(result);
       lsSet('vb:aiAnalysis', result);
       toast(`Analysis complete (${result.engine})`, 'ok');
@@ -93,10 +152,10 @@ export default function AiPanel() {
   useEffect(() => { if (!analysis) run(); }, [analysis, run]);
 
   useEffect(() => {
-    api.get<{ executions: any[] }>('/api/agent-executions?action=list&limit=20')
-      .then((data: any) => {
+    api.get<{ executions: AgentExecution[] }>('/api/agent-executions?action=list&limit=20')
+      .then((data) => {
         const execs = data.executions || [];
-        const relevant = execs.filter((e: any) => 
+        const relevant = execs.filter((e) => 
           ['analytics', 'content', 'specialist'].includes(e.division) ||
           (e.agent_id && (e.agent_id.includes('duplicate') || e.agent_id.includes('sentiment') ||
            e.agent_id.includes('nlp') || e.agent_id.includes('problem')))
@@ -110,7 +169,7 @@ export default function AiPanel() {
   const fetchSuggestions = useCallback(async () => {
     setSuggestionsBusy(true);
     try {
-      const result = await api.get<{ suggestions: any[]; count: number }>('/api/proactive?action=detect');
+      const result = await api.get<{ suggestions: Suggestion[]; count: number }>('/api/proactive?action=detect');
       setSuggestions(result?.suggestions || []);
     } catch { /* non-critical */ }
     setSuggestionsBusy(false);
@@ -161,7 +220,7 @@ export default function AiPanel() {
 
   const applySummary = async (id: string) => {
     try {
-      const posts = await api.get<any[]>(`/api/posts?id=${id}`);
+      const posts = await api.get<PostData[]>(`/api/posts?id=${id}`);
       const p = posts?.[0];
       if (!p) { toast('Post not found', 'err'); return; }
       const s = await api.post<{ summary: string }>('/api/ai', { task: 'summarize', title: p.title, description: p.description });
@@ -265,7 +324,7 @@ export default function AiPanel() {
           {(analysis.safety_alerts || []).length > 0 && (
             <div className="card !border-bad/40 p-5">
               <h2 className="text-xs font-bold uppercase tracking-wider text-bad mb-2 flex items-center gap-1.5"><ShieldAlert size={13} /> Safety alerts</h2>
-              {analysis.safety_alerts.map((a: any) => (
+              {analysis.safety_alerts.map((a) => (
                 <p key={a.id} className="text-sm py-1.5 border-b border-border last:border-0"><b>{a.title}</b> <span className="text-xs text-ink3">— {a.reason}</span></p>
               ))}
             </div>
@@ -274,7 +333,7 @@ export default function AiPanel() {
           <div className="card p-5">
             <h2 className="text-xs font-bold uppercase tracking-wider text-ink3 mb-3 flex items-center gap-1.5"><TrendingUp size={13} /> AI-ranked issues</h2>
             <div className="space-y-2">
-              {(analysis.ranked_issues || []).map((r: any, i: number) => (
+              {(analysis.ranked_issues || []).map((r, i) => (
                 <div key={r.id} className="flex items-center gap-3 py-2 border-b border-border last:border-0 vb-rise" style={{ animationDelay: `${i * 45}ms` }}>
                   <div className="flex flex-col items-center w-8 shrink-0">
                     <span className={`font-display font-bold ${i === 0 ? 'text-accent' : 'text-ink3'}`}>{i + 1}</span>
@@ -309,7 +368,7 @@ export default function AiPanel() {
           {(analysis.duplicate_clusters || []).length > 0 && (
             <div className="card p-5">
               <h2 className="text-xs font-bold uppercase tracking-wider text-ink3 mb-3 flex items-center gap-1.5"><GitMerge size={13} /> Duplicate clusters</h2>
-              {analysis.duplicate_clusters.map((c: any, i: number) => (
+              {analysis.duplicate_clusters.map((c, i) => (
                 <div key={i} className="py-2 border-b border-border last:border-0">
                   <p className="text-sm font-medium">{c.topic} <span className="chip !text-[10px] ml-1">{c.count} similar</span></p>
                   {c.shared_words?.length > 0 && <p className="text-[10px] text-ink3 mt-0.5">Shared words: {c.shared_words.map((w: string) => `“${w}”`).join(', ')}</p>}
@@ -329,7 +388,7 @@ export default function AiPanel() {
             <Brain size={16} className="text-accent" /> Agent Intelligence
           </h3>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-            {agentIntel.map((exec: any) => (
+            {agentIntel.map((exec) => (
               <div key={exec.id} className="card p-3 space-y-1">
                 <div className="flex items-center gap-2">
                   <span className={`w-2 h-2 rounded-full ${exec.status === 'completed' ? 'bg-green-400' : exec.status === 'failed' ? 'bg-red-400' : 'bg-accent animate-pulse'}`} />
@@ -365,7 +424,7 @@ export default function AiPanel() {
             {!suggestionsBusy && suggestions.length === 0 && (
               <p className="text-[11px] text-ink3">No suggestions right now. The assistant will proactively detect issues and opportunities.</p>
             )}
-            {suggestions.map((s: any) => (
+            {suggestions.map((s) => (
               <div key={s.id} className="flex items-start gap-3 p-3 rounded-xl bg-surface/50 border border-border/60 group">
                 <div className="shrink-0 mt-0.5">
                   <span className={`w-2 h-2 rounded-full ${s.priority === 'high' ? 'bg-bad' : s.priority === 'medium' ? 'bg-warn' : 'bg-good'}`} />

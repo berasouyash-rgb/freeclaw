@@ -4,10 +4,31 @@ import { api } from '../../lib/api';
 import { useApp } from '../../contexts/AppContext';
 import { timeAgo } from '../../lib/utils';
 import PostPreviewCard from '../../components/PostPreviewCard';
+import type { PostData } from '../../types';
+
+interface ReportRow {
+  id: number;
+  target_id: string;
+  target_type: 'post' | 'comment' | 'poll';
+  reason: string;
+  details?: string;
+  status?: string;
+  created_at: string;
+  [k: string]: unknown;
+}
+
+interface PreReviewItem {
+  key: string;
+  title: string;
+  body: string;
+  author_id: string;
+  created_at: string;
+  [k: string]: unknown;
+}
 
 /* ── Post preview card (for existing reports) ────────────────── */
 function PostPreview({ targetId }: { targetId: string }) {
-  const [post, setPost] = useState<any>(null);
+  const [post, setPost] = useState<PostData | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -90,7 +111,7 @@ function PostPreview({ targetId }: { targetId: string }) {
 }
 
 /* ── Pre-publish review item ─────────────────────────────────── */
-function PrePublishReview({ item, onAction }: { item: any; onAction: (key: string, action: string) => void }) {
+function PrePublishReview({ item, onAction }: { item: PreReviewItem; onAction: (key: string, action: string) => void }) {
   const [acting, setActing] = useState(false);
 
   const handleAction = async (action: string) => {
@@ -174,8 +195,8 @@ function PrePublishReview({ item, onAction }: { item: any; onAction: (key: strin
 /* ── Main Reports Component ─────────────────────────────────── */
 export default function Reports() {
   const { toast } = useApp();
-  const [reports, setReports] = useState<any[]>([]);
-  const [preReviews, setPreReviews] = useState<any[]>([]);
+  const [reports, setReports] = useState<ReportRow[]>([]);
+  const [preReviews, setPreReviews] = useState<PreReviewItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState<'open' | 'resolved' | 'pre-publish'>('open');
   const [expandedId, setExpandedId] = useState<number | null>(null);
@@ -183,8 +204,8 @@ export default function Reports() {
   const load = useCallback(async () => {
     try {
       const [reportsData, reviewData] = await Promise.all([
-        api.get<any[]>('/api/reports').catch(() => []),
-        api.get<{ items: any[] }>('/api/pre-review').catch(() => ({ items: [] })),
+        api.get<ReportRow[]>('/api/reports').catch(() => []),
+        api.get<{ items: PreReviewItem[] }>('/api/pre-review').catch(() => ({ items: [] })),
       ]);
       setReports(reportsData || []);
       setPreReviews(reviewData?.items || []);

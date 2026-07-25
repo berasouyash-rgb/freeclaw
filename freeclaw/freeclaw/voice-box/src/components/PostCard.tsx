@@ -1,4 +1,4 @@
-import { memo, useCallback, useState } from 'react';
+import { memo, useCallback, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { ThumbsUp, MessageCircle, Bookmark, Pin, Sparkles, CheckCircle2, Flame, BarChart3, AlertCircle, Angry, Heart, Gavel } from 'lucide-react';
 import { useApp } from '../contexts/AppContext';
@@ -25,7 +25,7 @@ function PostCardInner({ post, myReactions, onReacted }: PostCardProps) {
   const [localCounts, setLocalCounts] = useState<Record<string, number> | null>(null);
   const [localMine, setLocalMine] = useState<string[] | null>(null);
   const counts = localCounts || post.reactions || {};
-  const mine = localMine || myReactions || [];
+  const mine = useMemo(() => localMine || myReactions || [], [localMine, myReactions]);
   const status = STATUS_META[post.status] ?? STATUS_META.reported ?? { label: 'Unknown', color: '#888', pct: 0 };
   const prio = PRIORITY_META[post.priority] ?? PRIORITY_META.medium ?? { label: 'Medium', color: '#888' };
   // Trending: fast-rising support relative to age

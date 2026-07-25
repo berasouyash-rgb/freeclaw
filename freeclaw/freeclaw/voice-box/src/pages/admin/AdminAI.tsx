@@ -37,8 +37,8 @@ interface ChatMessage {
 
 interface ToolCallEvent {
   tool: string;
-  input?: any;
-  result?: any;
+  input?: Record<string, unknown>;
+  result?: Record<string, unknown> | string;
   status: 'executing' | 'result' | 'error';
   timestamp: number;
 }
@@ -53,7 +53,7 @@ interface AgentRoute {
 
 interface ExecutionEvent {
   type: string;
-  data: any;
+  data: Record<string, unknown>;
   timestamp: number;
 }
 
@@ -62,7 +62,7 @@ interface ToolSchema {
   description: string;
   category: string;
   permissions: string;
-  parameters?: any;
+  parameters?: Record<string, unknown>;
   requiresApproval?: boolean;
 }
 
@@ -86,7 +86,7 @@ interface MemoryEntry {
   id: string;
   agent_id: string;
   memory_type: string;
-  content: any;
+  content: Record<string, unknown> | string;
   created_at: string;
 }
 
@@ -232,11 +232,11 @@ export default function AdminAI() {
 
   // ── RAG ──
   const [ragQuery, setRagQuery] = useState('');
-  const [ragResults, setRagResults] = useState<any[]>([]);
+  const [ragResults, setRagResults] = useState<Record<string, unknown>[]>([]);
   const [ragLoading, setRagLoading] = useState(false);
 
   // ── Conversation history ──
-  const [conversations, setConversations] = useState<any[]>([]);
+  const [conversations, setConversations] = useState<{ id: string; title?: string; agent_id?: string; created_at: string }[]>([]);
   const [conversationsLoading, setConversationsLoading] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
 
@@ -304,7 +304,7 @@ export default function AdminAI() {
   const loadConversations = async () => {
     setConversationsLoading(true);
     try {
-      const data = await api.get<{ conversations: any[] }>('/api/v3/stream?action=conversations&limit=20');
+      const data = await api.get<{ conversations: { id: string; title?: string; agent_id?: string; created_at: string }[] }>('/api/v3/stream?action=conversations&limit=20');
       setConversations(data.conversations || []);
     } catch (e: unknown) { console.warn('[AdminAI] Failed to load conversations:', e instanceof Error ? e.message : e); }
     setConversationsLoading(false);
@@ -328,7 +328,7 @@ export default function AdminAI() {
     if (!ragQuery.trim()) return;
     setRagLoading(true);
     try {
-      const data = await api.post<{ results: any[] }>('/api/v3/rag', {
+      const data = await api.post<{ results: Record<string, unknown>[] }>('/api/v3/rag', {
         query: ragQuery,
         limit: 10,
       });
@@ -534,7 +534,7 @@ export default function AdminAI() {
     try {
       const data = await api.get<{ messages: ChatMessage[] }>(`/api/v3/stream?action=history&session_id=${convId}`);
       if (data.messages && data.messages.length > 0) {
-        setMessages(data.messages.map((m: any) => ({
+        setMessages(data.messages.map((m: { role: string; content: string; agent_id?: string; created_at: string }) => ({
           role: m.role, content: m.content, agent: m.agent_id, timestamp: new Date(m.created_at).getTime(),
         })));
         setShowHistory(false);

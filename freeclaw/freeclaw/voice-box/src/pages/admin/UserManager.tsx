@@ -5,13 +5,37 @@ import { useApp } from '../../contexts/AppContext';
 import { timeAgo, fmtDate } from '../../lib/utils';
 import { ConfirmDialog, PromptDialog } from '../../components/ui';
 import { useInfiniteScroll } from '../../hooks/useInfiniteScroll';
+import type { PostData, CommentData } from '../../types';
+
+interface UserSummary {
+  anon_id: string;
+  last_seen?: string;
+  post_count?: number;
+  comment_count?: number;
+  [k: string]: unknown;
+}
+
+interface UserDetail {
+  anon_id: string;
+  meta: {
+    anon_id: string;
+    notes?: string;
+    warnings?: { text: string; at: string }[];
+    [k: string]: unknown;
+  };
+  posts: (PostData & { created_at: string; deleted?: boolean })[];
+  comments: (CommentData & { created_at: string; deleted?: boolean })[];
+  reactions: { created_at: string; kind: string; target_id: string }[];
+  reports: { created_at: string; target_type: string; reason: string }[];
+  [k: string]: unknown;
+}
 
 const SUSPEND_OPTIONS = [1, 3, 7, 30, 90];
 
 export default function UserManager() {
   const { toast } = useApp();
   const [query, setQuery] = useState('');
-  const [detail, setDetail] = useState<any>(null);
+  const [detail, setDetail] = useState<UserDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [dialog, setDialog] = useState<{ kind: 'warn' | 'spam' | 'ban' } | null>(null);
 
@@ -20,22 +44,22 @@ export default function UserManager() {
     return { data: result.data || [], nextCursor: result.nextCursor, total: result.total || 0 };
   }, []);
 
-  const { items: users, loading, initialLoading, hasMore, total, sentinelRef, reset } = useInfiniteScroll<any>(fetchUsers, { limit: 30 });
+  const { items: users, loading, initialLoading, hasMore, total, sentinelRef, reset } = useInfiniteScroll<UserSummary>(fetchUsers, { limit: 30 });
 
   const openDetail = async (anonId: string) => {
     setDetailLoading(true);
-    try { setDetail(await api.post('/api/admin', { action: 'user_detail', anon_id: anonId })); }
-    catch (e: any) { toast(e.message, 'err'); }
+    try { setDetail(await api.post<UserDetail>('/api/admin', { action: 'user_detail', anon_id: anonId })); }
+    catch (e: unknown) { toast(e instanceof Error ? e.message : 'Failed to load user detail', 'err'); }
     setDetailLoading(false);
   };
 
-  const updateUser = async (anonId: string, patch: any) => {
+  const updateUser = async (anonId: string, patch: Record<string, unknown>) => {
     try {
       await api.post('/api/admin', { action: 'update_user', anon_id: anonId, ...patch });
       toast('User updated', 'ok');
       reset(); // reload from scratch to get updated counts
       openDetail(anonId);
-    } catch (e: any) { toast(e.message, 'err'); }
+    } catch (e: unknown) { toast(e instanceof Error ? e.message : 'Failed to update user', 'err'); }
   };
 
   const filtered = users
@@ -134,7 +158,7 @@ export default function UserManager() {
                 {(meta.warnings || []).length > 0 && (
                   <div className="mb-4">
                     <h3 className="text-xs font-bold uppercase text-ink3 mb-2">Warnings issued</h3>
-                    {meta.warnings.map((w: any, i: number) => (
+                    {meta.warnings.map((w, i) => (
                       <p key={i} className="text-xs text-ink2 py-1 border-b border-border">{w.text} <span className="text-ink3">· {timeAgo(w.at)}</span></p>
                     ))}
                   </div>
@@ -142,10 +166,10 @@ export default function UserManager() {
 
                 <h3 className="text-xs font-bold uppercase text-ink3 mb-2">Activity timeline</h3>
                 <div className="space-y-1.5 mb-4">
-                  {[...detail.posts.map((p: any) => ({ at: p.created_at, label: `Posted: ${p.title}`, del: p.deleted })),
-                    ...detail.comments.map((c: any) => ({ at: c.created_at, label: `Commented: ${c.body.slice(0, 60)}`, del: c.deleted })),
-                    ...detail.reactions.map((r: any) => ({ at: r.created_at, label: `Reacted (${r.kind}) on ${r.target_id.slice(0, 14)}`, del: false })),
-                    ...detail.reports.map((r: any) => ({ at: r.created_at, label: `Reported ${r.target_type}: ${r.reason.slice(0, 50)}`, del: false }))]
+                  {[...detail.posts.map((p) => ({ at: p.created_at, label: `Posted: ${p.title}`, del: p.deleted })),
+                    ...detail.comments.map((c) => ({ at: c.created_at, label: `Commented: ${c.body.slice(0, 60)}`, del: c.deleted })),
+                    ...detail.reactions.map((r) => ({ at: r.created_at, label: `Reacted (${r.kind}) on ${r.target_id.slice(0, 14)}`, del: false })),
+                    ...detail.reports.map((r) => ({ at: r.created_at, label: `Reported ${r.target_type}: ${r.reason.slice(0, 50)}`, del: false }))]
                     .sort((a, b) => +new Date(b.at) - +new Date(a.at)).slice(0, 40)
                     .map((e, i) => (
                       <p key={i} className={`text-xs py-1 border-b border-border last:border-0 ${e.del ? 'line-through text-ink3' : 'text-ink2'}`}>

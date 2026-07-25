@@ -6,14 +6,15 @@ import { CATEGORIES, STATUS_META, timeAgo, sanitize } from '../../lib/utils';
 import { ConfirmDialog, PromptDialog, StatusDialog } from '../../components/ui';
 import { fireConfetti } from '../../components/Confetti';
 import { useInfiniteScroll } from '../../hooks/useInfiniteScroll';
+import type { PostData } from '../../types';
 
 export default function PostsTable({ type }: { type: 'problem' | 'suggestion' }) {
   const { toast } = useApp();
   const [query, setQuery] = useState('');
   const [statusF, setStatusF] = useState('all');
   const [catF, setCatF] = useState('All');
-  const [selected, setSelected] = useState<any>(null);
-  const [dialog, setDialog] = useState<{ kind: 'delete' | 'merge' | 'poll'; payload?: any } | null>(null);
+  const [selected, setSelected] = useState<PostData | null>(null);
+  const [dialog, setDialog] = useState<{ kind: 'delete' | 'merge' | 'poll'; payload?: string } | null>(null);
   const [statusDialog, setStatusDialog] = useState<{ id: string; status: string } | null>(null);
 
   const fetchPosts = useCallback(async ({ cursor, limit }: { cursor: string | null; limit: number }) => {
@@ -21,13 +22,13 @@ export default function PostsTable({ type }: { type: 'problem' | 'suggestion' })
     return { data: result.data || [], nextCursor: result.nextCursor, total: result.total || 0 };
   }, [type]);
 
-  const { items: posts, loading, initialLoading, hasMore, total, sentinelRef, setItems } = useInfiniteScroll<any>(fetchPosts, { limit: 30 });
+  const { items: posts, loading, initialLoading, hasMore, total, sentinelRef, setItems } = useInfiniteScroll<PostData>(fetchPosts, { limit: 30 });
 
-  const update = async (id: string, patch: any) => {
+  const update = async (id: string, patch: Partial<PostData>) => {
     try {
       const updated = await api.put<Record<string, unknown>>('/api/posts', { id, ...patch });
       setItems((prev) => prev.map((p) => (p.id === id ? { ...p, ...updated } : p)));
-      if (selected?.id === id) setSelected((s: any) => ({ ...s, ...updated }));
+      if (selected?.id === id) setSelected((s) => s ? { ...s, ...updated } as PostData : null);
       if (patch.status === 'solved') {
         fireConfetti();
         toast('Issue solved — the community will be notified!', 'ok');
@@ -49,7 +50,7 @@ export default function PostsTable({ type }: { type: 'problem' | 'suggestion' })
     window.dispatchEvent(new CustomEvent('vb:admin-tab', { detail: 'chat' }));
   };
 
-  const convertToPoll = async (p: any) => {
+  const convertToPoll = async (p: PostData) => {
     try {
       await api.post('/api/polls', { title: `Do you agree: ${p.title}?`, ptype: 'yesno', post_id: p.id, author_id: 'ADMIN' });
       toast('Linked poll created', 'ok');

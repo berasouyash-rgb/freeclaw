@@ -22,8 +22,8 @@ interface Message {
   role: 'user' | 'assistant' | 'system' | 'tool';
   content: string;
   agent_id?: string;
-  tool_calls?: any[];
-  metadata?: any;
+  tool_calls?: Record<string, unknown>[];
+  metadata?: Record<string, unknown>;
   created_at: string;
 }
 
@@ -331,8 +331,8 @@ export default function CommandCenter() {
 
       // Load saved tabs
       try {
-        const tabData = await api.get<{ tabs: any[] }>('/api/command-center?action=admin-tabs');
-        const loadedTabs: ChatTab[] = (tabData.tabs || []).map((t: any) => ({
+        const tabData = await api.get<{ tabs: { id: string; conversation_id: string; conversations?: { agent_id?: string; title?: string } }[] }>('/api/command-center?action=admin-tabs');
+        const loadedTabs: ChatTab[] = (tabData.tabs || []).map((t) => ({
           id: t.id,
           conversation_id: t.conversation_id,
           agent_id: t.conversations?.agent_id || null,
