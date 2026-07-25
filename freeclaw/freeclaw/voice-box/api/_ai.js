@@ -3,6 +3,7 @@
 // Built-in heuristic fallback when no provider is available.
 import { cors, isAdmin } from './_auth.js';
 import { callLLMChain } from './_providers.js';
+import { sanitizeError } from './_error.js';
 
 function parseJson(text) {
   try {
@@ -100,7 +101,7 @@ function heuristicModeration(text) {
 }
 
 export default async function handler(req, res) {
-  cors(res);
+  cors(res, req);
   if (req.method === 'OPTIONS') return res.status(204).end();
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
@@ -117,24 +118,52 @@ export default async function handler(req, res) {
 
     if (task === 'analyze') {
       if (!(await isAdmin(req))) return res.status(403).json({ error: 'Admin only' });
-      // Defensively coerce posts to array (body parser may deliver as string or object)
-      const postList = Array.isArray(posts) ? posts : (typeof posts === 'string' ? (() => { try { return JSON.parse(posts); } catch { return []; } })() : []);
+
+      // Defensively coerce posts to array (body parser may deliver as string, object, or undefined)
+      let postList = [];
+      if (Array.isArray(posts)) {
+        postList = posts;
+      } else if (typeof posts === 'string') {
+        try { postList = JSON.parse(posts); } catch { /* fall through */ }
+      } else if (posts && typeof posts === 'object') {
+        // Body parser delivered as object — check if it has numeric keys (array-like)
+        const keys = Object.keys(posts);
+        if (keys.length > 0 && keys.every((k) => !isNaN(Number(k)))) {
+          postList = Object.values(posts);
+        }
+      }
+
+      console.log(`[ai:analyze] Received ${postList.length} posts, type=${typeof posts}, isArray=${Array.isArray(posts)}`);
+
+      if (postList.length === 0) {
+        console.error('[ai:analyze] No posts received — falling back to heuristic');
+        return res.status(200).json(heuristicAnalysis([]));
+      }
+
       const items = postList.slice(0, 60).map((p) => ({
         id: p.id, title: p.title, description: (p.description || '').slice(0, 240),
         category: p.category, priority: p.priority, status: p.status,
         reactions: p.reactions, comments: p.comment_count, created_at: p.created_at,
       }));
+
       const ai = await callLLMJson(
         'You are an analyst for an anonymous school feedback platform. Cluster duplicates, detect urgency, rank issues using votes, support ratio, severity, recurrence, comment volume and growth rate. Detect abuse/spam/bullying/safety risks.',
         `Feedback items JSON:\n${JSON.stringify(items)}\n\nReturn JSON with keys: summary (string), ranked_issues (array of {id,title,category,urgency_score:0-100,rank_score,support_ratio,flags:[],recommended_action,confidence:0-1}), duplicate_clusters (array of {topic,post_ids,count}), safety_alerts (array of {id,title,reason}), weekly_insights ({total,high_urgency,trending_category,recommendation}).`
       );
+
       if (ai && ai.result) {
-        // Validate LLM result — fall back to heuristic if summary is empty/undefined
         const result = ai.result;
-        if (result.summary && typeof result.summary === 'string' && result.summary.trim().length > 10 && !result.summary.includes('undefined')) {
+        // Lenient validation — accept if summary exists and is meaningful
+        const summaryOk = result.summary && typeof result.summary === 'string' && result.summary.trim().length > 5;
+        if (summaryOk) {
+          console.log(`[ai:analyze] LLM result accepted (${ai.engine}), summary: ${result.summary.slice(0, 80)}...`);
           return res.status(200).json({ engine: ai.engine, generated_at: new Date().toISOString(), ...result });
         }
+        console.warn('[ai:analyze] LLM result invalid — summary:', result.summary);
+      } else {
+        console.warn('[ai:analyze] LLM returned no result');
       }
+
       return res.status(200).json(heuristicAnalysis(postList));
     }
 
@@ -202,7 +231,6 @@ export default async function handler(req, res) {
 
     return res.status(400).json({ error: 'Unknown task' });
   } catch (err) {
-    console.error('ai API error:', err);
-    return res.status(500).json({ error: err.message });
+    return sanitizeError(res, err, 'ai');
   }
 }

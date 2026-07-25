@@ -1,26 +1,31 @@
-import { useState, useEffect, useCallback, lazy, Suspense } from 'react';
+import { useState, useEffect, lazy, Suspense } from 'react';
 import { Link } from 'react-router-dom';
-import { ShieldCheck, LayoutDashboard, Table2, Lightbulb, BarChart3, MessageCircle, Users, Flag, MessagesSquare, ScrollText, Settings as SettingsIcon, LogOut, Sun, Moon, Sparkles, Megaphone, Menu, X, Bot, Loader2 } from 'lucide-react';
+import { ShieldCheck, LayoutDashboard, Table2, Lightbulb, BarChart3, MessageCircle, Users, Flag, 
+ScrollText, Settings as SettingsIcon, LogOut, Sun, Moon, Sparkles, Megaphone, Menu, X, Loader2, 
+Activity, Inbox, Brain, Zap, Cpu, Eye } from 'lucide-react';
 import { useApp } from '../contexts/AppContext';
 import { api, hasAdminSession, setAdminSession, clearAdminSession } from '../lib/api';
 import { sha256 } from '../lib/utils';
 
-// Eagerly loaded (small, always visible)
-import Overview from './admin/Overview';
-import PostsTable from './admin/PostsTable';
-import PollManager from './admin/PollManager';
-
-// Lazy loaded (heavy, only loaded when tab is active)
+// Lazy loaded (all tabs)
+const Overview = lazy(() => import('./admin/Overview'));
+const PostsTable = lazy(() => import('./admin/PostsTable'));
+const PollManager = lazy(() => import('./admin/PollManager'));
 const SuggestionsTable = lazy(() => import('./admin/SuggestionsTable'));
 const CommentMod = lazy(() => import('./admin/CommentMod'));
 const UserManager = lazy(() => import('./admin/UserManager'));
 const Reports = lazy(() => import('./admin/Reports'));
-const AdminChat = lazy(() => import('./admin/AdminChat'));
+// AdminChat merged into UnifiedInbox
 const Logs = lazy(() => import('./admin/Logs'));
 const AdminSettings = lazy(() => import('./admin/AdminSettings'));
 const AiPanel = lazy(() => import('./admin/AiPanel'));
-const AgentPanel = lazy(() => import('./admin/AgentPanel'));
 const AgentTeamPanel = lazy(() => import('./admin/AgentTeamPanel'));
+const CommandCenter = lazy(() => import('./admin/CommandCenter'));
+const UnifiedInbox = lazy(() => import('./admin/UnifiedInbox'));
+const AgentDashboard = lazy(() => import('./admin/AgentDashboard'));
+const AgentOutputPage = lazy(() => import('./admin/AgentOutputPage'));
+const AdminAI = lazy(() => import('./admin/AdminAI'));
+const ContentReview = lazy(() => import('./admin/ContentReview'));
 
 function TabFallback() {
   return (
@@ -33,8 +38,12 @@ function TabFallback() {
 
 const TABS = [
   { key: 'overview', label: 'Dashboard', icon: LayoutDashboard },
-  { key: 'agent', label: 'Admin Agent', icon: Bot },
+  { key: 'admin-ai', label: 'Admin AI', icon: Cpu },
   { key: 'agent-team', label: 'Agent Team', icon: Users },
+  { key: 'command-center', label: 'Command Center', icon: Activity },
+  { key: 'agent-dashboard', label: 'Agent Dashboard', icon: Brain },
+  { key: 'output', label: 'AI Output', icon: Zap },
+  { key: 'inbox', label: 'Inbox', icon: Inbox },
   { key: 'ai', label: 'AI Analysis', icon: Sparkles },
   { key: 'posts', label: 'Complaints', icon: Table2 },
   { key: 'suggestions', label: 'Suggestions', icon: Lightbulb },
@@ -42,7 +51,8 @@ const TABS = [
   { key: 'comments', label: 'Comments', icon: MessageCircle },
   { key: 'users', label: 'Users', icon: Users },
   { key: 'reports', label: 'Reports', icon: Flag },
-  { key: 'chat', label: 'Chat', icon: MessagesSquare },
+  { key: 'content-review', label: 'Content Review', icon: Eye },
+  { key: '__divider__', label: '', icon: () => null },
   { key: 'logs', label: 'Activity Log', icon: ScrollText },
   { key: 'settings', label: 'Settings', icon: SettingsIcon },
 ];
@@ -65,9 +75,9 @@ export default function Admin() {
   // verify session on mount + auto-logout on expiry
   useEffect(() => {
     if (!hasAdminSession()) { setAuthed(false); return; }
-    api.get('/api/admin?action=verify').then((r) => {
+    api.get<{ valid: boolean }>('/api/admin?action=verify').then((r) => {
       if (!r.valid) { clearAdminSession(); setAuthed(false); }
-    }).catch(() => {});
+    }).catch((e: unknown) => { console.warn('[Admin] Session verify failed:', e instanceof Error ? e.message : e); clearAdminSession(); setAuthed(false); });
     const iv = setInterval(() => {
       if (!hasAdminSession()) { setAuthed(false); toast('Admin session expired', 'info'); }
     }, 30000);
@@ -79,11 +89,11 @@ export default function Admin() {
     setBusy(true);
     try {
       const hash = await sha256(password);
-      const res = await api.post('/api/admin', { action: 'login', password_hash: hash });
+      const res = await api.post<{ token: string; expires_at: string }>('/api/admin', { action: 'login', password_hash: hash });
       setAdminSession(res.token, res.expires_at);
       setAuthed(true); setPassword('');
       toast('Welcome back, admin 👋', 'ok');
-    } catch (e: any) { toast(e.message, 'err'); }
+    } catch (e: unknown) { toast(e instanceof Error ? e.message : 'Login failed', 'err'); }
     setBusy(false);
   };
 
@@ -103,9 +113,9 @@ export default function Admin() {
           </div>
           <label className="text-xs font-semibold text-ink2 block mb-1.5" htmlFor="admin-pw">Password</label>
           <input id="admin-pw" type="password" className="input" placeholder="••••••••" value={password}
-            onChange={(e) => setPassword(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && login()} autoFocus />
-          <button className="btn btn-primary w-full mt-4" onClick={login} disabled={busy || !password}>{busy ? 'Verifying…' : 'Sign in'}</button>
-          <p className="text-[11px] text-ink3 text-center mt-4">Enter your admin password to access the dashboard.</p>
+            onChange={(e) => setPassword(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && login()} autoFocus aria-describedby="admin-pw-help" />
+          <p id="admin-pw-help" className="text-[10px] text-ink3 mt-1.5">Enter the admin password to access the dashboard.</p>
+          <button className="btn btn-primary w-full mt-4" onClick={login} disabled={busy || !password} aria-label={busy ? 'Verifying password' : 'Sign in to admin panel'}>{busy ? 'Verifying…' : 'Sign in'}</button>
           <Link to="/" className="block text-center text-xs text-ink3 hover:text-accent mt-3">← Back to Voice Box</Link>
         </div>
       </div>
@@ -114,12 +124,15 @@ export default function Admin() {
 
   const nav = (
     <nav className="flex flex-col gap-0.5">
-      {TABS.map(({ key, label, icon: Icon }) => (
-        <button key={key} onClick={() => { setTab(key); setMobileNav(false); }}
-          className={`flex items-center gap-2.5 px-3 py-2 rounded-lg text-[13px] font-medium text-left transition-all ${tab === key ? 'bg-accent-soft text-accent' : 'text-ink2 hover:bg-surface2'}`}>
-          <Icon size={16} /> {label}
-        </button>
-      ))}
+      {TABS.map(({ key, label, icon: Icon }) => {
+        if (key === '__divider__') return <div key={key} className="border-t border-border my-2" />;
+        return (
+          <button key={key} onClick={() => { setTab(key); setMobileNav(false); }}
+            className={`flex items-center gap-2.5 px-3 py-2 rounded-lg text-[13px] font-medium text-left transition-all ${tab === key ? 'bg-accent-soft text-accent' : 'text-ink2 hover:bg-surface2'}`}>
+            <Icon size={16} /> {label}
+          </button>
+        );
+      })}
     </nav>
   );
 
@@ -160,8 +173,12 @@ export default function Admin() {
         <main className="p-4 sm:p-6 max-w-7xl mx-auto">
           <Suspense fallback={<TabFallback />}>
             {tab === 'overview' && <Overview />}
-            {tab === 'agent' && <AgentPanel />}
+            {tab === 'admin-ai' && <AdminAI />}
             {tab === 'agent-team' && <AgentTeamPanel />}
+            {tab === 'command-center' && <CommandCenter />}
+            {tab === 'agent-dashboard' && <AgentDashboard />}
+            {tab === 'output' && <AgentOutputPage />}
+            {tab === 'inbox' && <UnifiedInbox />}
             {tab === 'ai' && <AiPanel />}
             {tab === 'posts' && <PostsTable type="problem" />}
             {tab === 'suggestions' && <SuggestionsTable />}
@@ -169,7 +186,8 @@ export default function Admin() {
             {tab === 'comments' && <CommentMod />}
             {tab === 'users' && <UserManager />}
             {tab === 'reports' && <Reports />}
-            {tab === 'chat' && <AdminChat />}
+            {tab === 'content-review' && <ContentReview />}
+
             {tab === 'logs' && <Logs />}
             {tab === 'settings' && <AdminSettings />}
           </Suspense>

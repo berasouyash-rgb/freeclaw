@@ -303,6 +303,85 @@ export async function callLLMChain(system, user, extraMessages = []) {
   return null;
 }
 
+// ─── Streaming call (SSE) ────────────────────────────────────────
+// Calls providers with stream:true and pipes tokens to callback.
+// Returns { ok, text, provider, model } when done.
+export async function callProviderStream(messages, { onToken, onDone, onError } = {}) {
+  const providers = [];
+
+  // Build chain: DB providers first, then NIM fallback
+  const dbChain = await buildChain();
+  for (const p of dbChain) providers.push(p);
+  for (const p of NIM_FALLBACK_CHAIN) providers.push(p);
+
+  for (const provider of providers) {
+    if (!provider.baseUrl) continue;
+    try {
+      const body = provider.buildBody(provider.model, messages);
+      body.stream = true;
+
+      const resp = await fetch(provider.baseUrl, {
+        method: 'POST',
+        headers: provider.buildHeaders(provider.key),
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(30000),
+      });
+
+      if (!resp.ok) {
+        const errText = await resp.text().catch(() => '');
+        console.warn(`[LLM-STREAM] ${provider.id} HTTP ${resp.status}: ${errText.slice(0, 200)}`);
+        continue;
+      }
+
+      let fullText = '';
+      const reader = resp.body?.getReader();
+      if (!reader) continue;
+
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed || !trimmed.startsWith('data: ')) continue;
+          const dataStr = trimmed.slice(6);
+          if (dataStr === '[DONE]') continue;
+
+          try {
+            const chunk = JSON.parse(dataStr);
+            const delta = chunk?.choices?.[0]?.delta;
+            const content = delta?.content || '';
+            if (content) {
+              fullText += content;
+              if (onToken) onToken(content);
+            }
+          } catch { /* skip malformed chunks */ }
+        }
+      }
+
+      if (fullText) {
+        if (onDone) onDone();
+        console.log(`[LLM-STREAM] ${provider.id} succeeded (${fullText.length} chars)`);
+        return { ok: true, text: fullText, provider: provider.id, model: provider.model };
+      }
+    } catch (err) {
+      const msg = err.name === 'TimeoutError' ? 'Timeout' : err.message;
+      console.warn(`[LLM-STREAM] ${provider.id} failed:`, msg);
+      if (onError) onError(err);
+    }
+  }
+
+  console.error('[LLM-STREAM] ALL providers failed');
+  return { ok: false, text: '', provider: null, model: null };
+}
+
 // ─── HTTP Handler ────────────────────────────────────────────────
 export default async function handler(req, res) {
   cors(res, req);

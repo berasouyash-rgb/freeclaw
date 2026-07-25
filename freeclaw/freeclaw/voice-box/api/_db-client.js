@@ -17,14 +17,16 @@ function getClient() {
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.VITE_SUPABASE_ANON_KEY;
 
   if (!url || !key) {
-    console.error('CRITICAL: Missing Supabase config. Set VITE_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in .env');
+    const msg = 'CRITICAL: Missing Supabase config. Set VITE_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in .env';
+    console.error(msg);
+    throw new Error(msg);
   }
 
   const isServiceRole = !!process.env.SUPABASE_SERVICE_ROLE_KEY;
 
   _client = createClient(
-    url || 'https://placeholder.supabase.co',
-    key || 'placeholder',
+    url,
+    key,
     {
       global: {
         fetch: async (url, options) => {

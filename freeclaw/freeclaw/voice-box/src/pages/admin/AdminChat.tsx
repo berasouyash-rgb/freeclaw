@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
   Send, Lock, Unlock, Sparkles, Plus, MessageSquare, Search,
-  Copy, Check, Download, ArrowDown, MoreVertical, Trash2,
+  Copy, Check, Download, ArrowDown, Trash2,
   Image as ImageIcon, X, Loader2,
 } from 'lucide-react';
 import { PromptDialog } from '../../components/ui';
@@ -38,8 +38,11 @@ function renderMarkdown(text: string): string {
     .replace(/^[-*]\s+(.+)$/gm, '<li>$1</li>')
     // Ordered lists
     .replace(/^\d+\.\s+(.+)$/gm, '<li>$1</li>')
-    // Links
-    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener" class="text-accent underline">$1</a>')
+    // Links — strip javascript: URIs to prevent XSS
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_m: string, label: string, href: string) => {
+      const safeHref = href.replace(/^\s*javascript\s*:/i, '#');
+      return `<a href="${safeHref}" target="_blank" rel="noopener" class="text-accent underline">${label}</a>`;
+    })
     // Line breaks (preserve double newlines as paragraphs)
     .replace(/\n\n/g, '</p><p>')
     .replace(/\n/g, '<br/>');
@@ -91,7 +94,7 @@ function DownloadButton({ url, filename }: { url: string; filename?: string }) {
 }
 
 /* ── Typing indicator ──────────────────────────────────────── */
-function TypingIndicator() {
+function _TypingIndicator() {
   return (
     <div className="flex items-center gap-3 chat-msg-anim px-4 py-3">
       <div className="w-8 h-8 rounded-full bg-accent-soft flex items-center justify-center flex-shrink-0">
@@ -199,17 +202,17 @@ export default function AdminChat() {
   }, []);
 
   const loadThreads = useCallback(async () => {
-    try { setThreads(await api.get('/api/chat?threads=1')); } catch { /* */ }
+    try { setThreads(await api.get<Record<string, unknown>[]>('/api/chat?threads=1')); } catch (e: unknown) { console.warn('[AdminChat] Failed to load threads:', e instanceof Error ? e.message : e); }
     setLoading(false);
   }, []);
 
   const loadMessages = useCallback(async (tid: string) => {
     try {
-      const data = await api.get(`/api/chat?thread_id=${tid}`);
+      const data = await api.get<{ messages: Record<string, unknown>[]; thread: Record<string, unknown> }>(`/api/chat?thread_id=${tid}`);
       setMessages(data.messages); setThread(data.thread);
-      await api.put('/api/chat', { action: 'mark_read', thread_id: tid, as: 'admin' });
+      await api.put<unknown>('/api/chat', { action: 'mark_read', thread_id: tid, as: 'admin' });
       loadThreads();
-    } catch { /* */ }
+    } catch (e: unknown) { console.warn('[AdminChat] Failed to load messages:', e instanceof Error ? e.message : e); }
   }, [loadThreads]);
 
   useEffect(() => { loadThreads(); }, [loadThreads]);
@@ -250,12 +253,12 @@ export default function AdminChat() {
     if (!msg || !active || sending) return;
     setSending(true);
     try {
-      await api.post('/api/chat', { thread_id: active, sender: 'admin', body: msg });
+      await api.post<unknown>('/api/chat', { thread_id: active, sender: 'admin', body: msg });
       setText('');
       if (inputRef.current) inputRef.current.style.height = 'auto';
       await loadMessages(active);
       setShowScrollBtn(false);
-    } catch (e: any) { toast(e.message, 'err'); }
+    } catch (e: unknown) { toast(e instanceof Error ? e.message : 'Failed to send', 'err'); }
     setSending(false);
     inputRef.current?.focus();
   };
@@ -272,18 +275,18 @@ export default function AdminChat() {
   const setStatus = async (status: 'open' | 'closed') => {
     if (!active) return;
     try {
-      await api.put('/api/chat', { action: 'set_status', thread_id: active, status });
+      await api.put<unknown>('/api/chat', { action: 'set_status', thread_id: active, status });
       await loadMessages(active);
       toast(`Conversation ${status}`, 'ok');
-    } catch (e: any) { toast(e.message, 'err'); }
+    } catch (e: unknown) { toast(e instanceof Error ? e.message : 'Failed to update status', 'err'); }
   };
 
   // AI suggest
   const aiSuggest = async () => {
-    if (!messages.length) { setText(QUICK_REPLIES[0]); return; }
+    if (!messages.length) { setText(QUICK_REPLIES[0] ?? ''); return; }
     setAiBusy(true);
     try {
-      const r = await api.post('/api/assist', {
+      const r = await api.post<{ reply?: string; engine?: string }>('/api/assist', {
         task: 'chat_reply',
         messages: messages.map((m) => ({ sender: m.sender, body: m.body })),
       });
@@ -292,7 +295,7 @@ export default function AdminChat() {
         toast(r.engine === 'keyword' ? 'Suggested reply (add ANTHROPIC_API_KEY for smarter AI)' : 'AI reply drafted — edit before sending', 'info');
         inputRef.current?.focus();
       }
-    } catch (e: any) { toast(e.message, 'err'); }
+    } catch (e: unknown) { toast(e instanceof Error ? e.message : 'AI suggest failed', 'err'); }
     setAiBusy(false);
   };
 
@@ -310,11 +313,11 @@ export default function AdminChat() {
   const deleteThread = async (tid: string) => {
     if (!confirm('Delete this conversation?')) return;
     try {
-      await api.del('/api/chat', { thread_id: tid });
+      await api.del<unknown>('/api/chat', { thread_id: tid });
       setThreads((prev) => prev.filter((t) => t.thread_id !== tid));
       if (active === tid) { setActive(null); setMessages([]); setThread(null); }
       toast('Conversation deleted', 'ok');
-    } catch (e: any) { toast(e.message, 'err'); }
+    } catch (e: unknown) { toast(e instanceof Error ? e.message : 'Failed to delete', 'err'); }
   };
 
   // Filter threads by search

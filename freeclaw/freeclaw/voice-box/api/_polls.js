@@ -1,6 +1,7 @@
 // Poll system: standalone + complaint-linked, with live results
 import supabase from './_db-client.js';
-import { cors, isAdmin, checkUser, auditLog, clean, maskProfanity, rateLimited } from './_auth.js';
+import { cors, isAdmin, checkUser, auditLog, clean, maskProfanity, rateLimited, rateLimitResponse } from './_auth.js';
+import { sanitizeError } from './_error.js';
 
 async function attachResults(polls) {
   const ids = polls.map((p) => p.id);
@@ -16,12 +17,14 @@ async function attachResults(polls) {
 }
 
 export default async function handler(req, res) {
-  cors(res);
+  cors(res, req);
   if (req.method === 'OPTIONS') return res.status(204).end();
 
   try {
     if (req.method === 'GET') {
       const { id, post_id, voter } = req.query;
+      // Cache: 30s browser + CDN for poll listings
+      res.setHeader('Cache-Control', 'public, max-age=30, s-maxage=30, stale-while-revalidate=10');
       if (voter) {
         const { data } = await supabase.from('poll_votes').select('poll_id,choices').eq('author_id', voter);
         return res.status(200).json(data || []);
@@ -31,12 +34,29 @@ export default async function handler(req, res) {
       if (post_id) q = q.eq('post_id', post_id);
       const { data, error } = await q;
       if (error) throw error;
+
+      // Validate linked posts still exist — clean orphaned post_id references
+      const pollsWithLinks = (data || []).filter((p) => p.post_id);
+      if (pollsWithLinks.length) {
+        const postIds = [...new Set(pollsWithLinks.map((p) => p.post_id))];
+        const { data: existingPosts } = await supabase.from('posts').select('id').in('id', postIds);
+        const existingSet = new Set((existingPosts || []).map((p) => p.id));
+        const orphans = pollsWithLinks.filter((p) => !existingSet.has(p.post_id));
+        if (orphans.length) {
+          // Clear orphaned post_id in background (non-blocking)
+          Promise.all(orphans.map((p) => supabase.from('polls').update({ post_id: null }).eq('id', p.id)))
+            .catch(() => {});
+          // Also fix in-memory for this response
+          orphans.forEach((p) => { p.post_id = null; });
+        }
+      }
+
       const results = await attachResults(data || []);
       // Mask author IDs — they are bearer tokens for poll deletion
       const v = clean(req.query.viewer, 40);
       const masked = results.map((p) => {
         const is_mine = !!v && p.author_id === v;
-        return { ...p, is_mine, author_id: is_mine || p.author_id === 'ADMIN' ? p.author_id : (p.author_id || '').slice(0, 9) + '…' };
+        return { ...p, is_mine, author_id: is_mine || p.author_id === 'ADMIN' ? p.author_id : (p.author_id || '').slice(0, 9) + '...' };
       });
       return res.status(200).json(masked);
     }
@@ -70,7 +90,7 @@ export default async function handler(req, res) {
       if (!admin) {
         const gate = await checkUser(author_id);
         if (!gate.ok) return res.status(403).json({ error: gate.error });
-        if (await rateLimited('polls', author_id, 120, 2)) return res.status(429).json({ error: 'Please wait before creating another poll.' });
+        if (await rateLimited('polls', author_id, 120, 2)) return rateLimitResponse(res, 120, 'Please wait before creating another poll.');
       }
       const title = maskProfanity(clean(b.title, 140));
       if (title.length < 5) return res.status(400).json({ error: 'Question must be at least 5 characters.' });
@@ -119,7 +139,6 @@ export default async function handler(req, res) {
 
     return res.status(405).json({ error: 'Method not allowed' });
   } catch (err) {
-    console.error('polls API error:', err);
-    return res.status(500).json({ error: err.message });
+    return sanitizeError(res, err, 'polls');
   }
 }

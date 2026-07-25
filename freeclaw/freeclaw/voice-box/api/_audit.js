@@ -170,7 +170,7 @@ export async function queryAuditLogs({
   if (actorId) query = query.eq('actor_id', actorId);
   if (resourceType) query = query.eq('resource_type', resourceType);
   if (resourceId) query = query.eq('resource_id', resourceId);
-  if (level) query = query.eq('level', level);
+  if (level) query = query.eq('details->>level', level);
   if (startDate) query = query.gte('timestamp', startDate);
   if (endDate) query = query.lte('timestamp', endDate);
 

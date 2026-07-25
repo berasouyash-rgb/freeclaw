@@ -16,7 +16,7 @@ export function triggerRestore() {
     method: 'POST',
     headers,
     body: JSON.stringify({ project_ref: PROJECT_REF }),
-  }).catch(() => {});
+  }).catch((err) => console.error('[db-wake] Restore request failed:', err.message));
 
   // Rate limit: max one restore per minute
   setTimeout(() => { _restoreTriggered = false; }, 60000);

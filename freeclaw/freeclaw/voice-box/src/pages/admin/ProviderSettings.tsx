@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
-import { Key, RefreshCcw, Check, X, AlertTriangle, ChevronDown, ChevronRight, Zap, Star, Layers, Search } from 'lucide-react';
+import { Key, RefreshCcw, Check, X, AlertTriangle, ChevronDown, ChevronRight, Zap, Star, Search } from 'lucide-react';
 import { api } from '../../lib/api';
 import { useApp } from '../../contexts/AppContext';
 
@@ -75,19 +75,19 @@ export default function ProviderSettings() {
   const [searchQuery, setSearchQuery] = useState('');
   // Per-provider edit state
   const [editKey, setEditKey] = useState('');
-  const [editModel, setEditModel] = useState('');
+  const [_editModel, _setEditModel] = useState('');
   const [editCustomModel, setEditCustomModel] = useState('');
   const [savingModel, setSavingModel] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
       const [p, c] = await Promise.all([
-        api.get('/api/providers?action=list'),
-        api.get('/api/providers?action=categories'),
+        api.get<Record<string, ProviderConfig>>('/api/providers?action=list'),
+        api.get<CategoryInfo>('/api/providers?action=categories'),
       ]);
       setProviders(p);
       setCategoryInfo(c);
-    } catch (e: any) { toast(e.message, 'err'); }
+    } catch (e: unknown) { toast(e instanceof Error ? e.message : 'Unknown error', 'err'); }
     setLoading(false);
   }, [toast]);
 
@@ -96,65 +96,66 @@ export default function ProviderSettings() {
   const testProvider = async (pid: string) => {
     setTesting(pid);
     try {
-      const r = await api.post('/api/providers', { action: 'test_provider', provider: pid });
+      const r = await api.post<{ success: boolean; latency_ms?: number; error?: string }>('/api/providers', { action: 'test_provider', provider: pid });
+      const pName = providers[pid]?.name ?? pid;
       if (r.success) {
-        toast(`${providers[pid].name}: OK (${r.latency_ms}ms)`, 'ok');
+        toast(`${pName}: OK (${r.latency_ms}ms)`, 'ok');
       } else {
-        toast(`${providers[pid].name}: Failed — ${r.error}`, 'err');
+        toast(`${pName}: Failed — ${r.error}`, 'err');
       }
       await load();
-    } catch (e: any) { toast(e.message, 'err'); }
+    } catch (e: unknown) { toast(e instanceof Error ? e.message : 'Unknown error', 'err'); }
     setTesting(null);
   };
 
   const testAll = async () => {
     setTestingAll(true);
     try {
-      const r = await api.post('/api/providers', { action: 'test_all' });
-      const ok = Object.values(r).filter((v: any) => v.success).length;
+      const r = await api.post<Record<string, { success: boolean }>>('/api/providers', { action: 'test_all' });
+      const ok = Object.values(r).filter((v) => v.success).length;
       const total = Object.keys(r).length;
       toast(`Tested ${total} providers: ${ok} OK, ${total - ok} failed`, ok > 0 ? 'ok' : 'err');
       await load();
-    } catch (e: any) { toast(e.message, 'err'); }
+    } catch (e: unknown) { toast(e instanceof Error ? e.message : 'Unknown error', 'err'); }
     setTestingAll(false);
   };
 
   const setDefault = async (pid: string) => {
     try {
       await api.post('/api/providers', { action: 'set_default', provider: pid });
-      toast(`${providers[pid].name} set as default`, 'ok');
+      toast(`${providers[pid]?.name ?? pid} set as default`, 'ok');
       await load();
-    } catch (e: any) { toast(e.message, 'err'); }
+    } catch (e: unknown) { toast(e instanceof Error ? e.message : 'Unknown error', 'err'); }
   };
 
   const saveKey = async (pid: string) => {
     try {
-      const config: any = {};
+      const config: Record<string, unknown> = {};
       if (editKey) config.key = editKey;
       config.enabled = true;
       await api.post('/api/providers', { action: 'update_provider', provider: pid, config });
-      toast(`${providers[pid].name} key updated`, 'ok');
+      toast(`${providers[pid]?.name ?? pid} key updated`, 'ok');
       setExpanded(null); setEditKey('');
       await load();
-    } catch (e: any) { toast(e.message, 'err'); }
+    } catch (e: unknown) { toast(e instanceof Error ? e.message : 'Unknown error', 'err'); }
   };
 
   const saveModel = async (pid: string, model: string) => {
     setSavingModel(pid);
     try {
       await api.post('/api/providers', { action: 'update_provider', provider: pid, config: { model } });
-      toast(`${providers[pid].name} → ${model}`, 'ok');
+      toast(`${providers[pid]?.name ?? pid} → ${model}`, 'ok');
       await load();
-    } catch (e: any) { toast(e.message, 'err'); }
+    } catch (e: unknown) { toast(e instanceof Error ? e.message : 'Unknown error', 'err'); }
     setSavingModel(null);
   };
 
   const toggleProvider = async (pid: string, enabled: boolean) => {
     try {
       await api.post('/api/providers', { action: 'update_provider', provider: pid, config: { enabled } });
-      toast(`${providers[pid].name} ${enabled ? 'enabled' : 'disabled'}`, 'ok');
+      toast(`${providers[pid]?.name ?? pid} ${enabled ? 'enabled' : 'disabled'}`, 'ok');
       await load();
-    } catch (e: any) { toast(e.message, 'err'); }
+    } catch (e: unknown) { toast(e instanceof Error ? e.message : 'Unknown error', 'err'); }
   };
 
   const toggleCategory = (cat: string) => {
@@ -175,14 +176,14 @@ export default function ProviderSettings() {
     for (const [cat, ids] of Object.entries(categoryInfo.categories)) {
       const items = ids
         .filter((id) => providers[id])
-        .map((id) => providers[id])
+        .map((id) => providers[id]!)
         .filter((p) => !q || p.name.toLowerCase().includes(q) || p.id.includes(q) || p.model.toLowerCase().includes(q))
         .sort((a, b) => (a.is_default ? -1 : b.is_default ? 1 : a.priority - b.priority));
       if (items.length > 0) {
         groups.push({
           cat,
-          name: categoryInfo.names[cat] || cat,
-          style: CATEGORY_STYLES[cat] || CATEGORY_STYLES.other,
+          name: categoryInfo.names[cat] ?? cat,
+          style: CATEGORY_STYLES[cat] ?? CATEGORY_STYLES.other ?? { icon: '🔧', accent: 'text-ink3', bg: 'bg-surface2' },
           items,
           enabledCount: items.filter((i) => i.enabled).length,
         });
@@ -375,7 +376,7 @@ export default function ProviderSettings() {
               className="w-full text-left px-3 py-2.5 flex items-center gap-2 hover:bg-surface2/30 transition-colors"
               onClick={() => toggleCategory(cat)}
             >
-              <span className="text-sm">{style.icon}</span>
+              <span className="text-sm">{style?.icon ?? '🔧'}</span>
               <span className="font-display font-semibold text-[13px] text-ink flex-1">{name}</span>
               <span className="text-[9px] font-mono text-ink3">{enabledCount}/{items.length} active</span>
               {isOpen ? <ChevronDown size={14} className="text-ink3" /> : <ChevronRight size={14} className="text-ink3" />}

@@ -1,9 +1,11 @@
 // Anonymous comments with nested replies
 import supabase from './_db-client.js';
-import { cors, isAdmin, checkUser, ensureUser, auditLog, clean, maskProfanity, rateLimited } from './_auth.js';
+import { cors, isAdmin, checkUser, ensureUser, auditLog, clean, maskProfanity, rateLimited, rateLimitResponse } from './_auth.js';
+import { emitEvent, EVENT_TYPES } from './_events.js';
+import { sanitizeError } from './_error.js';
 
 export default async function handler(req, res) {
-  cors(res);
+  cors(res, req);
   if (req.method === 'OPTIONS') return res.status(204).end();
 
   try {
@@ -12,6 +14,13 @@ export default async function handler(req, res) {
       const admin = all === '1' ? await isAdmin(req) : false;
       const isPaginated = paginate === '1' || paginate === 'true';
       const PAGE_LIMIT = Math.min(parseInt(limitParam) || 30, 100);
+
+      // Cache headers for public reads
+      if (!admin && !viewer) {
+        res.setHeader('Cache-Control', 'public, max-age=20, s-maxage=20, stale-while-revalidate=10');
+      } else {
+        res.setHeader('Cache-Control', 'private, no-cache');
+      }
 
       let q = supabase.from('comments').select('*').order('created_at', { ascending: false });
       if (post_id) q = q.eq('post_id', post_id);
@@ -61,7 +70,7 @@ export default async function handler(req, res) {
         const gate = await checkUser(author_id);
         if (!gate.ok) return res.status(403).json({ error: gate.error });
         if (await rateLimited('comments', author_id, 30, 5)) {
-          return res.status(429).json({ error: 'Too many comments — please wait a moment.' });
+          return rateLimitResponse(res, 30, 'Too many comments — please wait a moment.');
         }
       }
       const body = maskProfanity(clean(b.body, 500));
@@ -81,6 +90,8 @@ export default async function handler(req, res) {
       if (!is_admin_msg) await ensureUser(author_id);
       // Activity resets the auto-deletion countdown on solved/archived posts
       await supabase.from('posts').update({ updated_at: new Date().toISOString() }).eq('id', row.post_id);
+      // Emit event for event-triggered agents
+      emitEvent(EVENT_TYPES.COMMENT_CREATED, { comment_id: data.id, post_id: row.post_id, author_id: row.author_id }).catch(() => {});
       return res.status(201).json(data);
     }
 
@@ -111,7 +122,6 @@ export default async function handler(req, res) {
 
     return res.status(405).json({ error: 'Method not allowed' });
   } catch (err) {
-    console.error('comments API error:', err);
-    return res.status(500).json({ error: err.message });
+    return sanitizeError(res, err, 'comments');
   }
 }

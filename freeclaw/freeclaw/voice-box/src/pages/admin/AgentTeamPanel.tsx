@@ -1,13 +1,14 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   Users, RefreshCcw, Search, Plus, Loader2, Zap, Shield,
-  Activity, Bot, BarChart3, GitMerge, X, Play,
-  CheckCircle2, Eye, Layers, FileText,
+  Activity, GitMerge, X, Play,
+  CheckCircle2, FileText,
 } from 'lucide-react';
 import { api } from '../../lib/api';
+import { safeStringify } from '../../lib/utils';
 import { useApp } from '../../contexts/AppContext';
 
-import type { Agent, Division, Dashboard, AgentState, WorkflowResult } from './agent-office/types';
+import type { Agent, Division, Dashboard, AgentState, WorkflowResult, AgentActivation } from './agent-office/types';
 import { DIV_COLORS } from './agent-office/constants';
 import OfficeVisualization from './agent-office/OfficeVisualization';
 import InspectorPanel from './agent-office/InspectorPanel';
@@ -44,14 +45,14 @@ function CreateAgentForm({ onCreated, onClose }: { onCreated: (a: Agent) => void
     if (!name.trim()) { toast('Name is required', 'err'); return; }
     setBusy(true);
     try {
-      const r = await api.post('/api/agent-team', {
+      const r = await api.post<{ agent: Agent }>('/api/agent-team', {
         action: 'create', name: name.trim(), description: description.trim(),
         icon, division, role: role.trim(), permissions: ['posts.read'], capabilities: ['custom_task'],
       });
       toast(`Agent "${r.agent.name}" created`, 'ok');
       onCreated(r.agent);
       onClose();
-    } catch (e: any) { toast(e.message, 'err'); }
+    } catch (e: unknown) { toast(e instanceof Error ? e.message : String(e), 'err'); }
     setBusy(false);
   };
 
@@ -117,11 +118,11 @@ function SpawnPanel({ agents, onClose, onResult }: { agents: Agent[]; onClose: (
     if (!task.trim()) { toast('Describe the task', 'err'); return; }
     setBusy(true);
     try {
-      const r = await api.postLong('/api/agent-team', { action: 'spawn', task: task.trim() });
+      const r = await api.postLong<WorkflowResult>('/api/agent-team', { action: 'spawn', message: task.trim() });
       setResult(r);
       toast(`Spawned ${r.agents_used?.length || 0} agents — ${r.total_time_ms}ms`, 'ok');
       onResult(); // refresh data
-    } catch (e: any) { toast(e.message, 'err'); }
+    } catch (e: unknown) { toast(e instanceof Error ? e.message : String(e), 'err'); }
     setBusy(false);
   };
 
@@ -162,7 +163,7 @@ function SpawnPanel({ agents, onClose, onResult }: { agents: Agent[]; onClose: (
                       <div className="mt-1 space-y-0.5">
                         {Object.entries(r.result.data).slice(0, 3).map(([k, v]) => (
                           <p key={k} className="text-[10px] text-ink3 font-mono truncate">
-                            <span className="text-ink2 uppercase">{k}:</span> {typeof v === 'object' ? JSON.stringify(v).slice(0, 40) : String(v).slice(0, 60)}
+                            <span className="text-ink2 uppercase">{k}:</span> {typeof v === 'object' ? safeStringify(v).slice(0, 40) : String(v).slice(0, 60)}
                           </p>
                         ))}
                       </div>
@@ -190,6 +191,7 @@ export default function AgentTeamPanel() {
   const [divisions, setDivisions] = useState<Division[]>([]);
   const [dashboard, setDashboard] = useState<Dashboard | null>(null);
   const [agentStates, setAgentStates] = useState<Record<string, AgentState>>({});
+  const [activations, setActivations] = useState<Record<string, AgentActivation>>({});
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [selectedDivision, setSelectedDivision] = useState<string | null>(null);
@@ -203,32 +205,44 @@ export default function AgentTeamPanel() {
   const load = useCallback(async () => {
     try {
       const [agentsRes, divRes, dashRes] = await Promise.all([
-        api.get('/api/agent-team?action=list'),
-        api.get('/api/agent-team?action=divisions'),
-        api.get('/api/agent-team?action=dashboard'),
+        api.get<{ agents: Agent[] }>('/api/agent-team?action=list'),
+        api.get<{ divisions: Division[] }>('/api/agent-team?action=divisions'),
+        api.get<Dashboard>('/api/agent-team?action=dashboard'),
       ]);
       setAgents(agentsRes.agents || []);
       setDivisions(divRes.divisions || []);
       setDashboard(dashRes);
-    } catch (e: any) { toast(e.message, 'err'); }
+    } catch (e: unknown) { toast(e instanceof Error ? e.message : String(e), 'err'); }
     setLoading(false);
   }, [toast]);
+
+  // Load activation state from backend
+  const loadActivations = useCallback(async () => {
+    try {
+      const r = await api.get<{ agents: AgentActivation[] }>('/api/agent-team?action=activationState');
+      if (r.agents) {
+        const map: Record<string, AgentActivation> = {};
+        r.agents.forEach((a) => { map[a.id] = a; });
+        setActivations(map);
+      }
+    } catch (e: unknown) { console.warn('[AgentTeamPanel] activation load failed:', e instanceof Error ? e.message : e); }
+  }, []);
 
   // Load real agent states from backend
   const loadAgentStates = useCallback(async () => {
     try {
-      const r = await api.get('/api/agent-team?action=status');
+      const r = await api.get<{ states: Record<string, AgentState> }>('/api/agent-team?action=status');
       if (r.states) setAgentStates(r.states);
-    } catch (e) { /* silent */ }
+    } catch (e: unknown) { console.warn('[AgentTeamPanel] polling failed:', e instanceof Error ? e.message : e); }
   }, []);
 
-  useEffect(() => { load(); loadAgentStates(); }, [load, loadAgentStates]);
+  useEffect(() => { load(); loadAgentStates(); loadActivations(); }, [load, loadAgentStates, loadActivations]);
 
-  // Auto-refresh: agents every 30s, states every 3s
+  // Auto-refresh: agents every 30s, states every 10s (DB-backed, no need for 3s polling)
   useEffect(() => {
     if (!autoRefresh) return;
     const ivData = setInterval(load, 30000);
-    const ivStates = setInterval(loadAgentStates, 3000);
+    const ivStates = setInterval(loadAgentStates, 10000);
     return () => { clearInterval(ivData); clearInterval(ivStates); };
   }, [autoRefresh, load, loadAgentStates]);
 
@@ -256,11 +270,41 @@ export default function AgentTeamPanel() {
   const handleSpawnFromInspector = useCallback(async (agentId: string) => {
     toast(`Spawning ${agentId}…`, 'ok');
     try {
-      await api.postLong('/api/agent-team', { action: 'spawn', task: `Execute ${agentId} capabilities` });
+      await api.postLong('/api/agent-team', { action: 'spawn', message: `Execute ${agentId} capabilities` });
       toast(`Agent completed`, 'ok');
       loadAgentStates();
-    } catch (e: any) { toast(e.message, 'err'); }
+    } catch (e: unknown) { toast(e instanceof Error ? e.message : String(e), 'err'); }
   }, [toast, loadAgentStates]);
+
+  // Toggle agent activation
+  const handleToggleActivation = useCallback(async (agentId: string, active: boolean) => {
+    try {
+      await api.post('/api/agent-team', { action: active ? 'activate' : 'deactivate', id: agentId });
+      toast(`Agent ${active ? 'activated' : 'deactivated'}`, 'ok');
+      loadActivations();
+      load();
+    } catch (e: unknown) { toast(e instanceof Error ? e.message : String(e), 'err'); }
+  }, [toast, loadActivations, load]);
+
+  // Toggle autonomous mode
+  const handleToggleAutonomous = useCallback(async (agentId: string, autonomous: boolean) => {
+    try {
+      await api.post('/api/agent-team', { action: 'setAutonomous', id: agentId, autonomous });
+      toast(`Autonomous ${autonomous ? 'enabled' : 'disabled'}`, 'ok');
+      loadActivations();
+    } catch (e: unknown) { toast(e instanceof Error ? e.message : String(e), 'err'); }
+  }, [toast, loadActivations]);
+
+  // Bulk activation
+  const handleBulkActivation = useCallback(async (active: boolean) => {
+    const division = selectedDivision || undefined;
+    try {
+      await api.post('/api/agent-team', { action: active ? 'activateAll' : 'deactivateAll', division });
+      toast(`${active ? 'Activated' : 'Deactivated'} all${division ? ` in ${division}` : ''}`, 'ok');
+      loadActivations();
+      load();
+    } catch (e: unknown) { toast(e instanceof Error ? e.message : String(e), 'err'); }
+  }, [toast, selectedDivision, loadActivations, load]);
 
   if (loading) {
     return (
@@ -294,6 +338,12 @@ export default function AgentTeamPanel() {
           </button>
           <button onClick={() => setShowCreate(true)} className="btn text-xs px-3 py-2 bg-surface2 border border-border hover:border-accent">
             <Plus size={13} className="mr-1.5" /> New Agent
+          </button>
+          <button onClick={() => handleBulkActivation(true)} className="btn text-xs px-3 py-2 bg-emerald-500/10 text-emerald-400 border border-emerald-500/25 hover:bg-emerald-500/20" title={selectedDivision ? `Activate all in ${selectedDivision}` : 'Activate all agents'}>
+            Activate All
+          </button>
+          <button onClick={() => handleBulkActivation(false)} className="btn text-xs px-3 py-2 bg-red-500/10 text-red-400 border border-red-500/25 hover:bg-red-500/20" title={selectedDivision ? `Deactivate all in ${selectedDivision}` : 'Deactivate all agents'}>
+            Deactivate All
           </button>
           <button onClick={() => { load(); loadAgentStates(); }} className="btn btn-ghost !p-2" title="Refresh"><RefreshCcw size={14} /></button>
           <button
@@ -343,7 +393,8 @@ export default function AgentTeamPanel() {
           All ({agents.length})
         </button>
         {divisions.map((d) => {
-          const c = DIV_COLORS[d.id] || DIV_COLORS.specialist;
+          const fallback = { bg: 'bg-surface2', text: 'text-ink3', border: 'border-border' };
+          const c = DIV_COLORS[d.id] ?? DIV_COLORS.specialist ?? fallback;
           const divWorking = Object.values(agentStates).filter((s) => {
             const ag = agents.find((a) => a.id === s.agent_id);
             return ag?.division === d.id && s.state === 'working';
@@ -366,6 +417,7 @@ export default function AgentTeamPanel() {
         onSelectAgent={setSelectedAgent}
         searchQuery={search}
         isConnected={autoRefresh}
+        activations={activations}
       />
 
       {/* ── Activity console — real events ─────────────────── */}
@@ -376,8 +428,11 @@ export default function AgentTeamPanel() {
         <InspectorPanel
           agent={selectedAgent}
           agentState={selectedAgentState}
+          activation={activations[selectedAgent.id] || null}
           onClose={() => setSelectedAgent(null)}
           onSpawn={handleSpawnFromInspector}
+          onToggleActivation={handleToggleActivation}
+          onToggleAutonomous={handleToggleAutonomous}
         />
       )}
 

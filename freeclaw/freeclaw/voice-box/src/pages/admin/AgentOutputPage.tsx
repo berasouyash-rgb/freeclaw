@@ -3,7 +3,6 @@
 // Agent Name, Task, Trigger, Complaint/User ID, Start/End Time, Duration,
 // Result, Status, Confidence Score, Logs, Errors, Download Report
 import { useState, useEffect, useCallback } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
 import { api } from '../../lib/api';
 import { safeStringify } from '../../lib/utils';
 
@@ -144,10 +143,8 @@ function WorkflowCard({ wf, onDownload }: { wf: WorkflowResult; onDownload: () =
     : wf.classification.urgency === 'medium' ? '#FF9800' : '#4CAF50';
 
   return (
-    <motion.div
-      initial={{ opacity: 0, y: 8 }}
-      animate={{ opacity: 1, y: 0 }}
-      className="border border-white/10 rounded-lg overflow-hidden"
+    <div
+      className="vb-rise border border-white/10 rounded-lg overflow-hidden"
       style={{ background: 'rgba(255,255,255,0.03)' }}
     >
       {/* Header */}
@@ -196,15 +193,8 @@ function WorkflowCard({ wf, onDownload }: { wf: WorkflowResult; onDownload: () =
       </div>
 
       {/* Expanded details */}
-      <AnimatePresence>
         {expanded && (
-          <motion.div
-            initial={{ height: 0, opacity: 0 }}
-            animate={{ height: 'auto', opacity: 1 }}
-            exit={{ height: 0, opacity: 0 }}
-            transition={{ duration: 0.25, ease: 'easeOut' }}
-            className="overflow-hidden"
-          >
+          <div className="vb-rise overflow-hidden">
             <div className="px-4 pb-4 border-t border-white/5">
               {/* Agent list */}
               <div className="mt-3 mb-3">
@@ -215,8 +205,8 @@ function WorkflowCard({ wf, onDownload }: { wf: WorkflowResult; onDownload: () =
                       key={a.id}
                       className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-full border"
                       style={{
-                        borderColor: (DIV_COLORS as Record<string, string>)[a.id.split('-')[0]] || '#666',
-                        color: (DIV_COLORS as Record<string, string>)[a.id.split('-')[0]] || '#999',
+                        borderColor: (DIV_COLORS as Record<string, string>)[a.id.split('-')[0] ?? ''] ?? '#666',
+                        color: (DIV_COLORS as Record<string, string>)[a.id.split('-')[0] ?? ''] ?? '#999',
                       }}
                     >
                       {a.icon} {a.name}
@@ -280,10 +270,9 @@ function WorkflowCard({ wf, onDownload }: { wf: WorkflowResult; onDownload: () =
                 ))}
               </div>
             </div>
-          </motion.div>
+          </div>
         )}
-      </AnimatePresence>
-    </motion.div>
+    </div>
   );
 }
 
@@ -296,10 +285,8 @@ function ExecutionCard({ ex }: { ex: ExecutionRecord }) {
   const divColor = DIV_COLORS[ex.division] || '#9E9E9E';
 
   return (
-    <motion.div
-      initial={{ opacity: 0, y: 8 }}
-      animate={{ opacity: 1, y: 0 }}
-      className="border border-white/10 rounded-lg overflow-hidden"
+    <div
+      className="vb-rise border border-white/10 rounded-lg overflow-hidden"
       style={{ background: 'rgba(255,255,255,0.03)' }}
     >
       <div
@@ -355,15 +342,8 @@ function ExecutionCard({ ex }: { ex: ExecutionRecord }) {
         </div>
       </div>
 
-      <AnimatePresence>
         {expanded && (
-          <motion.div
-            initial={{ height: 0, opacity: 0 }}
-            animate={{ height: 'auto', opacity: 1 }}
-            exit={{ height: 0, opacity: 0 }}
-            transition={{ duration: 0.25, ease: 'easeOut' }}
-            className="overflow-hidden"
-          >
+          <div className="vb-rise overflow-hidden">
             <div className="px-4 pb-4 border-t border-white/5">
               {/* Metadata */}
               <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-3 mb-3">
@@ -386,7 +366,7 @@ function ExecutionCard({ ex }: { ex: ExecutionRecord }) {
               </div>
 
               {/* Output */}
-              {ex.output && (
+              {!!ex.output && (
                 <div className="mb-3">
                   <div className="text-xs font-mono text-white/40 uppercase tracking-wider mb-2">Output</div>
                   <pre className="text-xs text-white/60 p-3 rounded bg-black/20 border border-white/5 overflow-auto max-h-64 whitespace-pre-wrap font-mono">
@@ -405,10 +385,9 @@ function ExecutionCard({ ex }: { ex: ExecutionRecord }) {
                 </div>
               )}
           </div>
-          </motion.div>
+          </div>
         )}
-      </AnimatePresence>
-    </motion.div>
+    </div>
   );
 }
 
@@ -441,10 +420,10 @@ export default function AgentOutputPage() {
 
       // Fetch all data sources in parallel — api.get() returns parsed JSON
       const results = await Promise.allSettled([
-        api.get('/api/agent-team?action=results&limit=50'),
-        api.get('/api/agent-executions?action=list&limit=100'),
-        api.get('/api/agent-executions?action=activity&limit=100'),
-        api.get('/api/agent-team?action=dashboard'),
+        api.get<{ results: WorkflowResult[]; total: number }>('/api/agent-team?action=results&limit=50'),
+        api.get<{ executions: ExecutionRecord[]; total: number }>('/api/agent-executions?action=list&limit=100'),
+        api.get<{ activities: ActivityRecord[] }>('/api/agent-executions?action=activity&limit=100'),
+        api.get<{ agent_states: { working: number; completed: number; error: number; idle: number } }>('/api/agent-team?action=dashboard'),
       ]);
 
       const wfData = results[0].status === 'fulfilled' ? results[0].value : null;

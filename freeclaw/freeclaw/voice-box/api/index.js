@@ -4,6 +4,9 @@
 
 import { cors as corsFn } from './_auth.js';
 import { triggerAutoCleanup, cleanupHandler } from './_cleanup.js';
+import { setSecurityHeaders, securityCheck, detectPromptInjection } from './_security.js';
+import { cleanupMetrics } from './_observability.js';
+import { cleanupCache } from './_cache.js';
 
 import posts from './_posts.js';
 import comments from './_comments.js';
@@ -43,33 +46,87 @@ import inbox from './_inbox.js';
 import agentExecutions from './_agent-executions.js';
 import agentsCron from './_agents-cron.js';
 import eventAgents from './_event-agents.js';
+import keepAlive from './_keep-alive.js';
+import toolForge from './_tool-forge.js';
+import persona from './_persona.js';
+import aiChat from './_ai-chat.js';
+import commandCenter from './_command-center.js';
+import proactive from './_proactive.js';
 
-// upload.js needs a 4 MB body limit; the rest are fine with the default.
-export const config = {
-  api: { bodyParser: { sizeLimit: '4mb' } },
-};
+// V3 Enterprise endpoints
+import v3Stream from './v3/_stream.js';
+import v3Audit from './v3/_audit.js';
+import v3Tools from './v3/_tools.js';
+import v3Verify from './v3/_verify.js';
+import v3Orchestrate from './v3/_orchestrate.js';
+import v3Rag from './v3/_rag.js';
+import v3Memory from './v3/_memory.js';
+import v3Security from './v3/_security.js';
+import v3Monitoring, { recordRequest } from './v3/_monitoring.js';
 
-// Body parsing safety net for rewrites (/api/* → /api/index.js)
-// When Vercel rewrites /api/* → /api/index.js, the bodyParser config might not apply.
-function parseBody(req) {
+// Body parser: consume raw stream if Vercel didn't already parse it.
+// In Vercel Node.js runtime, req.body may be a ReadableStream, Buffer, string,
+// or already-parsed object. This function normalizes it to a plain object.
+async function parseBody(req) {
   if (req.method === 'GET' || req.method === 'OPTIONS' || req.method === 'HEAD') return;
-  if (typeof req.body === 'string' || Buffer.isBuffer(req.body)) {
-    const raw = typeof req.body === 'string' ? req.body : req.body.toString('utf8');
-    if (raw) {
-      try {
-        req.body = JSON.parse(raw);
-      } catch (parseErr) {
-        console.error('[body-parser] Failed to parse body:', parseErr.message);
-      }
-    }
+
+  // Already a parsed plain object — use as-is
+  const b = req.body;
+  if (b && typeof b === 'object' && !Buffer.isBuffer(b) && typeof b.getReader !== 'function' && typeof b.pipe !== 'function') {
+    return;
   }
-  if (!req.body || typeof req.body !== 'object') {
+
+  let raw = '';
+
+  try {
+    // ReadableStream (web streams API)
+    if (b && typeof b.getReader === 'function') {
+      const reader = b.getReader();
+      const chunks = [];
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        chunks.push(value);
+      }
+      raw = new TextDecoder().decode(new Uint8Array(chunks.flatMap(c => Array.from(c))));
+    }
+    // Node.js Readable stream
+    else if (b && typeof b.pipe === 'function') {
+      raw = await new Promise((resolve, reject) => {
+        const chunks = [];
+        b.on('data', (chunk) => chunks.push(chunk));
+        b.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
+        b.on('error', reject);
+      });
+    }
+    // Buffer
+    else if (Buffer.isBuffer(b)) {
+      raw = b.toString('utf8');
+    }
+    // String
+    else if (typeof b === 'string') {
+      raw = b;
+    }
+  } catch (_) {
+    // Stream read failed — fall through with empty raw
+  }
+
+  // Parse the raw text into an object
+  if (raw) {
+    try { req.body = JSON.parse(raw); } catch (_) {
+      try { req.body = Object.fromEntries(new URLSearchParams(raw)); } catch (_) { req.body = {}; }
+    }
+  } else {
     req.body = {};
   }
 }
 
 // Auto-cleanup on cold start (7-day retention, runs once per instance)
 triggerAutoCleanup();
+
+// Periodic cleanup of observability metrics and cache
+cleanupMetrics();
+cleanupCache();
 
 const routes = {
   posts,
@@ -80,6 +137,7 @@ const routes = {
   reports,
   admin,
   announcements: announcement,
+  announcement: announcement, // singular alias used by frontend
   upload,
   users,
   agent,
@@ -110,23 +168,77 @@ const routes = {
   'agents-cron': agentsCron,
   'agent-executions': agentExecutions,
   'event-agents': eventAgents,
+  'keep-alive': keepAlive,
+  'tool-forge': toolForge,
+  persona,
+  'ai-chat': aiChat,
+  'command-center': commandCenter,
+  proactive,
   cleanup: cleanupHandler,
+  // V3 Enterprise routes
+  'v3/stream': v3Stream,
+  'v3/audit': v3Audit,
+  'v3/tools': v3Tools,
+  'v3/verify': v3Verify,
+  'v3/orchestrate': v3Orchestrate,
+  'v3/rag': v3Rag,
+  'v3/memory': v3Memory,
+  'v3/security': v3Security,
+  'v3/monitoring': v3Monitoring,
 };
 
 export default async function handler(req, res) {
+  // EARLY TEST: confirm handler runs for JSON POST
+  if (req.url.includes('_ping')) {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Content-Type', 'application/json');
+    return res.status(200).json({ pong: true, method: req.method, url: req.url });
+  }
+
   // req.url will be the original e.g. /api/posts (the rewrite preserves it)
   // Strip query strings before splitting
   const pathname = req.url.split('?')[0];
   const parts = pathname.split('/').filter(Boolean);
-  const endpoint = parts[1]; // ['api', 'posts', …] → 'posts'
+  
+  // Handle V3 routes: /api/v3/stream → 'v3/stream'
+  let endpoint = parts[1]; // ['api', 'posts', …] → 'posts'
+  if (endpoint === 'v3' && parts[2]) {
+    endpoint = `v3/${parts[2]}`;
+  }
+
+  // Set security headers on every response
+  setSecurityHeaders(res);
+
+  // Security check (abuse prevention, request size)
+  const secCheck = securityCheck(req);
+  if (!secCheck.ok) {
+    corsFn(res, req);
+    if (secCheck.retryAfter) {
+      res.setHeader('Retry-After', String(secCheck.retryAfter));
+    }
+    return res.status(secCheck.status).json({ error: secCheck.error });
+  }
+
+  // Parse body from raw stream (Vercel body parser is disabled)
+  // Must run BEFORE debug endpoint so it can inspect the parsed body.
+  try {
+    await parseBody(req);
+  } catch (parseErr) {
+    console.error('[handler] parseBody threw:', parseErr.message);
+  }
 
   // Debug endpoint — echoes request info for diagnosing body parsing issues
   if (endpoint === '_debug') {
     corsFn(res, req);
     res.setHeader('Content-Type', 'application/json');
-    const bodyPreview = typeof req.body === 'string' ? req.body.slice(0, 500) :
-                         Buffer.isBuffer(req.body) ? req.body.toString('utf8').slice(0, 500) :
-                         JSON.stringify(req.body).slice(0, 500);
+    let bodyPreview = '';
+    try {
+      const bodyRaw = req.body === undefined || req.body === null ? '' :
+                      typeof req.body === 'string' ? req.body :
+                      Buffer.isBuffer(req.body) ? req.body.toString('utf8') :
+                      JSON.stringify(req.body) || '';
+      bodyPreview = bodyRaw.slice(0, 500);
+    } catch (_) { bodyPreview = '[unserializable]'; }
     return res.status(200).json({
       method: req.method,
       bodyType: typeof req.body,
@@ -146,14 +258,21 @@ export default async function handler(req, res) {
     });
   }
 
-  // Apply body parsing safety net before routing
-  parseBody(req);
-
   const routeHandler = routes[endpoint];
   if (!routeHandler) {
     corsFn(res, req);
+    recordRequest(0, 404, pathname);
     return res.status(404).json({ error: 'Not found' });
   }
+
+  // Wrap response to capture status code for monitoring
+  const originalEnd = res.end;
+  const startMs = Date.now();
+  res.end = function (...args) {
+    const duration = Date.now() - startMs;
+    recordRequest(duration, res.statusCode, pathname);
+    return originalEnd.apply(this, args);
+  };
 
   return routeHandler(req, res);
 }

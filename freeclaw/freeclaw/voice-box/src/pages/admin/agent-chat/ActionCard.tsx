@@ -1,11 +1,12 @@
 import { useState } from 'react';
 import {
   Eye, ChevronDown, ChevronUp, PlayCircle, Loader2,
-  CheckCircle2, XCircle, ExternalLink, Check,
+  CheckCircle2, XCircle, ExternalLink,
 } from 'lucide-react';
 import type { Action } from './tool-meta';
 import { TOOL_META } from './tool-meta';
 import { getToolPreview } from './ActionPreviews';
+import { safeStringify } from '../../../lib/utils';
 
 /* ═══════════════════════════════════════════════════════════════
    EXPANDABLE ACTION CARD — click header to expand full preview
@@ -58,13 +59,13 @@ export default function ActionCard({
             )}
           </div>
         </div>
-        {success && data && (
+        {success && data != null && (
           <pre className="mt-2 text-[10px] font-mono text-ink3/70 whitespace-pre-wrap max-h-20 overflow-auto">
-            {typeof data === 'string' ? data : JSON.stringify(data, null, 2)}
+            {typeof data === 'string' ? data : safeStringify(data, 2)}
           </pre>
         )}
         {/* Presentation open-in-tab button */}
-        {success && action.tool === 'create_presentation' && action.result?.data && typeof action.result.data === 'object' && 'html' in (action.result.data as Record<string, unknown>) && (
+        {success && action.tool === 'create_presentation' && action.result?.data != null && typeof action.result.data === 'object' && 'html' in (action.result.data as Record<string, unknown>) && (
           <button
             className="mt-2 btn btn-primary !text-[11px] !py-2 flex items-center gap-1.5 rounded-xl"
             onClick={() => {

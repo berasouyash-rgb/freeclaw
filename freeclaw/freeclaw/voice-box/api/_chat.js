@@ -1,9 +1,32 @@
 // Anonymous direct messaging between admin and anonymous users
 import supabase from './_db-client.js';
-import { cors, isAdmin, checkUser, clean, maskProfanity } from './_auth.js';
+import { cors, isAdmin, checkUser, clean, maskProfanity, rateLimitResponse } from './_auth.js';
+import { sanitizeError } from './_error.js';
+
+// FIX-M9: IP-based rate limiting for anonymous chat (20 messages per 5 min)
+const _chatRateLimit = new Map();
+const CHAT_RATE_LIMIT = 20;
+const CHAT_RATE_WINDOW_MS = 5 * 60 * 1000;
+
+function chatRateLimited(ip) {
+  const now = Date.now();
+  const entry = _chatRateLimit.get(ip);
+  if (entry && (now - entry.start) < CHAT_RATE_WINDOW_MS) {
+    if (entry.count >= CHAT_RATE_LIMIT) return true;
+    entry.count++;
+    return false;
+  }
+  _chatRateLimit.set(ip, { count: 1, start: now });
+  if (_chatRateLimit.size > 10000) {
+    for (const [k, v] of _chatRateLimit) {
+      if ((now - v.start) > CHAT_RATE_WINDOW_MS) _chatRateLimit.delete(k);
+    }
+  }
+  return false;
+}
 
 export default async function handler(req, res) {
-  cors(res);
+  cors(res, req);
   if (req.method === 'OPTIONS') return res.status(204).end();
 
   try {
@@ -43,9 +66,31 @@ export default async function handler(req, res) {
       if (!fromAdmin) {
         const gate = await checkUser(thread_id);
         if (!gate.ok) return res.status(403).json({ error: gate.error });
+        // FIX-M9: IP-based rate limiting for anonymous chat
+        const clientIp = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket?.remoteAddress || 'unknown';
+        if (chatRateLimited(clientIp)) return rateLimitResponse(res, 300, 'Rate limit exceeded — 20 messages per 5 minutes');
       }
       const body = maskProfanity(clean(b.body, 1000));
       if (!body && !b.attachment_url) return res.status(400).json({ error: 'Empty message' });
+
+      // Server-side dedup: check for same sender+body within 10s window
+      const tenSecsAgo = new Date(Date.now() - 10000).toISOString();
+      const { data: recentDup } = await supabase
+        .from('chat_messages')
+        .select('id, body, created_at, sender')
+        .eq('thread_id', thread_id)
+        .eq('sender', fromAdmin ? 'admin' : 'user')
+        .eq('body', body)
+        .gte('created_at', tenSecsAgo)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (recentDup) {
+        console.log(`[chat] Dedup: blocked duplicate message in ${thread_id} (id=${recentDup.id})`);
+        return res.status(201).json(recentDup);
+      }
+
       // Ensure thread exists / bump
       const { data: existing } = await supabase.from('chat_threads').select('thread_id').eq('thread_id', thread_id).maybeSingle();
       const now = new Date().toISOString();
@@ -85,7 +130,6 @@ export default async function handler(req, res) {
 
     return res.status(405).json({ error: 'Method not allowed' });
   } catch (err) {
-    console.error('chat API error:', err);
-    return res.status(500).json({ error: err.message });
+    return sanitizeError(res, err, 'chat');
   }
 }

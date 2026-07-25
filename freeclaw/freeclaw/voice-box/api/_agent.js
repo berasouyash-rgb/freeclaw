@@ -5,6 +5,7 @@
 // Suggestions expire after 48 hours automatically.
 import supabase from './_db-client.js';
 import { cors, isAdmin, auditLog, clean } from './_auth.js';
+import { sanitizeError } from './_error.js';
 
 const EXPIRY_MS = 48 * 60 * 60 * 1000;
 
@@ -80,7 +81,7 @@ function generateSuggestions(posts) {
 }
 
 export default async function handler(req, res) {
-  cors(res);
+  cors(res, req);
   if (req.method === 'OPTIONS') return res.status(204).end();
 
   try {
@@ -172,7 +173,6 @@ export default async function handler(req, res) {
 
     return res.status(405).json({ error: 'Method not allowed' });
   } catch (err) {
-    console.error('agent API error:', err);
-    return res.status(500).json({ error: err.message });
+    return sanitizeError(res, err, 'agent');
   }
 }

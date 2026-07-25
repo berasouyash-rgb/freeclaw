@@ -1,9 +1,10 @@
 // Report queue for moderation
 import supabase from './_db-client.js';
-import { cors, isAdmin, checkUser, auditLog, clean } from './_auth.js';
+import { cors, isAdmin, checkUser, auditLog, clean, rateLimited, rateLimitResponse } from './_auth.js';
+import { sanitizeError } from './_error.js';
 
 export default async function handler(req, res) {
-  cors(res);
+  cors(res, req);
   if (req.method === 'OPTIONS') return res.status(204).end();
 
   try {
@@ -19,6 +20,9 @@ export default async function handler(req, res) {
       const author_id = clean(b.author_id, 40);
       const gate = await checkUser(author_id);
       if (!gate.ok) return res.status(403).json({ error: gate.error });
+      if (await rateLimited('reports', author_id, 300, 10)) {
+        return rateLimitResponse(res, 300, 'Slow down — max 10 reports per 5 minutes.');
+      }
       const row = {
         target_id: clean(b.target_id, 60),
         target_type: ['post', 'comment', 'poll'].includes(b.target_type) ? b.target_type : 'post',
@@ -42,7 +46,6 @@ export default async function handler(req, res) {
 
     return res.status(405).json({ error: 'Method not allowed' });
   } catch (err) {
-    console.error('reports API error:', err);
-    return res.status(500).json({ error: err.message });
+    return sanitizeError(res, err, 'reports');
   }
 }

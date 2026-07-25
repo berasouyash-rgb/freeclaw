@@ -1,9 +1,10 @@
 import {
   BarChart3, Eye, EyeOff, TrendingUp, ArrowRight, Lock, Unlock,
   Pin, PinOff, Star, StarOff, Megaphone, X, MessageCircle,
-  Trash2, Ban, UserCheck, UserX, AlertTriangle, Search, Calendar,
+  Trash2, UserCheck, UserX, AlertTriangle, Search, Calendar,
   UserPlus, FileText, Flag, Clock, Zap, Check, Shield, Sparkles,
 } from 'lucide-react';
+import { safeStringify } from '../../../lib/utils';
 
 /* ═══════════════════════════════════════════════════════════════
    VISUAL PREVIEW COMPONENTS
@@ -88,7 +89,8 @@ export function PriorityPreview({ args }: P) {
     medium: { bg: 'bg-yellow-500/15', text: 'text-yellow-400', border: 'border-yellow-500/25', label: 'MEDIUM' },
     low:    { bg: 'bg-green-500/15',  text: 'text-green-400',  border: 'border-green-500/25',  label: 'LOW' },
   };
-  const c = colors[p] || colors.medium;
+  const fallback = { bg: 'bg-yellow-500/15', text: 'text-yellow-400', border: 'border-yellow-500/25', label: 'MEDIUM' };
+  const c = colors[p] ?? fallback;
   return (
     <div className="vb-action-preview rounded-xl border border-violet-500/25 bg-gradient-to-br from-violet-500/5 via-surface2 to-surface p-4">
       <div className="flex items-center gap-2 mb-3">
@@ -243,7 +245,7 @@ export function BanPreview({ args }: P) {
           <p className="text-[11px] text-red-400/80 mt-0.5">Will be blocked from all platform activity</p>
         </div>
       </div>
-      {args.reason && (
+      {args.reason != null && (
         <div className="mt-3 px-3 py-2 rounded-lg bg-red-500/5 border border-red-500/10">
           <p className="text-[10px] text-ink3 uppercase tracking-wider mb-0.5">Reason</p>
           <p className="text-xs text-ink2 italic">"{String(args.reason)}"</p>
@@ -291,7 +293,7 @@ export function WarnPreview({ args }: P) {
           <p className="text-[11px] text-orange-400/80 mt-0.5">Will receive an official warning</p>
         </div>
       </div>
-      {args.reason && (
+      {args.reason != null && (
         <div className="mt-3 px-3 py-2 rounded-lg bg-orange-500/5 border border-orange-500/10">
           <p className="text-[10px] text-ink3 uppercase tracking-wider mb-0.5">Warning reason</p>
           <p className="text-xs text-ink2 italic">"{String(args.reason)}"</p>
@@ -317,7 +319,7 @@ export function DeletePostPreview({ args }: P) {
           </div>
         </div>
       </div>
-      {args.reason && (
+      {args.reason != null && (
         <div className="mt-3 px-3 py-2 rounded-lg bg-red-500/5 border border-red-500/10">
           <p className="text-[10px] text-ink3 uppercase tracking-wider mb-0.5">Reason</p>
           <p className="text-xs text-ink2 italic">"{String(args.reason)}"</p>
@@ -608,7 +610,7 @@ export function CSVPreview({ args, result }: P & { result?: { success: boolean; 
 }
 
 /** Health/trend analysis preview */
-export function TrendAnalysisPreview({ args }: P) {
+export function TrendAnalysisPreview({ args: _args }: P) {
   return (
     <div className="vb-action-preview rounded-xl border border-violet-500/25 bg-gradient-to-br from-violet-500/5 via-surface2 to-surface p-4">
       <div className="flex items-center gap-2 mb-3">
@@ -706,7 +708,7 @@ export function GenericPreview({ args }: P) {
     <div className="rounded-lg bg-surface2/60 border border-border p-2.5">
       <p className="text-[10px] font-mono text-ink3 uppercase tracking-wider mb-1">Parameters</p>
       <pre className="text-[10px] font-mono text-ink2 whitespace-pre-wrap break-all">
-        {JSON.stringify(args, null, 2)}
+        {safeStringify(args, 2)}
       </pre>
     </div>
   );
@@ -736,7 +738,7 @@ export function getToolPreview(tool: string, args: Record<string, unknown>, resu
     case 'set_eta':             return <ETAPreview args={args} />;
     case 'assign_post':         return <AssignPreview args={args} />;
     case 'generate_csv':        return <CSVPreview args={args} result={result as { success: boolean; data?: { csv?: string; row_count?: number } } | undefined} />;
-    case 'bulk_update':         return <MetaAgentPreview args={{ query: `Bulk update: ${JSON.stringify(args)}` }} />;
+    case 'bulk_update':         return <MetaAgentPreview args={{ query: `Bulk update: ${safeStringify(args)}` }} />;
     case 'generate_summary':    return <TrendAnalysisPreview args={args} />;
     case 'search_content':      return <MetaAgentPreview args={{ query: String(args.query || args.keyword || 'Search content') }} />;
     case 'trend_analysis':      return <TrendAnalysisPreview args={args} />;

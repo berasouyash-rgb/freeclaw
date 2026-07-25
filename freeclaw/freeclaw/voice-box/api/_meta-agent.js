@@ -6,7 +6,13 @@
 // 4. Returns combined results
 import supabase from './_db-client.js';
 import { cors, isAdmin, auditLog, clean } from './_auth.js';
+import { sanitizeError } from './_error.js';
 import { callLLMChain } from './_providers.js';
+
+/** Escape LIKE metacharacters to prevent pattern injection */
+function escapeLike(str) {
+  return String(str).replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_');
+}
 
 // ─── Tool Templates (fallback when no LLM) ───────────────────────
 const TOOL_TEMPLATES = {
@@ -86,13 +92,14 @@ const TOOL_TEMPLATES = {
       execute: async (args) => {
         const { query: q, tables = ['posts', 'comments'] } = args;
         if (!q) throw new Error('query required');
+        const safeQ = escapeLike(q);
         const results = {};
         for (const table of tables) {
           if (table === 'posts') {
-            const { data } = await supabase.from('posts').select('id,title,description,category,status,created_at,deleted').or(`title.ilike.%${q}%,description.ilike.%${q}%`).order('created_at', { ascending: false }).limit(10);
+            const { data } = await supabase.from('posts').select('id,title,description,category,status,created_at,deleted').or(`title.ilike.%${safeQ}%,description.ilike.%${safeQ}%`).order('created_at', { ascending: false }).limit(10);
             results.posts = (data || []).filter((p) => !p.deleted);
           } else if (table === 'comments') {
-            const { data } = await supabase.from('comments').select('id,post_id,body,created_at').ilike('body', `%${q}%`).order('created_at', { ascending: false }).limit(10);
+            const { data } = await supabase.from('comments').select('id,post_id,body,created_at').ilike('body', `%${safeQ}%`).order('created_at', { ascending: false }).limit(10);
             results.comments = data || [];
           }
         }
@@ -189,7 +196,7 @@ const SUBAGENT_TYPES = {
     icon: '📊',
     process: async (task, context) => {
       const { analysis_type } = task;
-      const { data: posts } = await supabase.from('posts').select('id,title,category,status,priority,created_at,deleted,hidden,admin_reply,assigned_to,reactions_count').eq('deleted', false);
+      const { data: posts } = await supabase.from('posts').select('id,title,category,status,priority,created_at,deleted,hidden,admin_reply,assigned_to').eq('deleted', false);
       const active = (posts || []).filter((p) => !p.deleted);
       switch (analysis_type) {
         case 'health': {
@@ -396,7 +403,7 @@ No explanation, ONLY JSON.`;
 
 // ─── HTTP Handler ────────────────────────────────────────────────
 export default async function handler(req, res) {
-  cors(res);
+  cors(res, req);
   if (req.method === 'OPTIONS') return res.status(204).end();
   try {
     if (!(await isAdmin(req))) return res.status(403).json({ error: 'Admin only' });
@@ -419,7 +426,6 @@ export default async function handler(req, res) {
 
     return res.status(400).json({ error: 'Unknown action. GET ?action=capabilities or POST { action: "coordinate", message: "..." }' });
   } catch (err) {
-    console.error('meta-agent error:', err);
-    return res.status(500).json({ error: err.message });
+    return sanitizeError(res, err, 'meta-agent');
   }
 }

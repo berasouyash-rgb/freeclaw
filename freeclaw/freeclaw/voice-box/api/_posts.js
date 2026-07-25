@@ -4,8 +4,66 @@ import { cors, isAdmin, checkUser, ensureUser, auditLog, clean, maskProfanity, r
 import { emitEvent, EVENT_TYPES } from './_events.js';
 import { sanitizeError } from './_error.js';
 
+// ─── Server-side content moderation (catches what client misses) ─────────
+const DANGEROUS_WORDS = /\b(?:kill|murder|shoot|stab|bomb|weapon|gun|knife|suicide|suicidal|die|dead|death)\b/i;
+const VIOLENCE_PATTERNS = [
+  /kill\s+(?:you|him|her|them|my|our|someone|anyone|people|person|friend|classmate|teacher|student)/i,
+  /murder\s+(?:you|him|her|them|my|our|someone|anyone|people|person|friend)/i,
+  /shoot\s+(?:you|him|her|them|my|our|someone|anyone|people|person|friend)/i,
+  /stab\s+(?:you|him|her|them|my|our|someone|anyone|people|person|friend)/i,
+  /beat\s+(?:you|him|her|them|my|our|someone|anyone|people|person|friend)\s+up/i,
+  /hurt\s+(?:you|him|her|them|my|our|someone|anyone|people|person|friend)/i,
+  /burn\s+(?:the|this|a|my)\s*(?:school|building|house|classroom)/i,
+  /bomb\s+(?:the|this|a|my)\s*(?:school|building|house|classroom)/i,
+  /bring(?:ing)?\s+(?:a\s+)?(?:gun|knife|weapon|bomb)/i,
+];
+const SLURS = /\b(?:nigger|nigga|faggot|fag|kike|spic|chink|wop|cunt|retard|retarded|tranny|dyke|paki)\b/i;
+
+function serverModerate(title, description) {
+  const text = `${title} ${description}`;
+  const flags = [];
+  
+  // Check for violence threats
+  for (const pattern of VIOLENCE_PATTERNS) {
+    if (pattern.test(text)) {
+      flags.push({ type: 'violence', severity: 'critical', message: 'Violence threat detected' });
+      break;
+    }
+  }
+  
+  // Check for dangerous words
+  if (DANGEROUS_WORDS.test(text) && flags.length === 0) {
+    // Only flag if it's combined with threatening context
+    if (/\b(?:i(?:'ll| will)|gonna|going\s+to|want\s+to|wish)\b/i.test(text)) {
+      flags.push({ type: 'threat', severity: 'high', message: 'Potential threat detected' });
+    }
+  }
+  
+  // Check for slurs
+  if (SLURS.test(text)) {
+    flags.push({ type: 'hate_speech', severity: 'critical', message: 'Hate speech detected' });
+  }
+  
+  // Check for spam patterns (same words repeated 10+ times)
+  const words = text.toLowerCase().split(/\s+/);
+  const wordCounts = {};
+  for (const w of words) {
+    if (w.length > 3) wordCounts[w] = (wordCounts[w] || 0) + 1;
+  }
+  const maxCount = Math.max(...Object.values(wordCounts), 0);
+  if (maxCount >= 10) {
+    flags.push({ type: 'spam', severity: 'medium', message: 'Spam-like content detected' });
+  }
+  
+  return {
+    blocked: flags.some(f => f.severity === 'critical'),
+    flags,
+    requiresReview: flags.length > 0,
+  };
+}
+
 const CATEGORIES = ['Academics','Facilities','Food','Bullying','Teachers','Events','Transport','Sports','Technology','Library','Hostel','Security','Cleanliness','Medical','Other'];
-const STATUSES = ['reported','verified','in_progress','waiting','solved','archived'];
+const STATUSES = ['reported','verified','in_progress','waiting','solved','archived','pending_review'];
 
 // Co-sign threshold: posts with this many supports are auto-flagged "ready for decision"
 const READY_THRESHOLD = 10;
@@ -41,20 +99,29 @@ async function attachCounts(posts) {
   const ids = posts.map((p) => p.id);
   if (!ids.length) return posts;
 
-  // Batch all 3 count queries in parallel; use .in() with chunked IDs for large sets
+  // Batch all 3 count queries in parallel across ALL IDs (chunked for Supabase IN limit)
   const chunkSize = 100;
-  const chunkedIds = [];
-  for (let i = 0; i < ids.length; i += chunkSize) chunkedIds.push(ids.slice(i, i + chunkSize));
-
   const allReactions = [];
   const allComments = [];
   const allPolls = [];
-  for (const chunk of chunkedIds) {
-    const [reactRes, commRes, pollRes] = await Promise.all([
+
+  // Build chunk arrays once, then run all queries in flat parallel
+  const chunks = [];
+  for (let i = 0; i < ids.length; i += chunkSize) chunks.push(ids.slice(i, i + chunkSize));
+
+  const results = await Promise.all(
+    chunks.flatMap((chunk) => [
       supabase.from('reactions').select('target_id,kind').in('target_id', chunk),
       supabase.from('comments').select('post_id').in('post_id', chunk).eq('deleted', false).eq('hidden', false),
       supabase.from('polls').select('id,post_id').in('post_id', chunk),
-    ]);
+    ])
+  );
+
+  // Unpack results: every 3 entries correspond to one chunk (reactions, comments, polls)
+  for (let i = 0; i < results.length; i += 3) {
+    const reactRes = results[i];
+    const commRes = results[i + 1];
+    const pollRes = results[i + 2];
     if (reactRes.data) allReactions.push(...reactRes.data);
     if (commRes.data) allComments.push(...commRes.data);
     if (pollRes.data) allPolls.push(...pollRes.data);
@@ -105,7 +172,7 @@ export default async function handler(req, res) {
       else if (author) q = q.eq('author_id', clean(author, 40)).eq('deleted', false).limit(200);
       else {
         if (type) q = q.eq('type', type);
-        if (!admin) q = q.eq('hidden', false).eq('deleted', false);
+        if (!admin) q = q.eq('hidden', false).eq('deleted', false).neq('status', 'pending_review');
         if (isPaginated) {
           // Cursor-based pagination: cursor is ISO timestamp of last item
           if (cursor) q = q.lt('created_at', cursor);
@@ -131,7 +198,7 @@ export default async function handler(req, res) {
         // Get total count (separate query, lightweight)
         let totalQ = supabase.from('posts').select('id', { count: 'exact', head: true });
         if (type) totalQ = totalQ.eq('type', type);
-        if (!admin) totalQ = totalQ.eq('hidden', false).eq('deleted', false);
+        if (!admin) totalQ = totalQ.eq('hidden', false).eq('deleted', false).neq('status', 'pending_review');
         const { count } = await totalQ;
         return res.status(200).json({ data: masked, nextCursor, total: count || 0 });
       }
@@ -142,6 +209,19 @@ export default async function handler(req, res) {
         const is_mine = !!v && p.author_id === v;
         return { ...p, is_mine, author_id: admin || is_mine || author ? p.author_id : p.author_id.slice(0, 9) + '…' };
       });
+      // Single-post fetch (by ID) returns wrapped format for PostDetail page
+      if (id && masked.length === 1) {
+        const post = masked[0];
+        const counts = post.reactions || {};
+        // Fetch viewer's own reactions for this post
+        let mine = [];
+        if (v) {
+          const { data: myReactions } = await supabase
+            .from('reactions').select('kind').eq('target_id', id).eq('author_id', v);
+          mine = (myReactions || []).map((r) => r.kind);
+        }
+        return res.status(200).json({ post, counts, mine });
+      }
       return res.status(200).json(masked);
     }
 
@@ -157,7 +237,58 @@ export default async function handler(req, res) {
       const description = maskProfanity(clean(b.description, 500));
       if (title.length < 5) return res.status(400).json({ error: 'Title must be at least 5 characters.' });
       if (description.length < 10) return res.status(400).json({ error: 'Description must be at least 10 characters.' });
+      
+      // Duplicate detection: check for posts with very similar titles in the same category
       const category = CATEGORIES.includes(b.category) ? b.category : 'Other';
+      const normalizeForCompare = (s) => s.toLowerCase().replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, ' ').trim();
+      const normalizedTitle = normalizeForCompare(title);
+      
+      // Fetch recent posts in same category (last 200) for comparison
+      const { data: recentPosts } = await supabase
+        .from('posts')
+        .select('id, title, category, status')
+        .eq('category', category)
+        .eq('deleted', false)
+        .order('created_at', { ascending: false })
+        .limit(200);
+      
+      // Check for exact or near-exact title matches
+      const isDuplicate = (recentPosts || []).some((p) => {
+        if (['solved', 'archived'].includes(p.status)) return false; // ignore closed posts
+        const existingTitle = normalizeForCompare(p.title || '');
+        // Exact match after normalization
+        if (existingTitle === normalizedTitle) return true;
+        // Very high similarity (>85% word overlap in shorter title)
+        const shorter = normalizedTitle.length < existingTitle.length ? normalizedTitle : existingTitle;
+        const longer = normalizedTitle.length < existingTitle.length ? existingTitle : normalizedTitle;
+        const shorterWords = new Set(shorter.split(' '));
+        const longerWords = new Set(longer.split(' '));
+        const overlap = [...shorterWords].filter((w) => longerWords.has(w)).length;
+        if (shorterWords.size > 0 && overlap / shorterWords.size >= 0.85) return true;
+        return false;
+      });
+      
+      if (isDuplicate) {
+        return res.status(409).json({ 
+          error: 'A post with a very similar title already exists in this category. Please check the existing posts before creating a duplicate.',
+          code: 'DUPLICATE_POST'
+        });
+      }
+
+      // Server-side content moderation — blocks dangerous content before save
+      const moderation = serverModerate(title, description);
+      if (moderation.blocked) {
+        await auditLog('moderation', 'post_blocked', `${author_id}: ${title.slice(0, 60)} [${moderation.flags.map((f) => f.type).join(', ')}]`);
+        return res.status(403).json({ 
+          error: 'This content violates our safety guidelines and cannot be published. If you are in crisis, please contact a counselor or call a crisis hotline.',
+          code: 'CONTENT_BLOCKED'
+        });
+      }
+      
+      // Quality review: flagged posts need admin approval before going public
+      const needsReview = moderation.requiresReview;
+      const initialStatus = needsReview ? 'pending_review' : 'reported';
+
       const type = b.type === 'suggestion' ? 'suggestion' : 'problem';
       const priority = ['low', 'medium', 'high', 'critical'].includes(b.priority) ? b.priority : 'medium';
       const tags = Array.isArray(b.tags) ? b.tags.slice(0, 6).map((t) => clean(t, 24)).filter(Boolean) : [];
@@ -165,14 +296,19 @@ export default async function handler(req, res) {
         id: `${type === 'suggestion' ? 'sug' : 'post'}_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`,
         type, title, description, category, priority, tags,
         image_url: clean(b.image_url, 500) || null,
-        author_id, status: 'reported', progress: 0,
-        status_history: [{ status: 'reported', at: new Date().toISOString(), note: 'Submitted anonymously' }],
+        author_id, status: initialStatus, progress: 0,
+        status_history: [{ status: initialStatus, at: new Date().toISOString(), note: needsReview ? 'Queued for quality review' : 'Submitted anonymously' }],
       };
+      
+      if (needsReview) {
+        await auditLog('moderation', 'post_flagged_for_review', `${author_id}: ${title.slice(0, 60)} [${moderation.flags.map((f) => f.type).join(', ')}]`);
+      }
+      
       const { data, error } = await supabase.from('posts').insert(post).select().single();
       if (error) throw error;
       await ensureUser(author_id);
       // Emit event for event-triggered agents
-      emitEvent(EVENT_TYPES.POST_CREATED, { post_id: data.id, type, category, priority, author_id }).catch((err) => console.warn('[posts] emit POST_CREATED failed:', err.message));
+      emitEvent(EVENT_TYPES.POST_CREATED, { post_id: data.id, type, category, priority, author_id, flagged: needsReview }).catch((err) => console.warn('[posts] emit POST_CREATED failed:', err.message));
       return res.status(201).json(data);
     }
 
@@ -196,7 +332,7 @@ export default async function handler(req, res) {
       if (admin) {
         if (b.status && STATUSES.includes(b.status)) {
           patch.status = b.status;
-          const map = { reported: 5, verified: 20, in_progress: 50, waiting: 70, solved: 100, archived: 100 };
+          const map = { reported: 5, verified: 20, in_progress: 50, waiting: 70, solved: 100, archived: 100, pending_review: 10 };
           patch.progress = map[b.status];
           patch.status_history = [...(post.status_history || []), { status: b.status, at: new Date().toISOString(), note: clean(b.status_note, 300) || null }];
         }

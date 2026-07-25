@@ -6,6 +6,7 @@
 
 import supabase from './_db-client.js';
 import { cors, isAdmin, auditLog } from './_auth.js';
+import { sanitizeError } from './_error.js';
 
 const SOFT_DELETE_RETENTION_DAYS = 14;  // soft-deleted posts
 const COMMENT_RETENTION_DAYS = 30;      // comments
@@ -40,7 +41,10 @@ async function deleteBatch(table, filter, filterCol = 'created_at', retentionDay
       .match(filter)
       .limit(BATCH_SIZE);
 
-    if (fetchErr || !batch || batch.length === 0) break;
+    if (fetchErr || !batch || batch.length === 0) {
+      if (fetchErr) console.error(`[cleanup] fetch batch error on ${table}:`, fetchErr.message);
+      break;
+    }
 
     const ids = batch.map((r) => r.id);
     const { error: delErr } = await supabase
@@ -48,7 +52,10 @@ async function deleteBatch(table, filter, filterCol = 'created_at', retentionDay
       .delete()
       .in('id', ids);
 
-    if (delErr) break;
+    if (delErr) {
+      console.error(`[cleanup] delete batch error on ${table}:`, delErr.message);
+      break;
+    }
     deleted += batch.length;
 
     if (batch.length < BATCH_SIZE) break;
@@ -89,7 +96,7 @@ async function runCleanup() {
       }
       results.deleted_posts = deleted;
     }
-  } catch { /* empty */ }
+    } catch (e) { console.error('[cleanup] posts sweep failed:', e.message); }
 
   // 2. Comments older than 30 days
   try {
@@ -104,7 +111,7 @@ async function runCleanup() {
       await supabase.from('comments').delete().in('id', oldComments.map((c) => c.id));
       results.deleted_comments = oldComments.length;
     }
-  } catch { /* empty */ }
+    } catch (e) { console.error('[cleanup] comments sweep failed:', e.message); }
 
   // 3. Reactions older than 30 days
   try {
@@ -119,7 +126,7 @@ async function runCleanup() {
       await supabase.from('reactions').delete().in('id', oldReactions.map((r) => r.id));
       results.deleted_reactions = oldReactions.length;
     }
-  } catch { /* empty */ }
+    } catch (e) { console.error('[cleanup] reactions sweep failed:', e.message); }
 
   // 4. Chat messages older than 30 days
   try {
@@ -134,7 +141,7 @@ async function runCleanup() {
       await supabase.from('chat_messages').delete().in('id', oldMessages.map((m) => m.id));
       results.deleted_messages = oldMessages.length;
     }
-  } catch { /* empty */ }
+    } catch (e) { console.error('[cleanup] chat_messages sweep failed:', e.message); }
 
   // 5. Activity logs older than 30 days
   try {
@@ -149,7 +156,7 @@ async function runCleanup() {
       await supabase.from('activity_logs').delete().in('id', oldLogs.map((l) => l.id));
       results.deleted_logs = oldLogs.length;
     }
-  } catch { /* empty */ }
+    } catch (e) { console.error('[cleanup] activity_logs sweep failed:', e.message); }
 
   // 6. Agent conversation history older than 30 days (safe: table may not exist)
   try {
@@ -166,7 +173,7 @@ async function runCleanup() {
       await supabase.from('agent_conversations').delete().in('id', oldConvos.map((c) => c.id));
       results.deleted_conversations = oldConvos.length;
     }
-  } catch { /* empty */ }
+    } catch (e) { console.error('[cleanup] agent_conversations sweep:', e.message); }
 
   // 7. Archived polls older than 30 days
   try {
@@ -182,7 +189,7 @@ async function runCleanup() {
       await supabase.from('polls').delete().in('id', oldPolls.map((p) => p.id));
       results.deleted_polls = oldPolls.length;
     }
-  } catch { /* empty */ }
+      } catch (e) { console.error('[cleanup] polls archive sweep failed:', e.message); }
 
   // NOTE: Bans are NEVER auto-removed. Only admins can unban users.
 
@@ -195,12 +202,12 @@ let cleanupStarted = false;
 function triggerAutoCleanup() {
   if (cleanupStarted) return;
   cleanupStarted = true;
-  runCleanup().catch(() => {}).finally(() => { cleanupStarted = false; });
+  runCleanup().catch((err) => console.error('[cleanup] Auto-cleanup failed:', err.message)).finally(() => { cleanupStarted = false; });
 }
 
 // HTTP handler for manual trigger
 export async function cleanupHandler(req, res) {
-  cors(res);
+  cors(res, req);
   if (req.method === 'OPTIONS') return res.status(204).end();
 
   try {
@@ -213,8 +220,7 @@ export async function cleanupHandler(req, res) {
     await auditLog('admin', 'cleanup', `Cleaned ${result.cleaned} records`);
     return res.status(200).json({ success: true, ...result });
   } catch (err) {
-    console.error('Cleanup error:', err);
-    return res.status(500).json({ error: err.message });
+    return sanitizeError(res, err, 'cleanup');
   }
 }
 

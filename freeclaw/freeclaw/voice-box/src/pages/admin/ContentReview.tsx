@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Eye, EyeOff, Trash2, CheckCircle2, XCircle, AlertTriangle, MessageCircle, Image, Clock, User, Tag, Shield, Search, Filter, ChevronDown, ChevronUp, ExternalLink, Check, RefreshCcw, Inbox } from 'lucide-react';
+import { Eye, EyeOff, Trash2, CheckCircle2, XCircle, MessageCircle, Image, Clock, User, Tag, Shield, Search, ChevronDown, ChevronUp, ExternalLink, Check, RefreshCcw, Inbox } from 'lucide-react';
 import { api } from '../../lib/api';
 import { useApp } from '../../contexts/AppContext';
 import { CATEGORIES, CAT_EMOJI } from '../../lib/utils';

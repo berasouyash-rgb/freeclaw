@@ -2,6 +2,7 @@
 // FALLBACK: If Supabase Storage fails, returns a data-URL so images always work.
 import supabase from './_db-client.js';
 import { cors, checkUser, clean } from './_auth.js';
+import { sanitizeError } from './_error.js';
 
 export const config = { api: { bodyParser: { sizeLimit: '4mb' } } };
 
@@ -9,7 +10,7 @@ export const config = { api: { bodyParser: { sizeLimit: '4mb' } } };
 const BUCKETS = ['chat-media', 'voicebox-media'];
 
 export default async function handler(req, res) {
-  cors(res);
+  cors(res, req);
   if (req.method === 'OPTIONS') return res.status(204).end();
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
@@ -55,7 +56,7 @@ export default async function handler(req, res) {
         const dataUrl = `data:${ct || 'image/png'};base64,${fb64}`;
         return res.status(200).json({ url: dataUrl, storage: 'fallback-data-url' });
       }
-    } catch { /* give up */ }
-    return res.status(500).json({ error: err.message });
+    } catch { console.error('[upload] Last-resort data URL fallback also failed'); }
+    return sanitizeError(res, err, 'upload');
   }
 }

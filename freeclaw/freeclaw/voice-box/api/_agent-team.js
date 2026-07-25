@@ -222,6 +222,9 @@ const ALL_AGENTS = [
 
 const AGENT_MAP = new Map(ALL_AGENTS.map((a) => [a.id, a]));
 
+// Export for use by other modules (e.g., _command-center.js)
+export { ALL_AGENTS, AGENT_MAP, DIVISIONS };
+
 // ═══════════════════════════════════════════════════════════════════
 // DIVISION METADATA
 // ═══════════════════════════════════════════════════════════════════
@@ -421,7 +424,7 @@ const agentStates = new Map(); // agentId → { state, task, started_at, progres
 const workflowResults = [];    // last 100 workflow results
 const MAX_RESULTS = 100;
 
-function setAgentState(agentId, state, task = null, result = null) {
+export function setAgentState(agentId, state, task = null, result = null) {
   const existing = agentStates.get(agentId) || {};
   agentStates.set(agentId, {
     agent_id: agentId,
@@ -435,7 +438,7 @@ function setAgentState(agentId, state, task = null, result = null) {
   });
 }
 
-function getAgentState(agentId) {
+export function getAgentState(agentId) {
   return agentStates.get(agentId) || {
     agent_id: agentId,
     state: 'idle',
@@ -477,6 +480,41 @@ async function addWorkflowResult(result) {
 
 // Initialize all agents as idle
 ALL_AGENTS.forEach((a) => setAgentState(a.id, 'idle'));
+
+// ═══════════════════════════════════════════════════════════════════
+// PERSISTENT AGENT ACTIVATION STATE (survives cold starts)
+// ═══════════════════════════════════════════════════════════════════
+const ACTIVATION_KEY = 'agent_activation_state';
+let _activationCache = null;
+let _activationCacheAt = 0;
+const ACTIVATION_CACHE_TTL = 30000; // 30s
+
+async function getActivationState() {
+  const now = Date.now();
+  if (_activationCache && (now - _activationCacheAt) < ACTIVATION_CACHE_TTL) return _activationCache;
+  try {
+    const { data } = await supabase.from('settings').select('value').eq('key', ACTIVATION_KEY).maybeSingle();
+    _activationCache = data?.value?.agents || {};
+    _activationCacheAt = now;
+  } catch {
+    _activationCache = {};
+    _activationCacheAt = now;
+  }
+  return _activationCache;
+}
+
+async function saveActivationState(state) {
+  _activationCache = state;
+  _activationCacheAt = Date.now();
+  try {
+    await supabase.from('settings').upsert(
+      { key: ACTIVATION_KEY, value: { agents: state, updated_at: new Date().toISOString() } },
+      { onConflict: 'key' }
+    );
+  } catch (err) {
+    console.error('[agent-team] Failed to save activation state:', err.message);
+  }
+}
 
 // ═══════════════════════════════════════════════════════════════════
 // CUSTOM AGENT STORAGE (supplemented from DB)
@@ -549,8 +587,13 @@ function classifyTask(message) {
   return { division: 'content', priority: 'medium' };
 }
 
-function selectAgentsForTask(task, maxAgents = 5) {
-  const candidates = ALL_AGENTS.filter((a) => a.status === 'active');
+async function selectAgentsForTask(task, maxAgents = 5) {
+  const activationState = await getActivationState();
+  const candidates = ALL_AGENTS.filter((a) => {
+    if (a.status !== 'active') return false;
+    const act = activationState[a.id];
+    return !act || act.active !== false; // default: active
+  });
   
   // Priority: same division first, then meta agents, then specialists
   const sameDivision = candidates.filter((a) => a.division === task.division);
@@ -585,7 +628,7 @@ function selectAgentsForTask(task, maxAgents = 5) {
 
 async function spawnSubagents(message, maxAgents = 5) {
   const task = classifyTask(message);
-  const selected = selectAgentsForTask(task, maxAgents);
+  const selected = await selectAgentsForTask(task, maxAgents);
   const workflowId = `wf_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
   
   const workflow = {
@@ -1333,7 +1376,7 @@ export default async function handler(req, res) {
     if (action === 'classify') {
       if (!b.message) return res.status(400).json({ error: 'message required' });
       const task = classifyTask(b.message);
-      const recommended = selectAgentsForTask(task, b.max_agents || 5);
+      const recommended = await selectAgentsForTask(task, b.max_agents || 5);
       return res.status(200).json({ task, recommended: recommended.map((a) => ({ id: a.id, name: a.name, icon: a.icon, division: a.division })) });
     }
     
@@ -1362,7 +1405,7 @@ export default async function handler(req, res) {
       const tierCounts = {};
       agents.forEach((a) => { divCounts[a.division] = (divCounts[a.division] || 0) + 1; tierCounts[a.tier] = (tierCounts[a.tier] || 0) + 1; });
       
-      // Real-time stats from agent state tracker
+      // Real-time stats from agent state tracker (in-memory, per-invocation)
       let working = 0, completed = 0, errored = 0, idle = 0;
       agentStates.forEach((s) => {
         if (s.state === 'working') working++;
@@ -1370,6 +1413,40 @@ export default async function handler(req, res) {
         else if (s.state === 'error') errored++;
         else idle++;
       });
+
+      // Query agent_executions table for persistent, accurate counts
+      // This is the source of truth — in-memory state is lost between cold starts
+      let dbWorking = 0, dbCompleted = 0, dbFailed = 0;
+      try {
+        const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+        const { data: recentExecs } = await supabase
+          .from('agent_executions')
+          .select('status')
+          .gte('started_at', oneDayAgo);
+        if (recentExecs) {
+          dbCompleted = recentExecs.filter(e => e.status === 'completed' || e.status === 'success').length;
+          dbFailed = recentExecs.filter(e => e.status === 'failed' || e.status === 'error').length;
+          dbWorking = recentExecs.filter(e => e.status === 'running' || e.status === 'in_progress').length;
+        }
+      } catch { /* table may not exist */ }
+
+      // Also count currently running (status = 'running', started in last 5 min)
+      try {
+        const fiveMinAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+        const { count: runningNow } = await supabase
+          .from('agent_executions')
+          .select('id', { count: 'exact', head: true })
+          .eq('status', 'running')
+          .gte('started_at', fiveMinAgo);
+        dbWorking = runningNow || 0;
+      } catch { /* ignore */ }
+
+      // Use DB counts as primary source (they survive cold starts)
+      // Fall back to in-memory only if DB query failed entirely
+      const finalWorking = dbWorking || working;
+      const finalCompleted = dbCompleted || completed;
+      const finalFailed = dbFailed || errored;
+      const finalIdle = agents.length - finalWorking - finalCompleted - finalFailed;
       
       return res.status(200).json({
         total_agents: agents.length,
@@ -1379,8 +1456,8 @@ export default async function handler(req, res) {
         division_counts: divCounts,
         tier_counts: tierCounts,
         active_workflows: activeWorkflows.size,
-        // Real-time agent states
-        agent_states: { working, completed, error: errored, idle },
+        // DB-backed agent states (persistent across cold starts)
+        agent_states: { working: finalWorking, completed: finalCompleted, error: finalFailed, idle: Math.max(0, finalIdle) },
         recent_results: workflowResults.length,
       });
     }
@@ -1391,24 +1468,25 @@ export default async function handler(req, res) {
       if (targetId) {
         return res.status(200).json({ state: getAgentState(targetId) });
       }
-      // Return all agent states
+      // Return all agent states from in-memory Map
       const states = {};
       getAllAgents().forEach((a) => {
         states[a.id] = getAgentState(a.id);
       });
 
-      // FIX-#3: Query agent_executions table for recent run history
+      // Query agent_executions table for recent run history (DB is source of truth)
       let recentExecutions = [];
       let executionCount = 0;
       try {
-        const { data: execs, count } = await supabase
+        const { data: execs, error: execErr } = await supabase
           .from('agent_executions')
-          .select('id, agent_id, agent_name, status, started_at, completed_at, duration_ms, division, workflow_id', { count: 'exact' })
+          .select('id, agent_id, agent_name, status, started_at, completed_at, duration_ms, division')
           .order('started_at', { ascending: false })
           .limit(50);
+        if (execErr) console.warn('[status] exec query error:', execErr.message);
         recentExecutions = execs || [];
-        executionCount = count || 0;
-      } catch { /* table may not exist yet */ }
+        executionCount = recentExecutions.length;
+      } catch (e) { console.warn('[status] exec query exception:', e.message); }
 
       // Aggregate execution stats by agent
       const executionStats = {};
@@ -1422,6 +1500,21 @@ export default async function handler(req, res) {
         else if (exec.status === 'failed' || exec.status === 'error') s.failed++;
         else if (exec.status === 'running' || exec.status === 'in_progress') s.running++;
         if (!s.last_run) s.last_run = exec.started_at;
+      }
+
+      // Override in-memory states with DB data (DB survives cold starts)
+      // In-memory is always stale between cold starts, so DB is the source of truth
+      for (const agentId of Object.keys(states)) {
+        const execStat = executionStats[agentId];
+        if (execStat && execStat.last_run) {
+          if (execStat.running > 0) {
+            states[agentId] = { agent_id: agentId, state: 'working', task: 'Running', started_at: execStat.last_run, completed_at: null, progress: 50, result: null, updated_at: execStat.last_run };
+          } else if (execStat.succeeded > 0 && execStat.failed === 0) {
+            states[agentId] = { agent_id: agentId, state: 'completed', task: 'Completed', started_at: execStat.last_run, completed_at: execStat.last_run, progress: 100, result: null, updated_at: execStat.last_run };
+          } else if (execStat.failed > 0) {
+            states[agentId] = { agent_id: agentId, state: 'error', task: 'Failed', started_at: execStat.last_run, completed_at: execStat.last_run, progress: 0, result: null, updated_at: execStat.last_run };
+          }
+        }
       }
 
       return res.status(200).json({ states, total: Object.keys(states).length, recent_executions: recentExecutions, total_executions: executionCount, execution_stats: executionStats });
@@ -1455,7 +1548,73 @@ export default async function handler(req, res) {
       return res.status(200).json({ results: allResults.slice(0, limit), total: allResults.length });
     }
     
-    return res.status(400).json({ error: 'Unknown action. Actions: list, get, roles, create, delete, spawn, classify, check_permission, divisions, dashboard, status, results' });
+    // ── Activate / Deactivate agents (persisted in settings) ────
+    if (action === 'activate') {
+      if (!b.id) return res.status(400).json({ error: 'id required' });
+      const state = await getActivationState();
+      state[b.id] = { active: true, autonomous: state[b.id]?.autonomous || false, activated_at: new Date().toISOString() };
+      await saveActivationState(state);
+      await auditLog('admin', 'agent_activate', `Activated agent: ${b.id}`);
+      return res.status(200).json({ ok: true, id: b.id, active: true });
+    }
+    if (action === 'deactivate') {
+      if (!b.id) return res.status(400).json({ error: 'id required' });
+      const state = await getActivationState();
+      state[b.id] = { active: false, autonomous: false, deactivated_at: new Date().toISOString() };
+      await saveActivationState(state);
+      // Reset agent state to idle
+      setAgentState(b.id, 'idle');
+      await auditLog('admin', 'agent_deactivate', `Deactivated agent: ${b.id}`);
+      return res.status(200).json({ ok: true, id: b.id, active: false });
+    }
+    if (action === 'activateAll') {
+      const state = await getActivationState();
+      const division = b.division || null;
+      const agents = division ? ALL_AGENTS.filter(a => a.division === division) : ALL_AGENTS;
+      agents.forEach(a => { state[a.id] = { active: true, autonomous: state[a.id]?.autonomous || false, activated_at: new Date().toISOString() }; });
+      await saveActivationState(state);
+      await auditLog('admin', 'agent_activate_all', `Activated ${agents.length} agents${division ? ` in ${division}` : ''}`);
+      return res.status(200).json({ ok: true, count: agents.length });
+    }
+    if (action === 'deactivateAll') {
+      const state = await getActivationState();
+      const division = b.division || null;
+      const agents = division ? ALL_AGENTS.filter(a => a.division === division) : ALL_AGENTS;
+      agents.forEach(a => { state[a.id] = { active: false, autonomous: false, deactivated_at: new Date().toISOString() }; });
+      await saveActivationState(state);
+      agents.forEach(a => setAgentState(a.id, 'idle'));
+      await auditLog('admin', 'agent_deactivate_all', `Deactivated ${agents.length} agents${division ? ` in ${division}` : ''}`);
+      return res.status(200).json({ ok: true, count: agents.length });
+    }
+    if (action === 'setAutonomous') {
+      if (!b.id) return res.status(400).json({ error: 'id required' });
+      const state = await getActivationState();
+      const prev = state[b.id] || { active: true };
+      state[b.id] = { ...prev, autonomous: !!b.autonomous, autonomous_updated_at: new Date().toISOString() };
+      await saveActivationState(state);
+      await auditLog('admin', 'agent_autonomous', `${b.autonomous ? 'Enabled' : 'Disabled'} autonomous for: ${b.id}`);
+      return res.status(200).json({ ok: true, id: b.id, autonomous: !!b.autonomous });
+    }
+    if (action === 'activationState') {
+      const state = await getActivationState();
+      // Merge with agent list
+      const agents = getAllAgents();
+      const result = agents.map(a => ({
+        id: a.id,
+        name: a.name,
+        icon: a.icon,
+        division: a.division,
+        active: state[a.id]?.active !== false, // default true
+        autonomous: state[a.id]?.autonomous || false,
+        activated_at: state[a.id]?.activated_at || null,
+        deactivated_at: state[a.id]?.deactivated_at || null,
+      }));
+      const activeCount = result.filter(r => r.active).length;
+      const autonomousCount = result.filter(r => r.autonomous).length;
+      return res.status(200).json({ agents: result, total: result.length, active: activeCount, autonomous: autonomousCount });
+    }
+
+    return res.status(400).json({ error: 'Unknown action. Actions: list, get, roles, create, delete, spawn, classify, check_permission, divisions, dashboard, status, results, activate, deactivate, activateAll, deactivateAll, setAutonomous, activationState' });
   } catch (err) {
     return sanitizeError(res, err, 'agent-team');
   }

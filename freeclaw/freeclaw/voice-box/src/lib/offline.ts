@@ -4,6 +4,8 @@ import { lsGet, lsSet } from './identity';
 interface QueuedAction { id: string; method: string; path: string; body: unknown; queuedAt: string; }
 
 const KEY = 'vb:offlineQueue';
+/** Canonical admin token key — must match api.ts (sessionStorage, JSON {token, exp}) */
+const ADMIN_AUTH_KEY = 'vb:adminAuth';
 
 export function queueAction(method: string, path: string, body: unknown) {
   const q = lsGet<QueuedAction[]>(KEY, []);
@@ -31,15 +33,20 @@ export async function flushQueue(): Promise<number> {
   for (const a of q) {
     try {
       const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-      // Attach admin token for admin-only endpoints
+      // Attach admin token for admin-only endpoints — read from canonical sessionStorage key
       if (isAdminEndpoint(a.path)) {
-        const token = lsGet<string>('vb:adminToken', '');
-        if (token) headers['x-admin-token'] = token;
+        try {
+          const raw = sessionStorage.getItem(ADMIN_AUTH_KEY);
+          if (raw) {
+            const { token, exp } = JSON.parse(raw);
+            if (token && (!exp || exp > Date.now())) headers['x-admin-token'] = token;
+          }
+        } catch { /* no valid session */ }
       }
       const res = await fetch(a.path, {
         method: a.method,
         headers,
-        body: a.body ? JSON.stringify(a.body) : undefined,
+        body: a.body != null ? JSON.stringify(a.body) : null,
       });
       if (res.ok) flushed++;
       else if (res.status >= 500) remaining.push(a); // retry server errors later

@@ -2,6 +2,7 @@
 // One vote per anonymous browser per item; tapping again removes it.
 import supabase from './_db-client.js';
 import { cors, checkUser, clean } from './_auth.js';
+import { sanitizeError } from './_error.js';
 
 // Normalize legacy/synonym kinds from older cached clients so nobody
 // ever gets an "invalid reaction" error.
@@ -15,7 +16,7 @@ const NORMALIZE = {
 const OPPOSITES = {}; // no opposing kinds — voting is positive-only
 
 export default async function handler(req, res) {
-  cors(res);
+  cors(res, req);
   if (req.method === 'OPTIONS') return res.status(204).end();
 
   try {
@@ -26,6 +27,8 @@ export default async function handler(req, res) {
       if (target) q = q.eq('target_id', target);
       const { data, error } = await q.limit(1000);
       if (error) throw error;
+      // Cache: 15s browser + CDN for reaction counts
+      res.setHeader('Cache-Control', 'public, max-age=15, s-maxage=15, stale-while-revalidate=5');
       return res.status(200).json(data);
     }
 
@@ -62,7 +65,7 @@ export default async function handler(req, res) {
 
       // Return fresh counts AND the caller's own reactions so the UI stays in perfect sync
       let counts = {};
-      let mine: string[] = [];
+      let mine = [];
       try {
         const [{ data: rows }, { data: mineRows }] = await Promise.all([
           supabase.from('reactions').select('kind').eq('target_id', target_id),
@@ -79,7 +82,6 @@ export default async function handler(req, res) {
 
     return res.status(405).json({ error: 'Method not allowed' });
   } catch (err) {
-    console.error('reactions API error:', err);
-    return res.status(500).json({ error: err.message });
+    return sanitizeError(res, err, 'reactions');
   }
 }
