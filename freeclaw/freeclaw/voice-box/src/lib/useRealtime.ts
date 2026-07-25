@@ -16,7 +16,13 @@ import supabase from './supabase';
  * This reduces 11 channels → ~5 unique table groups on a typical page.
  */
 
-type ChangeCallback = (table: string, payload: any) => void;
+/** Payload from Supabase Realtime postgres_changes or polling fallback */
+export interface RealtimePayload {
+  eventType?: string;
+  [key: string]: unknown;
+}
+
+type ChangeCallback = (table: string, payload: RealtimePayload) => void;
 
 interface ChannelEntry {
   channel: ReturnType<typeof supabase.channel>;
@@ -99,7 +105,7 @@ function removeSubscriber(id: number, key: string) {
  * Polling fallback only activates if the Realtime channel fails to connect,
  * avoiding unnecessary load when realtime is working.
  */
-export function useRealtime(tables: string[], onChange: (table: string, payload: any) => void, debounceMs = 400) {
+export function useRealtime(tables: string[], onChange: (table: string, payload: RealtimePayload) => void, debounceMs = 400) {
   const cbRef = useRef(onChange);
   cbRef.current = onChange;
   const key = tables.join(',');

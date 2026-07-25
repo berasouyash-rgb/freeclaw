@@ -45,7 +45,7 @@ export interface AgentState {
   started_at: string | null;
   completed_at: string | null;
   progress: number;
-  result: any | null;
+  result: Record<string, unknown> | null;
   updated_at: string;
 }
 
@@ -54,7 +54,7 @@ export interface WorkflowResult {
   workflow_id: string;
   classification: { division: string; priority: string };
   agents_used: { id: string; name: string; icon: string; status: string }[];
-  results: { agent_id: string; agent_name: string; icon: string; result: any }[];
+  results: { agent_id: string; agent_name: string; icon: string; result: Record<string, unknown> }[];
   total_time_ms: number;
   created_at: string;
   completed_at: string;

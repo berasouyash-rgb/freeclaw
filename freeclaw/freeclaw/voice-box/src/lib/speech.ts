@@ -6,7 +6,45 @@
  * - punctuation voice commands ("comma", "full stop", "new line")
  */
 
-const SR: any = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+// Web Speech API vendor-prefixed interface — not in all TS DOM typings.
+interface SpeechRecognitionLike {
+  new (): SpeechRecognitionInstance;
+}
+interface SpeechRecognitionInstance {
+  lang: string;
+  continuous: boolean;
+  interimResults: boolean;
+  maxAlternatives: number;
+  onresult: ((e: SpeechRecognitionEventLike) => void) | null;
+  onerror: ((e: SpeechRecognitionErrorEventLike) => void) | null;
+  onend: (() => void) | null;
+  start(): void;
+  stop(): void;
+}
+interface SpeechRecognitionEventLike {
+  resultIndex: number;
+  results: SpeechRecognitionResultListLike;
+}
+interface SpeechRecognitionResultListLike {
+  length: number;
+  [index: number]: SpeechRecognitionResultLike;
+}
+interface SpeechRecognitionResultLike {
+  isFinal: boolean;
+  length: number;
+  [index: number]: { transcript: string; confidence: number };
+}
+interface SpeechRecognitionErrorEventLike {
+  error: string;
+}
+interface WindowWithSR {
+  SpeechRecognition?: SpeechRecognitionLike;
+  webkitSpeechRecognition?: SpeechRecognitionLike;
+}
+
+const SR: SpeechRecognitionLike | undefined =
+  (window as unknown as WindowWithSR).SpeechRecognition ??
+  (window as unknown as WindowWithSR).webkitSpeechRecognition;
 
 export const speechSupported = !!SR;
 
@@ -97,7 +135,7 @@ export function startDictation(opts: {
 
   let stopped = false;
 
-  rec.onresult = (e: any) => {
+  rec.onresult = (e: SpeechRecognitionEventLike) => {
     let interim = '';
     for (let i = e.resultIndex; i < e.results.length; i++) {
       const result = e.results[i];
@@ -115,7 +153,7 @@ export function startDictation(opts: {
     opts.onInterim(cleanTranscript(interim));
   };
 
-  rec.onerror = (e: any) => {
+  rec.onerror = (e: SpeechRecognitionErrorEventLike) => {
     const map: Record<string, string> = {
       'not-allowed': 'Microphone access denied. Allow the mic permission and try again.',
       'no-speech': 'No speech detected — speak clearly near the microphone.',

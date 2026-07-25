@@ -1,14 +1,15 @@
 import { useMemo } from 'react';
 import { CalendarDays, CheckCircle2, TrendingUp } from 'lucide-react';
 import { CAT_EMOJI } from '../lib/utils';
+import type { PostData, StatusHistoryEntry } from '../types';
 
 /** Weekly community recap — computed client-side from the loaded feed */
-export default function RecapCard({ posts }: { posts: any[] }) {
+export default function RecapCard({ posts }: { posts: PostData[] }) {
   const recap = useMemo(() => {
     const now = Date.now();
     const DAY = 86400000;
     const week = posts.filter((p) => now - +new Date(p.created_at) < 7 * DAY);
-    const solvedWeek = posts.filter((p) => (p.status_history || []).some((h: any) => h.status === 'solved' && now - +new Date(h.at) < 7 * DAY));
+    const solvedWeek = posts.filter((p) => (p.status_history || []).some((h: StatusHistoryEntry) => h.status === 'solved' && now - +new Date(h.at) < 7 * DAY));
     const cats: Record<string, number> = {};
     week.forEach((p) => { cats[p.category] = (cats[p.category] || 0) + 1; });
     const top = Object.entries(cats).sort((a, b) => b[1] - a[1])[0];

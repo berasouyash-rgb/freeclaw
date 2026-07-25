@@ -18,7 +18,7 @@ function CopyBtn({ text }: { text: string }) {
 }
 
 /* ── Download button ─────────────────────────────────────────── */
-function DownloadBtn({ data, filename }: { data: any; filename: string }) {
+function DownloadBtn({ data, filename }: { data: Record<string, unknown> | string; filename: string }) {
   const download = () => {
     const json = typeof data === 'string' ? data : safeStringify(data, 2);
     const blob = new Blob([json], { type: 'application/json' });
@@ -36,7 +36,7 @@ function DownloadBtn({ data, filename }: { data: any; filename: string }) {
 }
 
 /* ── Result detail renderer ──────────────────────────────────── */
-function ResultDetail({ result }: { result: any }) {
+function ResultDetail({ result }: { result: WorkflowResult['results'][number]['result'] | null }) {
   if (!result) return <p className="text-xs text-ink3 italic">No data</p>;
   if (result.error) return <p className="text-xs text-red-400">Error: {result.error}</p>;
 

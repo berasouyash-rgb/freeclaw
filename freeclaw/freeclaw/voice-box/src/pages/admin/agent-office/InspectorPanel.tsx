@@ -18,7 +18,7 @@ function CopyBtn({ text }: { text: string }) {
 }
 
 /* ── Download button ─────────────────────────────────────────── */
-function DownloadBtn({ data, filename }: { data: any; filename: string }) {
+function DownloadBtn({ data, filename }: { data: Record<string, unknown> | string; filename: string }) {
   const download = () => {
     const json = typeof data === 'string' ? data : safeStringify(data, 2);
     const blob = new Blob([json], { type: 'application/json' });

@@ -9,6 +9,7 @@ import { api } from '../../lib/api';
 import { useApp } from '../../contexts/AppContext';
 import { timeAgo, fmtDate } from '../../lib/utils';
 import { useRealtime } from '../../lib/useRealtime';
+import type { ChatMessage, ChatThread } from '../../types';
 
 /* ── Simple markdown renderer ─────────────────────────────── */
 /** Escape HTML entities to prevent XSS via dangerouslySetInnerHTML */
@@ -110,7 +111,7 @@ function _TypingIndicator() {
 }
 
 /* ── Single message bubble ─────────────────────────────────── */
-function MessageBubble({ msg, isAdmin }: { msg: any; isAdmin: boolean }) {
+function MessageBubble({ msg, isAdmin }: { msg: ChatMessage & { id: string }; isAdmin: boolean }) {
   const htmlBody = useMemo(() => msg.body ? renderMarkdown(msg.body) : '', [msg.body]);
 
   return (
@@ -170,10 +171,10 @@ function MessageBubble({ msg, isAdmin }: { msg: any; isAdmin: boolean }) {
    ═══════════════════════════════════════════════════════════════ */
 export default function AdminChat() {
   const { toast } = useApp();
-  const [threads, setThreads] = useState<any[]>([]);
+  const [threads, setThreads] = useState<(ChatThread & { status?: string; last_message?: string; last_at?: string; unread?: number })[]>([]);
   const [active, setActive] = useState<string | null>(null);
-  const [messages, setMessages] = useState<any[]>([]);
-  const [thread, setThread] = useState<any>(null);
+  const [messages, setMessages] = useState<(ChatMessage & { id: string })[]>([]);
+  const [thread, setThread] = useState<(ChatThread & { status?: string }) | null>(null);
   const [text, setText] = useState('');
   const [loading, setLoading] = useState(true);
   const [showNew, setShowNew] = useState(false);

@@ -5,17 +5,18 @@ import PurgeCountdown from '../components/PurgeCountdown';
 import { api } from '../lib/api';
 import { useRealtime } from '../lib/useRealtime';
 import { STATUS_META, CAT_EMOJI, timeAgo } from '../lib/utils';
+import type { PostData } from '../types';
 
 const COLUMNS = ['reported', 'verified', 'in_progress', 'waiting', 'solved', 'archived'];
 
 export default function SolvingBoard() {
-  const [posts, setPosts] = useState<any[]>([]);
+  const [posts, setPosts] = useState<PostData[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
   const load = useCallback(async () => {
     try { setError(''); setPosts(await api.get('/api/posts?type=problem')); }
-    catch (e: any) { setError(e.message); }
+    catch (e: unknown) { setError(e instanceof Error ? e.message : 'Unknown error'); }
     setLoading(false);
   }, []);
 

@@ -2,11 +2,17 @@ import { useState, useEffect } from 'react';
 import { Megaphone, Trash2, Send, Zap, CheckCircle2, Play, Inbox } from 'lucide-react';
 import { api } from '../../lib/api';
 import { useApp } from '../../contexts/AppContext';
+import type { PostData } from '../../types';
+
+interface Announcement {
+  text: string;
+  kind: 'info' | 'success' | 'warning';
+}
 
 /** Broadcast announcement + one-click triage widget shown at top of admin dashboard */
-export default function QuickActions({ posts, onStatusChange }: { posts: any[]; onStatusChange: (id: string, status: string) => void }) {
+export default function QuickActions({ posts, onStatusChange }: { posts: PostData[]; onStatusChange: (id: string, status: string) => void }) {
   const { toast } = useApp();
-  const [announcement, setAnnouncement] = useState<any>(null);
+  const [announcement, setAnnouncement] = useState<Announcement | null>(null);
   const [text, setText] = useState('');
   const [kind, setKind] = useState<'info' | 'success' | 'warning'>('info');
   const [busy, setBusy] = useState(false);
@@ -17,7 +23,7 @@ export default function QuickActions({ posts, onStatusChange }: { posts: any[]; 
     if (!text.trim()) return;
     setBusy(true);
     try {
-      const r = await api.post<{ value: any }>('/api/announcement', { text: text.trim(), kind });
+      const r = await api.post<{ value: Announcement }>('/api/announcement', { text: text.trim(), kind });
       setAnnouncement(r.value); setText('');
       toast('Announcement is now live for everyone 📣', 'ok');
     } catch (e: unknown) { toast(e instanceof Error ? e.message : 'Unknown error', 'err'); }

@@ -5,6 +5,7 @@ import { useApp } from '../../contexts/AppContext';
 import { timeAgo } from '../../lib/utils';
 import { ConfirmDialog } from '../../components/ui';
 import { useInfiniteScroll } from '../../hooks/useInfiniteScroll';
+import type { CommentData } from '../../types';
 
 export default function CommentMod() {
   const { toast } = useApp();
@@ -16,15 +17,15 @@ export default function CommentMod() {
     return { data: result.data || [], nextCursor: result.nextCursor, total: result.total || 0 };
   }, []);
 
-  const { items: comments, loading, initialLoading, hasMore, total, sentinelRef, setItems } = useInfiniteScroll<any>(fetchComments, { limit: 30 });
+  const { items: comments, loading, initialLoading, hasMore, total, sentinelRef, setItems } = useInfiniteScroll<CommentData>(fetchComments, { limit: 30 });
 
   const setHidden = async (id: string, hidden: boolean) => {
     try { await api.put('/api/comments', { id, hidden }); setItems((p) => p.map((c) => c.id === id ? { ...c, hidden } : c)); }
-    catch (e: any) { toast(e.message, 'err'); }
+    catch (e: unknown) { toast(e instanceof Error ? e.message : 'Failed to update', 'err'); }
   };
   const del = async (id: string) => {
     try { await api.del('/api/comments', { id }); setItems((p) => p.filter((c) => c.id !== id)); toast('Deleted', 'ok'); }
-    catch (e: any) { toast(e.message, 'err'); }
+    catch (e: unknown) { toast(e instanceof Error ? e.message : 'Failed to delete', 'err'); }
   };
 
   const q = query.trim().toLowerCase();

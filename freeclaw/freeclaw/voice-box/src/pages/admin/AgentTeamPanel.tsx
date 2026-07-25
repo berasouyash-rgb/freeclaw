@@ -9,6 +9,7 @@ import { safeStringify } from '../../lib/utils';
 import { useApp } from '../../contexts/AppContext';
 
 import type { Agent, Division, Dashboard, AgentState, WorkflowResult, AgentActivation } from './agent-office/types';
+import type { LucideIcon } from 'lucide-react';
 import { DIV_COLORS } from './agent-office/constants';
 import OfficeVisualization from './agent-office/OfficeVisualization';
 import InspectorPanel from './agent-office/InspectorPanel';
@@ -17,7 +18,7 @@ import FloatingNotifications from './agent-office/FloatingNotifications';
 import AgentOutput from './agent-office/AgentOutput';
 
 /* ── Stat card ───────────────────────────────────────────── */
-function StatCard({ icon: Icon, label, value, color }: { icon: any; label: string; value: number | string; color: string }) {
+function StatCard({ icon: Icon, label, value, color }: { icon: LucideIcon; label: string; value: number | string; color: string }) {
   return (
     <div className="bg-surface2 rounded-xl p-3.5 border border-border flex items-center gap-3">
       <div className={`w-9 h-9 rounded-lg flex items-center justify-center ${color}`}>
@@ -151,7 +152,7 @@ function SpawnPanel({ agents, onClose, onResult }: { agents: Agent[]; onClose: (
             {result.total_time_ms && (
               <p className="text-[10px] text-ink3 font-mono">{result.total_time_ms}ms total · {result.agents_used?.length || 0} agents · {result.classification?.division}</p>
             )}
-            {(result.results || []).map((r: any, i: number) => {
+            {(result.results || []).map((r: WorkflowResult['results'][number], i: number) => {
               const agent = agents.find((a) => a.id === r.agent_id);
               const hasData = r.result && r.result.data && Object.keys(r.result.data).length > 0;
               return (

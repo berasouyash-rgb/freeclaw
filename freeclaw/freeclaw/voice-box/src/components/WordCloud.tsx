@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react';
+import type { PostData } from '../types';
 
 const STOP = new Set(['the', 'and', 'for', 'this', 'that', 'with', 'have', 'has', 'been', 'are', 'was', 'were', 'they', 'them', 'their', 'there', 'from', 'would', 'could', 'should', 'about', 'after', 'before', 'during', 'every', 'almost', 'also', 'because', 'but', 'not', 'you', 'your', 'our', 'ours', 'its', 'it\u2019s', 'into', 'over', 'under', 'more', 'most', 'some', 'any', 'all', 'can', 'cant', 'like', 'just', 'get', 'gets', 'make', 'makes', 'need', 'needs', 'even', 'still', 'very', 'too', 'than', 'then', 'when', 'where', 'while', 'who', 'what', 'why', 'how', 'does', 'doesnt', 'dont', 'isnt', 'wont']);
 
@@ -6,7 +7,7 @@ const STOP = new Set(['the', 'and', 'for', 'this', 'that', 'with', 'have', 'has'
  * Theme word cloud — extracts the most frequent meaningful words across posts.
  * Words animate in with staggered pops; click a word to filter by it.
  */
-export default function WordCloud({ posts, onWordClick }: { posts: any[]; onWordClick?: (word: string) => void }) {
+export default function WordCloud({ posts, onWordClick }: { posts: PostData[]; onWordClick?: (word: string) => void }) {
   const [activeWord, setActiveWord] = useState<string | null>(null);
 
   const words = useMemo(() => {

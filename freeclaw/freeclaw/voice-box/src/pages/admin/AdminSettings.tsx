@@ -19,7 +19,7 @@ export default function AdminSettings() {
       await api.post('/api/admin', { action: 'change_password', new_hash: await sha256(pw1) });
       setPw1(''); setPw2('');
       toast('Password updated — use it on your next login', 'ok');
-    } catch (e: any) { toast(e.message, 'err'); }
+    } catch (e: unknown) { toast(e instanceof Error ? e.message : 'Failed to change password', 'err'); }
     setBusy(false);
   };
 

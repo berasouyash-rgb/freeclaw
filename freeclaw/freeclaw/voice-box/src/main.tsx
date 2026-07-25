@@ -56,9 +56,9 @@ try {
   // so if we reach here the app IS running — never leave the splash up)
   window.addEventListener('load', killSplash);
   setTimeout(killSplash, 3000);
-} catch (err: any) {
+} catch (err: unknown) {
   console.error('[VoiceBox] fatal boot error:', err);
-  showFatal(err?.message || 'Unknown startup error');
+  showFatal(err instanceof Error ? err.message : 'Unknown startup error');
 }
 
 // Any uncaught error before splash removal → visible error, not a dead spinner
