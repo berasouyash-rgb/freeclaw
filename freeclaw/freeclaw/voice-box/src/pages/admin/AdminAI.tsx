@@ -315,7 +315,7 @@ export default function AdminAI() {
     setReportsLoading(true);
     try {
       const data = await api.get<{ reports: Record<string, unknown>[]; stats: { total_24h: number; by_severity: Record<string, number>; by_division: Record<string, number>; critical: number; high: number } }>(
-        `/api/v3/agent-team?action=reports&limit=50${reportSeverityFilter ? `&severity=${reportSeverityFilter}` : ''}`
+        `/api/agent-team?action=reports&limit=50${reportSeverityFilter ? `&severity=${reportSeverityFilter}` : ''}`
       );
       setAgentReports(data.reports || []);
       setReportStats(data.stats || null);
@@ -326,7 +326,7 @@ export default function AdminAI() {
   const loadSupervisorAlerts = async () => {
     setSupervisorLoading(true);
     try {
-      const data = await api.get<Record<string, unknown>>('/api/v3/agent-team?action=supervisor');
+      const data = await api.get<Record<string, unknown>>('/api/agent-team?action=supervisor');
       setSupervisorAlerts(data);
     } catch (e: unknown) { console.warn('[AdminAI] Failed to load supervisor alerts:', e instanceof Error ? e.message : e); }
     setSupervisorLoading(false);
