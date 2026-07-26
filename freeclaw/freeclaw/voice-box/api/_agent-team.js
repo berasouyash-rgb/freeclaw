@@ -1840,4 +1840,4 @@ export default async function handler(req, res) {
 // ═══════════════════════════════════════════════════════════════════
 // EXPORTS — used by agent-cron.js and other modules
 // ═══════════════════════════════════════════════════════════════════
-export { ALL_AGENTS, processAgentTask, setAgentState, classifyTask, saveAgentReport, getAgentReports, getReportStats, runSupervisorScan };
+export { processAgentTask, classifyTask, saveAgentReport, getAgentReports, getReportStats, runSupervisorScan };
