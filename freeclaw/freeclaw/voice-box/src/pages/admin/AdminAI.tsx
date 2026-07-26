@@ -180,7 +180,7 @@ function CopyButton({ text }: { text: string }) {
 }
 
 /* ─── Tab type ────────────────────────────────────────────────── */
-type SideTab = 'chat' | 'agents' | 'tools' | 'health' | 'audit' | 'memory' | 'rag';
+type SideTab = 'chat' | 'agents' | 'tools' | 'health' | 'audit' | 'memory' | 'rag' | 'reports';
 
 /* ═══════════════════════════════════════════════════════════════
    MAIN — Admin AI Central Intelligence Workspace
@@ -234,6 +234,15 @@ export default function AdminAI() {
   const [ragQuery, setRagQuery] = useState('');
   const [ragResults, setRagResults] = useState<Record<string, unknown>[]>([]);
   const [ragLoading, setRagLoading] = useState(false);
+
+  // ── Agent Reports ──
+  const [agentReports, setAgentReports] = useState<Record<string, unknown>[]>([]);
+  const [reportStats, setReportStats] = useState<{ total_24h: number; by_severity: Record<string, number>; by_division: Record<string, number>; critical: number; high: number } | null>(null);
+  const [reportsLoading, setReportsLoading] = useState(false);
+  const [supervisorAlerts, setSupervisorAlerts] = useState<Record<string, unknown> | null>(null);
+  const [supervisorLoading, setSupervisorLoading] = useState(false);
+  const [reportFilter, setReportFilter] = useState('');
+  const [reportSeverityFilter, setReportSeverityFilter] = useState('');
 
   // ── Conversation history ──
   const [conversations, setConversations] = useState<{ id: string; title?: string; agent_id?: string; created_at: string; session_id?: string; updated_at?: string; last_message?: string; message_count?: number }[]>([]);
@@ -299,6 +308,28 @@ export default function AdminAI() {
       setMemories(data.memories || []);
     } catch (e: unknown) { console.warn('[AdminAI] Failed to load memory:', e instanceof Error ? e.message : e); }
     setMemoryLoading(false);
+  };
+
+  /* ─── Agent Reports ───────────────────────────────────────── */
+  const loadReports = async () => {
+    setReportsLoading(true);
+    try {
+      const data = await api.get<{ reports: Record<string, unknown>[]; stats: { total_24h: number; by_severity: Record<string, number>; by_division: Record<string, number>; critical: number; high: number } }>(
+        `/api/v3/agent-team?action=reports&limit=50${reportSeverityFilter ? `&severity=${reportSeverityFilter}` : ''}`
+      );
+      setAgentReports(data.reports || []);
+      setReportStats(data.stats || null);
+    } catch (e: unknown) { console.warn('[AdminAI] Failed to load reports:', e instanceof Error ? e.message : e); }
+    setReportsLoading(false);
+  };
+
+  const loadSupervisorAlerts = async () => {
+    setSupervisorLoading(true);
+    try {
+      const data = await api.get<Record<string, unknown>>('/api/v3/agent-team?action=supervisor');
+      setSupervisorAlerts(data);
+    } catch (e: unknown) { console.warn('[AdminAI] Failed to load supervisor alerts:', e instanceof Error ? e.message : e); }
+    setSupervisorLoading(false);
   };
 
   const loadConversations = async () => {
@@ -768,6 +799,7 @@ export default function AdminAI() {
                   { key: 'audit' as SideTab, label: 'Audit', icon: ClipboardList },
                   { key: 'memory' as SideTab, label: 'Memory', icon: Brain },
                   { key: 'rag' as SideTab, label: 'KB', icon: Database },
+                  { key: 'reports' as SideTab, label: 'Reports', icon: FileText },
                 ]).map(({ key, label, icon: Icon }) => (
                   <button key={key} onClick={() => setSideTab(key)} className={`flex items-center gap-1.5 px-3 py-2.5 text-[11px] font-medium border-b-2 transition-colors whitespace-nowrap ${sideTab === key ? 'border-accent text-accent bg-accent/5' : 'border-transparent text-ink3 hover:text-ink2'}`}>
                     <Icon size={12} /> {label}
@@ -1019,6 +1051,133 @@ export default function AdminAI() {
                     )}
                     {ragResults.length === 0 && !ragLoading && (
                       <div className="text-center py-8"><Database size={24} className="mx-auto text-ink3/30 mb-2" /><p className="text-[11px] text-ink3">Search the knowledge base for answers</p></div>
+                    )}
+                  </div>
+                )}
+
+                {/* ── REPORTS TAB ─────────────────────────────── */}
+                {sideTab === 'reports' && (
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between">
+                      <h3 className="text-[10px] font-mono text-ink3 uppercase tracking-wider">Agent Reports Feed</h3>
+                      <div className="flex items-center gap-2">
+                        <button onClick={loadReports} disabled={reportsLoading} className="text-[10px] text-accent hover:underline flex items-center gap-1">
+                          {reportsLoading ? <Loader2 size={10} className="animate-spin" /> : <RefreshCw size={10} />} Refresh
+                        </button>
+                        <button onClick={loadSupervisorAlerts} disabled={supervisorLoading} className="text-[10px] text-amber-400 hover:underline flex items-center gap-1">
+                          {supervisorLoading ? <Loader2 size={10} className="animate-spin" /> : <Shield size={10} />} Supervisor
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Stats cards */}
+                    {reportStats && (
+                      <div className="grid grid-cols-2 gap-2">
+                        <div className="p-2 rounded-lg bg-surface2/50 border border-border/30">
+                          <div className="text-[10px] text-ink3">24h Reports</div>
+                          <div className="text-sm font-bold text-ink">{reportStats.total_24h}</div>
+                        </div>
+                        <div className="p-2 rounded-lg bg-surface2/50 border border-border/30">
+                          <div className="text-[10px] text-ink3">Critical</div>
+                          <div className={`text-sm font-bold ${reportStats.critical > 0 ? 'text-red-400' : 'text-green-400'}`}>{reportStats.critical}</div>
+                        </div>
+                        <div className="p-2 rounded-lg bg-surface2/50 border border-border/30">
+                          <div className="text-[10px] text-ink3">High</div>
+                          <div className={`text-sm font-bold ${reportStats.high > 0 ? 'text-amber-400' : 'text-green-400'}`}>{reportStats.high}</div>
+                        </div>
+                        <div className="p-2 rounded-lg bg-surface2/50 border border-border/30">
+                          <div className="text-[10px] text-ink3">Divisions</div>
+                          <div className="text-sm font-bold text-ink">{Object.keys(reportStats.by_division).length}</div>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Supervisor alerts */}
+                    {supervisorAlerts && (
+                      <div className={`p-2.5 rounded-xl border ${
+                        (supervisorAlerts as Record<string, unknown>).danger_level === 'critical' ? 'border-red-400/30 bg-red-400/5' :
+                        (supervisorAlerts as Record<string, unknown>).danger_level === 'elevated' ? 'border-amber-400/30 bg-amber-400/5' :
+                        'border-green-400/30 bg-green-400/5'
+                      }`}>
+                        <div className="flex items-center gap-2 mb-1">
+                          <Shield size={12} className={
+                            (supervisorAlerts as Record<string, unknown>).danger_level === 'critical' ? 'text-red-400' :
+                            (supervisorAlerts as Record<string, unknown>).danger_level === 'elevated' ? 'text-amber-400' : 'text-green-400'
+                          } />
+                          <span className="text-[10px] font-bold text-ink">AI Supervisor</span>
+                          <span className={`text-[9px] px-1.5 py-0.5 rounded font-mono ${
+                            (supervisorAlerts as Record<string, unknown>).danger_level === 'critical' ? 'bg-red-400/10 text-red-400' :
+                            (supervisorAlerts as Record<string, unknown>).danger_level === 'elevated' ? 'bg-amber-400/10 text-amber-400' :
+                            'bg-green-400/10 text-green-400'
+                          }`}>{String((supervisorAlerts as Record<string, unknown>).danger_level || 'unknown')}</span>
+                        </div>
+                        <p className="text-[9px] text-ink3">
+                          Reviewed {String((supervisorAlerts as Record<string, unknown>).reports_reviewed || 0)} reports &middot;
+                          {' '}{String((supervisorAlerts as Record<string, unknown>).critical_count || 0)} critical &middot;
+                          {' '}{String((supervisorAlerts as Record<string, unknown>).high_count || 0)} high &middot;
+                          {' '}{String((supervisorAlerts as Record<string, unknown>).failed_count || 0)} failed
+                        </p>
+                        {((supervisorAlerts as Record<string, unknown>).unhealthy_divisions as Record<string, unknown>[])?.length > 0 && (
+                          <div className="mt-1.5 flex flex-wrap gap-1">
+                            {((supervisorAlerts as Record<string, unknown>).unhealthy_divisions as Record<string, unknown>[]).map((ud, i) => (
+                              <span key={i} className="text-[8px] px-1.5 py-0.5 rounded bg-red-400/10 text-red-400 font-mono">
+                                {String(ud.division)}: {String(ud.critical)}C {String(ud.high)}H
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                        <p className="text-[8px] text-ink3 mt-1">Escalation: Kaku (Bally Howrah) &middot; Principal (Rahil)</p>
+                      </div>
+                    )}
+
+                    {/* Severity filter */}
+                    <div className="flex gap-1.5">
+                      {['', 'critical', 'high', 'medium', 'low', 'info'].map(sev => (
+                        <button key={sev} onClick={() => { setReportSeverityFilter(sev); }}
+                          className={`text-[9px] px-2 py-1 rounded-full border transition-colors ${
+                            reportSeverityFilter === sev ? 'border-accent text-accent bg-accent/10' : 'border-border text-ink3 hover:text-ink2'
+                          }`}>
+                          {sev || 'All'}
+                        </button>
+                      ))}
+                    </div>
+
+                    {/* Reports list */}
+                    {agentReports.length > 0 && (
+                      <div className="space-y-1.5">
+                        {agentReports.filter(r => !reportFilter || String(r.agent_name || r.agent_id || '').toLowerCase().includes(reportFilter.toLowerCase()) || String(r.task_summary || '').toLowerCase().includes(reportFilter.toLowerCase())).map((report, i) => (
+                          <div key={i} className={`p-2 rounded-lg border ${
+                            report.severity === 'critical' ? 'border-red-400/30 bg-red-400/5' :
+                            report.severity === 'high' ? 'border-amber-400/30 bg-amber-400/5' :
+                            'border-border/30 bg-surface2/50'
+                          }`}>
+                            <div className="flex items-center gap-2 mb-1">
+                              <span className={`text-[8px] px-1.5 py-0.5 rounded font-mono ${
+                                report.severity === 'critical' ? 'bg-red-400/10 text-red-400' :
+                                report.severity === 'high' ? 'bg-amber-400/10 text-amber-400' :
+                                report.severity === 'medium' ? 'bg-blue-400/10 text-blue-400' :
+                                'bg-surface2 text-ink3'
+                              }`}>{String(report.severity || 'info')}</span>
+                              <span className="text-[10px] font-mono text-ink truncate">{String(report.agent_name || report.agent_id || 'unknown')}</span>
+                              <span className="text-[8px] text-ink3 ml-auto">{timeAgo(String(report.created_at || ''))}</span>
+                            </div>
+                            <p className="text-[9px] text-ink2 line-clamp-2">{String(report.task_summary || 'No summary')}</p>
+                            {report.findings != null && (
+                              <div className="mt-1 text-[8px] text-ink3 line-clamp-2">
+                                {typeof report.findings === 'string' ? report.findings : JSON.stringify(report.findings).slice(0, 120)}
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {agentReports.length === 0 && !reportsLoading && (
+                      <div className="text-center py-8">
+                        <FileText size={24} className="mx-auto text-ink3/30 mb-2" />
+                        <p className="text-[11px] text-ink3">No agent reports yet</p>
+                        <p className="text-[9px] text-ink3 mt-1">Reports appear when autonomous agents run scans</p>
+                      </div>
                     )}
                   </div>
                 )}

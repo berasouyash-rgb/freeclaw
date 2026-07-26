@@ -42,8 +42,8 @@
   },
   "crons": [
     {
-      "path": "/api/agents-cron",
-      "schedule": "0 0 * * *"
+      "path": "/api/agent-cron",
+      "schedule": "*/15 * * * *"
     }
   ]
 }

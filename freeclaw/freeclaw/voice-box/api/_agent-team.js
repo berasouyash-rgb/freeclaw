@@ -18,6 +18,7 @@ const EXECUTIVE_AGENTS = [
   { id: 'risk-assessor', name: 'Risk Assessor', division: 'executive', icon: '🛡️', role: 'Risk Management', description: 'Identifies platform risks, escalation triggers, and mitigation strategies', permissions: ['posts.read', 'users.read', 'reports.read'], capabilities: ['risk_scoring', 'escalation_triggering', 'mitigation_planning', 'threat_detection'], status: 'active', tier: 'leadership' },
   { id: 'data-scientist', name: 'Data Scientist', division: 'executive', icon: '📊', role: 'Data Science Lead', description: 'Advanced analytics, predictive modeling, and statistical analysis', permissions: ['analytics.read', 'posts.read', 'comments.read', 'users.read'], capabilities: ['predictive_modeling', 'statistical_analysis', 'data_visualization', 'anomaly_detection'], status: 'active', tier: 'leadership' },
   { id: 'operations-director', name: 'Operations Director', division: 'executive', icon: '⚙️', role: 'Ops Director', description: 'Operational efficiency, process optimization, and workflow automation', permissions: ['agents.read', 'tools.read', 'analytics.read', 'logs.read'], capabilities: ['process_optimization', 'efficiency_scoring', 'automation_design', 'workflow_analysis'], status: 'active', tier: 'leadership' },
+  { id: 'ai-supervisor', name: 'AI Supervisor', division: 'executive', icon: '👁️', role: 'AI Oversight Lead', description: 'Monitors all agent divisions, detects danger patterns, generates alerts. Knows Kaku (Bally Howrah) and Principal (Rahil) as escalation contacts.', permissions: ['agents.read', 'analytics.read', 'logs.read', 'reports.read', 'users.read'], capabilities: ['agent_monitoring', 'danger_detection', 'personnel_awareness', 'escalation_management', 'health_scoring', 'alert_generation'], status: 'active', tier: 'executive' },
 ];
 
 // ═══════════════════════════════════════════════════════════════════
@@ -686,6 +687,9 @@ async function spawnSubagents(message, maxAgents = 5) {
   // Store result for output viewing (persists to settings table)
   await addWorkflowResult(output);
   
+  // AUTO-SAVE: Persist all agent reports to agent_reports table
+  await saveWorkflowReports(output);
+  
   // Reset agents back to idle after a short delay (they'll stay "completed" briefly)
   setTimeout(() => {
     workflow.agents.forEach((a) => setAgentState(a.id, 'idle'));
@@ -1252,6 +1256,136 @@ function hasCap(agent, ...caps) {
 }
 
 // ═══════════════════════════════════════════════════════════════════
+// AGENT REPORT PERSISTENCE — saves findings to agent_reports table
+// ═══════════════════════════════════════════════════════════════════
+async function saveAgentReport(agentId, agentName, division, result, taskSummary, durationMs) {
+  try {
+    if (!result || result.type === 'error') return false;
+    const data = result.data || {};
+    const findings = data.llm_findings || data.findings || [];
+    const severity = data.severity || 'info';
+    const metrics = {};
+    // Extract key metrics from raw data
+    if (data.total_posts) metrics.total_posts = data.total_posts;
+    if (data.total_users) metrics.total_users = data.total_users;
+    if (data.total_comments) metrics.total_comments = data.total_comments;
+    if (data.pending_reports !== undefined) metrics.pending_reports = data.pending_reports;
+    if (data.active_users !== undefined) metrics.active_users = data.active_users;
+    if (data.risk_level) metrics.risk_level = data.risk_level;
+    if (data.engagement_rate) metrics.engagement_rate = data.engagement_rate;
+    if (data.error_rate) metrics.error_rate = data.error_rate;
+    if (data.avg_duration_ms) metrics.avg_duration_ms = data.avg_duration_ms;
+
+    const { error } = await supabase.from('agent_reports').insert({
+      agent_id: agentId,
+      agent_name: agentName,
+      division: division,
+      report_type: result.type || 'scan',
+      findings: Array.isArray(findings) ? findings : [findings],
+      metrics: metrics,
+      raw_data: data,
+      severity: severity,
+      status: 'new',
+      task_summary: taskSummary || 'Autonomous scan',
+      duration_ms: durationMs || 0,
+    });
+    if (error) { console.error('[agent-team] Report save error:', error.message); return false; }
+    return true;
+  } catch (err) { console.error('[agent-team] Report save failed:', err.message); return false; }
+}
+
+// Save all results from a workflow execution
+async function saveWorkflowReports(workflowOutput) {
+  if (!workflowOutput?.results) return;
+  const duration = workflowOutput.total_time_ms || 0;
+  for (const r of workflowOutput.results) {
+    if (r.result && r.result.type !== 'error') {
+      await saveAgentReport(r.agent_id, r.agent_name, workflowOutput.classification?.division || 'unknown', r.result, workflowOutput.task, Math.round(duration / (workflowOutput.results.length || 1)));
+    }
+  }
+}
+
+// Get recent agent reports
+async function getAgentReports(limit = 50, division = null, severity = null) {
+  try {
+    let query = supabase.from('agent_reports').select('*').order('created_at', { ascending: false }).limit(Math.min(limit, 200));
+    if (division) query = query.eq('division', division);
+    if (severity) query = query.eq('severity', severity);
+    const { data, error } = await query;
+    if (error) { console.error('[agent-team] Reports query error:', error.message); return []; }
+    return data || [];
+  } catch { return []; }
+}
+
+// Get report stats for dashboard
+async function getReportStats() {
+  try {
+    const oneDayAgo = new Date(Date.now() - 86400000).toISOString();
+    const { data } = await supabase.from('agent_reports').select('division,severity,status,created_at').gte('created_at', oneDayAgo);
+    const reports = data || [];
+    const bySeverity = {};
+    const byDivision = {};
+    const byStatus = {};
+    reports.forEach(r => {
+      bySeverity[r.severity] = (bySeverity[r.severity] || 0) + 1;
+      byDivision[r.division] = (byDivision[r.division] || 0) + 1;
+      byStatus[r.status] = (byStatus[r.status] || 0) + 1;
+    });
+    return { total_24h: reports.length, by_severity: bySeverity, by_division: byDivision, by_status: byStatus, critical: bySeverity.critical || 0, high: bySeverity.high || 0 };
+  } catch { return { total_24h: 0, by_severity: {}, by_division: {}, by_status: {}, critical: 0, high: 0 }; }
+}
+
+// AI Supervisor: review recent reports and generate alerts
+async function runSupervisorScan() {
+  const recentReports = await getAgentReports(100);
+  if (recentReports.length === 0) return { type: 'supervisor_scan', data: { status: 'no_reports', message: 'No recent agent reports to review' } };
+
+  const critical = recentReports.filter(r => r.severity === 'critical');
+  const high = recentReports.filter(r => r.severity === 'high');
+  const failed = recentReports.filter(r => r.status === 'error');
+
+  // Build supervisor analysis
+  const divisionHealth = {};
+  recentReports.forEach(r => {
+    if (!divisionHealth[r.division]) divisionHealth[r.division] = { total: 0, critical: 0, high: 0, info: 0 };
+    divisionHealth[r.division].total++;
+    if (r.severity === 'critical') divisionHealth[r.division].critical++;
+    else if (r.severity === 'high') divisionHealth[r.division].high++;
+    else divisionHealth[r.division].info++;
+  });
+
+  const unhealthyDivisions = Object.entries(divisionHealth)
+    .filter(([, h]) => h.critical > 0 || h.high > 2)
+    .map(([div, h]) => ({ division: div, critical: h.critical, high: h.high }));
+
+  const supervisorData = {
+    reports_reviewed: recentReports.length,
+    critical_count: critical.length,
+    high_count: high.length,
+    failed_count: failed.length,
+    unhealthy_divisions: unhealthyDivisions,
+    division_health: divisionHealth,
+    danger_level: critical.length > 3 ? 'critical' : critical.length > 0 ? 'elevated' : high.length > 5 ? 'warning' : 'normal',
+    // Admin personnel context
+    escalation_contacts: [
+      { name: 'Kaku', location: 'Bally Howrah', role: 'Primary escalation contact' },
+      { name: 'Principal', location: 'Rahil', role: 'Secondary escalation contact' },
+    ],
+    scan_time: new Date().toISOString(),
+  };
+
+  // If there are critical issues, create a critical report
+  if (critical.length > 0) {
+    await saveAgentReport('ai-supervisor', 'AI Supervisor', 'executive', {
+      type: 'supervisor_alert',
+      data: { ...supervisorData, analysis: `ALERT: ${critical.length} critical issues detected across ${unhealthyDivisions.length} divisions. Immediate attention required.` }
+    }, 'Supervisor danger scan', 0);
+  }
+
+  return { type: 'supervisor_scan', data: supervisorData };
+}
+
+// ═══════════════════════════════════════════════════════════════════
 // RBAC CHECK
 // ═══════════════════════════════════════════════════════════════════
 function hasPermission(agentId, requiredPermission) {
@@ -1614,8 +1748,96 @@ export default async function handler(req, res) {
       return res.status(200).json({ agents: result, total: result.length, active: activeCount, autonomous: autonomousCount });
     }
 
-    return res.status(400).json({ error: 'Unknown action. Actions: list, get, roles, create, delete, spawn, classify, check_permission, divisions, dashboard, status, results, activate, deactivate, activateAll, deactivateAll, setAutonomous, activationState' });
+    // ── AGENT REPORTS — persistent findings from autonomous scans ────
+    if (action === 'reports') {
+      const limit = Math.min(parseInt(req.query.limit) || 50, 200);
+      const division = req.query.division || null;
+      const severity = req.query.severity || null;
+      const reports = await getAgentReports(limit, division, severity);
+      const stats = await getReportStats();
+      return res.status(200).json({ reports, stats, total: reports.length });
+    }
+
+    // ── SAVE REPORT — manually save an agent report ───────────────
+    if (action === 'saveReport') {
+      if (!b.agent_id || !b.agent_name) return res.status(400).json({ error: 'agent_id and agent_name required' });
+      const saved = await saveAgentReport(b.agent_id, b.agent_name, b.division || 'unknown', b.result || { type: 'scan', data: {} }, b.task_summary, b.duration_ms);
+      return res.status(200).json({ ok: saved, agent_id: b.agent_id });
+    }
+
+    // ── AI SUPERVISOR — review all recent reports, generate alerts ──
+    if (action === 'supervisor') {
+      const scan = await runSupervisorScan();
+      return res.status(200).json(scan);
+    }
+
+    // ── CRON — autonomous agent execution (called by Vercel cron) ───
+    if (action === 'cron') {
+      const activationState = await getActivationState();
+      const autonomousAgents = ALL_AGENTS.filter(a => {
+        const act = activationState[a.id];
+        return act && act.active !== false && act.autonomous === true;
+      });
+      
+      if (autonomousAgents.length === 0) {
+        return res.status(200).json({ ok: true, message: 'No autonomous agents configured', executed: 0 });
+      }
+
+      // Execute each autonomous agent (max 10 per cron run to avoid timeouts)
+      const toRun = autonomousAgents.slice(0, 10);
+      const results = [];
+      
+      for (const agent of toRun) {
+        const startTime = Date.now();
+        try {
+          setAgentState(agent.id, 'working', 'Autonomous cron scan');
+          const task = classifyTask(agent.description || agent.name);
+          const result = await Promise.race([
+            processAgentTask(agent, 'Autonomous scheduled scan', task),
+            new Promise((_, reject) => setTimeout(() => reject(new Error('Cron timeout')), 25000)),
+          ]);
+          const duration = Date.now() - startTime;
+          if (result && result.type !== 'error') {
+            await saveAgentReport(agent.id, agent.name, agent.division, result, 'Autonomous cron scan', duration);
+            results.push({ agent_id: agent.id, status: 'completed', duration_ms: duration });
+          } else {
+            results.push({ agent_id: agent.id, status: 'error', error: result?.data?.error || 'Unknown error' });
+          }
+          setAgentState(agent.id, 'completed', 'Autonomous cron scan');
+        } catch (err) {
+          results.push({ agent_id: agent.id, status: 'error', error: err.message });
+          setAgentState(agent.id, 'error', 'Cron failed');
+        }
+      }
+
+      // After all agents run, run supervisor scan
+      const supervisorResult = await runSupervisorScan();
+      
+      await auditLog('admin', 'agent_cron', `Cron executed ${results.length} agents, ${results.filter(r => r.status === 'completed').length} succeeded`);
+      return res.status(200).json({ ok: true, executed: results.length, results, supervisor: supervisorResult });
+    }
+
+    // ── BATCH ACTIVATE — set all agents active + autonomous ─────────
+    if (action === 'batchActivate') {
+      const state = await getActivationState();
+      const division = b.division || null;
+      const agents = division ? ALL_AGENTS.filter(a => a.division === division) : ALL_AGENTS;
+      const autonomous = b.autonomous !== false; // default true
+      agents.forEach(a => {
+        state[a.id] = { active: true, autonomous, activated_at: new Date().toISOString() };
+      });
+      await saveActivationState(state);
+      await auditLog('admin', 'agent_batch_activate', `Batch activated ${agents.length} agents (autonomous: ${autonomous})${division ? ` in ${division}` : ''}`);
+      return res.status(200).json({ ok: true, count: agents.length, autonomous });
+    }
+
+    return res.status(400).json({ error: 'Unknown action. Actions: list, get, roles, create, delete, spawn, classify, check_permission, divisions, dashboard, status, results, activate, deactivate, activateAll, deactivateAll, setAutonomous, activationState, reports, saveReport, supervisor, cron, batchActivate' });
   } catch (err) {
     return sanitizeError(res, err, 'agent-team');
   }
 }
+
+// ═══════════════════════════════════════════════════════════════════
+// EXPORTS — used by agent-cron.js and other modules
+// ═══════════════════════════════════════════════════════════════════
+export { ALL_AGENTS, processAgentTask, setAgentState, classifyTask, saveAgentReport, getAgentReports, getReportStats, runSupervisorScan };
