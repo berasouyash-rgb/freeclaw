@@ -52,6 +52,7 @@ import persona from './_persona.js';
 import aiChat from './_ai-chat.js';
 import commandCenter from './_command-center.js';
 import proactive from './_proactive.js';
+import learning from './learning.js';
 
 // V3 Enterprise endpoints
 import v3Stream from './v3/_stream.js';
@@ -174,6 +175,7 @@ const routes = {
   'ai-chat': aiChat,
   'command-center': commandCenter,
   proactive,
+  learning,
   cleanup: cleanupHandler,
   // V3 Enterprise routes
   'v3/stream': v3Stream,

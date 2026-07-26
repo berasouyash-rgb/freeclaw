@@ -5,6 +5,7 @@ import supabase from './_db-client.js';
 import { cors, isAdmin, auditLog, clean } from './_auth.js';
 import { callLLMChain } from './_providers.js';
 import { sanitizeError } from './_error.js';
+import { recordTaskOutcome, sharePattern, queryKnowledge } from './_learning-engine.js';
 
 // ═══════════════════════════════════════════════════════════════════
 // DIVISION 1: EXECUTIVE INTELLIGENCE (agents 1-8)
@@ -664,6 +665,23 @@ async function spawnSubagents(message, maxAgents = 5) {
     agent.status = 'completed';
     agent.completed_at = new Date().toISOString();
     if (result?.type !== 'error') setAgentState(agent.id, 'completed', message, result);
+
+    // ── LEARNING ENGINE: Record task outcome for every agent execution ──
+    const outcomeType = result?.type === 'error' ? 'failure' : 'success';
+    const agentDef = getAgent(agent.id);
+    recordTaskOutcome(
+      agent.id,
+      agentDef?.division || 'unknown',
+      task?.division || 'general',
+      outcomeType,
+      {
+        duration_ms: Date.now() - new Date(agent.started_at).getTime(),
+        confidence: result?.data?.severity === 'critical' ? 0.3 : result?.data?.severity === 'high' ? 0.5 : 0.8,
+        items_processed: result?.data?.total_posts || result?.data?.total_users || 0,
+        error_type: result?.type === 'error' ? result?.data?.error : null,
+      }
+    ).catch(() => {}); // fire-and-forget to not slow down execution
+
     return { agent_id: agent.id, agent_name: agent.name, icon: agent.icon, result };
   });
   const results = await Promise.allSettled(agentPromises);
@@ -1800,8 +1818,12 @@ export default async function handler(req, res) {
           if (result && result.type !== 'error') {
             await saveAgentReport(agent.id, agent.name, agent.division, result, 'Autonomous cron scan', duration);
             results.push({ agent_id: agent.id, status: 'completed', duration_ms: duration });
+            // ── LEARNING: Record cron task outcome ──
+            recordTaskOutcome(agent.id, agent.division, 'cron_scan', 'success', { duration_ms: duration, confidence: 0.7 }).catch(() => {});
           } else {
             results.push({ agent_id: agent.id, status: 'error', error: result?.data?.error || 'Unknown error' });
+            // ── LEARNING: Record cron failure ──
+            recordTaskOutcome(agent.id, agent.division, 'cron_scan', 'failure', { error_type: result?.data?.error || 'timeout' }).catch(() => {});
           }
           setAgentState(agent.id, 'completed', 'Autonomous cron scan');
         } catch (err) {

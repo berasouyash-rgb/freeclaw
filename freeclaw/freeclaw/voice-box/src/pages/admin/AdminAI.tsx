@@ -180,7 +180,7 @@ function CopyButton({ text }: { text: string }) {
 }
 
 /* ─── Tab type ────────────────────────────────────────────────── */
-type SideTab = 'chat' | 'agents' | 'tools' | 'health' | 'audit' | 'memory' | 'rag' | 'reports';
+type SideTab = 'chat' | 'agents' | 'tools' | 'health' | 'audit' | 'memory' | 'rag' | 'reports' | 'learning';
 
 /* ═══════════════════════════════════════════════════════════════
    MAIN — Admin AI Central Intelligence Workspace
@@ -241,8 +241,13 @@ export default function AdminAI() {
   const [reportsLoading, setReportsLoading] = useState(false);
   const [supervisorAlerts, setSupervisorAlerts] = useState<Record<string, unknown> | null>(null);
   const [supervisorLoading, setSupervisorLoading] = useState(false);
-  const [reportFilter, setReportFilter] = useState('');
   const [reportSeverityFilter, setReportSeverityFilter] = useState('');
+
+  // ── Learning system state ──
+  const [learningStats, setLearningStats] = useState<Record<string, unknown> | null>(null);
+  const [learningLoading, setLearningLoading] = useState(false);
+  const [learningInsights, setLearningInsights] = useState<Record<string, unknown>[]>([]);
+  const [learningRecords, setLearningRecords] = useState<Record<string, unknown>[]>([]);
 
   // ── Conversation history ──
   const [conversations, setConversations] = useState<{ id: string; title?: string; agent_id?: string; created_at: string; session_id?: string; updated_at?: string; last_message?: string; message_count?: number }[]>([]);
@@ -330,6 +335,21 @@ export default function AdminAI() {
       setSupervisorAlerts(data);
     } catch (e: unknown) { console.warn('[AdminAI] Failed to load supervisor alerts:', e instanceof Error ? e.message : e); }
     setSupervisorLoading(false);
+  };
+
+  const loadLearningStats = async () => {
+    setLearningLoading(true);
+    try {
+      const [stats, insightsData, recordsData] = await Promise.all([
+        api.get<Record<string, unknown>>('/api/learning?action=stats'),
+        api.get<{ insights: Record<string, unknown>[] }>('/api/learning?action=insights'),
+        api.get<{ records: Record<string, unknown>[] }>('/api/learning?action=records&limit=30'),
+      ]);
+      setLearningStats(stats);
+      setLearningInsights(insightsData.insights || []);
+      setLearningRecords(recordsData.records || []);
+    } catch (e: unknown) { console.warn('[AdminAI] Failed to load learning stats:', e instanceof Error ? e.message : e); }
+    setLearningLoading(false);
   };
 
   const loadConversations = async () => {
@@ -800,6 +820,7 @@ export default function AdminAI() {
                   { key: 'memory' as SideTab, label: 'Memory', icon: Brain },
                   { key: 'rag' as SideTab, label: 'KB', icon: Database },
                   { key: 'reports' as SideTab, label: 'Reports', icon: FileText },
+                  { key: 'learning' as SideTab, label: 'Learning', icon: Sparkles },
                 ]).map(({ key, label, icon: Icon }) => (
                   <button key={key} onClick={() => setSideTab(key)} className={`flex items-center gap-1.5 px-3 py-2.5 text-[11px] font-medium border-b-2 transition-colors whitespace-nowrap ${sideTab === key ? 'border-accent text-accent bg-accent/5' : 'border-transparent text-ink3 hover:text-ink2'}`}>
                     <Icon size={12} /> {label}
@@ -1145,7 +1166,7 @@ export default function AdminAI() {
                     {/* Reports list */}
                     {agentReports.length > 0 && (
                       <div className="space-y-1.5">
-                        {agentReports.filter(r => !reportFilter || String(r.agent_name || r.agent_id || '').toLowerCase().includes(reportFilter.toLowerCase()) || String(r.task_summary || '').toLowerCase().includes(reportFilter.toLowerCase())).map((report, i) => (
+                        {agentReports.map((report, i) => (
                           <div key={i} className={`p-2 rounded-lg border ${
                             report.severity === 'critical' ? 'border-red-400/30 bg-red-400/5' :
                             report.severity === 'high' ? 'border-amber-400/30 bg-amber-400/5' :
@@ -1177,6 +1198,132 @@ export default function AdminAI() {
                         <FileText size={24} className="mx-auto text-ink3/30 mb-2" />
                         <p className="text-[11px] text-ink3">No agent reports yet</p>
                         <p className="text-[9px] text-ink3 mt-1">Reports appear when autonomous agents run scans</p>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* ── LEARNING TAB ──────────────────────────── */}
+                {sideTab === 'learning' && (
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between">
+                      <h3 className="text-[10px] font-mono text-ink3 uppercase tracking-wider">Self-Evolution Learning Engine</h3>
+                      <button onClick={loadLearningStats} disabled={learningLoading} className="text-[10px] text-accent hover:underline flex items-center gap-1">
+                        {learningLoading ? <Loader2 size={10} className="animate-spin" /> : <RefreshCw size={10} />} Refresh
+                      </button>
+                    </div>
+
+                    {/* Learning stats overview */}
+                    {learningStats && (
+                      <div className="grid grid-cols-2 gap-2">
+                        <div className="p-2 rounded-lg bg-surface2/50 border border-border/30">
+                          <div className="text-[10px] text-ink3">Tasks (24h)</div>
+                          <div className="text-sm font-bold text-ink">{String((learningStats.learning as Record<string, unknown>)?.total_24h ?? 0)}</div>
+                        </div>
+                        <div className="p-2 rounded-lg bg-surface2/50 border border-border/30">
+                          <div className="text-[10px] text-ink3">Success Rate</div>
+                          <div className="text-sm font-bold text-green-400">
+                            {String(((learningStats.learning as Record<string, unknown>)?.total_24h as number) || 0) !== '0'
+                              ? Math.round((((learningStats.learning as Record<string, unknown>)?.success as number) || 0) / (((learningStats.learning as Record<string, unknown>)?.total_24h as number) || 1) * 100)
+                              : 0}%
+                          </div>
+                        </div>
+                        <div className="p-2 rounded-lg bg-surface2/50 border border-border/30">
+                          <div className="text-[10px] text-ink3">Insights (7d)</div>
+                          <div className="text-sm font-bold text-accent">{String((learningStats.insights as Record<string, unknown>)?.total_7d ?? 0)}</div>
+                        </div>
+                        <div className="p-2 rounded-lg bg-surface2/50 border border-border/30">
+                          <div className="text-[10px] text-ink3">Admin Feedback</div>
+                          <div className="text-sm font-bold text-ink">{String((learningStats.feedback as Record<string, unknown>)?.total_24h ?? 0)}</div>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Learning subsystems status */}
+                    {learningStats && (
+                      <div className="space-y-1.5">
+                        <div className="text-[9px] font-mono text-ink3 uppercase">Subsystems</div>
+                        {[
+                          { label: 'A. Feedback Loops', active: ((learningStats.learning as Record<string, unknown>)?.total_24h as number) > 0, desc: 'Zero-cost task outcome recording' },
+                          { label: 'B. LLM Reflection', active: ((learningStats.insights as Record<string, unknown>)?.total_7d as number) > 0, desc: 'Deep analysis on failures' },
+                          { label: 'C. Knowledge Sharing', active: ((learningStats.knowledge as Record<string, unknown>)?.active_patterns as number) > 0, desc: 'Cross-agent pattern propagation' },
+                          { label: 'D. Admin Feedback', active: ((learningStats.feedback as Record<string, unknown>)?.total_24h as number) > 0, desc: 'Human-in-the-loop learning' },
+                          { label: 'E. Self-Modification', active: true, desc: 'Threshold adjust, prompt rewrite, agent spawn' },
+                        ].map((sys, i) => (
+                          <div key={i} className="flex items-center gap-2 p-1.5 rounded-lg bg-surface2/30 border border-border/20">
+                            <span className={`w-1.5 h-1.5 rounded-full ${sys.active ? 'bg-green-400' : 'bg-ink3/30'}`} />
+                            <span className="text-[9px] font-mono text-ink">{sys.label}</span>
+                            <span className="text-[8px] text-ink3 ml-auto">{sys.desc}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* Pending spawn requests */}
+                    {learningStats && ((learningStats.self_modification as Record<string, unknown>)?.pending_spawn_requests as number) > 0 && (
+                      <div className="p-2 rounded-lg border border-accent/30 bg-accent/5">
+                        <div className="text-[9px] font-mono text-accent uppercase mb-1">Pending Spawn Requests</div>
+                        {((learningStats.self_modification as Record<string, unknown>)?.spawn_requests as Record<string, unknown>[])?.map((sr, i) => (
+                          <div key={i} className="text-[9px] text-ink2">
+                            Division: {String(sr.division)} — Reason: {String(sr.reason)}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* Insights list */}
+                    {learningInsights.length > 0 && (
+                      <div className="space-y-1.5">
+                        <div className="text-[9px] font-mono text-ink3 uppercase">Recent Insights</div>
+                        {learningInsights.slice(0, 10).map((insight, i) => (
+                          <div key={i} className={`p-2 rounded-lg border ${
+                            insight.priority === 'high' ? 'border-amber-400/30 bg-amber-400/5' :
+                            insight.applied ? 'border-green-400/30 bg-green-400/5' :
+                            'border-border/30 bg-surface2/50'
+                          }`}>
+                            <div className="flex items-center gap-2 mb-0.5">
+                              <span className={`text-[8px] px-1.5 py-0.5 rounded font-mono ${
+                                insight.priority === 'high' ? 'bg-amber-400/10 text-amber-400' :
+                                insight.priority === 'medium' ? 'bg-blue-400/10 text-blue-400' :
+                                'bg-surface2 text-ink3'
+                              }`}>{String(insight.priority || 'low')}</span>
+                              <span className="text-[9px] font-mono text-ink">{String(insight.insight_type || insight.type || 'insight')}</span>
+                              <span className={`text-[8px] ml-auto ${insight.applied ? 'text-green-400' : 'text-ink3'}`}>
+                                {insight.applied ? 'applied' : 'pending'}
+                              </span>
+                            </div>
+                            <p className="text-[9px] text-ink2 line-clamp-2">{String(insight.description || '')}</p>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* Recent learning records */}
+                    {learningRecords.length > 0 && (
+                      <div className="space-y-1.5">
+                        <div className="text-[9px] font-mono text-ink3 uppercase">Recent Task Outcomes</div>
+                        {learningRecords.slice(0, 15).map((record, i) => (
+                          <div key={i} className="flex items-center gap-2 p-1.5 rounded bg-surface2/30 border border-border/20">
+                            <span className={`w-1.5 h-1.5 rounded-full ${
+                              record.outcome === 'success' ? 'bg-green-400' :
+                              record.outcome === 'failure' ? 'bg-red-400' : 'bg-amber-400'
+                            }`} />
+                            <span className="text-[9px] font-mono text-ink truncate">{String(record.agent_id || 'unknown')}</span>
+                            <span className="text-[8px] text-ink3">{String(record.task_type || '')}</span>
+                            <span className={`text-[8px] ml-auto ${
+                              record.outcome === 'success' ? 'text-green-400' :
+                              record.outcome === 'failure' ? 'text-red-400' : 'text-amber-400'
+                            }`}>{String(record.outcome || '')}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {learningStats === null && !learningLoading && (
+                      <div className="text-center py-8">
+                        <Sparkles size={24} className="mx-auto text-ink3/30 mb-2" />
+                        <p className="text-[11px] text-ink3">Click Refresh to load learning data</p>
+                        <p className="text-[9px] text-ink3 mt-1">Learning engine activates after agents complete tasks</p>
                       </div>
                     )}
                   </div>
