@@ -1,5 +1,5 @@
-import { createClient } from '@supabase/supabase-js';
-import { triggerRestore } from './_db-wake.js';
+import { createClient } from "@supabase/supabase-js";
+import { triggerRestore } from "./_db-wake.js";
 
 // Connection pooling: reuse client across warm invocations (Vercel keeps instances alive)
 let _client = null;
@@ -10,73 +10,99 @@ let _client = null;
  * Falls back to VITE_SUPABASE_ANON_KEY if service role key is not set (with RLS).
  */
 function getClient() {
-  if (_client) return _client;
+	if (_client) return _client;
 
-  const url = process.env.VITE_SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
-  // Prefer service role key (bypasses RLS) — required for server-side operations
-  const key = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.VITE_SUPABASE_ANON_KEY;
+	const url =
+		process.env.VITE_SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
+	// Prefer service role key (bypasses RLS) — required for server-side operations
+	const key =
+		process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.VITE_SUPABASE_ANON_KEY;
 
-  if (!url || !key) {
-    const msg = 'CRITICAL: Missing Supabase config. Set VITE_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in .env';
-    console.error(msg);
-    throw new Error(msg);
-  }
+	if (!url || !key) {
+		const msg =
+			"CRITICAL: Missing Supabase config. Set VITE_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in .env";
+		console.error(msg);
+		throw new Error(msg);
+	}
 
-  const isServiceRole = !!process.env.SUPABASE_SERVICE_ROLE_KEY;
+	const isServiceRole = !!process.env.SUPABASE_SERVICE_ROLE_KEY;
+	const isProd =
+		process.env.VERCEL_ENV === "production" ||
+		process.env.NODE_ENV === "production";
 
-  _client = createClient(
-    url,
-    key,
-    {
-      global: {
-        fetch: async (url, options) => {
-          // Add request timeout to prevent hung connections
-          const controller = new AbortController();
-          const timeout = setTimeout(() => controller.abort(), 15000);
-          try {
-            const res = await fetch(url, { ...options, signal: controller.signal });
-            clearTimeout(timeout);
-            if (!res.ok && res.status >= 500) {
-              triggerRestore();
-              const ct = res.headers.get('content-type') || '';
-              if (!ct.includes('json')) {
-                console.warn('[db-client] Non-JSON response from Supabase (cold start?), retrying...');
-                clearTimeout(timeout);
-                const retryController = new AbortController();
-                const retryTimeout = setTimeout(() => retryController.abort(), 30000);
-                try {
-                  const retryRes = await fetch(url, { ...options, signal: retryController.signal });
-                  clearTimeout(retryTimeout);
-                  return retryRes;
-                } catch (retryErr) {
-                  clearTimeout(retryTimeout);
-                  throw retryErr;
-                }
-              }
-            }
-            return res;
-          } catch (err) {
-            clearTimeout(timeout);
-            if (err.name === 'AbortError') triggerRestore();
-            throw err;
-          }
-        },
-      },
-      db: {
-        schema: 'public',
-      },
-      auth: {
-        persistSession: false,
-        autoRefreshToken: false,
-      },
-    }
-  );
+	// Fail closed: in production the server MUST run with the service role key.
+	// Falling back to the anon key is a security regression — anon is now
+	// deny-by-default in the database (migration 005), so it would silently
+	// break every API route while looking like a config omission.
+	if (!isServiceRole && isProd) {
+		const msg =
+			"SECURITY FAIL-CLOSED: production is missing SUPABASE_SERVICE_ROLE_KEY; refusing to run with the anon key.";
+		console.error(msg);
+		throw new Error(msg);
+	}
 
-  if (!isServiceRole) {
-    console.warn('⚠️ Using anon key for server-side client — RLS policies will be enforced. Set SUPABASE_SERVICE_ROLE_KEY for full access.');
-  }
+	_client = createClient(url, key, {
+		global: {
+			fetch: async (url, options) => {
+				// Add request timeout to prevent hung connections
+				const controller = new AbortController();
+				const timeout = setTimeout(() => controller.abort(), 15000);
+				try {
+					const res = await fetch(url, {
+						...options,
+						signal: controller.signal,
+					});
+					clearTimeout(timeout);
+					if (!res.ok && res.status >= 500) {
+						triggerRestore();
+						const ct = res.headers.get("content-type") || "";
+						if (!ct.includes("json")) {
+							console.warn(
+								"[db-client] Non-JSON response from Supabase (cold start?), retrying...",
+							);
+							clearTimeout(timeout);
+							const retryController = new AbortController();
+							const retryTimeout = setTimeout(
+								() => retryController.abort(),
+								30000,
+							);
+							try {
+								const retryRes = await fetch(url, {
+									...options,
+									signal: retryController.signal,
+								});
+								clearTimeout(retryTimeout);
+								return retryRes;
+							} catch (retryErr) {
+								clearTimeout(retryTimeout);
+								throw retryErr;
+							}
+						}
+					}
+					return res;
+				} catch (err) {
+					clearTimeout(timeout);
+					if (err.name === "AbortError") triggerRestore();
+					throw err;
+				}
+			},
+		},
+		db: {
+			schema: "public",
+		},
+		auth: {
+			persistSession: false,
+			autoRefreshToken: false,
+		},
+	});
 
-  return _client;
+	if (!isServiceRole) {
+		console.warn(
+			"⚠️ Using anon key for server-side client — RLS policies will be enforced. Set SUPABASE_SERVICE_ROLE_KEY for full access.",
+		);
+	}
+
+	return _client;
 }
 
 const supabase = getClient();

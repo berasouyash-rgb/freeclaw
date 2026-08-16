@@ -7,150 +7,176 @@
 // POST /api/v3/memory — search memories
 // GET  /api/v3/memory — memory analytics
 
-import { cors, isAdmin } from '../_auth.js';
-import { sanitizeError } from '../_error.js';
+import { cors, isAdmin } from "../_auth.js";
+import { sanitizeError } from "../_error.js";
 import {
-  storeMemory,
-  retrieveMemories,
-  searchMemories,
-  updateMemory,
-  deleteMemory,
-  clearAgentMemories,
-  consolidateMemories,
-  buildMemoryContext,
-  getMemoryAnalytics,
-  MEMORY_TYPES,
-} from '../_memory.js';
+	buildMemoryContext,
+	clearAgentMemories,
+	consolidateMemories,
+	deleteMemory,
+	getMemoryAnalytics,
+	MEMORY_TYPES,
+	retrieveMemories,
+	searchMemories,
+	storeMemory,
+	updateMemory,
+} from "../_memory.js";
 
 export default async function handler(req, res) {
-  cors(res, req);
-  if (req.method === 'OPTIONS') return res.status(204).end();
+	cors(res, req);
+	if (req.method === "OPTIONS") return res.status(204).end();
 
-  try {
-    const body = req.body || {};
+	try {
+		// Enterprise memory API — every action (including delete/clear/update) is
+		// admin-only. Mirrors the auth gate used by /api/memory (_memory-api.js).
+		// Memories store conversation content, so read actions are gated too.
+		if (!(await isAdmin(req)))
+			return res.status(403).json({ error: "Admin only" });
 
-    // ── Store a memory ─────────────────────────────────────────────
-    if (body.action === 'store' && body.agent_id && body.memory_type && body.content) {
-      if (!MEMORY_TYPES.includes(body.memory_type)) {
-        return res.status(400).json({ error: `Invalid memory type. Must be one of: ${MEMORY_TYPES.join(', ')}` });
-      }
+		const body = req.body || {};
 
-      const result = await storeMemory(body.agent_id, body.memory_type, body.content, {
-        confidence: body.confidence,
-        ttl: body.ttl,
-        source: body.source || 'api',
-      });
+		// ── Store a memory ─────────────────────────────────────────────
+		if (
+			body.action === "store" &&
+			body.agent_id &&
+			body.memory_type &&
+			body.content
+		) {
+			if (!MEMORY_TYPES.includes(body.memory_type)) {
+				return res
+					.status(400)
+					.json({
+						error: `Invalid memory type. Must be one of: ${MEMORY_TYPES.join(", ")}`,
+					});
+			}
 
-      if (result.error) {
-        return res.status(400).json(result);
-      }
+			const result = await storeMemory(
+				body.agent_id,
+				body.memory_type,
+				body.content,
+				{
+					confidence: body.confidence,
+					ttl: body.ttl,
+					source: body.source || "api",
+				},
+			);
 
-      return res.status(201).json(result);
-    }
+			if (result.error) {
+				return res.status(400).json(result);
+			}
 
-    // ── Retrieve memories ──────────────────────────────────────────
-    if (body.action === 'retrieve' && body.agent_id) {
-      const memories = await retrieveMemories(body.agent_id, {
-        type: body.memory_type,
-        limit: body.limit || 50,
-        minConfidence: body.min_confidence || 0.5,
-      });
+			return res.status(201).json(result);
+		}
 
-      return res.status(200).json({
-        agent_id: body.agent_id,
-        count: memories.length,
-        memories,
-      });
-    }
+		// ── Retrieve memories ──────────────────────────────────────────
+		if (body.action === "retrieve" && body.agent_id) {
+			const memories = await retrieveMemories(body.agent_id, {
+				type: body.memory_type,
+				limit: body.limit || 50,
+				minConfidence: body.min_confidence || 0.5,
+			});
 
-    // ── Search memories ────────────────────────────────────────────
-    if (body.action === 'search' && body.agent_id && body.query) {
-      const memories = await searchMemories(body.agent_id, body.query, {
-        type: body.memory_type,
-        limit: body.limit || 10,
-      });
+			return res.status(200).json({
+				agent_id: body.agent_id,
+				count: memories.length,
+				memories,
+			});
+		}
 
-      return res.status(200).json({
-        agent_id: body.agent_id,
-        query: body.query,
-        count: memories.length,
-        memories,
-      });
-    }
+		// ── Search memories ────────────────────────────────────────────
+		if (body.action === "search" && body.agent_id && body.query) {
+			const memories = await searchMemories(body.agent_id, body.query, {
+				type: body.memory_type,
+				limit: body.limit || 10,
+			});
 
-    // ── Build memory context ───────────────────────────────────────
-    if (body.action === 'context' && body.agent_id) {
-      const context = await buildMemoryContext(body.agent_id, {
-        maxTokens: body.max_tokens || 2000,
-      });
+			return res.status(200).json({
+				agent_id: body.agent_id,
+				query: body.query,
+				count: memories.length,
+				memories,
+			});
+		}
 
-      return res.status(200).json({
-        agent_id: body.agent_id,
-        context,
-        length: context.length,
-      });
-    }
+		// ── Build memory context ───────────────────────────────────────
+		if (body.action === "context" && body.agent_id) {
+			const context = await buildMemoryContext(body.agent_id, {
+				maxTokens: body.max_tokens || 2000,
+			});
 
-    // ── Consolidate memories ───────────────────────────────────────
-    if (body.action === 'consolidate' && body.agent_id) {
-      const result = await consolidateMemories(body.agent_id, body.memory_type);
+			return res.status(200).json({
+				agent_id: body.agent_id,
+				context,
+				length: context.length,
+			});
+		}
 
-      return res.status(200).json({
-        agent_id: body.agent_id,
-        ...result,
-      });
-    }
+		// ── Consolidate memories ───────────────────────────────────────
+		if (body.action === "consolidate" && body.agent_id) {
+			const result = await consolidateMemories(body.agent_id, body.memory_type);
 
-    // ── Clear memories ─────────────────────────────────────────────
-    if (body.action === 'clear' && body.agent_id) {
-      const result = await clearAgentMemories(body.agent_id, body.memory_type);
+			return res.status(200).json({
+				agent_id: body.agent_id,
+				...result,
+			});
+		}
 
-      return res.status(200).json({
-        agent_id: body.agent_id,
-        ...result,
-      });
-    }
+		// ── Clear memories ─────────────────────────────────────────────
+		if (body.action === "clear" && body.agent_id) {
+			const result = await clearAgentMemories(body.agent_id, body.memory_type);
 
-    // ── Update memory ──────────────────────────────────────────────
-    if (body.action === 'update' && body.memory_id) {
-      const updates = {};
-      if (body.content) updates.content = body.content;
-      if (body.confidence !== undefined) updates.confidence = body.confidence;
-      if (body.ttl) updates.expires_at = new Date(Date.now() + body.ttl * 1000).toISOString();
+			return res.status(200).json({
+				agent_id: body.agent_id,
+				...result,
+			});
+		}
 
-      const result = await updateMemory(body.memory_id, updates);
+		// ── Update memory ──────────────────────────────────────────────
+		if (body.action === "update" && body.memory_id) {
+			const updates = {};
+			if (body.content) updates.content = body.content;
+			if (body.confidence !== undefined) updates.confidence = body.confidence;
+			if (body.ttl)
+				updates.expires_at = new Date(
+					Date.now() + body.ttl * 1000,
+				).toISOString();
 
-      if (result.error) {
-        return res.status(400).json(result);
-      }
+			const result = await updateMemory(body.memory_id, updates);
 
-      return res.status(200).json(result);
-    }
+			if (result.error) {
+				return res.status(400).json(result);
+			}
 
-    // ── Delete memory ──────────────────────────────────────────────
-    if (body.action === 'delete' && body.memory_id) {
-      const result = await deleteMemory(body.memory_id);
+			return res.status(200).json(result);
+		}
 
-      return res.status(200).json(result);
-    }
+		// ── Delete memory ──────────────────────────────────────────────
+		if (body.action === "delete" && body.memory_id) {
+			const result = await deleteMemory(body.memory_id);
 
-    // ── GET: Memory analytics ──────────────────────────────────────
-    if (req.method === 'GET') {
-      const agentId = req.query.agent_id || 'general';
-      const analytics = await getMemoryAnalytics(agentId);
+			return res.status(200).json(result);
+		}
 
-      return res.status(200).json({
-        service: 'memory-engine',
-        status: 'operational',
-        memory_types: MEMORY_TYPES,
-        analytics,
-      });
-    }
+		// ── GET: Memory analytics ──────────────────────────────────────
+		if (req.method === "GET") {
+			const agentId = req.query.agent_id || "general";
+			const analytics = await getMemoryAnalytics(agentId);
 
-    return res.status(400).json({ error: 'Invalid request. Provide action with required parameters.' });
+			return res.status(200).json({
+				service: "memory-engine",
+				status: "operational",
+				memory_types: MEMORY_TYPES,
+				analytics,
+			});
+		}
 
-  } catch (err) {
-    console.error('[V3-MEMORY] Error:', err.message);
-    sanitizeError(res, err, 'v3-memory');
-  }
+		return res
+			.status(400)
+			.json({
+				error: "Invalid request. Provide action with required parameters.",
+			});
+	} catch (err) {
+		console.error("[V3-MEMORY] Error:", err.message);
+		sanitizeError(res, err, "v3-memory");
+	}
 }

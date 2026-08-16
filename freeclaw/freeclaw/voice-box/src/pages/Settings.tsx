@@ -1,425 +1,847 @@
 // ─── User Settings Page ──────────────────────────────────────────
-// Allows users to manage notification preferences, display settings,
-// and account options like resetting their anonymous identity.
-import { useState } from 'react';
-import {
-  Settings as SettingsIcon, Bell, Eye, Shield, RotateCcw,
-  Trash2, Download, Check, Moon, Sun, Monitor,
-} from 'lucide-react';
-import { useApp } from '../contexts/AppContext';
-import { resetTutorial } from '../components/Tutorial';
-import { resetAnonId, clearAllLocalData } from '../lib/identity';
-import { ConfirmDialog } from '../components/ui';
+// Full user-facing preferences:
+//   • Notifications — sound / mentions / replies / updates / email
+//   • Display — REAL theme (system/light/dark), glass morphism,
+//     animations, compact density, avatars (all actually applied)
+//   • Account — display name, avatar + bio, tutorial reset, data export
+//   • Privacy — what we collect / don't collect
+//
+// Every toggle here takes real effect (AppContext applies <html> data
+// attributes that index.css reacts to). No fake buttons.
 
-type SettingsTab = 'notifications' | 'display' | 'account' | 'privacy';
+import {
+	Bell,
+	Camera,
+	Check,
+	Download,
+	Eye,
+	Image as ImageIcon,
+	Monitor,
+	Moon,
+	PenLine,
+	RotateCcw,
+	Settings as SettingsIcon,
+	Shield,
+	Sparkles,
+	Sun,
+} from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { resetTutorial } from "../components/Tutorial";
+import { ConfirmDialog } from "../components/ui";
+import { useApp } from "../contexts/AppContext";
+import { api } from "../lib/api";
+import { getDisplayName } from "../lib/identity";
+
+interface NotifyChannelPrefs {
+	phone: string;
+	email: string;
+	sms_enabled: boolean;
+	email_enabled: boolean;
+}
+
+type SettingsTab = "notifications" | "display" | "account" | "privacy";
+
+const AVATAR_CHOICES = ["🦊", "🐱", "🐼", "🦉", "🐸", "🦄", "🐙", "🌙", "⚡", "🎧", "📚", "🎮", "🌊", "🔥", "💎", "🌵"];
 
 export default function Settings() {
-  const { anonId, toast, refreshIdentity, notifications: _notifications, bookmarks, recentlyViewed } = useApp();
-  const [tab, setTab] = useState<SettingsTab>('notifications');
-  const [dialog, setDialog] = useState<'resetId' | 'clearData' | 'resetTutorial' | null>(null);
+	const {
+		anonId,
+		toast,
+		setDisplayName: persistDisplayName,
+		theme,
+		setTheme,
+		displayPrefs,
+		setDisplayPrefs,
+		profile,
+		setProfile,
+		notifications: _notifications,
+		bookmarks,
+		recentlyViewed,
+	} = useApp();
+	const [tab, setTab] = useState<SettingsTab>("notifications");
+	const [nameDraft, setNameDraft] = useState(getDisplayName);
+	const [avatarDraft, setAvatarDraft] = useState(profile.avatar || "");
+	const [bioDraft, setBioDraft] = useState(profile.bio || "");
+	const [photoDraft, setPhotoDraft] = useState(profile.photo || "");
+	const [dialog, setDialog] = useState<"resetTutorial" | null>(null);
+	const photoRef = useRef<HTMLInputElement | null>(null);
 
-  // Notification preferences (stored in localStorage)
-  const [notifPrefs, setNotifPrefs] = useState(() => {
-    try {
-      const raw = localStorage.getItem('vb:notif-prefs');
-      return raw ? JSON.parse(raw) : { push: true, email: false, sound: true, mentions: true, replies: true, updates: false };
-    } catch {
-      return { push: true, email: false, sound: true, mentions: true, replies: true, updates: false };
-    }
-  });
+	// Notification preferences (stored in localStorage)
+	const [notifPrefs, setNotifPrefs] = useState(() => {
+		try {
+			const raw = localStorage.getItem("vb:notif-prefs");
+			return raw
+				? JSON.parse(raw)
+				: {
+						push: true,
+						email: false,
+						sound: true,
+						mentions: true,
+						replies: true,
+						updates: false,
+					};
+		} catch {
+			return {
+				push: true,
+				email: false,
+				sound: true,
+				mentions: true,
+				replies: true,
+				updates: false,
+			};
+		}
+	});
 
-  // Display preferences
-  const [displayPrefs, setDisplayPrefs] = useState(() => {
-    try {
-      const raw = localStorage.getItem('vb:display-prefs');
-      return raw ? JSON.parse(raw) : { theme: 'system', compactMode: false, showAvatars: true, animationsEnabled: true };
-    } catch {
-      return { theme: 'system', compactMode: false, showAvatars: true, animationsEnabled: true };
-    }
-  });
+	const saveNotifPrefs = (prefs: typeof notifPrefs) => {
+		setNotifPrefs(prefs);
+		localStorage.setItem("vb:notif-prefs", JSON.stringify(prefs));
+		toast("Notification preferences saved", "ok");
+	};
 
-  const saveNotifPrefs = (prefs: typeof notifPrefs) => {
-    setNotifPrefs(prefs);
-    localStorage.setItem('vb:notif-prefs', JSON.stringify(prefs));
-    toast('Notification preferences saved', 'ok');
-  };
+	// ── Phone & email alert channels (real: saved to the server so a solved
+	//    post can SMS/email you — see api/_notify-prefs.js + _dispatch.js) ──
+	const [channelPrefs, setChannelPrefs] = useState<NotifyChannelPrefs>({
+		phone: "",
+		email: "",
+		sms_enabled: false,
+		email_enabled: false,
+	});
+	const [channelSaving, setChannelSaving] = useState(false);
+	const channelLoaded = useRef(false);
 
-  const saveDisplayPrefs = (prefs: typeof displayPrefs) => {
-    setDisplayPrefs(prefs);
-    localStorage.setItem('vb:display-prefs', JSON.stringify(prefs));
-    toast('Display preferences saved', 'ok');
-  };
+	useEffect(() => {
+		if (channelLoaded.current) return;
+		channelLoaded.current = true;
+		api
+			.get<Partial<NotifyChannelPrefs>>(`/api/notify-prefs?user_id=${anonId}`)
+			.then((p) =>
+				setChannelPrefs({
+					phone: p.phone || "",
+					email: p.email || "",
+					sms_enabled: p.sms_enabled !== false,
+					email_enabled: p.email_enabled !== false,
+				}),
+			)
+			.catch(() => {
+				/* offline / prefs endpoint unavailable — keep defaults */
+			});
+	}, [anonId]);
 
-  const handleResetId = () => {
-    resetAnonId();
-    refreshIdentity();
-    toast('Anonymous ID reset. You now have a new identity.', 'ok');
-    setDialog(null);
-  };
+	const saveChannelPrefs = async () => {
+		setChannelSaving(true);
+		try {
+			const saved = await api.post<NotifyChannelPrefs>(
+				"/api/notify-prefs",
+				{
+					user_id: anonId,
+					phone: channelPrefs.phone,
+					email: channelPrefs.email,
+					sms_enabled: channelPrefs.sms_enabled,
+					email_enabled: channelPrefs.email_enabled,
+				},
+			);
+			setChannelPrefs({
+				phone: saved.phone || "",
+				email: saved.email || "",
+				sms_enabled: saved.sms_enabled !== false,
+				email_enabled: saved.email_enabled !== false,
+			});
+			toast(
+				saved.phone || saved.email
+					? "Alert channels saved — you'll get SMS/email on updates"
+					: "Alert channels cleared",
+				"ok",
+			);
+		} catch (e: unknown) {
+			const msg =
+				e instanceof Error ? e.message : "Could not save alert channels";
+			toast(msg, "err");
+		} finally {
+			setChannelSaving(false);
+		}
+	};
 
-  const handleClearData = () => {
-    clearAllLocalData();
-    toast('All local data cleared', 'ok');
-    setDialog(null);
-  };
+	const SCALE_OPTIONS = [85, 90, 95, 100, 105, 110];
 
-  const handleResetTutorial = () => {
-    resetTutorial();
-    toast('Tutorial will show again on next visit', 'ok');
-    setDialog(null);
-  };
+	const handleResetTutorial = () => {
+		resetTutorial();
+		toast("Tutorial will show again on next visit", "ok");
+		setDialog(null);
+	};
 
-  const tabs: { key: SettingsTab; label: string; icon: typeof Bell }[] = [
-    { key: 'notifications', label: 'Notifications', icon: Bell },
-    { key: 'display', label: 'Display', icon: Eye },
-    { key: 'account', label: 'Account', icon: Shield },
-    { key: 'privacy', label: 'Privacy', icon: Shield },
-  ];
+	const saveProfile = () => {
+		const clean = setProfile({ avatar: avatarDraft, bio: bioDraft, photo: photoDraft });
+		setAvatarDraft(clean.avatar || "");
+		setBioDraft(clean.bio || "");
+		setPhotoDraft(clean.photo || "");
+		toast(clean.avatar || clean.bio || clean.photo ? "Profile updated" : "Profile cleared", "ok");
+	};
 
-  return (
-    <div className="max-w-3xl mx-auto px-4 py-8 vb-page-enter">
-      {/* Header */}
-      <div className="flex items-center gap-3 mb-6">
-        <div className="w-10 h-10 rounded-xl bg-accent/10 flex items-center justify-center">
-          <SettingsIcon size={20} className="text-accent" />
-        </div>
-        <div>
-          <h1 className="font-display font-bold text-xl">Settings</h1>
-          <p className="text-sm text-ink3">Manage your preferences and account</p>
-        </div>
-      </div>
+	const pickPhoto = (f: File) => {
+		if (f.size > 2 * 1024 * 1024) {
+			toast("Photo must be under 2 MB", "err");
+			return;
+		}
+		if (!/^image\/(png|jpe?g|gif|webp)$/.test(f.type)) {
+			toast("Only PNG, JPG, GIF or WebP images", "err");
+			return;
+		}
+		const reader = new FileReader();
+		reader.onload = () => {
+			const result = reader.result as string;
+			if (result.length > 450000) {
+				toast("Photo is too large — try a smaller image", "err");
+				return;
+			}
+			setPhotoDraft(result);
+		};
+		reader.readAsDataURL(f);
+	};
 
-      <div className="flex gap-6">
-        {/* Tab sidebar */}
-        <nav className="w-48 flex-shrink-0 space-y-1">
-          {tabs.map(({ key, label, icon: Icon }) => (
-            <button
-              key={key}
-              onClick={() => setTab(key)}
-              className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-sm transition-all ${
-                tab === key
-                  ? 'bg-accent/10 text-accent font-medium'
-                  : 'text-ink3 hover:text-ink hover:bg-surface2'
-              }`}
-            >
-              <Icon size={15} />
-              {label}
-            </button>
-          ))}
-        </nav>
+	const tabs: { key: SettingsTab; label: string; icon: typeof Bell }[] = [
+		{ key: "notifications", label: "Notifications", icon: Bell },
+		{ key: "display", label: "Display & Feel", icon: Eye },
+		{ key: "account", label: "Account", icon: Shield },
+		{ key: "privacy", label: "Privacy", icon: Shield },
+	];
 
-        {/* Content */}
-        <div className="flex-1 min-w-0">
-          {/* ── Notifications Tab ─────────────────────────── */}
-          {tab === 'notifications' && (
-            <div className="space-y-6">
-              <Section title="Notification Preferences" desc="Control how and when you receive notifications" />
-              <ToggleRow
-                label="Push notifications"
-                desc="Receive browser push notifications for new activity"
-                checked={notifPrefs.push}
-                onChange={(v) => saveNotifPrefs({ ...notifPrefs, push: v })}
-              />
-              <ToggleRow
-                label="Sound alerts"
-                desc="Play a sound when notifications arrive"
-                checked={notifPrefs.sound}
-                onChange={(v) => saveNotifPrefs({ ...notifPrefs, sound: v })}
-              />
-              <ToggleRow
-                label="Mentions"
-                desc="Get notified when someone mentions you"
-                checked={notifPrefs.mentions}
-                onChange={(v) => saveNotifPrefs({ ...notifPrefs, mentions: v })}
-              />
-              <ToggleRow
-                label="Replies"
-                desc="Get notified when someone replies to your posts"
-                checked={notifPrefs.replies}
-                onChange={(v) => saveNotifPrefs({ ...notifPrefs, replies: v })}
-              />
-              <ToggleRow
-                label="System updates"
-                desc="Receive notifications about platform updates and changes"
-                checked={notifPrefs.updates}
-                onChange={(v) => saveNotifPrefs({ ...notifPrefs, updates: v })}
-              />
-              <ToggleRow
-                label="Email notifications"
-                desc="Receive digest emails (requires email in the future)"
-                checked={notifPrefs.email}
-                onChange={(v) => saveNotifPrefs({ ...notifPrefs, email: v })}
-              />
-            </div>
-          )}
+	return (
+		<div className="max-w-3xl mx-auto px-4 py-8 vb-page-enter">
+			{/* Header */}
+			<div className="flex items-center gap-3 mb-6">
+				<div className="w-10 h-10 rounded-xl bg-accent/10 flex items-center justify-center">
+					<SettingsIcon size={20} className="text-accent" />
+				</div>
+				<div>
+					<h1 className="font-display font-bold text-xl">Settings</h1>
+					<p className="text-sm text-ink3">
+						Manage your preferences and account
+					</p>
+				</div>
+			</div>
 
-          {/* ── Display Tab ───────────────────────────────── */}
-          {tab === 'display' && (
-            <div className="space-y-6">
-              <Section title="Display Settings" desc="Customize how Voice Box looks and feels" />
+			<div className="flex flex-col sm:flex-row gap-6">
+				{/* Tab sidebar */}
+				<nav className="sm:w-48 flex-shrink-0 flex sm:flex-col gap-1 overflow-x-auto pb-1 sm:pb-0">
+					{tabs.map(({ key, label, icon: Icon }) => (
+						<button
+							key={key}
+							onClick={() => setTab(key)}
+							className={`whitespace-nowrap flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-sm transition-all ${
+								tab === key
+									? "bg-accent/10 text-accent font-medium"
+									: "text-ink3 hover:text-ink hover:bg-surface2"
+							}`}
+						>
+							<Icon size={15} />
+							{label}
+						</button>
+					))}
+				</nav>
 
-              {/* Theme selector */}
-              <div className="space-y-2">
-                <label className="text-sm font-medium text-ink">Theme</label>
-                <p className="text-xs text-ink3">Choose your preferred color scheme</p>
-                <div className="flex gap-2 mt-2">
-                  {([
-                    { value: 'dark', label: 'Dark', icon: Moon },
-                    { value: 'light', label: 'Light', icon: Sun },
-                    { value: 'system', label: 'System', icon: Monitor },
-                  ] as const).map(({ value, label, icon: Icon }) => (
-                    <button
-                      key={value}
-                      onClick={() => saveDisplayPrefs({ ...displayPrefs, theme: value })}
-                      className={`flex items-center gap-2 px-4 py-2.5 rounded-xl border text-sm transition-all ${
-                        displayPrefs.theme === value
-                          ? 'border-accent bg-accent/10 text-accent'
-                          : 'border-border hover:border-accent/30 text-ink3'
-                      }`}
-                    >
-                      <Icon size={14} />
-                      {label}
-                    </button>
-                  ))}
-                </div>
-              </div>
+				{/* Content */}
+				<div className="flex-1 min-w-0">
+					{/* ── Notifications Tab ─────────────────────────── */}
+					{tab === "notifications" && (
+						<div className="space-y-6">
+							<Section
+								title="Notification Preferences"
+								desc="Control how and when you receive notifications"
+							/>
+							<ToggleRow
+								label="Push notifications"
+								desc="Receive browser push notifications for new activity"
+								checked={notifPrefs.push}
+								onChange={(v) => saveNotifPrefs({ ...notifPrefs, push: v })}
+							/>
+							<ToggleRow
+								label="Sound alerts"
+								desc="Play a sound when notifications arrive"
+								checked={notifPrefs.sound}
+								onChange={(v) => saveNotifPrefs({ ...notifPrefs, sound: v })}
+							/>
+							<ToggleRow
+								label="Mentions"
+								desc="Get notified when someone mentions you"
+								checked={notifPrefs.mentions}
+								onChange={(v) => saveNotifPrefs({ ...notifPrefs, mentions: v })}
+							/>
+							<ToggleRow
+								label="Replies"
+								desc="Get notified when someone replies to your posts"
+								checked={notifPrefs.replies}
+								onChange={(v) => saveNotifPrefs({ ...notifPrefs, replies: v })}
+							/>
+							<ToggleRow
+								label="System updates"
+								desc="Receive notifications about platform updates and changes"
+								checked={notifPrefs.updates}
+								onChange={(v) => saveNotifPrefs({ ...notifPrefs, updates: v })}
+							/>
+							<div className="pt-4 border-t border-border/50">
+								<p className="text-sm font-medium text-ink mb-0.5">
+									Phone & email alerts
+								</p>
+								<p className="text-xs text-ink3 mb-3">
+									Get an SMS or email when a post you follow is solved or
+									updated by the team. Numbers/emails are stored on the
+									server only to deliver these alerts.
+								</p>
+								<div className="space-y-3">
+									<label className="block">
+										<span className="text-xs text-ink3">Phone number</span>
+										<input
+											type="tel"
+											value={channelPrefs.phone}
+											onChange={(e) =>
+												setChannelPrefs({ ...channelPrefs, phone: e.target.value })
+											}
+											placeholder="+1 555 123 4567"
+											maxLength={20}
+											className="input !py-2 !text-sm w-full"
+										/>
+									</label>
+									<label className="block">
+										<span className="text-xs text-ink3">Email address</span>
+										<input
+											type="email"
+											value={channelPrefs.email}
+											onChange={(e) =>
+												setChannelPrefs({ ...channelPrefs, email: e.target.value })
+											}
+											placeholder="you@example.com"
+											maxLength={120}
+											className="input !py-2 !text-sm w-full"
+										/>
+									</label>
+									<ToggleRow
+										label="SMS alerts"
+										desc="Text me when a followed post is solved or updated"
+										checked={channelPrefs.sms_enabled}
+										onChange={(v) =>
+											setChannelPrefs({ ...channelPrefs, sms_enabled: v })
+										}
+									/>
+									<ToggleRow
+										label="Email alerts"
+										desc="Email me when a followed post is solved or updated"
+										checked={channelPrefs.email_enabled}
+										onChange={(v) =>
+											setChannelPrefs({ ...channelPrefs, email_enabled: v })
+										}
+									/>
+									<button
+										className="btn btn-primary !py-2 !px-4 !text-xs"
+										onClick={saveChannelPrefs}
+										disabled={channelSaving}
+									>
+										{channelSaving ? "Saving…" : "Save alert channels"}
+									</button>
+								</div>
+							</div>
+						</div>
+					)}
 
-              <ToggleRow
-                label="Compact mode"
-                desc="Reduce spacing and padding for a denser layout"
-                checked={displayPrefs.compactMode}
-                onChange={(v) => saveDisplayPrefs({ ...displayPrefs, compactMode: v })}
-              />
-              <ToggleRow
-                label="Show avatars"
-                desc="Display user avatars next to posts and comments"
-                checked={displayPrefs.showAvatars}
-                onChange={(v) => saveDisplayPrefs({ ...displayPrefs, showAvatars: v })}
-              />
-              <ToggleRow
-                label="Animations"
-                desc="Enable smooth transitions and motion effects"
-                checked={displayPrefs.animationsEnabled}
-                onChange={(v) => saveDisplayPrefs({ ...displayPrefs, animationsEnabled: v })}
-              />
-            </div>
-          )}
+					{/* ── Display Tab ───────────────────────────────── */}
+					{tab === "display" && (
+						<div className="space-y-6">
+							<Section
+								title="Display & Feel"
+								desc="Customize how Voice Box looks and feels — every option applies instantly"
+							/>
 
-          {/* ── Account Tab ───────────────────────────────── */}
-          {tab === 'account' && (
-            <div className="space-y-6">
-              <Section title="Account Settings" desc="Manage your anonymous identity and data" />
+							{/* Theme selector — real, applies immediately */}
+							<div className="space-y-2">
+								<label className="text-sm font-medium text-ink">Theme</label>
+								<p className="text-xs text-ink3">
+									System follows your device preference automatically
+								</p>
+								<div className="flex gap-2 mt-2 flex-wrap">
+									{(
+										[
+											{ value: "system", label: "System", icon: Monitor },
+											{ value: "dark", label: "Dark", icon: Moon },
+											{ value: "light", label: "Light", icon: Sun },
+										] as const
+									).map(({ value, label, icon: Icon }) => (
+										<button
+											key={value}
+											onClick={() => {
+												setTheme(value);
+												toast(
+													value === "system"
+														? "Theme follows your device"
+														: `Theme set to ${label}`,
+													"ok",
+												);
+											}}
+											className={`flex items-center gap-2 px-4 py-2.5 rounded-xl border text-sm transition-all ${
+												theme === value
+													? "border-accent bg-accent/10 text-accent"
+													: "border-border hover:border-accent/30 text-ink3"
+											}`}
+										>
+											<Icon size={14} />
+											{label}
+										</button>
+									))}
+								</div>
+							</div>
 
-              {/* Identity info */}
-              <div className="p-4 rounded-xl border border-border bg-surface2/50">
-                <div className="flex items-center gap-2 mb-2">
-                  <Shield size={14} className="text-accent" />
-                  <span className="text-sm font-medium text-ink">Anonymous Identity</span>
-                </div>
-                <p className="text-xs text-ink3 mb-2">
-                  Your anonymous ID: <code className="font-mono text-accent bg-accent/5 px-1.5 py-0.5 rounded">{anonId}</code>
-                </p>
-                <p className="text-xs text-ink3">
-                  This ID is stored locally in your browser and is used to identify your posts, comments, and votes.
-                  No personal information is collected.
-                </p>
-              </div>
+							<ToggleRow
+								label="Glass morphism"
+								desc="Frosted-glass surfaces with blur on cards, panels, and the nav"
+								checked={displayPrefs.glassEnabled}
+								onChange={(v) =>
+									setDisplayPrefs({ ...displayPrefs, glassEnabled: v })
+								}
+							/>
+							<ToggleRow
+								label="Animations"
+								desc="Enable smooth transitions and motion effects"
+								checked={displayPrefs.animationsEnabled}
+								onChange={(v) =>
+									setDisplayPrefs({ ...displayPrefs, animationsEnabled: v })
+								}
+							/>
+							<ToggleRow
+								label="Compact mode"
+								desc="Reduce spacing and padding for a denser layout"
+								checked={displayPrefs.compactMode}
+								onChange={(v) =>
+									setDisplayPrefs({ ...displayPrefs, compactMode: v })
+								}
+							/>
+							<ToggleRow
+								label="Show avatars"
+								desc="Display avatars next to posts, comments, and community activity"
+								checked={displayPrefs.showAvatars}
+								onChange={(v) =>
+									setDisplayPrefs({ ...displayPrefs, showAvatars: v })
+								}
+							/>
 
-              {/* Action rows */}
-              <ActionRow
-                icon={RotateCcw}
-                label="Reset anonymous ID"
-                desc="Generate a new anonymous identity. Your old posts will remain but won't be linked to you."
-                action="Reset ID"
-                onClick={() => setDialog('resetId')}
-                variant="warning"
-              />
-              <ActionRow
-                icon={RotateCcw}
-                label="Show tutorial again"
-                desc="Re-enable the onboarding tutorial for next visit"
-                action="Reset"
-                onClick={() => setDialog('resetTutorial')}
-                variant="default"
-              />
-              <ActionRow
-                icon={Download}
-                label="Export your data"
-                desc="Download all your posts, comments, and votes as JSON"
-                action="Export"
-                onClick={() => {
-                  const data = {
-                    anonymous_id: anonId,
-                    exported_at: new Date().toISOString(),
-                    bookmarks,
-                    recently_viewed: recentlyViewed,
-                    notification_prefs: notifPrefs,
-                    display_prefs: displayPrefs,
-                  };
-                  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-                  const url = URL.createObjectURL(blob);
-                  const a = document.createElement('a');
-                  a.href = url;
-                  a.download = `voicebox-data-${anonId.slice(0, 8)}.json`;
-                  a.click();
-                  URL.revokeObjectURL(url);
-                  toast('Data exported', 'ok');
-                }}
-                variant="default"
-              />
-              <ActionRow
-                icon={Trash2}
-                label="Clear all local data"
-                desc="Remove all local data including bookmarks, recently viewed, and preferences"
-                action="Clear Data"
-                onClick={() => setDialog('clearData')}
-                variant="danger"
-              />
-            </div>
-          )}
+							{/* UI scale — the whole interface, proportionally */}
+							<div className="pt-4 border-t border-border/50">
+								<label className="text-sm font-medium text-ink">
+									UI scale
+								</label>
+								<p className="text-xs text-ink3 mt-0.5 mb-2">
+									Make everything smaller or larger on this device.
+								</p>
+								<div className="flex gap-2 flex-wrap">
+									{SCALE_OPTIONS.map((s) => (
+										<button
+											key={s}
+											onClick={() =>
+												setDisplayPrefs({ ...displayPrefs, uiScale: s })
+											}
+											aria-pressed={displayPrefs.uiScale === s}
+											className={`px-3.5 py-2 rounded-xl border text-sm transition-all ${
+												displayPrefs.uiScale === s
+													? "border-accent bg-accent/10 text-accent font-medium"
+													: "border-border text-ink3 hover:text-ink"
+											}`}
+										>
+											{s}%
+										</button>
+									))}
+								</div>
+								<p className="text-[11px] text-ink3 mt-1.5">
+									{displayPrefs.uiScale < 100
+										? `Compact: ${100 - displayPrefs.uiScale}% smaller than default`
+										: displayPrefs.uiScale > 100
+											? `${displayPrefs.uiScale - 100}% larger than default`
+											: "Default size"}
+								</p>
+							</div>
+						</div>
+					)}
 
-          {/* ── Privacy Tab ───────────────────────────────── */}
-          {tab === 'privacy' && (
-            <div className="space-y-6">
-              <Section title="Privacy Settings" desc="Control your privacy and data sharing" />
+					{/* ── Account Tab ───────────────────────────────── */}
+					{tab === "account" && (
+						<div className="space-y-6">
+							<Section
+								title="Account Settings"
+								desc="Manage your anonymous identity and profile"
+							/>
 
-              <div className="p-4 rounded-xl border border-border bg-surface2/50 space-y-3">
-                <h3 className="text-sm font-medium text-ink">Anonymous by Design</h3>
-                <p className="text-xs text-ink3 leading-relaxed">
-                  Voice Box is built for anonymous participation. Here's what we collect and don't collect:
-                </p>
-                <ul className="text-xs text-ink3 space-y-2">
-                  <li className="flex items-start gap-2">
-                    <Check size={12} className="text-good mt-0.5 flex-shrink-0" />
-                    <span><strong className="text-ink">Collected:</strong> Posts, comments, votes, and reactions (linked to anonymous ID only)</span>
-                  </li>
-                  <li className="flex items-start gap-2">
-                    <Check size={12} className="text-good mt-0.5 flex-shrink-0" />
-                    <span><strong className="text-ink">Not collected:</strong> Names, emails, IP addresses, device fingerprints, browsing history</span>
-                  </li>
-                  <li className="flex items-start gap-2">
-                    <Check size={12} className="text-good mt-0.5 flex-shrink-0" />
-                    <span><strong className="text-ink">No tracking:</strong> No analytics, no third-party cookies, no advertising scripts</span>
-                  </li>
-                  <li className="flex items-start gap-2">
-                    <Check size={12} className="text-good mt-0.5 flex-shrink-0" />
-                    <span><strong className="text-ink">Your data:</strong> Export or delete anytime. Reset your ID to disconnect your history.</span>
-                  </li>
-                </ul>
-              </div>
+							{/* Identity info */}
+							<div className="p-4 rounded-xl border border-border bg-surface2/50">
+								<div className="flex items-center gap-2 mb-2">
+									<Shield size={14} className="text-accent" />
+									<span className="text-sm font-medium text-ink">
+										Anonymous Identity
+									</span>
+								</div>
+								<p className="text-xs text-ink3 mb-2">
+									Your anonymous ID:{" "}
+									<code className="font-mono text-accent bg-accent/5 px-1.5 py-0.5 rounded">
+										{anonId}
+									</code>
+								</p>
+								<p className="text-xs text-ink3">
+									This ID is stored locally in your browser and is used to
+									identify your posts, comments, and votes. No personal
+									information is collected.
+								</p>
+							</div>
 
-              <div className="p-4 rounded-xl border border-border bg-surface2/50">
-                <h3 className="text-sm font-medium text-ink mb-2">Data Retention</h3>
-                <p className="text-xs text-ink3 leading-relaxed">
-                  Posts and comments are retained indefinitely unless you delete them. Anonymous IDs are
-                  stored in your browser's localStorage and never leave your device. Server-side data
-                  contains no personally identifiable information.
-                </p>
-              </div>
+							{/* Display name — keep the anonymous ID, but sound like you */}
+							<div className="p-4 rounded-xl border border-border bg-surface2/50">
+								<div className="flex items-center gap-2 mb-2">
+									<PenLine size={14} className="text-accent" />
+									<span className="text-sm font-medium text-ink">
+										Display name
+									</span>
+								</div>
+								<p className="text-xs text-ink3 mb-2">
+									Give yourself a friendly name shown on this device. Leave
+									it empty to keep your anonymous ID everywhere.
+								</p>
+								<div className="flex gap-2">
+									<input
+										type="text"
+										value={nameDraft}
+										onChange={(e) => setNameDraft(e.target.value)}
+										placeholder="e.g. Curious Cat"
+										maxLength={24}
+										className="input !py-2 !text-sm flex-1"
+										aria-label="Display name"
+									/>
+									<button
+										className="btn btn-primary !py-2 !px-4 !text-xs"
+										onClick={() => {
+											persistDisplayName(nameDraft);
+											setNameDraft(getDisplayName());
+											toast(
+												nameDraft.trim()
+													? "Display name saved"
+													: "Using your anonymous ID",
+												"ok",
+											);
+										}}
+									>
+										Save
+									</button>
+								</div>
+							</div>
 
-              <div className="p-4 rounded-xl border border-border bg-surface2/50">
-                <h3 className="text-sm font-medium text-ink mb-2">Open Source</h3>
-                <p className="text-xs text-ink3 leading-relaxed">
-                  Voice Box is open source. You can audit the code to verify our privacy claims.
-                  No hidden telemetry, no sneaky data collection.
-                </p>
-              </div>
-            </div>
-          )}
-        </div>
-      </div>
+							{/* Avatar + bio — your local profile */}
+							<div className="p-4 rounded-xl border border-border bg-surface2/50">
+								<div className="flex items-center gap-2 mb-2">
+									<ImageIcon size={14} className="text-accent" />
+									<span className="text-sm font-medium text-ink">
+										Avatar & bio
+									</span>
+								</div>
+							<p className="text-xs text-ink3 mb-3">
+								Pick an avatar, upload a profile photo, and add a short bio.
+								All of it stays on this device only — photos are stored as
+								local images and never leave your browser.
+							</p>
+							<div className="flex items-center gap-4 mb-3">
+								{photoDraft ? (
+									<img
+										src={photoDraft}
+										alt="Your profile photo"
+										className="w-16 h-16 rounded-2xl object-cover flex-shrink-0 vb-avatar"
+									/>
+								) : (
+									<div className="w-16 h-16 rounded-2xl bg-surface3 flex items-center justify-center text-3xl vb-avatar">
+										{avatarDraft || "🙂"}
+									</div>
+								)}
+								<div className="flex flex-col gap-1.5">
+									<input
+										ref={photoRef}
+										type="file"
+										accept="image/png,image/jpeg,image/gif,image/webp"
+										className="hidden"
+										onChange={(e) => {
+											const f = e.target.files?.[0];
+											if (f) pickPhoto(f);
+										}}
+										aria-label="Upload profile photo"
+									/>
+									<button
+										className="btn btn-ghost !text-xs !py-1.5 !px-3"
+										onClick={() => photoRef.current?.click()}
+									>
+										<Camera size={13} /> {photoDraft ? "Change photo" : "Upload photo"}
+									</button>
+									{photoDraft && (
+										<button
+											className="btn btn-ghost !text-xs !py-1 !px-3 !text-bad"
+											onClick={() => setPhotoDraft("")}
+										>
+											Remove photo
+										</button>
+									)}
+								</div>
+							</div>
+							<div className="flex flex-wrap gap-1.5 mb-3">
+								{AVATAR_CHOICES.map((e) => (
+									<button
+										key={e}
+										onClick={() => {
+											setAvatarDraft(e);
+											setPhotoDraft("");
+										}}
+										aria-label={`Avatar ${e}`}
+										className={`w-8 h-8 rounded-lg text-lg flex items-center justify-center transition-all ${
+											avatarDraft === e
+												? "bg-accent/20 ring-1 ring-accent"
+												: "bg-surface3 hover:bg-surface2"
+										}`}
+									>
+										{e}
+									</button>
+								))}
+							</div>
+								<textarea
+									className="input !py-2 !text-sm w-full min-h-16 resize-none"
+									placeholder="A short line about you (optional, max 160 chars)"
+									value={bioDraft}
+									onChange={(e) => setBioDraft(e.target.value)}
+									maxLength={160}
+									aria-label="Bio"
+								/>
+								<div className="flex justify-end mt-2">
+									<button
+										className="btn btn-primary !py-2 !px-4 !text-xs"
+										onClick={saveProfile}
+									>
+										<Sparkles size={13} /> Save profile
+									</button>
+								</div>
+							</div>
 
-      {/* Confirm dialogs */}
-      {dialog === 'resetId' && (
-        <ConfirmDialog
-          open
-          title="Reset Anonymous ID?"
-          message="This will generate a new anonymous identity. Your old posts will remain visible but won't be linked to your new ID. This action cannot be undone."
-          confirmLabel="Reset ID"
-          onConfirm={handleResetId}
-          onClose={() => setDialog(null)}
-        />
-      )}
-      {dialog === 'clearData' && (
-        <ConfirmDialog
-          open
-          title="Clear All Local Data?"
-          message="This will remove all bookmarks, recently viewed posts, notification preferences, display settings, and tutorial state. Your posts and comments on the server will not be affected."
-          confirmLabel="Clear Data"
-          onConfirm={handleClearData}
-          onClose={() => setDialog(null)}
-        />
-      )}
-      {dialog === 'resetTutorial' && (
-        <ConfirmDialog
-          open
-          title="Reset Tutorial?"
-          message="The onboarding tutorial will show again on your next page visit."
-          confirmLabel="Reset"
-          onConfirm={handleResetTutorial}
-          onClose={() => setDialog(null)}
-        />
-      )}
-    </div>
-  );
+							{/* Action rows */}
+							<ActionRow
+								icon={RotateCcw}
+								label="Show tutorial again"
+								desc="Re-enable the onboarding tutorial for next visit"
+								action="Reset"
+								onClick={() => setDialog("resetTutorial")}
+								variant="default"
+							/>
+							<ActionRow
+								icon={Download}
+								label="Export your data"
+								desc="Download all your posts, comments, and votes as JSON"
+								action="Export"
+								onClick={() => {
+									const data = {
+										anonymous_id: anonId,
+										exported_at: new Date().toISOString(),
+										bookmarks,
+										recently_viewed: recentlyViewed,
+										notification_prefs: notifPrefs,
+										display_prefs: displayPrefs,
+										profile,
+									};
+									const blob = new Blob([JSON.stringify(data, null, 2)], {
+										type: "application/json",
+									});
+									const url = URL.createObjectURL(blob);
+									const a = document.createElement("a");
+									a.href = url;
+									a.download = `voicebox-data-${anonId.slice(0, 8)}.json`;
+									a.click();
+									URL.revokeObjectURL(url);
+									toast("Data exported", "ok");
+								}}
+								variant="default"
+							/>
+						</div>
+					)}
+
+					{/* ── Privacy Tab ───────────────────────────────── */}
+					{tab === "privacy" && (
+						<div className="space-y-6">
+							<Section
+								title="Privacy Settings"
+								desc="Control your privacy and data sharing"
+							/>
+
+							<div className="p-4 rounded-xl border border-border bg-surface2/50 space-y-3">
+								<h3 className="text-sm font-medium text-ink">
+									Anonymous by Design
+								</h3>
+								<p className="text-xs text-ink3 leading-relaxed">
+									Voice Box is built for anonymous participation. Here's what we
+									collect and don't collect:
+								</p>
+								<ul className="text-xs text-ink3 space-y-2">
+									<li className="flex items-start gap-2">
+										<Check
+											size={12}
+											className="text-good mt-0.5 flex-shrink-0"
+										/>
+										<span>
+											<strong className="text-ink">Collected:</strong> Posts,
+											comments, votes, and reactions (linked to anonymous ID
+											only)
+										</span>
+									</li>
+									<li className="flex items-start gap-2">
+										<Check
+											size={12}
+											className="text-good mt-0.5 flex-shrink-0"
+										/>
+										<span>
+											<strong className="text-ink">Not collected:</strong>{" "}
+											Names, emails, IP addresses, device fingerprints, browsing
+											history
+										</span>
+									</li>
+									<li className="flex items-start gap-2">
+										<Check
+											size={12}
+											className="text-good mt-0.5 flex-shrink-0"
+										/>
+										<span>
+											<strong className="text-ink">No tracking:</strong> No
+											analytics, no third-party cookies, no advertising scripts
+										</span>
+									</li>
+									<li className="flex items-start gap-2">
+										<Check
+											size={12}
+											className="text-good mt-0.5 flex-shrink-0"
+										/>
+										<span>
+											<strong className="text-ink">Your data:</strong> Your
+											avatar, profile photo, bio, and display name are stored
+											only in your browser and never sent to the server.
+										</span>
+									</li>
+								</ul>
+							</div>
+
+							<div className="p-4 rounded-xl border border-border bg-surface2/50">
+								<h3 className="text-sm font-medium text-ink mb-2">
+									Data Retention
+								</h3>
+								<p className="text-xs text-ink3 leading-relaxed">
+									Posts and comments are retained indefinitely unless you delete
+									them. Anonymous IDs are stored in your browser's localStorage
+									and never leave your device. Server-side data contains no
+									personally identifiable information.
+								</p>
+							</div>
+
+							<div className="p-4 rounded-xl border border-border bg-surface2/50">
+								<h3 className="text-sm font-medium text-ink mb-2">
+									Open Source
+								</h3>
+								<p className="text-xs text-ink3 leading-relaxed">
+									Voice Box is open source. You can audit the code to verify our
+									privacy claims. No hidden telemetry, no sneaky data
+									collection.
+								</p>
+							</div>
+						</div>
+					)}
+				</div>
+			</div>
+
+			{/* Confirm dialogs */}
+			{dialog === "resetTutorial" && (
+				<ConfirmDialog
+					open
+					title="Reset Tutorial?"
+					message="The onboarding tutorial will show again on your next page visit."
+					confirmLabel="Reset"
+					onConfirm={handleResetTutorial}
+					onClose={() => setDialog(null)}
+				/>
+			)}
+		</div>
+	);
 }
 
 /* ─── Helper components ──────────────────────────────────────────── */
 function Section({ title, desc }: { title: string; desc: string }) {
-  return (
-    <div className="pb-4 border-b border-border">
-      <h2 className="font-display font-bold text-base text-ink">{title}</h2>
-      <p className="text-xs text-ink3 mt-0.5">{desc}</p>
-    </div>
-  );
+	return (
+		<div className="pb-4 border-b border-border">
+			<h2 className="font-display font-bold text-base text-ink">{title}</h2>
+			<p className="text-xs text-ink3 mt-0.5">{desc}</p>
+		</div>
+	);
 }
 
-function ToggleRow({ label, desc, checked, onChange }: { label: string; desc: string; checked: boolean; onChange: (v: boolean) => void }) {
-  return (
-    <div className="flex items-center justify-between py-3 border-b border-border/50">
-      <div className="flex-1 min-w-0 pr-4">
-        <p className="text-sm font-medium text-ink">{label}</p>
-        <p className="text-xs text-ink3 mt-0.5">{desc}</p>
-      </div>
-      <button
-        onClick={() => onChange(!checked)}
-        className={`relative w-11 h-6 rounded-full transition-colors flex-shrink-0 ${
-          checked ? 'bg-accent' : 'bg-surface2 border border-border'
-        }`}
-      >
-        <span
-          className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform ${
-            checked ? 'translate-x-5' : ''
-          }`}
-        />
-      </button>
-    </div>
-  );
-}
-
-function ActionRow({ icon: Icon, label, desc, action, onClick, variant }: {
-  icon: typeof RotateCcw; label: string; desc: string; action: string; onClick: () => void; variant: 'default' | 'warning' | 'danger';
+function ToggleRow({
+	label,
+	desc,
+	checked,
+	onChange,
+}: {
+	label: string;
+	desc: string;
+	checked: boolean;
+	onChange: (v: boolean) => void;
 }) {
-  const colors = {
-    default: 'text-accent hover:bg-accent/5',
-    warning: 'text-amber-400 hover:bg-amber-400/5',
-    danger: 'text-red-400 hover:bg-red-400/5',
-  };
-  return (
-    <div className="flex items-center justify-between py-3 border-b border-border/50">
-      <div className="flex items-center gap-3 flex-1 min-w-0 pr-4">
-        <Icon size={16} className="text-ink3 flex-shrink-0" />
-        <div>
-          <p className="text-sm font-medium text-ink">{label}</p>
-          <p className="text-xs text-ink3 mt-0.5">{desc}</p>
-        </div>
-      </div>
-      <button
-        onClick={onClick}
-        className={`btn !text-xs !px-3 !py-1.5 flex-shrink-0 transition-all ${colors[variant]}`}
-      >
-        {action}
-      </button>
-    </div>
-  );
+	return (
+		<div className="flex items-center justify-between py-3 border-b border-border/50">
+			<div className="flex-1 min-w-0 pr-4">
+				<p className="text-sm font-medium text-ink">{label}</p>
+				<p className="text-xs text-ink3 mt-0.5">{desc}</p>
+			</div>
+			<button
+				onClick={() => onChange(!checked)}
+				aria-pressed={checked}
+				aria-label={label}
+				className={`relative w-11 h-6 rounded-full transition-colors flex-shrink-0 ${
+					checked ? "bg-accent" : "bg-surface2 border border-border"
+				}`}
+			>
+				<span
+					className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform ${
+						checked ? "translate-x-5" : ""
+					}`}
+				/>
+			</button>
+		</div>
+	);
+}
+
+function ActionRow({
+	icon: Icon,
+	label,
+	desc,
+	action,
+	onClick,
+	variant,
+}: {
+	icon: typeof RotateCcw;
+	label: string;
+	desc: string;
+	action: string;
+	onClick: () => void;
+	variant: "default" | "warning" | "danger";
+}) {
+	const colors = {
+		default: "text-accent hover:bg-accent/5",
+		warning: "text-amber-400 hover:bg-amber-400/5",
+		danger: "text-red-400 hover:bg-red-400/5",
+	};
+	return (
+		<div className="flex items-center justify-between py-3 border-b border-border/50">
+			<div className="flex items-center gap-3 flex-1 min-w-0 pr-4">
+				<Icon size={16} className="text-ink3 flex-shrink-0" />
+				<div>
+					<p className="text-sm font-medium text-ink">{label}</p>
+					<p className="text-xs text-ink3 mt-0.5">{desc}</p>
+				</div>
+			</div>
+			<button
+				onClick={onClick}
+				className={`btn !text-xs !px-3 !py-1.5 flex-shrink-0 transition-all ${colors[variant]}`}
+			>
+				{action}
+			</button>
+		</div>
+	);
 }

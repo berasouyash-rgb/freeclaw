@@ -1,113 +1,183 @@
-// Evidence Management — upload and manage evidence files for complaints.
-// POST /api/evidence/upload   →  upload evidence (multipart form data with base64)
-// GET  /api/evidence?post_id=X →  get evidence for a post
-// DELETE /api/evidence { evidence_id }  →  delete evidence
-// POST /api/evidence/scan { evidence_id, text }  →  AI scan evidence content
-import supabase from './_db-client.js';
-import { cors, isAdmin, auditLog, clean } from './_auth.js';
+// Evidence Audit Trail — verifiable records for tool executions & moderation actions.
+// Backs the `tool_evidence` table written by _tool-registry.js (storeToolEvidence).
+//
+// GET    /api/evidence                → list evidence (admin) with filters + pagination
+// GET    /api/evidence?id=X           → single evidence record (admin)
+// POST   /api/evidence                → create an evidence record (admin)
+// PUT    /api/evidence                → update verification_status (admin)
+// DELETE /api/evidence?id=X           → delete an evidence record (admin)
 
-function evidenceKey(postId) { return `evidence:${postId}`; }
+import { auditLog, clean, cors, isAdmin } from "./_auth.js";
+import supabase from "./_db-client.js";
+import { sanitizeError } from "./_error.js";
 
-function detectContentFlags(text) {
-  if (!text) return [];
-  const flags = [];
-  const lower = text.toLowerCase();
-  if (/\b\d{3}[-.]?\d{3}[-.]?\d{4}\b/.test(text)) flags.push({ type: 'pii', detail: 'Phone number detected' });
-  if (/\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b/.test(text)) flags.push({ type: 'pii', detail: 'Email address detected' });
-  const bullyingWords = ['stupid', 'idiot', 'loser', 'ugly', 'fat', 'dumb', 'pathetic'];
-  if (bullyingWords.some((w) => lower.includes(w))) flags.push({ type: 'bullying', detail: 'Potential bullying language' });
-  if (['i will kill', 'gonna hurt', 'death threat', 'bomb', 'shoot'].some((w) => lower.includes(w))) {
-    flags.push({ type: 'threat', detail: 'Potential threat detected' });
-  }
-  if (['nude', 'naked', 'porn', 'xxx', 'send nudes'].some((w) => lower.includes(w))) {
-    flags.push({ type: 'explicit', detail: 'Explicit content detected' });
-  }
-  return flags;
-}
+const VALID_ACTION_TYPES = ["query", "create", "modify", "delete", "escalate"];
+const VALID_RISK_LEVELS = ["low", "medium", "high", "critical"];
+const VALID_VERIFICATION = ["pending", "verified", "rejected", "auto_verified"];
 
 export default async function handler(req, res) {
-  cors(res, req);
-  if (req.method === 'OPTIONS') return res.status(204).end();
+	cors(res, req);
+	if (req.method === "OPTIONS") return res.status(204).end();
 
-  try {
-    // GET: fetch evidence for a post (requires auth)
-    if (req.method === 'GET') {
-      const { data: authData, error: authError } = await supabase.auth.getUser();
-      if (authError || !authData?.user) return res.status(401).json({ error: 'Unauthorized' });
+	// /api/evidence/scan resolves to this route in index.js (endpoint = parts[1]).
+	// Forward sub-path requests to the evidence-scan scanner handler so the
+	// documented POST /api/evidence/scan contract keeps working.
+	if (req.url?.split("?")[0].endsWith("/scan")) {
+		try {
+			const { default: evidenceScanHandler } = await import(
+				"./_evidence-scan.js"
+			);
+			return evidenceScanHandler(req, res);
+		} catch {
+			/* fall through to normal evidence routing */
+		}
+	}
 
-      const postId = req.query.post_id;
-      if (!postId) return res.status(400).json({ error: 'post_id required' });
-      const { data } = await supabase.from('settings').select('value').eq('key', evidenceKey(postId)).maybeSingle();
-      return res.status(200).json({ evidence: data?.value?.evidence || [], post_id: postId });
-    }
+	try {
+		if (!(await isAdmin(req)))
+			return res.status(403).json({ error: "Admin only" });
 
-    // POST: upload evidence or scan (requires auth)
-    if (req.method === 'POST') {
-      const { data: authData, error: authError } = await supabase.auth.getUser();
-      if (authError || !authData?.user) return res.status(401).json({ error: 'Unauthorized' });
+		if (req.method === "GET") {
+			const {
+				id,
+				tool_name,
+				action_type,
+				actor_id,
+				verification_status,
+				limit: limitParam,
+			} = req.query;
+			const limit = Math.min(parseInt(limitParam) || 50, 200);
 
-      const b = req.body || {};
+			if (id) {
+				const { data, error } = await supabase
+					.from("tool_evidence")
+					.select("*")
+					.eq("id", id)
+					.maybeSingle();
+				if (error) throw error;
+				if (!data) return res.status(404).json({ error: "Evidence not found" });
+				return res.status(200).json(data);
+			}
 
-      // AI scan evidence content
-      if (b.action === 'scan') {
-        const flags = detectContentFlags(b.text || '');
-        return res.status(200).json({ flags, risk: flags.some((f) => f.type === 'threat') ? 'critical' : flags.some((f) => f.type === 'bullying') ? 'high' : flags.length > 0 ? 'medium' : 'safe' });
-      }
+			let query = supabase
+				.from("tool_evidence")
+				.select("*")
+				.order("created_at", { ascending: false })
+				.limit(limit);
+			if (tool_name) query = query.eq("tool_name", clean(tool_name, 100));
+			if (action_type) query = query.eq("action_type", action_type);
+			if (actor_id) query = query.eq("actor_id", clean(actor_id, 100));
+			if (verification_status)
+				query = query.eq("verification_status", verification_status);
 
-      // Upload evidence
-      if (!b.post_id) return res.status(400).json({ error: 'post_id required' });
+			const { data, error } = await query;
+			if (error) throw error;
+			return res.status(200).json(data || []);
+		}
 
-      const evidence = {
-        id: `ev_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
-        post_id: b.post_id,
-        type: b.type || 'text',  // text, image, file
-        content: b.content || b.text || '',
-        filename: b.filename || null,
-        description: clean(b.description || '', 500),
-        uploaded_by: b.author_id || 'anonymous',
-        created_at: new Date().toISOString(),
-      };
+		if (req.method === "POST") {
+			const b = req.body || {};
+			const toolName = clean(b.tool_name, 100);
+			if (!toolName)
+				return res.status(400).json({ error: "tool_name is required" });
 
-      // Scan content for flags
-      evidence.content_flags = detectContentFlags(evidence.content);
-      evidence.flagged = evidence.content_flags.length > 0;
+			const row = {
+				tool_call_id: b.tool_call_id ? clean(b.tool_call_id, 100) : null,
+				conversation_id: b.conversation_id
+					? clean(b.conversation_id, 100)
+					: null,
+				tool_name: toolName,
+				action_type: VALID_ACTION_TYPES.includes(b.action_type)
+					? b.action_type
+					: "query",
+				input_params:
+					b.input_params && typeof b.input_params === "object"
+						? b.input_params
+						: {},
+				output_result:
+					b.output_result && typeof b.output_result === "object"
+						? b.output_result
+						: {},
+				actor_id: clean(b.actor_id, 100) || "admin",
+				actor_type: b.actor_type === "user" ? "user" : "admin",
+				ip_address: b.ip_address ? clean(b.ip_address, 64) : null,
+				risk_level: VALID_RISK_LEVELS.includes(b.risk_level)
+					? b.risk_level
+					: "low",
+				requires_approval:
+					b.risk_level === "high" || b.risk_level === "critical",
+				verification_status: VALID_VERIFICATION.includes(b.verification_status)
+					? b.verification_status
+					: "pending",
+			};
 
-      // Store in settings
-      const { data: existing } = await supabase.from('settings').select('value').eq('key', evidenceKey(b.post_id)).maybeSingle();
-      const existingEvidence = existing?.value?.evidence || [];
-      existingEvidence.push(evidence);
-      await supabase.from('settings').upsert(
-        { key: evidenceKey(b.post_id), value: { evidence: existingEvidence, updated_at: new Date().toISOString() } },
-        { onConflict: 'key' },
-      );
+			const { data, error } = await supabase
+				.from("tool_evidence")
+				.insert(row)
+				.select()
+				.single();
+			if (error) throw error;
+			await auditLog(
+				"admin",
+				"create_evidence",
+				`${toolName} (${row.action_type})`,
+			);
+			return res.status(201).json(data);
+		}
 
-      if (evidence.flagged) {
-        await auditLog('admin', 'evidence_flagged', `Evidence ${evidence.id} on post ${b.post_id} flagged: ${evidence.content_flags.map((f) => f.type).join(', ')}`);
-      }
+		if (req.method === "PUT") {
+			const b = req.body || {};
+			const { id } = b;
+			if (!id) return res.status(400).json({ error: "id is required" });
 
-      return res.status(201).json(evidence);
-    }
+			const patch = {};
+			if (VALID_VERIFICATION.includes(b.verification_status))
+				patch.verification_status = b.verification_status;
+			if (
+				b.requires_approval !== undefined &&
+				typeof b.requires_approval === "boolean"
+			)
+				patch.requires_approval = b.requires_approval;
+			if (b.output_result !== undefined && typeof b.output_result === "object")
+				patch.output_result = b.output_result;
+			if (!Object.keys(patch).length)
+				return res.status(400).json({ error: "Nothing to update" });
 
-    // DELETE: remove evidence
-    if (req.method === 'DELETE') {
-      if (!(await isAdmin(req))) return res.status(403).json({ error: 'Admin only' });
-      const b = req.body || {};
-      if (!b.evidence_id || !b.post_id) return res.status(400).json({ error: 'evidence_id and post_id required' });
+			// .maybeSingle() (not .single()): a non-matching id returns { data: null,
+			// error: null } instead of a PGRST116 error, so the 404 branch is reachable
+			// — and no separate existence pre-check round-trip is needed.
+			const { data, error } = await supabase
+				.from("tool_evidence")
+				.update(patch)
+				.eq("id", id)
+				.select()
+				.maybeSingle();
+			if (error) throw error;
+			if (!data) return res.status(404).json({ error: "Evidence not found" });
+			await auditLog(
+				"admin",
+				"update_evidence",
+				`${id}: ${Object.keys(patch).join(", ")}`,
+			);
+			return res.status(200).json(data);
+		}
 
-      const { data: existing } = await supabase.from('settings').select('value').eq('key', evidenceKey(b.post_id)).maybeSingle();
-      const evidenceList = (existing?.value?.evidence || []).filter((e) => e.id !== b.evidence_id);
-      await supabase.from('settings').upsert(
-        { key: evidenceKey(b.post_id), value: { evidence: evidenceList, updated_at: new Date().toISOString() } },
-        { onConflict: 'key' },
-      );
+		if (req.method === "DELETE") {
+			// index.js parseBody always yields a truthy object, so req.query must be
+			// checked FIRST — `req.body || req.query` would short-circuit to the body.
+			const id = req.query?.id || req.body?.id;
+			if (!id) return res.status(400).json({ error: "id is required" });
+			const { error } = await supabase
+				.from("tool_evidence")
+				.delete()
+				.eq("id", id);
+			if (error) throw error;
+			await auditLog("admin", "delete_evidence", String(id));
+			return res.status(200).json({ ok: true });
+		}
 
-      await auditLog('admin', 'evidence_delete', `Deleted evidence ${b.evidence_id} from post ${b.post_id}`);
-      return res.status(200).json({ success: true, deleted: b.evidence_id });
-    }
-
-    return res.status(405).json({ error: 'Method not allowed' });
-  } catch (err) {
-    console.error('evidence error:', err);
-    return res.status(500).json({ error: 'Internal error' });
-  }
+		return res.status(405).json({ error: "Method not allowed" });
+	} catch (err) {
+		return sanitizeError(res, err, "evidence");
+	}
 }

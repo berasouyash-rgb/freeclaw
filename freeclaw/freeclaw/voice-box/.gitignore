@@ -27,3 +27,4 @@ dist-ssr
 .vite-source-tags.js
 .vercel
 vercel.json
+.env*
