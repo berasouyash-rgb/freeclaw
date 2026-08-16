@@ -19,6 +19,7 @@ jobs:
           # Call the rotation endpoint (tier-based, runs ~8-12 agents per tick)
           RESPONSE=$(curl -s -w "\n%{http_code}" \
             "https://voice-box-psi.vercel.app/api/agents-cron?action=rotate" \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
             --max-time 55)
           
           HTTP_CODE=$(echo "$RESPONSE" | tail -1)
@@ -45,6 +46,7 @@ jobs:
           
           RESPONSE=$(curl -s -w "\n%{http_code}" \
             "https://voice-box-psi.vercel.app/api/agents-cron?agent=consume-all" \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
             --max-time 55)
           
           HTTP_CODE=$(echo "$RESPONSE" | tail -1)
