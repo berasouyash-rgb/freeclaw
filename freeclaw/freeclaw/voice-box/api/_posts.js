@@ -16,7 +16,11 @@ import supabase from "./_db-client.js";
 import { sanitizeError } from "./_error.js";
 import { EVENT_TYPES, emitEvent } from "./_events.js";
 import { notifyFollowers } from "./_follows.js";
-import { serverModerate } from "./_moderation.js";
+import {
+	serverModerate,
+	getLearnedWeakStats,
+	recordModerationDecision,
+} from "./_moderation.js";
 
 const CATEGORIES = [
 	"Academics",
@@ -427,8 +431,11 @@ export default async function handler(req, res) {
 				});
 			}
 
-			// Server-side content moderation — blocks dangerous content before save
-			const moderation = serverModerate(title, description);
+			// Server-side content moderation — blocks dangerous content before save.
+			// Learned weak-signal confidence is consulted so repeat-approved
+			// patterns stop holding posts once admins have proven them benign.
+			const learned = await getLearnedWeakStats();
+			const moderation = serverModerate(title, description, learned);
 			if (moderation.blocked) {
 				const isPII = moderation.flags.some((f) => f.type === "privacy");
 				await auditLog(
@@ -498,6 +505,22 @@ export default async function handler(req, res) {
 					"post_flagged_for_review",
 					`${author_id}: ${title.slice(0, 60)} [${moderation.flags.map((f) => f.type).join(", ")}]`,
 				);
+				// Persist the flag types so the admin's later decision can feed
+				// the self-learning loop (approve → confidence up, reject → down).
+				try {
+					await supabase.from("settings").upsert(
+						{
+							key: `modflag:${data?.id || post.id}`,
+							value: {
+								flags: moderation.flags.map((f) => f.type),
+								at: new Date().toISOString(),
+							},
+						},
+						{ onConflict: "key" },
+					);
+				} catch {
+					/* best-effort */
+				}
 			}
 
 			let { data, error } = await supabase
@@ -684,6 +707,30 @@ export default async function handler(req, res) {
 				}).catch((err) =>
 					console.warn("[posts] emit POST_STATUS_CHANGED failed:", err.message),
 				);
+			// ── Self-learning feedback: an admin decision on a held post ──
+			// Approving (leaving pending_review to any public status) raises
+			// confidence for the weak pattern; archiving lowers it.
+			if (
+				admin &&
+				post.status === "pending_review" &&
+				patch.status &&
+				patch.status !== "pending_review"
+			) {
+				try {
+					const { data: mf } = await supabase
+						.from("settings")
+						.select("value")
+						.eq("key", `modflag:${id}`)
+						.maybeSingle();
+					const heldFlags = mf?.value?.flags || [];
+					for (const t of heldFlags) {
+						await recordModerationDecision(t, patch.status !== "archived");
+					}
+					await supabase.from("settings").delete().eq("key", `modflag:${id}`);
+				} catch {
+					/* learning is best-effort */
+				}
+			}
 			// Notify followers on status change or admin reply
 			if (admin && (patch.status || patch.admin_reply !== undefined)) {
 				const nTitle = patch.status

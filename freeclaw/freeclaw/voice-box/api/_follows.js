@@ -63,6 +63,10 @@ export async function notifyFollowers(postId, notification = {}) {
 			followers.map(async (row) => {
 				const userId = String(row.key || "").replace("follows:", "");
 				if (!userId) return;
+				// Respect the follower's status-update preference FIRST — when
+				// opted out, skip every channel (in-app, SMS, email).
+				const prefs = await getNotifyPrefs(userId);
+				if (prefs && prefs.status_updates === false) return;
 				const { data: cur } = await supabase
 					.from("settings")
 					.select("value")
@@ -91,8 +95,7 @@ export async function notifyFollowers(postId, notification = {}) {
 
 				// ── REAL outbound channels: SMS + email when the follower opted in ──
 				// Best-effort only — a missing API key or a dead provider never blocks
-				// the in-app notification above.
-				const prefs = await getNotifyPrefs(userId);
+				// the in-app notification above. prefs was fetched above (opt-out gate).
 				const text = `${notif.title}\n${notif.body || ""}`;
 				if (prefs?.sms_enabled && prefs.phone) {
 					const r = await sendSms(prefs.phone, text);

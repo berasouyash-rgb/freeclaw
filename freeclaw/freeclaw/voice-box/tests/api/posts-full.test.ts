@@ -58,6 +58,10 @@ vi.mock("../../api/_moderation.js", () => ({
 		requiresReview: false,
 		flags: [],
 	})),
+	getLearnedWeakStats: vi.fn(() =>
+		Promise.resolve({ approved: 0, blocked: 0 }),
+	),
+	recordModerationDecision: vi.fn(() => Promise.resolve()),
 }));
 vi.mock("../../api/_follows.js", () => ({
 	notifyFollowers: vi.fn(() => Promise.resolve()),

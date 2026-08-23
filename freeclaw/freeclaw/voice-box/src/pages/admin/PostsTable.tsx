@@ -102,7 +102,13 @@ export default function PostsTable({
 		}
 	}, [type, setItems]);
 
-	useRealtime(["posts"], () => refresh(), 1000);
+	// Realtime covers ALL engagement surfaces — not just post edits — so
+	// supports/hearts/votes/comments update the admin snapshot live.
+	useRealtime(
+		["posts", "reactions", "poll_votes", "comments"],
+		() => refresh(),
+		1000,
+	);
 
 	const exportRows = async () => {
 		const all: PostData[] = [];
@@ -278,7 +284,11 @@ export default function PostsTable({
 								<th className="px-2 py-3">Status</th>
 								<th className="px-2 py-3">Priority</th>
 								<th className="px-2 py-3">Author</th>
-								<th className="px-2 py-3">Age</th>									<th className="px-2 py-3">Actions</th>
+								<th className="px-2 py-3">Age</th>
+								<th className="px-2 py-3" title="Supports · Comments · Poll votes — live">
+									Live
+								</th>
+									<th className="px-2 py-3">Actions</th>
 							</tr>
 						</thead>
 						<tbody>
@@ -316,9 +326,28 @@ export default function PostsTable({
 									<td className="px-2 py-3 font-mono text-[11px] text-ink3">
 										{p.author_id?.slice(0, 10) ?? "anon"}
 									</td>
-									<td className="px-2 py-3 text-xs text-ink3">
-										{timeAgo(p.created_at)}
-									</td>
+								<td className="px-2 py-3 text-xs text-ink3">
+									{timeAgo(p.created_at)}
+								</td>
+								<td
+									className="px-2 py-3 text-[11px] font-mono whitespace-nowrap"
+									title="Supports · Comments · Poll votes (live)"
+								>
+									<span className="text-good">
+										▲{p.reactions?.support ?? 0}
+									</span>{" "}
+									<span className="text-bad">♥{p.reactions?.heart ?? 0}</span>{" "}
+									<span className="text-ink2 inline-flex items-center gap-0.5">
+										<MessageSquare size={10} />
+										{p.comment_count ?? 0}
+									</span>{" "}
+									{p.linked_poll != null && (
+										<span className="text-accent inline-flex items-center gap-0.5">
+											<BarChart3 size={10} />
+											{p.linked_poll_votes ?? 0}
+										</span>
+									)}
+								</td>
 									<td className="px-2 py-3">
 										<div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
 											<button

@@ -3,6 +3,56 @@
 // addresses, phone numbers, emails, or dangerous content to the public.
 // Mirrors the pre-publish emergencyRegex whitelists (see _pre-publish.js).
 
+import supabase from "./_db-client.js";
+
+// ─── Self-learning feedback loop (weak signals ONLY) ─────────────
+// Admin decisions feed back into confidence: every time an admin APPROVES a
+// post that was held on a privacy_weak signal, the counter rises; explicit
+// rejections raise blocked. Once approvals are decisively dominant
+// (>=5 approvals AND >=3x rejections), NEW weak-only holds on POSTS are
+// auto-approved instead of queued. Hard signals (full privacy / violence /
+// hate_speech) are NEVER learnable — the safety floor is absolute.
+const LEARN_KEY = "moderation_learned";
+const LEARN_APPROVE_THRESHOLD = 5;
+const LEARN_RATIO_REQUIRED = 3;
+
+async function readLearned() {
+	try {
+		const { data } = await supabase
+			.from("settings")
+			.select("value")
+			.eq("key", LEARN_KEY)
+			.maybeSingle();
+		return data?.value?.privacy_weak || { approved: 0, blocked: 0 };
+	} catch {
+		return { approved: 0, blocked: 0 };
+	}
+}
+
+export async function recordModerationDecision(flagType, approved) {
+	try {
+		if (flagType !== "privacy_weak") return; // safety floor: only weak signals learn
+		const cur = await readLearned();
+		const next = {
+			privacy_weak: {
+				approved: cur.approved + (approved ? 1 : 0),
+				blocked: cur.blocked + (approved ? 0 : 1),
+				updated_at: new Date().toISOString(),
+			},
+		};
+		await supabase
+			.from("settings")
+			.upsert({ key: LEARN_KEY, value: next }, { onConflict: "key" });
+	} catch {
+		/* learning is best-effort; never break the moderation path */
+	}
+}
+
+export async function getLearnedWeakStats() {
+	return readLearned();
+}
+
+
 const DANGEROUS_WORDS =
 	/\b(?:kill|murder|shoot|stab|bomb|weapon|gun|knife|suicide|suicidal|die|dead|death)\b/i;
 const VIOLENCE_PATTERNS = [
@@ -75,9 +125,11 @@ const PII_ROOM_ADDR =
  * - Violence threats and slurs are blocking (critical).
  * - Lower-severity flags set requiresReview so the caller can queue for review.
  */
-export function serverModerate(title, description) {
+export function serverModerate(title, description, learned = null) {
 	const text = `${title} ${description}`;
 	const flags = [];
+	// Learning verdict for weak-only content (set below)
+	let autoApproveWeak = false;
 
 	// Check for violence threats
 	for (const pattern of VIOLENCE_PATTERNS) {
@@ -180,6 +232,22 @@ export function serverModerate(title, description) {
 		});
 	}
 
+	// ── Learned-confidence adjustment (weak signals only) ──────────
+	// When the admin track record says weak PII flags are almost always
+	// approved, a weak-ONLY flag set no longer forces pending_review.
+	// Any hard flag in the mix keeps full blocking/review behavior.
+	const weakOnly =
+		flags.length > 0 && flags.every((f) => f.type === "privacy_weak");
+	if (
+		weakOnly &&
+		learned &&
+		learned.approved >= LEARN_APPROVE_THRESHOLD &&
+		learned.approved >= learned.blocked * LEARN_RATIO_REQUIRED
+	) {
+		autoApproveWeak = true;
+		for (const f of flags) f.downgraded = true;
+	}
+
 	return {
 		// PII is treated as blocking: on an anonymous platform a leaked
 		// address/phone/email must never go public.
@@ -187,7 +255,8 @@ export function serverModerate(title, description) {
 			(f) => f.severity === "critical" || f.type === "privacy",
 		),
 		flags,
-		requiresReview: flags.length > 0,
+		requiresReview: flags.length > 0 && !autoApproveWeak,
+		autoApproveWeak,
 	};
 }
 

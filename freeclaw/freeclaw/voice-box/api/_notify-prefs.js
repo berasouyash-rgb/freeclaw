@@ -48,6 +48,8 @@ export async function getNotifyPrefs(userId) {
 			email_enabled: v.email_enabled !== false,
 			// Inbox AI auto-replies — user-controllable, default ON.
 			ai_chat_enabled: v.ai_chat_enabled !== false,
+			// Status-change notifications (solved/in-progress/admin reply) — default ON.
+			status_updates: v.status_updates !== false,
 		};
 	} catch (err) {
 		console.warn("[notify-prefs] getNotifyPrefs failed:", err.message);
@@ -114,6 +116,7 @@ export default async function handler(req, res) {
 				sms_enabled: b.sms_enabled !== false,
 				email_enabled: b.email_enabled !== false,
 				ai_chat_enabled: b.ai_chat_enabled !== false,
+				status_updates: b.status_updates !== false,
 				updated_at: new Date().toISOString(),
 			};
 			await supabase

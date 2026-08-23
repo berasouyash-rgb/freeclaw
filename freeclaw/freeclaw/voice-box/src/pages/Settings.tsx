@@ -37,6 +37,7 @@ interface NotifyChannelPrefs {
 	email: string;
 	sms_enabled: boolean;
 	email_enabled: boolean;
+	status_updates: boolean;
 }
 
 type SettingsTab = "notifications" | "display" | "account" | "privacy";
@@ -105,6 +106,7 @@ export default function Settings() {
 		email: "",
 		sms_enabled: false,
 		email_enabled: false,
+		status_updates: true,
 	});
 	const [channelSaving, setChannelSaving] = useState(false);
 	const channelLoaded = useRef(false);
@@ -119,6 +121,7 @@ export default function Settings() {
 					phone: p.phone || "",
 					email: p.email || "",
 					sms_enabled: p.sms_enabled !== false,
+					status_updates: p.status_updates !== false,
 					email_enabled: p.email_enabled !== false,
 				}),
 			)
@@ -137,6 +140,7 @@ export default function Settings() {
 					phone: channelPrefs.phone,
 					email: channelPrefs.email,
 					sms_enabled: channelPrefs.sms_enabled,
+					status_updates: channelPrefs.status_updates !== false,
 					email_enabled: channelPrefs.email_enabled,
 				},
 			);
@@ -144,6 +148,7 @@ export default function Settings() {
 				phone: saved.phone || "",
 				email: saved.email || "",
 				sms_enabled: saved.sms_enabled !== false,
+				status_updates: saved.status_updates !== false,
 				email_enabled: saved.email_enabled !== false,
 			});
 			toast(
@@ -328,6 +333,14 @@ export default function Settings() {
 										checked={channelPrefs.email_enabled}
 										onChange={(v) =>
 											setChannelPrefs({ ...channelPrefs, email_enabled: v })
+										}
+									/>
+									<ToggleRow
+										label="Status-change notifications"
+										desc="In-app alerts when a followed post moves to verified, in progress, solved — or gets an admin reply"
+										checked={channelPrefs.status_updates !== false}
+										onChange={(v) =>
+											setChannelPrefs({ ...channelPrefs, status_updates: v })
 										}
 									/>
 									<button
