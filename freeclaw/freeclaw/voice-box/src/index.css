@@ -1380,3 +1380,45 @@ html[data-scale="110"] { font-size: 110%; }
     transform: none;
   }
 }
+
+/* ── Mobile UX hardening (touch devices) ───────────────────────
+   Fixes the classic mobile pain points:
+   1. iOS Safari auto-zooms when an input's font-size < 16px — every focus
+      jolted the whole page. Inputs/selects/textareas get 16px on touch.
+   2. Transparent tap highlight: grey flashes on every tap looked broken.
+   3. No horizontal panning: long words/emails could push the page sideways.
+   4. Scroll containment inside chat/cards so the page behind doesn't
+      rubber-band while scrolling a thread.
+   5. Comfortable minimum hit areas for icon-only buttons (44px Apple HIG). */
+@media (pointer: coarse) {
+  .input, select.input, textarea.input {
+    font-size: 16px;
+    line-height: 1.45;
+  }
+  html, body {
+    -webkit-tap-highlight-color: transparent;
+  }
+  body {
+    overflow-x: clip;
+  }
+  /* Icon-only controls get a real thumb target without changing layout */
+  button.btn:not(:has(span:not(.sr-only))):not(:has(svg + span)),
+  [aria-label].btn {
+    min-height: 44px;
+    min-width: 44px;
+  }
+}
+
+/* Chat threads and card scroll areas scroll on their own — keep the
+   rubber-banding contained to them, not the page behind. */
+.card.overflow-y-auto,
+.flex-1.overflow-y-auto {
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* Small screens: tighten section rhythm that assumes desktop width */
+@media (max-width: 640px) {
+  h1.font-display { letter-spacing: -0.01em; }
+  .card { border-radius: var(--vb-radius-md); }
+}

@@ -1,13 +1,14 @@
 // Notification channel preferences — phone + email for SMS/email alerts.
-// GET  /api/notify-prefs?user_id=X         → { phone, email, sms_enabled, email_enabled }
-// POST /api/notify-prefs { user_id, phone, email, sms_enabled, email_enabled }
+// GET  /api/notify-prefs?user_id=X → { phone, email, sms_enabled, email_enabled, ai_chat_enabled }
+// POST /api/notify-prefs { user_id, phone, email, sms_enabled, email_enabled, ai_chat_enabled }
 //
 // Stored in the settings table under `notify_prefs:<anonId>` as
-// { phone, email, sms_enabled, email_enabled, updated_at } — the same KV
-// pattern as follows/notifications. Consumed by _follows.js when a followed
-// post is solved/updated: enabled + valid phone → SMS, enabled + valid
-// email → email (via api/_dispatch.js). Reading prefs is public; writes
-// require a valid, non-banned, non-suspended user (same gate as _posts.js).
+// { phone, email, sms_enabled, email_enabled, ai_chat_enabled, updated_at } —
+// the same KV pattern as follows/notifications. Consumed by _follows.js when a
+// followed post is solved/updated: enabled + valid phone → SMS, enabled +
+// valid email → email (via api/_dispatch.js). ai_chat_enabled gates the
+// inbox AI auto-reply in _inbox.js. Reading prefs is public; writes require
+// a valid, non-banned, non-suspended user (same gate as _posts.js).
 
 import { checkUser, clean, cors, rateLimitResponse } from "./_auth.js";
 import supabase from "./_db-client.js";
@@ -45,6 +46,8 @@ export async function getNotifyPrefs(userId) {
 			email: typeof v.email === "string" ? v.email : "",
 			sms_enabled: v.sms_enabled !== false,
 			email_enabled: v.email_enabled !== false,
+			// Inbox AI auto-replies — user-controllable, default ON.
+			ai_chat_enabled: v.ai_chat_enabled !== false,
 		};
 	} catch (err) {
 		console.warn("[notify-prefs] getNotifyPrefs failed:", err.message);
@@ -110,6 +113,7 @@ export default async function handler(req, res) {
 				email: email ? email.trim() : "",
 				sms_enabled: b.sms_enabled !== false,
 				email_enabled: b.email_enabled !== false,
+				ai_chat_enabled: b.ai_chat_enabled !== false,
 				updated_at: new Date().toISOString(),
 			};
 			await supabase

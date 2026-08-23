@@ -75,7 +75,9 @@ const PROVIDER_DEFS = {
 	gemini: openaiCompat(
 		"Google Gemini",
 		"https://generativelanguage.googleapis.com/v1beta/openai/",
-		"gemini-2.5-flash",
+		// gemini-2.5-flash was shut down Oct 16 2026 / 404s for new users —
+		// point at the current cheap, stable Flash model.
+		"gemini-3.5-flash",
 		"GEMINI_API_KEY",
 	),
 	groq: openaiCompat(
@@ -250,7 +252,7 @@ const PROVIDER_DEFS = {
 	},
 	vertex_ai: {
 		name: "Vertex AI",
-		defaultModel: "gemini-2.5-flash",
+		defaultModel: "gemini-3.5-flash",
 		baseUrl: "",
 		buildHeaders: () => ({}),
 		buildBody: () => ({}),

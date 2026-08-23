@@ -51,6 +51,7 @@ const Categories = retryLazy(() => import("./admin/Categories"));
 const AdminSettings = retryLazy(() => import("./admin/AdminSettings"));
 const AiPanel = retryLazy(() => import("./admin/AiPanel"));
 const CommandCenter = retryLazy(() => import("./admin/CommandCenter"));
+const WorkforceCenter = retryLazy(() => import("./admin/WorkforceCenter"));
 const UnifiedInbox = retryLazy(() => import("./admin/UnifiedInbox"));
 // One unified AI Operations tab — combines the old Agent Team / Workforce /
 // Agent Dashboard / AI Output / Reports / Content Review workspaces.
@@ -85,6 +86,7 @@ const TAB_GROUPS: { title: string; tabs: AdminTab[] }[] = [
 			{ key: "ops-center", label: "Ops Center", icon: Radar },
 			{ key: "overview", label: "Dashboard", icon: LayoutDashboard },
 			{ key: "agent-dashboard", label: "Agent Dashboard", icon: Bot },
+			{ key: "workforce", label: "AI Workforce", icon: Bot },
 			{ key: "command-center", label: "Command Center", icon: MessageCircle },
 		],
 	},
@@ -207,7 +209,10 @@ export default function Admin() {
 	}, [search]);
 
 	const login = async () => {
-		if (!password) return;
+		// busy guard here (not just on the button) — the Enter key handler
+		// bypasses the disabled attribute, so two rapid Enters used to fire
+		// two concurrent /api/admin login requests.
+		if (!password || busy) return;
 		setBusy(true);
 		try {
 			const hash = await sha256(password);
@@ -553,6 +558,11 @@ export default function Admin() {
 						{tab === "agent-dashboard" && (
 							<ErrorBoundary key="agent-dashboard">
 								<AgentDashboard />
+							</ErrorBoundary>
+						)}
+						{tab === "workforce" && (
+							<ErrorBoundary key="workforce">
+								<WorkforceCenter />
 							</ErrorBoundary>
 						)}
 						{tab === "admin-ai" && (

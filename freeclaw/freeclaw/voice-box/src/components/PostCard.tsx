@@ -9,6 +9,7 @@
 	Flame,
 	Gavel,
 	Heart,
+	Lock,
 	MessageCircle,
 	Pin,
 	Play,
@@ -243,6 +244,14 @@ function PostCardInner({ post, myReactions, onReacted }: PostCardProps) {
 						{post.featured && (
 							<span className="chip !bg-warn/10 !text-warn !border-transparent">
 								<Sparkles size={11} /> Featured
+							</span>
+						)}
+						{post.visibility === "private" && (
+							<span
+								className="chip !bg-accent-soft !text-accent !border-transparent"
+								title="Only you, admins and moderators can see this post"
+							>
+								<Lock size={11} /> Private · admins only
 							</span>
 						)}
 						<span className="chip">{post.category}</span>

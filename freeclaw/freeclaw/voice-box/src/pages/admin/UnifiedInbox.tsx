@@ -3,6 +3,7 @@ import {
 	ArrowDown,
 	ArrowLeftRight,
 	Bot,
+	BotOff,
 	Check,
 	ChevronLeft,
 	CloudRain,
@@ -391,6 +392,9 @@ export default function UnifiedInbox() {
 	const [messages, setMessages] = useState<ChatMessage[]>([]);
 	const [threadState, setThreadState] = useState<ThreadState | null>(null);
 	const [loading, setLoading] = useState(true);
+	// Platform-wide inbox AI switch (server gates generation too)
+	const [aiMode, setAiMode] = useState(true);
+	const [aiModeBusy, setAiModeBusy] = useState(false);
 
 	const [text, setText] = useState("");
 	const [sending, setSending] = useState(false);
@@ -434,9 +438,43 @@ export default function UnifiedInbox() {
 		);
 	}, [threads, threadSearch]);
 
-	/* ── Load threads from BOTH APIs ──────────────────────── */
-	const loadThreads = useCallback(async () => {
+	/* ── Platform-wide inbox AI switch ───────────────────── */
+	useEffect(() => {
+		let alive = true;
+		api
+			.get<{ enabled?: boolean }>("/api/inbox?action=ai_mode")
+			.then((cfg) => {
+				if (alive && cfg && cfg.enabled === false) setAiMode(false);
+			})
+			.catch(() => {
+				/* default ON */
+			});
+		return () => {
+			alive = false;
+		};
+	}, []);
+
+	const toggleAiMode = async () => {
+		if (aiModeBusy) return;
+		const next = !aiMode;
+		setAiModeBusy(true);
 		try {
+			await api.post("/api/inbox", { action: "set_ai_mode", enabled: next });
+			setAiMode(next);
+			toast(
+				next
+					? "Inbox AI replies enabled platform-wide"
+					: "Inbox AI replies disabled — messages wait for admins",
+				"ok",
+			);
+		} catch (e: unknown) {
+			toast(e instanceof Error ? e.message : "Failed to update", "err");
+		}
+		setAiModeBusy(false);
+	};
+
+	/* ── Load threads from BOTH APIs ──────────────────────── */
+	const loadThreads = useCallback(async () => {		try {
 			const [inboxRes, chatRes] = await Promise.allSettled([
 				api.get<ThreadSummary[] | { threads: ThreadSummary[] }>(
 					"/api/inbox?threads=1",
@@ -796,12 +834,40 @@ export default function UnifiedInbox() {
 							{threads.length}
 						</span>
 					</h2>
+				<div className="flex items-center gap-2">
+					<button
+						type="button"
+						onClick={toggleAiMode}
+						disabled={aiModeBusy}
+						role="switch"
+						aria-checked={aiMode}
+						title={
+							aiMode
+								? "AI auto-replies are ON — click to disable platform-wide"
+								: "AI auto-replies are OFF — click to enable"
+						}
+						className={`shrink-0 inline-flex items-center gap-1 rounded-full border px-2 py-1 text-[10px] font-bold transition-all ${
+							aiMode
+								? "border-accent/30 bg-accent/10 text-accent"
+								: "border-border bg-surface2 text-ink3"
+						}`}
+					>
+						{aiModeBusy ? (
+							<Loader2 size={11} className="animate-spin" />
+						) : aiMode ? (
+							<Bot size={11} />
+						) : (
+							<BotOff size={11} />
+						)}
+						<span className="hidden lg:inline">AI {aiMode ? "ON" : "OFF"}</span>
+					</button>
 					<button
 						className="btn btn-primary !text-xs !py-1.5"
 						onClick={() => setShowNew(true)}
 					>
 						<Plus size={13} /> New
 					</button>
+				</div>
 				</div>
 
 				<div className="p-3 border-b border-border">

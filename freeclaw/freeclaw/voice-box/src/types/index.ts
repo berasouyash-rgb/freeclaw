@@ -40,7 +40,10 @@ export interface PostData {
 	ready_for_decision?: boolean;
 	ready_threshold?: number;
 	pinned?: boolean;
-	featured?: boolean;      		hidden?: boolean;
+	featured?: boolean;
+	hidden?: boolean;
+	/** 'private' → visible ONLY to author + admins/moderators */
+	visibility?: "public" | "private";
 	locked?: boolean;
 	official?: boolean;
 	deleted?: boolean;

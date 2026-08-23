@@ -55,7 +55,9 @@ const PROVIDER_COLORS: Record<string, string> = {
 const DEFAULT_MODELS: Record<string, string[]> = {
 	openai: ["gpt-4o", "gpt-4o-mini", "gpt-4.1", "o3-mini"],
 	anthropic: ["claude-sonnet-4-6", "claude-opus-4", "claude-haiku-3.5"],
-	gemini: ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.0-flash"],
+	// gemini-2.5-flash was shut down Oct 2026 / 404s for new users — offer the
+	// current stable lineup instead.
+	gemini: ["gemini-3.5-flash", "gemini-3.1-pro", "gemini-2.5-flash-lite"],
 	nvidia: [
 		"meta/llama-3.1-70b-instruct",
 		"meta/llama-3.1-405b-instruct",

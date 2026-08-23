@@ -126,7 +126,15 @@ export function toCSV<T extends object>(rows: T[]): string {
 	const first = rows[0] as Record<string, unknown>;
 	if (!first) return "";
 	const keys = Object.keys(first);
-	const esc = (v: unknown) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+	// CSV formula-injection guard: cells beginning with = + - @ (or tab/CR)
+	// are interpreted as formulas by Excel/LibreOffice/Sheets when the export
+	// is opened — a post titled "=HYPERLINK(...)" would execute on open.
+	// Prefix with a single quote so the cell renders as literal text.
+	const esc = (v: unknown) => {
+		let s = String(v ?? "").replace(/"/g, '""');
+		if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`;
+		return `"${s}"`;
+	};
 	return [
 		keys.join(","),
 		...rows.map((r) => {

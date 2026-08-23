@@ -48,6 +48,34 @@ interface NotifSnapshot {
 		| number;
 }
 
+/** Shape of a notification stored server-side (admin warnings, suspensions, bans). */
+interface ServerNotif {
+	id: string;
+	type: string;
+	title: string;
+	body: string;
+	post_id?: string | null;
+	read: boolean;
+	created_at: string;
+}
+
+// Map a server-side notification (from /api/notifications, written by admin
+// actions like warn/suspend/ban) into the client Notification shape. Returns
+// null for malformed entries so a corrupt row can never crash the UI.
+function mapServerNotif(n: ServerNotif): Notification | null {
+	if (!n || typeof n.id !== "string" || !n.id) return null;
+	const kind: NotificationKind = n.type === "success" ? "status" : "info";
+	return {
+		id: n.id,
+		kind,
+		title: String(n.title || "Notification"),
+		body: String(n.body || ""),
+		link: n.post_id ? `/post/${n.post_id}` : undefined,
+		at: n.created_at || new Date().toISOString(),
+		read: !!n.read,
+	};
+}
+
 export type { Notification, NotificationKind };
 
 interface Toast {
@@ -119,7 +147,9 @@ let toastSeq = 1;
 const _toastAction = () => {
 	window.location.href = "/chat";
 };
-/* v8 ignore stop -- @preserve */	export function AppProvider({ children }: { children: ReactNode }) {
+/* v8 ignore stop -- @preserve */
+
+export function AppProvider({ children }: { children: ReactNode }) {
 	const [anonId, setAnonId] = useState(getAnonId);
 	const [displayName, setDisplayNameState] = useState(getDisplayName);
 	const setDisplayName = useCallback((name: string) => {
@@ -185,6 +215,13 @@ const _toastAction = () => {
 	useEffect(() => {
 		bookmarksRef.current = bookmarks;
 	}, [bookmarks]);
+	// Latest notifications mirror — lets markNotifsRead/clearNotifs act on the
+	// current list without a stale closure and without side effects inside a
+	// state updater.
+	const notificationsRef = useRef<Notification[]>(notifications);
+	useEffect(() => {
+		notificationsRef.current = notifications;
+	}, [notifications]);
 
 	// Heartbeat: registers this browser's anonymous ID (so it appears in admin
 	// immediately, before any post) AND returns live ban/suspension/warning status.
@@ -368,17 +405,37 @@ const _toastAction = () => {
 	);
 
 	const markNotifsRead = useCallback(() => {
+		// Mirror read state to the server for admin-issued notifications so a
+		// later re-sync doesn't resurrect the unread badge (fire-and-forget).
+		notificationsRef.current
+			.filter((n) => !n.read && n.id.startsWith("notif_"))
+			.forEach((n) => {
+				api
+					.post("/api/notifications", {
+						user_id: anonId,
+						notification_id: n.id,
+					})
+					.catch(() => {
+						/* offline-friendly */
+					});
+			});
 		setNotifications((prev) => {
 			const next = prev.map((n) => ({ ...n, read: true }));
 			lsSet("vb:notifications", next);
 			return next;
 		});
-	}, []);
+	}, [anonId]);
 
 	const clearNotifs = useCallback(() => {
 		setNotifications([]);
 		lsSet("vb:notifications", []);
-	}, []);
+		// Clear the server store too so a re-sync can't resurrect cleared items.
+		api
+			.del(`/api/notifications?user_id=${anonId}`, {})
+			.catch(() => {
+				/* offline-friendly */
+			});
+	}, [anonId]);
 
 	const toast = useCallback(
 		(text: string, kind: Toast["kind"] = "info", action?: Toast["action"]) => {
@@ -407,15 +464,37 @@ const _toastAction = () => {
 			// Skip if tab is hidden — will catch up when user returns
 			if (document.hidden) return;
 			try {
-				const [mine, chat] = await Promise.all([
+				const [mine, chat, serverNotifs] = await Promise.all([
 					api
 						.getSlow<PostData[]>(`/api/posts?author=${anonId}&viewer=${anonId}`)
 						.catch((): PostData[] => []),
 					api
 						.get<ChatResponse | null>(`/api/chat?thread_id=${anonId}`)
 						.catch((): null => null),
+					api
+						.get<{ notifications?: ServerNotif[] }>(
+							`/api/notifications?user_id=${anonId}`,
+						)
+						.catch((): { notifications?: ServerNotif[] } => ({})),
 				]);
 				if (cancelled) return;
+				// Merge admin-issued notifications (warnings, suspensions, bans) that
+				// were written server-side — they must reach the user even on a fresh
+				// visit or after localStorage was cleared. Client notifications keep
+				// their ids (n_*) so nothing gets clobbered or duplicated.
+				if (serverNotifs?.notifications?.length) {
+					const mapped = serverNotifs.notifications
+						.map(mapServerNotif)
+						.filter((n): n is Notification => n !== null);
+					setNotifications((prev) => {
+						const have = new Set(prev.map((p) => p.id));
+						const fresh = mapped.filter((m) => !have.has(m.id));
+						if (fresh.length === 0) return prev;
+						const next = [...fresh, ...prev].slice(0, 60);
+						lsSet("vb:notifications", next);
+						return next;
+					});
+				}
 				const snapshot = lsGet<NotifSnapshot>("vb:notifSnapshot", {});
 				const nextSnap: NotifSnapshot = {};
 				for (const p of mine) {

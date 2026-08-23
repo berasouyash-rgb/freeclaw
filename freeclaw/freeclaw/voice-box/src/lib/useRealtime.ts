@@ -216,7 +216,11 @@ export function useRealtime(
 		const id = idRef.current!;
 		const entry = getOrCreate(key);
 		entry.subscribers.set(id, {
-			callback: cbRef.current,
+			// Fire through the ref: the callback identity changes every render,
+			// but this subscriber record is created once per [key, debounceMs].
+			// Reading cbRef.current at dispatch time means realtime events always
+			// invoke the LATEST closure instead of a stale first-render snapshot.
+			callback: (table, payload) => cbRef.current(table, payload),
 			debounceMs,
 			timer: null,
 		});

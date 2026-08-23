@@ -42,7 +42,6 @@ const PROFANITY_WORDS = [
 	"bitch",
 	"bitches",
 	"bitchy",
-	"biting",
 	"asshole",
 	"assholes",
 	"arsehole",

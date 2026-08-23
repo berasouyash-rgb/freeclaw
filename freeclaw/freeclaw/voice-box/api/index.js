@@ -42,6 +42,8 @@ import evidenceScan from "./_evidence-scan.js";
 import dataExport from "./_export.js";
 import follows from "./_follows.js";
 import notifyPrefs from "./_notify-prefs.js";
+import improvements from "./_improvements.js";
+import workforceCenter from "./_workforce-center.js";
 import health from "./_health.js";
 import inbox from "./_inbox.js";
 import insights from "./_insights.js";
@@ -226,6 +228,8 @@ const routes = {
 	learning: protect(learning, "learning"),
 	follows: protect(follows, "follows"),
 	"notify-prefs": protect(notifyPrefs, "notify-prefs"),
+	"improvements": protect(improvements, "improvements"),
+	"workforce-center": protect(workforceCenter, "workforce-center"),
 	saved: protect(saved, "saved"),
 	insights: protect(insights, "insights"),
 	categories: protect(categories, "categories"),
@@ -286,9 +290,16 @@ export default async function handler(req, res) {
 		console.error("[handler] parseBody threw:", parseErr.message);
 	}
 
-	// Debug endpoint â€” echoes request info for diagnosing body parsing issues
+	// Debug endpoint — echoes request info for diagnosing body parsing issues.
+	// Dev/diagnostic only: it reflects headers + body back, which is an
+	// information leak and fingerprinting surface if reachable in production.
+	const isProd =
+		process.env.VERCEL_ENV === "production" ||
+		process.env.NODE_ENV === "production";
 	if (endpoint === "_debug") {
 		corsFn(res, req);
+		if (isProd)
+			return res.status(404).json({ error: "Not found" });
 		res.setHeader("Content-Type", "application/json");
 		let bodyPreview = "";
 		try {

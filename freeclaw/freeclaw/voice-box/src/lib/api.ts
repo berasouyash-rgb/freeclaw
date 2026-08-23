@@ -132,7 +132,7 @@ async function request<T = unknown>(
 	}
 
 	const ctrl = new AbortController();
-	const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+	let timer = setTimeout(() => ctrl.abort(), timeoutMs);
 
 	/** Inner fetch with optional retry for transient errors */
 	const doFetch = async (attempt: number): Promise<T> => {
@@ -173,8 +173,14 @@ async function request<T = unknown>(
 			if (data === undefined) {
 				throw new Error("Unexpected response from server — please try again.");
 			}
-			// After successful write, flush any queued offline actions
-			if (method !== "GET") scheduleFlush();
+			// After successful write, flush any queued offline actions and
+			// invalidate the 5s GET cache so the very next fetch is fresh.
+			// Without this, hide/unhide/pin etc. appear to work only once
+			// because the following GET returns the stale cached response.
+			if (method !== "GET") {
+				scheduleFlush();
+				getCache.clear();
+			}
 			// Cache successful GET responses briefly (unless the caller asked for fresh data)
 			if (method === "GET" && !opts.noCache) {
 				getCache.set(cacheKey(method, path), {
@@ -204,6 +210,14 @@ async function request<T = unknown>(
 				console.warn(
 					`[api] GET ${path} failed (attempt ${attempt + 1}), retrying in ${GET_RETRY_DELAY_MS}ms…`,
 				);
+				// Give the retry a FULL timeout window: the shared countdown kept
+				// running during attempt 1, so a request that failed after 7s of an
+				// 8s budget used to leave its retry just 1s before the abort fired.
+				// The signal has NOT been aborted here (AbortError is excluded
+				// above), so restarting the countdown is safe. The delay itself runs
+				// inside the fresh window, matching the original single-attempt cost.
+				clearTimeout(timer);
+				timer = setTimeout(() => ctrl.abort(), timeoutMs + GET_RETRY_DELAY_MS);
 				await delay(GET_RETRY_DELAY_MS);
 				return doFetch(attempt + 1);
 			}

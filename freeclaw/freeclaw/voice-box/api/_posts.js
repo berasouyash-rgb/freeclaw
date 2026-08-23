@@ -44,6 +44,9 @@ const STATUSES = [
 	"archived",
 	"pending_review",
 ];
+// Private posts are visible ONLY to their author and verified admins —
+// enforced on every read path in this file and in _comments.js.
+const VISIBILITIES = ["public", "private"];
 
 // Co-sign threshold: posts with this many supports are auto-flagged "ready for decision"
 const READY_THRESHOLD = 10;
@@ -196,7 +199,9 @@ export default async function handler(req, res) {
 			} = req.query;
 			const admin = all === "1" ? await isAdmin(req) : false;
 			const isPaginated = paginate === "1" || paginate === "true";
-			const PAGE_LIMIT = Math.min(parseInt(limitParam) || 30, 100);
+			// Clamp on both ends: NaN/0 falls back to 30, negatives would produce
+			// an invalid PostgREST `limit` and surface as a 500.
+			const PAGE_LIMIT = Math.max(1, Math.min(parseInt(limitParam) || 30, 100));
 
 			// Cache headers for public reads (30s browser cache, 30s CDN, 10s stale-while-revalidate)
 			if (!admin && !viewer) {
@@ -208,6 +213,15 @@ export default async function handler(req, res) {
 			} else {
 				res.setHeader("Cache-Control", "private, no-cache");
 			}
+
+			const viewerId = clean(viewer, 40);
+			// Visibility guard: private posts are visible ONLY to their author
+			// and verified admins — feeds, id fetches, ids lists, author views.
+			const canSeePost = (p) =>
+				admin ||
+				!p.visibility ||
+				p.visibility === "public" ||
+				p.author_id === viewerId;
 
 			let q = supabase
 				.from("posts")
@@ -251,18 +265,23 @@ export default async function handler(req, res) {
 			// fetches, and author listings. The filter_artifacts=1 query flag is still
 			// accepted (the admin Overview sends it) but the filter no longer depends
 			// on it. Rows stay intact in the DB; they are only hidden from responses.
-			let rows = (data || []).filter((p) => !isTestArtifact(p.title));
+			let rows = (data || []).filter(
+				(p) => !isTestArtifact(p.title) && canSeePost(p),
+			);
 			// Keep responses bounded: only the most recent clean rows matter.
 			if (!isPaginated && rows.length > (author ? 200 : 300))
 				rows = rows.slice(0, author ? 200 : 300);
 
 			// Visibility guard for direct-by-id fetches: non-admins may only view
-			// hidden/deleted/pending_review posts they own. Prevents id-guessing leaks
-			// while keeping owner access to their own queued posts.
+			// hidden/deleted/pending_review/private posts they own. Prevents
+			// id-guessing leaks while keeping owner access to their own queued posts.
 			if (id && !admin && (data || []).length === 1) {
 				const row = data[0];
 				const publicVisible =
-					!row.hidden && !row.deleted && row.status !== "pending_review";
+					!row.hidden &&
+					!row.deleted &&
+					row.status !== "pending_review" &&
+					(!row.visibility || row.visibility === "public");
 				if (!publicVisible && clean(viewer, 40) !== row.author_id) {
 					return res.status(404).json({ error: "Post not found" });
 				}
@@ -275,9 +294,8 @@ export default async function handler(req, res) {
 					? sliced[sliced.length - 1]?.created_at
 					: null;
 				const out = await attachCounts(sliced);
-				const v = clean(viewer, 40);
 				const masked = out.map((p) => {
-					const is_mine = !!v && p.author_id === v;
+					const is_mine = !!viewerId && p.author_id === viewerId;
 					return {
 						...p,
 						is_mine,
@@ -302,9 +320,8 @@ export default async function handler(req, res) {
 			}
 
 			const out = await attachCounts(rows);
-			const v = clean(viewer, 40);
 			const masked = out.map((p) => {
-				const is_mine = !!v && p.author_id === v;
+				const is_mine = !!viewerId && p.author_id === viewerId;
 				return {
 					...p,
 					is_mine,
@@ -318,12 +335,12 @@ export default async function handler(req, res) {
 				const counts = post.reactions || {};
 				// Fetch viewer's own reactions for this post
 				let mine = [];
-				if (v) {
+				if (viewerId) {
 					const { data: myReactions } = await supabase
 						.from("reactions")
 						.select("kind")
 						.eq("target_id", id)
-						.eq("author_id", v);
+						.eq("author_id", viewerId);
 					mine = (myReactions || []).map((r) => r.kind);
 				}
 				return res.status(200).json({ post, counts, mine });
@@ -356,6 +373,9 @@ export default async function handler(req, res) {
 
 			// Duplicate detection: check for posts with very similar titles in the same category
 			const category = CATEGORIES.includes(b.category) ? b.category : "Other";
+			const visibility = VISIBILITIES.includes(b.visibility)
+				? b.visibility
+				: "public";
 			const normalizeForCompare = (s) =>
 				s
 					.toLowerCase()
@@ -370,6 +390,7 @@ export default async function handler(req, res) {
 				.select("id, title, category, status")
 				.eq("category", category)
 				.eq("deleted", false)
+				.eq("visibility", visibility)
 				.order("created_at", { ascending: false })
 				.limit(200);
 
@@ -453,6 +474,7 @@ export default async function handler(req, res) {
 				title,
 				description,
 				category,
+				visibility,
 				priority,
 				tags,
 				image_url: clean(b.image_url, 500) || null,
@@ -478,11 +500,35 @@ export default async function handler(req, res) {
 				);
 			}
 
-			const { data, error } = await supabase
+			let { data, error } = await supabase
 				.from("posts")
 				.insert(post)
 				.select()
 				.single();
+			if (error && post.visibility) {
+				// Pre-migration DBs lack posts.visibility (migration 009 not yet
+				// applied). Never fail a user's submission for that: retry once
+				// WITHOUT the visibility field so the post publishes as public,
+				// then surface a hint to run the migration.
+				const msg = String(error.message || "");
+				if (
+					error.code === "PGRST204" ||
+					error.code === "42703" ||
+					/visibility|could not find|does not exist/i.test(msg)
+				) {
+					console.warn(
+						"[posts] visibility column missing — run api/migrations/009_private_posts_integrity_indexes.sql. Publishing as public.",
+					);
+					const { visibility: _omit, ...rest } = post;
+					const retry = await supabase
+						.from("posts")
+						.insert(rest)
+						.select()
+						.single();
+					data = retry.data;
+					error = retry.error;
+				}
+			}
 			if (error) throw error;
 			await ensureUser(author_id);
 			// Emit event for event-triggered agents
@@ -517,6 +563,8 @@ export default async function handler(req, res) {
 				// Owner-permitted fields
 				if (typeof b.deleted === "boolean") patch.deleted = b.deleted; // soft delete + 30s restore
 				if (typeof b.locked === "boolean") patch.locked = b.locked; // owner turns comments off/on
+				if (b.visibility !== undefined && VISIBILITIES.includes(b.visibility))
+					patch.visibility = b.visibility;
 				if (b.title !== undefined)
 					patch.title = maskProfanity(clean(b.title, 120));
 				if (b.description !== undefined)

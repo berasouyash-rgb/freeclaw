@@ -12,6 +12,8 @@ interface QueuedAction {
 const KEY = "vb:offlineQueue";
 /** Canonical admin token key — must match api.ts (sessionStorage, JSON {token, exp}) */
 const ADMIN_AUTH_KEY = "vb:adminAuth";
+/** Per-item ceiling for flush requests — see flushQueue. */
+const FLUSH_TIMEOUT_MS = 15_000;
 
 export function queueAction(method: string, path: string, body: unknown) {
 	const q = lsGet<QueuedAction[]>(KEY, []);
@@ -66,14 +68,25 @@ export async function flushQueue(): Promise<number> {
 					/* no valid session */
 				}
 			}
-			const res = await fetch(a.path, {
-				method: a.method,
-				headers,
-				body: a.body != null ? JSON.stringify(a.body) : null,
-			});
+			// Hard per-item ceiling: a hung request used to stall the entire
+			// sequential flush loop forever (scheduleFlush would keep re-entering
+			// but never make progress past the stuck item).
+			const ctrl = new AbortController();
+			const kill = setTimeout(() => ctrl.abort(), FLUSH_TIMEOUT_MS);
+			let res: Response;
+			try {
+				res = await fetch(a.path, {
+					method: a.method,
+					headers,
+					body: a.body != null ? JSON.stringify(a.body) : null,
+					signal: ctrl.signal,
+				});
+			} finally {
+				clearTimeout(kill);
+			}
 			if (res.ok) flushed++;
 			else if (res.status >= 500) remaining.push(a); // retry server errors later
-			// 4xx: drop — it would never succeed
+			// 4xx / abort: drop or retry below — aborted requests land in catch
 		} catch {
 			remaining.push(a);
 		}

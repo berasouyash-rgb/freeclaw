@@ -38,7 +38,19 @@ export function renderMarkdown(text: string): string {
 		.replace(
 			/```(\w*)\n([\s\S]*?)```/g,
 			'<pre><code class="lang-$1">$2</code></pre>',
-		)
+		);
+
+	// Protect fenced code blocks from the inline transforms below: the
+	// paragraph (<br/>) and line-break replacements are global, so they used to
+	// rewrite newlines INSIDE <pre><code> too — injecting stray </p>/<br/> tags
+	// into the block and flattening multi-line code onto one line.
+	const codeBlocks: string[] = [];
+	html = html.replace(/<pre><code[\s\S]*?<\/pre>/g, (m) => {
+		codeBlocks.push(m);
+		return `\u0000CODE${codeBlocks.length - 1}\u0000`;
+	});
+
+	html = html
 		// Inline code
 		.replace(/`([^`]+)`/g, "<code>$1</code>")
 		// Bold
@@ -62,6 +74,12 @@ export function renderMarkdown(text: string): string {
 		// Line breaks (preserve double newlines as paragraphs)
 		.replace(/\n\n/g, "</p><p>")
 		.replace(/\n/g, "<br/>");
+
+	// Restore fenced code blocks verbatim
+	html = html.replace(
+		/\u0000CODE(\d+)\u0000/g,
+		(_m, i: string) => codeBlocks[Number(i)] ?? "",
+	);
 
 	// Wrap consecutive <li> in <ul>
 	html = html.replace(/((?:<li>.*?<\/li>\s*)+)/g, "<ul>$1</ul>");

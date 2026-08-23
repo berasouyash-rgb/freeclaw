@@ -1,7 +1,7 @@
 // Image upload to Supabase Storage (anonymous, size-capped)
 // FALLBACK: If Supabase Storage fails, returns a data-URL so images always work.
 
-import { checkUser, clean, cors } from "./_auth.js";
+import { checkUser, clean, cors, rateLimited, rateLimitResponse } from "./_auth.js";
 import supabase from "./_db-client.js";
 import { sanitizeError } from "./_error.js";
 
@@ -9,6 +9,29 @@ export const config = { api: { bodyParser: { sizeLimit: "4mb" } } };
 
 // Primary bucket — if it doesn't exist, try alternatives
 const BUCKETS = ["chat-media", "voicebox-media"];
+
+/** Magic-byte sniffing: verify decoded bytes match the declared image type.
+ *  Content-Type is client-declared, so without this any binary could be
+ *  stored under an image name/content-type. */
+function matchesImageMagic(buffer, contentType) {
+	const b = buffer;
+	if (b.length < 12) return false;
+	if (/^image\/png$/.test(contentType))
+		return b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47;
+	if (/^image\/jpe?g$/.test(contentType))
+		return b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff;
+	if (/^image\/gif$/.test(contentType)) {
+		const sig = b.subarray(0, 6).toString("latin1");
+		return sig === "GIF87a" || sig === "GIF89a";
+	}
+	if (/^image\/webp$/.test(contentType)) {
+		return (
+			b.subarray(0, 4).toString("latin1") === "RIFF" &&
+			b.subarray(8, 12).toString("latin1") === "WEBP"
+		);
+	}
+	return false;
+}
 
 export default async function handler(req, res) {
 	cors(res, req);
@@ -29,6 +52,18 @@ export default async function handler(req, res) {
 		const buffer = Buffer.from(fileBase64, "base64");
 		if (buffer.length > 3 * 1024 * 1024)
 			return res.status(400).json({ error: "Image must be under 3 MB." });
+		// Per-author throttle — uploads were the ONLY unthrottled write surface.
+		// Each request decodes up to ~3MB and writes to storage; spamming them
+		// fills the bucket and burns function time. (6/min matches chat-image use.)
+		if (await rateLimited("uploads", clean(author_id, 40), 60, 6)) {
+			return rateLimitResponse(res, 60, "Too many uploads — please wait a minute.");
+		}
+		// Reject payloads whose bytes don't match the declared image type.
+		if (!matchesImageMagic(buffer, contentType)) {
+			return res
+				.status(400)
+				.json({ error: "File content does not match its declared image type." });
+		}
 
 		// Try each available bucket
 		for (const bucket of BUCKETS) {

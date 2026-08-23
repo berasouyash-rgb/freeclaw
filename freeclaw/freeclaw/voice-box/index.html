@@ -13,36 +13,135 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Albert+Sans:wght@400;500;600;700&family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
 
-    <!-- Splash screen — shown instantly before React mounts -->
+    <!-- Splash screen v2 "VOICE ORB" — shown instantly before React mounts -->
     <style>
       #vb-splash {
         position: fixed; inset: 0; z-index: 99999;
         display: flex; flex-direction: column; align-items: center; justify-content: center;
-        background: #f6f6f9; color: #171724;
+        background:
+          radial-gradient(90% 70% at 50% 42%, rgba(122,111,240,0.10) 0%, transparent 55%),
+          #f6f6f9;
+        color: #171724;
         font-family: 'Albert Sans', system-ui, sans-serif;
-        transition: opacity 0.35s ease, transform 0.35s ease;
+        transition: opacity .5s cubic-bezier(.16,1,.3,1), visibility 0s linear .5s;
       }
-      #vb-splash.vb-hide { opacity: 0; transform: scale(0.98); pointer-events: none; }
-      #vb-splash .mark { width: 48px; height: 48px; margin-bottom: 16px; }
-      #vb-splash .wordmark { font-family: 'Fraunces', serif; font-size: 22px; font-weight: 700; letter-spacing: -0.01em; }
-      #vb-splash .tagline { font-size: 13px; color: #8e8ea5; margin-top: 6px; }
-      #vb-splash .spinner { margin-top: 24px; width: 20px; height: 20px; border: 2.5px solid #e4e4ee; border-top-color: #5652d6; border-radius: 50%; animation: spin 0.7s linear infinite; }
-      @keyframes spin { to { transform: rotate(360deg); } }
-      .dark #vb-splash { background: #0e0e16; color: #f0f0f7; }
-      .dark #vb-splash .tagline { color: #6e6e88; }
-      .dark #vb-splash .spinner { border-color: #262637; border-top-color: #8b85f5; }
+      #vb-splash.vb-hide { opacity: 0; pointer-events: none; visibility: hidden; }
+
+      /* ── THE ORB ─────────────────────────────────────────────── */
+      .vb-orb { position: relative; width: 148px; height: 148px; margin-bottom: 26px; }
+      /* Ripple rings — sound leaving the core */
+      .vb-orb i {
+        position: absolute; inset: 0; margin: auto;
+        width: 46px; height: 46px; border-radius: 50%;
+        border: 1.5px solid rgba(86,82,214,.45);
+        opacity: 0;
+        animation: vb-ripple 2.4s cubic-bezier(.16,1,.3,1) infinite;
+      }
+      .vb-orb i:nth-child(2) { animation-delay: .8s; }
+      .vb-orb i:nth-child(3) { animation-delay: 1.6s; }
+      @keyframes vb-ripple {
+        0%   { transform: scale(.55); opacity: 0; }
+        18%  { opacity: .9; }
+        100% { transform: scale(2.6); opacity: 0; }
+      }
+      /* Glowing core */
+      .vb-orb b {
+        position: absolute; inset: 0; margin: auto;
+        width: 34px; height: 34px; border-radius: 50%;
+        background:
+          radial-gradient(circle at 32% 28%, #a89dff 0%, #5652d6 58%, #4038c7 100%);
+        box-shadow:
+          0 0 22px rgba(86,82,214,.55),
+          inset 0 -4px 10px rgba(0,0,0,.22);
+        animation: vb-core 1.6s ease-in-out infinite alternate;
+      }
+      @keyframes vb-core {
+        from { transform: scale(.94); }
+        to   { transform: scale(1.06); }
+      }
+      /* Orbiting particles on two tilted rings */
+      .vb-orb u {
+        position: absolute; inset: -14px;
+        border-radius: 50%;
+        animation: vb-spin 5.5s linear infinite;
+      }
+      .vb-orb u:nth-of-type(2) { inset: 12px; animation-duration: 3.6s; animation-direction: reverse; }
+      .vb-orb u::before {
+        content: ""; position: absolute; top: -3px; left: 50%;
+        width: 6px; height: 6px; margin-left: -3px; border-radius: 50%;
+        background: #7a6ff0; box-shadow: 0 0 10px rgba(122,111,240,.85);
+      }
+      .vb-orb u:nth-of-type(2)::before { width: 4px; height: 4px; background: #38e1ff; box-shadow: 0 0 8px rgba(56,225,255,.85); }
+      @keyframes vb-spin { to { transform: rotate(360deg); } }
+
+      /* ── WORDMARK — letters rise one by one ──────────────────── */
+      .vb-word { display: flex; font-family: 'Fraunces', serif; font-size: 30px; font-weight: 700; letter-spacing: -0.02em; }
+      .vb-word span {
+        display: inline-block;
+        opacity: 0; transform: translateY(14px) rotateX(35deg);
+        animation: vb-letter .5s cubic-bezier(.16,1,.3,1) forwards;
+      }
+      @keyframes vb-letter { to { opacity: 1; transform: none; } }
+      .vb-tag { font-size: 13px; color: #8e8ea5; margin-top: 7px; letter-spacing: .04em; opacity: 0; animation: vb-fade .6s ease 1s forwards; }
+      @keyframes vb-fade { to { opacity: 1; } }
+
+      /* ── CIRCULAR PROGRESS RING ──────────────────────────────── */
+      .vb-ring { position: relative; width: 30px; height: 30px; margin-top: 24px; }
+      .vb-ring svg { width: 100%; height: 100%; transform: rotate(-90deg); }
+      .vb-ring circle { fill: none; stroke-width: 3; stroke-linecap: round; }
+      .vb-ring .bg { stroke: rgba(86,82,214,.14); }
+      .vb-ring .fg {
+        stroke: url(#vbg); stroke-dasharray: 70; stroke-dashoffset: 56;
+        animation: vb-dash 1.5s cubic-bezier(.4,0,.2,1) infinite;
+      }
+      @keyframes vb-dash {
+        0%   { stroke-dashoffset: 70; transform: rotate(0deg); }
+        50%  { stroke-dashoffset: 18; }
+        100% { stroke-dashoffset: -70; transform: rotate(360deg); }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        .vb-orb i, .vb-orb b, .vb-orb u { animation: none !important; }
+        .vb-orb i { opacity: .25 !important; transform: scale(1.4); }
+        .vb-word span { animation-duration: .01s; }
+        .vb-tag { animation-duration: .01s; }
+        .vb-ring .fg { animation-duration: 2.6s; }
+      }
+
+      .dark #vb-splash {
+        background:
+          radial-gradient(90% 70% at 50% 42%, rgba(139,133,245,.13) 0%, transparent 55%),
+          #0e0e16;
+        color: #f0f0f7;
+      }
+      .dark #vb-splash .vb-tag { color: #6e6e88; }
+      .dark #vb-splash .vb-ring .bg { stroke: rgba(139,133,245,.16); }
     </style>
   </head>
   <body>
     <!-- Splash screen DOM — removed by main.tsx once React mounts -->
-    <div id="vb-splash">
-      <svg class="mark" viewBox="0 0 48 48" fill="none">
-        <rect width="48" height="48" rx="12" fill="#5652d6"/>
-        <path d="M16 18h16v4H16zM16 24h12v4H16zM16 30h14v4H16z" fill="#fff" opacity="0.9"/>
-      </svg>
-      <div class="wordmark">Voice Box</div>
-      <div class="tagline">Your Voice Matters</div>
-      <div class="spinner"></div>
+    <div id="vb-splash" role="status" aria-label="Voice Box is loading">
+      <div class="vb-orb" aria-hidden="true">
+        <i></i><i></i><i></i>
+        <b></b>
+        <u></u><u></u>
+      </div>
+      <div class="vb-word" aria-label="Voice Box">
+        <span style="animation-delay:.45s">V</span><span style="animation-delay:.52s">o</span><span style="animation-delay:.59s">i</span><span style="animation-delay:.66s">c</span><span style="animation-delay:.73s">e</span><span style="animation-delay:.84s">&nbsp;</span><span style="animation-delay:.92s">B</span><span style="animation-delay:.99s">o</span><span style="animation-delay:1.06s">x</span>
+      </div>
+      <div class="vb-tag">Your Voice Matters</div>
+      <div class="vb-ring" aria-hidden="true">
+        <svg viewBox="0 0 26 26">
+          <defs>
+            <linearGradient id="vbg" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0%" stop-color="#5652d6"/>
+              <stop offset="100%" stop-color="#38e1ff"/>
+            </linearGradient>
+          </defs>
+          <circle class="bg" cx="13" cy="13" r="11.1"/>
+          <circle class="fg" cx="13" cy="13" r="11.1"/>
+        </svg>
+      </div>
     </div>
 
     <div id="root"></div>

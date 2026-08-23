@@ -145,6 +145,15 @@ export function startDictation(opts: {
 	rec.maxAlternatives = 3; // we pick the best-scoring alternative
 
 	let stopped = false;
+	// Restart-loop guard: fatal conditions (mic denied, no device) fire
+	// onerror → onend → rec.start() immediately, which re-raises the same
+	// error forever and spams the UI with toasts. Track consecutive rapid
+	// restarts and give up after the limit; a genuinely healthy long session
+	// never hits this because successful runs reset the counter.
+	const MAX_CONSECUTIVE_RESTARTS = 5;
+	const RESTART_WINDOW_MS = 10_000;
+	let restartTimes: number[] = [];
+	const fatalErrors = new Set(["not-allowed", "audio-capture", "service-not-allowed"]);
 
 	rec.onresult = (e: SpeechRecognitionEventLike) => {
 		let interim = "";
@@ -178,11 +187,23 @@ export function startDictation(opts: {
 		};
 		if (e.error !== "aborted")
 			opts.onError(map[e.error] || `Speech error: ${e.error}`);
+		if (fatalErrors.has(e.error)) stopped = true;
 	};
 
 	rec.onend = () => {
 		// auto-restart on silence gaps unless the user pressed stop
 		if (!stopped) {
+			const now = Date.now();
+			restartTimes = restartTimes.filter((t) => now - t < RESTART_WINDOW_MS);
+			if (restartTimes.length >= MAX_CONSECUTIVE_RESTARTS) {
+				stopped = true;
+				opts.onError(
+					"Dictation kept stopping — tap the mic button to start again.",
+				);
+				opts.onEnd();
+				return;
+			}
+			restartTimes.push(now);
 			try {
 				rec.start();
 				return;

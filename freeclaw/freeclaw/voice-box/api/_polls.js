@@ -48,11 +48,17 @@ export default async function handler(req, res) {
 		if (req.method === "GET") {
 			const { id, post_id, voter } = req.query;
 			const admin = await isAdmin(req);
-			// Cache: 30s browser + CDN for poll listings
-			res.setHeader(
-				"Cache-Control",
-				"public, max-age=0, no-cache, s-maxage=10, stale-while-revalidate=10",
-			);
+			// Cache: 30s browser + CDN for poll listings. Voter-specific responses
+			// (a user's own vote rows) must never be publicly cacheable — the CDN
+			// could serve one user's votes to another. Mirrors the posts route.
+			if (voter) {
+				res.setHeader("Cache-Control", "private, no-cache");
+			} else {
+				res.setHeader(
+					"Cache-Control",
+					"public, max-age=0, no-cache, s-maxage=10, stale-while-revalidate=10",
+				);
+			}
 			if (voter) {
 				const { data } = await supabase
 					.from("poll_votes")
@@ -211,7 +217,7 @@ export default async function handler(req, res) {
 					.eq("author_id", author_id)
 					.maybeSingle();
 				if (existingError) throw existingError;
-				const write = existing
+				let write = existing
 					? await supabase
 							.from("poll_votes")
 							.update({ choices })
@@ -219,6 +225,39 @@ export default async function handler(req, res) {
 					: await supabase
 							.from("poll_votes")
 							.insert({ poll_id: poll.id, author_id, choices });
+				// Race safety: two concurrent first-votes can both pass the existence
+				// probe and both try to INSERT. With migration 009's UNIQUE
+				// (poll_id, author_id) the loser receives a duplicate-key error —
+				// convert it to an update of the winning row so the second request
+				// CHANGES its vote instead of erroring or creating a second ballot.
+				// Any other error still throws (no fake success — see regression suite).
+				if (
+					write.error &&
+					!existing &&
+					(write.error.code === "23505" ||
+						/duplicate key|unique constraint/i.test(
+							String(write.error.message || ""),
+						))
+				) {
+					const { data: winner, error: winnerError } = await supabase
+						.from("poll_votes")
+						.select("id")
+						.eq("poll_id", poll.id)
+						.eq("author_id", author_id)
+						.maybeSingle();
+					if (winnerError) throw winnerError;
+					if (winner) {
+						write = await supabase
+							.from("poll_votes")
+							.update({ choices })
+							.eq("id", winner.id);
+					} else {
+						// Winning row vanished mid-flight — retry insert once.
+						write = await supabase
+							.from("poll_votes")
+							.insert({ poll_id: poll.id, author_id, choices });
+					}
+				}
 				if (write.error) throw write.error;
 				const [withResults] = await attachResults([poll], true);
 				return res.status(200).json(withResults);

@@ -13,6 +13,7 @@ import {
 // agent_executions via _runner.runAgent so the Agent Office dashboard
 // shows real working/results stats. Supervisor scan runs after agents.
 import { cors, isAdmin } from "./_auth.js";
+import { runImprovementScans } from "./_improve-scan.js";
 import supabase from "./_db-client.js";
 import { patrol } from "./_workforce.js";
 import { runAgent } from "./agents/_runner.js";
@@ -163,6 +164,34 @@ export default async function handler(req, res) {
 		// After all agents run, run supervisor scan
 		const supervisorResult = await runSupervisorScan();
 
+		// ── IMPROVEMENT SCAN PASS ────────────────────────────────────
+		// Five hidden audit scanners (content/security/db/perf/UX) queue
+		// SUGGESTIONS into the admin improvement desk. Suggestions never
+		// self-apply — an admin approves each one. Bounded read-only queries.
+		let improvements = null;
+		try {
+			improvements = await runImprovementScans();
+		} catch (impErr) {
+			console.error(
+				"[agent-cron] Improvement scan failed:",
+				impErr.message,
+			);
+			improvements = { ok: false, error: impErr.message };
+		}
+
+		// ── WORKFORCE ROSTER PASS ────────────────────────────────────
+		// Ten high-value workers run the full lifecycle (observe→verify→log).
+		// Class-A workers execute safe autonomous maintenance; Class-C workers
+		// only collect evidence and escalate. Every outcome lands in the ledger.
+		let workforce_roster = null;
+		try {
+			const { runHighValueRoster } = await import("./_workforce-workers.js");
+			workforce_roster = await runHighValueRoster("cron");
+		} catch (wfErr) {
+			console.error("[agent-cron] Workforce roster failed:", wfErr.message);
+			workforce_roster = { ok: false, error: wfErr.message };
+		}
+
 		// ── WORKFORCE ORCHESTRATION PASS ─────────────────────────────
 		// Real task queue: discover real signals → assign capable workers →
 		// execute → verify. Records every transition to agent_tasks + the
@@ -187,10 +216,12 @@ export default async function handler(req, res) {
 				ok: true,
 				executed: results.length,
 				succeeded,
-				results,
-				supervisor: supervisorResult,
-				workforce,
-			});
+			results,
+			supervisor: supervisorResult,
+			improvements,
+			workforce_roster,
+			workforce,
+		});
 	} catch (err) {
 		console.error("[agent-cron] Fatal error:", err.message);
 		return res.status(500).json({ error: err.message });

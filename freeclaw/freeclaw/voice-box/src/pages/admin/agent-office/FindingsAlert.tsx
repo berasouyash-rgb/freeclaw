@@ -1,6 +1,7 @@
 import {
 	AlertOctagon,
 	AlertTriangle,
+	ArrowRight,
 	ChevronDown,
 	ChevronUp,
 	Radar,
@@ -79,6 +80,29 @@ function findingKey(f: Finding): string {
 	return `${f.severity}|${f.domain}|${f.title}`;
 }
 
+// Every finding domain maps to the admin tab where the admin can actually
+// act on it — so each popup gets a real one-click destination, never a dead
+// "acknowledged" button. Falls back to the Dashboard for unknown domains.
+const FINDING_ACTIONS: Record<string, { tab: string; label: string }> = {
+	moderation: { tab: "reports", label: "Open Reports" },
+	content: { tab: "reports", label: "Review Content" },
+	workforce: { tab: "agent-dashboard", label: "Open Agent Dashboard" },
+	security: { tab: "ops-center", label: "Open Ops Center" },
+	community: { tab: "posts", label: "Open Feed" },
+	users: { tab: "users", label: "Open Users" },
+	performance: { tab: "overview", label: "Open Dashboard" },
+	reliability: { tab: "overview", label: "Open Dashboard" },
+};
+
+function findingAction(f: Finding): { tab: string; label: string } {
+	return (
+		FINDING_ACTIONS[f.domain] || {
+			tab: "overview",
+			label: "Open Dashboard",
+		}
+	);
+}
+
 function SnapshotTable({
 	snapshot,
 }: {
@@ -140,6 +164,16 @@ export default function FindingsAlert({ pollMs = 20000 }: { pollMs?: number }) {
 
 	const dismiss = (f: Finding) =>
 		setActive((prev) => prev.filter((x) => findingKey(x) !== findingKey(f)));
+
+	// One-click action: navigate to the admin tab where this finding lives,
+	// then drop the popup. Same vb:admin-tab channel Admin.tsx already listens
+	// to for cross-panel navigation.
+	const goTo = (f: Finding) => {
+		window.dispatchEvent(
+			new CustomEvent("vb:admin-tab", { detail: findingAction(f).tab }),
+		);
+		dismiss(f);
+	};
 
 	// Poll the real findings endpoint; fire popups only for NEW findings
 	useEffect(() => {
@@ -257,25 +291,27 @@ export default function FindingsAlert({ pollMs = 20000 }: { pollMs?: number }) {
 							{/* Real snapshot table */}
 							<SnapshotTable snapshot={f.snapshot} />
 
-							{/* Recommendation + agent */}
-							<div className="flex items-start gap-1.5 pt-0.5">
-								<Radar size={11} className="text-ink3 mt-0.5 flex-shrink-0" />
-								<p className="text-[10px] text-ink3 leading-relaxed">
-									<span className="text-ink2">Recommended:</span>{" "}
+							{/* What to do — the recommended action, made legible */}
+							<div className="rounded-lg bg-surface2/80 border border-border/60 px-2.5 py-2">
+								<p className="flex items-center gap-1 text-[9px] font-mono uppercase tracking-wider text-ink3">
+									<Radar size={10} /> What to do
+								</p>
+								<p className="text-[10.5px] text-ink1 leading-relaxed mt-0.5">
 									{f.recommendation}
 								</p>
 							</div>
-							<div className="flex items-center justify-between pt-1 border-t border-border/40">
-								<span className="text-[9px] font-mono text-ink3">
+							<div className="flex items-center justify-between gap-2 pt-1 border-t border-border/40">
+								<span className="text-[9px] font-mono text-ink3 min-w-0 truncate">
 									{AGENT_ICONS[f.agent] || "🤖"} {f.agent} ·{" "}
 									{f.at ? new Date(f.at).toLocaleTimeString() : ""}
 								</span>
-								{f.snapshot && (
-									<span className="text-[9px] font-mono text-ink3">
-										snapshot · {f.snapshot.length} row
-										{f.snapshot.length === 1 ? "" : "s"}
-									</span>
-								)}
+								<button
+									onClick={() => goTo(f)}
+									className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg font-bold text-[10px] transition-colors border ${s.bg} ${s.text} ${s.border} hover:brightness-125`}
+								>
+									{findingAction(f).label}
+									<ArrowRight size={11} />
+								</button>
 							</div>
 						</div>
 					</div>

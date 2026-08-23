@@ -24,6 +24,7 @@ import type { AccountStatus, PostData } from "../types";
 const h = vi.hoisted(() => ({
 	get: vi.fn(),
 	post: vi.fn(),
+	del: vi.fn(),
 	lsSet: vi.fn(),
 	anonSeq: ["anon-1", "anon-2", "anon-3", "anon-4"],
 	store: {} as Record<string, unknown>,
@@ -43,7 +44,7 @@ vi.mock("../lib/identity", () => ({
 }));
 
 vi.mock("../lib/api", () => ({
-	api: { get: h.get, getSlow: h.get, post: h.post },
+	api: { get: h.get, getSlow: h.get, post: h.post, del: h.del },
 }));
 
 function Probe() {
@@ -126,6 +127,7 @@ beforeEach(() => {
 		if (url === "/api/users") return Promise.resolve(benignStatus);
 		return Promise.resolve({});
 	});
+	h.del.mockImplementation(() => Promise.resolve({}));
 });
 
 describe("AppProvider — core behavior", () => {
@@ -253,6 +255,162 @@ describe("AppProvider — core behavior", () => {
 		await waitFor(() =>
 			expect(screen.getByTestId("notifs")).toHaveTextContent(""),
 		);
+	});
+
+	it("merges server-side admin notifications (warning/suspension/ban) into the list", async () => {
+		h.get.mockImplementation((url: string) => {
+			if (url.includes("/api/notifications"))
+				return Promise.resolve({
+					notifications: [
+						{
+							id: "notif_abc",
+							type: "warning",
+							title: "⚠️ You received a warning from admin",
+							body: "Be nice",
+							post_id: null,
+							read: false,
+							created_at: "2026-08-16T10:00:00.000Z",
+						},
+					],
+				});
+			if (url.includes("/api/saved")) return Promise.resolve({ saved: [] });
+			if (url.includes("/api/posts")) return Promise.resolve([]);
+			if (url.includes("/api/chat")) return Promise.resolve(null);
+			if (url.includes("/api/polls")) return Promise.resolve([]);
+			return Promise.resolve({});
+		});
+		render(
+			<AppProvider>
+				<Probe />
+			</AppProvider>,
+		);
+		await waitFor(() =>
+			expect(screen.getByTestId("notifs").textContent).toContain("warning"),
+		);
+		// unread, mapped to info kind with the server title/body
+		expect(screen.getByTestId("notifs").textContent).toContain("[U]info:");
+	});
+
+	it("does not duplicate server notifications on re-sync (dedupe by id)", async () => {
+		let notifCalls = 0;
+		h.get.mockImplementation((url: string) => {
+			if (url.includes("/api/notifications")) {
+				notifCalls++;
+				return Promise.resolve({
+					notifications: [
+						{
+							id: "notif_abc",
+							type: "info",
+							title: "Suspension lifted",
+							body: "",
+							post_id: null,
+							read: false,
+							created_at: "2026-08-16T10:00:00.000Z",
+						},
+					],
+				});
+			}
+			if (url.includes("/api/saved")) return Promise.resolve({ saved: [] });
+			if (url.includes("/api/posts")) return Promise.resolve([]);
+			if (url.includes("/api/chat")) return Promise.resolve(null);
+			if (url.includes("/api/polls")) return Promise.resolve([]);
+			return Promise.resolve({});
+		});
+		render(
+			<AppProvider>
+				<Probe />
+			</AppProvider>,
+		);
+		await waitFor(() =>
+			expect(screen.getByTestId("notifs").textContent).toContain("Suspension lifted"),
+		);
+		// second engine pass (visibility change) returns the same notif → no dup
+		document.dispatchEvent(new Event("visibilitychange"));
+		await waitFor(() => expect(notifCalls).toBeGreaterThanOrEqual(2));
+		const text = screen.getByTestId("notifs").textContent ?? "";
+		expect(text.split("Suspension lifted")).toHaveLength(2); // appears once
+	});
+
+	it("mirrors mark-all-read to the server for admin-issued notifications", async () => {
+		h.get.mockImplementation((url: string) => {
+			if (url.includes("/api/notifications"))
+				return Promise.resolve({
+					notifications: [
+						{
+							id: "notif_abc",
+							type: "warning",
+							title: "⚠️ Warning",
+							body: "",
+							post_id: null,
+							read: false,
+							created_at: "2026-08-16T10:00:00.000Z",
+						},
+					],
+				});
+			if (url.includes("/api/saved")) return Promise.resolve({ saved: [] });
+			if (url.includes("/api/posts")) return Promise.resolve([]);
+			if (url.includes("/api/chat")) return Promise.resolve(null);
+			if (url.includes("/api/polls")) return Promise.resolve([]);
+			return Promise.resolve({});
+		});
+		const user = userEvent.setup();
+		render(
+			<AppProvider>
+				<Probe />
+			</AppProvider>,
+		);
+		await waitFor(() =>
+			expect(screen.getByTestId("notifs").textContent).toContain("Warning"),
+		);
+		await user.click(screen.getByRole("button", { name: "mark-read" }));
+		await waitFor(() =>
+			expect(h.post).toHaveBeenCalledWith(
+				"/api/notifications",
+				expect.objectContaining({
+					user_id: "anon-1",
+					notification_id: "notif_abc",
+				}),
+			),
+		);
+	});
+
+	it("clears the server notification store when notifications are cleared", async () => {
+		const user = userEvent.setup();
+		render(
+			<AppProvider>
+				<Probe />
+			</AppProvider>,
+		);
+		await user.click(screen.getByRole("button", { name: "clear-notifs" }));
+		expect(h.del).toHaveBeenCalledWith(
+			"/api/notifications?user_id=anon-1",
+			expect.anything(),
+		);
+	});
+
+	it("survives a server-notifications fetch failure in the notification engine", async () => {
+		h.get.mockImplementation((url: string) => {
+			if (url.includes("/api/notifications"))
+				return Promise.reject(new Error("notifs down"));
+			if (url.includes("/api/saved")) return Promise.resolve({ saved: [] });
+			if (url.includes("/api/posts")) return Promise.resolve([]);
+			if (url.includes("/api/chat")) return Promise.resolve(null);
+			if (url.includes("/api/polls")) return Promise.resolve([]);
+			return Promise.resolve({});
+		});
+		render(
+			<AppProvider>
+				<Probe />
+			</AppProvider>,
+		);
+		await waitFor(() =>
+			expect(h.lsSet).toHaveBeenCalledWith(
+				"vb:notifSnapshot",
+				expect.any(Object),
+			),
+		);
+		// engine still completed its pass despite the notifications failure
+		expect(screen.getByTestId("chat-unread")).toHaveTextContent("0");
 	});
 
 	it("renders toasts and auto-dismisses them (30s for action toasts)", async () => {

@@ -5,6 +5,7 @@ import {
 	auditLog,
 	clean,
 	cors,
+	invalidateAdminTokenCache,
 	isAdmin,
 	notifyUser,
 	rateLimitResponse,
@@ -170,6 +171,11 @@ export default async function handler(req, res) {
 			if (!newHash || newHash.length < 32)
 				return res.status(400).json({ error: "Invalid hash" });
 			await setSetting("admin_password", { hash: newHash });
+			// Invalidate ALL existing sessions: a password change implies the old
+			// credential may be compromised, so outstanding tokens (valid up to
+			// SESSION_MS) must not survive it. Callers re-login immediately.
+			await setSetting("admin_sessions", { tokens: [] });
+			invalidateAdminTokenCache();
 			await auditLog("admin", "change_password", "Admin password updated");
 			return res.status(200).json({ ok: true });
 		}
@@ -177,7 +183,7 @@ export default async function handler(req, res) {
 		if (action === "logs") {
 			const { cursor, limit: limitParam, paginate } = req.query;
 			const isPaginated = paginate === "1" || paginate === "true";
-			const PAGE_LIMIT = Math.min(parseInt(limitParam) || 30, 100);
+			const PAGE_LIMIT = Math.max(1, Math.min(parseInt(limitParam) || 30, 100));
 
 			let q = supabase
 				.from("activity_logs")
@@ -219,7 +225,7 @@ export default async function handler(req, res) {
 		if (action === "users") {
 			const { cursor, limit: limitParam, paginate } = b;
 			const isPaginated = !!paginate;
-			const PAGE_LIMIT = Math.min(parseInt(limitParam) || 30, 100);
+			const PAGE_LIMIT = Math.max(1, Math.min(parseInt(limitParam) || 30, 100));
 
 			let q = supabase
 				.from("users_meta")
@@ -240,18 +246,27 @@ export default async function handler(req, res) {
 					? sliced[sliced.length - 1]?.created_at
 					: null;
 				const anonIds = sliced.map((u) => u.anon_id);
+				// `.in()` with an empty array is an invalid PostgREST filter — skip
+				// the count queries entirely on an empty page instead of erroring.
+				const counts =
+					anonIds.length > 0
+						? await Promise.all([
+								supabase
+									.from("posts")
+									.select("author_id")
+									.in("author_id", anonIds),
+								supabase
+									.from("comments")
+									.select("author_id")
+									.in("author_id", anonIds),
+								supabase
+									.from("reactions")
+									.select("author_id")
+									.in("author_id", anonIds),
+							])
+						: [{ data: [] }, { data: [] }, { data: [] }];
 				const [{ data: posts }, { data: comments }, { data: reactions }] =
-					await Promise.all([
-						supabase.from("posts").select("author_id").in("author_id", anonIds),
-						supabase
-							.from("comments")
-							.select("author_id")
-							.in("author_id", anonIds),
-						supabase
-							.from("reactions")
-							.select("author_id")
-							.in("author_id", anonIds),
-					]);
+					counts;
 				const count = (rows2, id) =>
 					(rows2 || []).filter((r) => r.author_id === id).length;
 				const { count: total } = await supabase
@@ -360,6 +375,16 @@ export default async function handler(req, res) {
 			if (b.notes !== undefined) patch.notes = clean(b.notes, 2000);
 			if (typeof b.spam_score === "number") patch.spam_score = b.spam_score;
 			if (typeof b.strikes === "number") patch.strikes = b.strikes;
+			// An empty PATCH body is rejected by PostgREST (400) — a no-op admin
+			// request must return the current row instead of surfacing a 500.
+			if (!Object.keys(patch).length) {
+				const { data: current } = await supabase
+					.from("users_meta")
+					.select("*")
+					.eq("anon_id", id)
+					.maybeSingle();
+				return res.status(200).json(current || { anon_id: id });
+			}
 			const { data, error } = await supabase
 				.from("users_meta")
 				.update(patch)

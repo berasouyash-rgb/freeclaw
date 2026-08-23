@@ -353,6 +353,14 @@ export default function PostDetail() {
 							<Lock size={11} className="inline" /> Locked
 						</span>
 					)}
+					{p.visibility === "private" && (
+						<span
+							className="chip !bg-accent-soft !text-accent !border-transparent"
+							title="Only you, admins and moderators can see this post"
+						>
+							<Lock size={11} className="inline" /> Private · admins only
+						</span>
+					)}
 					<span className="ml-auto text-xs text-ink3">
 						{timeAgo(p.created_at)} · by{" "}
 						<code className="font-mono">

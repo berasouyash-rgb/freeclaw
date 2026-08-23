@@ -4,6 +4,26 @@ import supabase from "./_db-client.js";
 // ─── isAdmin() cache: avoid DB query on every request ─────────────
 const _adminTokenCache = new Map(); // token → { valid: boolean, expiresAt: number }
 const ADMIN_CACHE_TTL_MS = 30_000; // 30 seconds
+// Hard cap: every probed token creates an entry, so an attacker spamming
+// random tokens must not grow the map without bound on a warm instance.
+const ADMIN_CACHE_MAX_ENTRIES = 1000;
+
+function cacheAdminToken(token, valid, now) {
+	if (_adminTokenCache.size >= ADMIN_CACHE_MAX_ENTRIES) {
+		for (const [k, v] of _adminTokenCache) {
+			// Drop expired first; if none expired, evict oldest insertion.
+			if (v.expiresAt <= now) _adminTokenCache.delete(k);
+			else if (_adminTokenCache.size >= ADMIN_CACHE_MAX_ENTRIES)
+				break;
+		}
+	}
+	_adminTokenCache.set(token, { valid, expiresAt: now + ADMIN_CACHE_TTL_MS });
+}
+
+/** Drop every cached admin-token verdict (password change / mass logout). */
+export function invalidateAdminTokenCache() {
+	_adminTokenCache.clear();
+}
 
 // ─── Rate limit state: persists across warm invocations ───────────
 // Maps key → { count: number, windowStart: number }
@@ -36,9 +56,13 @@ export function cors(res, req) {
 	res.setHeader("Vary", "Origin");
 	// FIX-#4: Cache preflight responses for 24h to reduce OPTIONS roundtrips
 	res.setHeader("Access-Control-Max-Age", "86400");
-	// FIX-#6: X-Request-Id for distributed request tracing
+	// FIX: header values must not contain CR/LF or other control characters —
+	// Node's setHeader throws ERR_INVALID_CHAR on them, turning a crafted
+	// x-request-id into a 500 on every route. Sanitize before echoing back.
+	const rawRequestId = req?.headers?.["x-request-id"];
 	const requestId =
-		req?.headers?.["x-request-id"] ||
+		(typeof rawRequestId === "string" &&
+			rawRequestId.replace(/[^\x20-\x7E]/g, "").slice(0, 64)) ||
 		`${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 	res.setHeader("X-Request-Id", requestId);
 }
@@ -57,7 +81,7 @@ export async function isAdmin(req) {
 		.maybeSingle();
 	const tokens = data?.value?.tokens || [];
 	const valid = tokens.some((s) => s.t === token && s.exp > now);
-	_adminTokenCache.set(token, { valid, expiresAt: now + ADMIN_CACHE_TTL_MS });
+	cacheAdminToken(token, valid, now);
 	return valid;
 }
 

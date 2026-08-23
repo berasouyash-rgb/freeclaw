@@ -6,6 +6,7 @@
 	Eye,
 	ImagePlus,
 	Lightbulb,
+	Lock,
 	Megaphone,
 	Mic,
 	MicOff,
@@ -103,6 +104,8 @@ export default function Submit() {
 	const categories = useCategories();
 	const [priority, setPriority] = useState("medium");
 	const [tags, setTags] = useState("");
+	/** Private post → visible only to admins/moderators (and you) */
+	const [isPrivate, setIsPrivate] = useState(false);
 	const [image, setImage] = useState<{
 		preview: string;
 		base64: string;
@@ -549,6 +552,7 @@ export default function Submit() {
 						.filter(Boolean)
 						.slice(0, 6),
 					pending_review: holdForReview,
+					visibility: isPrivate ? "private" : "public",
 				},
 			);
 			stampCooldown("post");
@@ -1323,6 +1327,37 @@ export default function Submit() {
 								</select>
 							</div>
 						</div>
+						{/* Private visibility — admins/moderators + you only */}
+						<button
+							type="button"
+							role="switch"
+							aria-checked={isPrivate}
+							onClick={() => setIsPrivate((v) => !v)}
+							className={`w-full flex items-center gap-3 rounded-xl px-3.5 py-3 text-left transition-all border ${
+								isPrivate
+									? "border-accent/40 bg-accent-soft/60"
+									: "border-border bg-surface hover:border-accent/30"
+							}`}
+						>
+							<span
+								className={`shrink-0 inline-flex h-5 w-9 items-center rounded-full transition-colors ${isPrivate ? "bg-accent" : "bg-surface3"}`}
+								aria-hidden
+							>
+								<span
+									className={`h-4 w-4 rounded-full bg-white shadow transition-transform ${isPrivate ? "translate-x-4" : "translate-x-0.5"}`}
+								/>
+							</span>
+							<span className="min-w-0">
+								<span className="flex items-center gap-1.5 text-xs font-semibold text-ink">
+									<Lock size={12} className={isPrivate ? "text-accent" : "text-ink3"} />
+									Private post
+								</span>
+								<span className="block text-[10px] text-ink3 mt-0.5">
+									Only you, admins and moderators can read this. Hidden from the
+									public feed.
+								</span>
+							</span>
+						</button>
 						<div>
 							<label
 								className="text-xs font-semibold text-ink2 block mb-1.5"
@@ -1486,9 +1521,9 @@ export default function Submit() {
 
 				<p className="text-[11px] text-ink3 flex items-start gap-1.5 pt-1">
 					<AlertTriangle size={12} className="mt-0.5 shrink-0" />
-					Posts are public. Content is filtered for abuse and spam. Repeated
-					misuse can lead to your anonymous ID being suspended — no personal
-					data is ever collected.
+					{isPrivate
+						? "Private post — visible only to you and the moderation team. Still filtered for abuse."
+						: "Posts are public. Content is filtered for abuse and spam. Repeated misuse can lead to your anonymous ID being suspended — no personal data is ever collected."}
 				</p>
 			</div>
 		</div>

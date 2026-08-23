@@ -74,7 +74,15 @@ export function cacheClear(pattern = null) {
 		_store.clear();
 		return;
 	}
-	const regex = new RegExp(pattern);
+	// Patterns may be built dynamically — an invalid regex must not throw
+	// out of a cache invalidation path.
+	let regex;
+	try {
+		regex = new RegExp(pattern);
+	} catch {
+		logger.warn("cache", "invalid_clear_pattern", { pattern });
+		return;
+	}
 	for (const key of _store.keys()) {
 		if (regex.test(key)) _store.delete(key);
 	}
@@ -175,6 +183,10 @@ export function staleWhileRevalidate(fn, options = {}) {
 	} = options;
 
 	const _swrCache = new Map();
+	// In-flight revalidation dedup: while a stale entry is being refreshed,
+	// additional requests must reuse the SAME background fetch instead of
+	// firing one DB query per request (thundering herd during the stale window).
+	const _inflightRevalidate = new Map(); // cacheKey → Promise<fresh>
 
 	return async function swrFn(...args) {
 		const cacheKey = `${keyPrefix}:${JSON.stringify(args).slice(0, 200)}`;
@@ -188,16 +200,22 @@ export function staleWhileRevalidate(fn, options = {}) {
 
 		// Stale but usable — return stale, revalidate in background
 		if (entry && entry.staleExpiresAt > now) {
-			// Background revalidation (fire and forget)
-			fn(...args)
-				.then((fresh) => {
-					_swrCache.set(cacheKey, {
-						value: fresh,
-						expiresAt: now + ttl,
-						staleExpiresAt: now + staleTtl,
+			// Background revalidation (fire and forget), deduped per cacheKey
+			if (!_inflightRevalidate.has(cacheKey)) {
+				const p = fn(...args)
+					.then((fresh) => {
+						_swrCache.set(cacheKey, {
+							value: fresh,
+							expiresAt: Date.now() + ttl,
+							staleExpiresAt: Date.now() + staleTtl,
+						});
+					})
+					.catch(() => {}) // Ignore background errors
+					.finally(() => {
+						_inflightRevalidate.delete(cacheKey);
 					});
-				})
-				.catch(() => {}); // Ignore background errors
+				_inflightRevalidate.set(cacheKey, p);
+			}
 			return entry.value;
 		}
 

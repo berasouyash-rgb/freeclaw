@@ -1,5 +1,6 @@
 import {
 	Bot,
+	BotOff,
 	Heart,
 	ImagePlus,
 	Loader2,
@@ -18,6 +19,7 @@ import { useApp } from "../contexts/AppContext";
 import { api } from "../lib/api";
 import { useRealtime } from "../lib/useRealtime";
 import { fmtDate, sanitize } from "../lib/utils";
+import { lsGet, lsSet } from "../lib/identity";
 import type { ChatMessage } from "../types";
 
 interface InboxResponse {
@@ -83,6 +85,13 @@ export default function UserChat() {
 	const [busy, setBusy] = useState(false);
 	const [typing, setTyping] = useState(false);
 	const [agentLabel, setAgentLabel] = useState<string | null>(null);
+	// AI-mode: user-controllable auto-replies. The server gates generation
+	// authoritatively; this cached copy just renders the switch instantly
+	// without an extra request on chat open.
+	const [aiEnabled, setAiEnabled] = useState<boolean>(() =>
+		lsGet<boolean>("vb:aichat", true),
+	);
+	const [aiBusy, setAiBusy] = useState(false);
 	const bottomRef = useRef<HTMLDivElement>(null);
 	const fileRef = useRef<HTMLInputElement>(null);
 	const sendingRef = useRef(false);
@@ -173,6 +182,29 @@ export default function UserChat() {
 	useEffect(() => {
 		load();
 	}, [load]);
+
+	const toggleAi = async () => {
+		if (aiBusy) return;
+		const next = !aiEnabled;
+		setAiBusy(true);
+		try {
+			await api.post("/api/notify-prefs", {
+				user_id: anonId,
+				ai_chat_enabled: next,
+			});
+			setAiEnabled(next);
+			lsSet("vb:aichat", next);
+			toast(
+				next
+					? "AI replies are back on"
+					: "AI replies paused — an admin will answer you directly",
+				"ok",
+			);
+		} catch (e: unknown) {
+			toast(e instanceof Error ? e.message : "Could not update setting", "err");
+		}
+		setAiBusy(false);
+	};
 
 	// Realtime subscription (with built-in fallback polling in useRealtime)
 	// handles both live updates AND silent-channel recovery — no raw setInterval needed.
@@ -288,17 +320,40 @@ export default function UserChat() {
 				<span className="vb-empty-icon !w-9 !h-9">
 					<MessageSquare size={17} />
 				</span>
-				<div>
+				<div className="min-w-0 flex-1">
 					<h1 className="font-display font-bold text-xl sm:text-2xl leading-tight">
 						Anonymous inbox
 					</h1>
-					<p className="text-xs text-ink3">
-						Chat directly — our AI assistant responds instantly. An admin will
-						join when available.
+					<p className="text-xs text-ink3 truncate">
+						{aiEnabled
+							? "Chat directly — our AI assistant responds instantly. An admin will join when available."
+							: "AI replies are paused. Your messages reach the admin team directly."}
 						{thread?.status === "closed" &&
 							" · This conversation was closed by admin."}
 					</p>
 				</div>
+				<button
+					type="button"
+					onClick={toggleAi}
+					disabled={aiBusy}
+					role="switch"
+					aria-checked={aiEnabled}
+					title={aiEnabled ? "Turn AI replies off" : "Turn AI replies on"}
+					className={`shrink-0 inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1.5 text-[10px] font-bold transition-all ${
+						aiEnabled
+							? "border-accent/30 bg-accent/10 text-accent"
+							: "border-border bg-surface2 text-ink3"
+					}`}
+				>
+					{aiBusy ? (
+						<Loader2 size={12} className="animate-spin" />
+					) : aiEnabled ? (
+						<Bot size={12} />
+					) : (
+						<BotOff size={12} />
+					)}
+					<span className="hidden sm:inline">AI {aiEnabled ? "ON" : "OFF"}</span>
+				</button>
 			</div>
 
 			{/* Agent indicator banner */}
@@ -377,9 +432,12 @@ export default function UserChat() {
 					</div>
 				))}
 
-				{/* Typing indicator — premium animated dots */}
-				{typing && (
+				{/* Typing indicator — premium animated dots (AI mode only) */}
+				{typing && aiEnabled && (
 					<TypingIndicator variant="preview" label="AI is responding..." />
+				)}
+				{typing && !aiEnabled && (
+					<TypingIndicator variant="preview" label="Sending to the admin team…" />
 				)}
 
 				<div ref={bottomRef} />

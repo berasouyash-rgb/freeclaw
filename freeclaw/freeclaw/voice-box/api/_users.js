@@ -10,6 +10,14 @@ import { sanitizeError } from "./_error.js";
 const ipHits = new Map();
 function ipRateLimited(ip, windowMs = 60000, limit = 10) {
 	const now = Date.now();
+	// Lazy prune — serverless-safe (no module-scope timers: they are frozen
+	// between invocations and never fire reliably).
+	if (ipHits.size > 1000) {
+		const cutoff = now - 2 * windowMs;
+		for (const [k, v] of ipHits) {
+			if (v.start < cutoff) ipHits.delete(k);
+		}
+	}
 	const entry = ipHits.get(ip);
 	if (!entry || now - entry.start > windowMs) {
 		ipHits.set(ip, { start: now, count: 1 });
@@ -18,13 +26,6 @@ function ipRateLimited(ip, windowMs = 60000, limit = 10) {
 	entry.count++;
 	return entry.count > limit;
 }
-// Cleanup stale entries every 5 minutes
-setInterval(() => {
-	const cutoff = Date.now() - 120000;
-	for (const [k, v] of ipHits) {
-		if (v.start < cutoff) ipHits.delete(k);
-	}
-}, 300000);
 
 export default async function handler(req, res) {
 	cors(res, req);
@@ -33,9 +34,14 @@ export default async function handler(req, res) {
 		return res.status(405).json({ error: "Method not allowed" });
 
 	try {
-		// Rate limit by IP: max 10 requests per 60s
+		// Rate limit by IP: max 10 requests per 60s. x-forwarded-for can carry
+		// multiple hops ("client, proxy1, …") — key on the first (client) hop
+		// only, consistent with _admin.js and v3/_security.js.
+		const fwd = req.headers["x-forwarded-for"];
 		const clientIp =
-			req.headers["x-forwarded-for"] || req.socket?.remoteAddress || "unknown";
+			(fwd ? String(fwd).split(",")[0].trim() : "") ||
+			req.socket?.remoteAddress ||
+			"unknown";
 		if (ipRateLimited(clientIp)) {
 			return rateLimitResponse(
 				res,

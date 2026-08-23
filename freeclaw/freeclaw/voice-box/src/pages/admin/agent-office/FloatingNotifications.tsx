@@ -95,6 +95,13 @@ export default function FloatingNotifications() {
 		setNotifications((prev) => prev.filter((n) => n.id !== id));
 	}, []);
 
+	// One-click action: open the Agent Dashboard where the workflow result lives.
+	const openWorkflow = useCallback(() => {
+		window.dispatchEvent(
+			new CustomEvent("vb:admin-tab", { detail: "agent-dashboard" }),
+		);
+	}, []);
+
 	if (notifications.length === 0) return null;
 
 	return (
@@ -104,20 +111,37 @@ export default function FloatingNotifications() {
 					key={n.id}
 					className="bg-surface border border-border rounded-xl shadow-lg px-3 py-2.5 flex items-start gap-2.5 pointer-events-auto toast-anim relative overflow-hidden"
 				>
-					<div className="mt-0.5">{ICON_MAP[n.type]}</div>
-					<div className="flex-1 min-w-0">
-						<p className="text-[11px] font-bold text-ink1 truncate">
-							{n.message}
-						</p>
-						{n.detail && (
-							<p className="text-[9px] text-ink3 mt-0.5 font-mono truncate">
-								{n.detail}
-							</p>
-						)}
+					<div
+						role="button"
+						tabIndex={0}
+						onClick={openWorkflow}
+						onKeyDown={(e) => {
+							if (e.key === "Enter" || e.key === " ") {
+								e.preventDefault();
+								openWorkflow();
+							}
+						}}
+						className="flex-1 min-w-0 cursor-pointer rounded-md hover:bg-surface2/60 p-0.5 -m-0.5 transition-colors focus:outline-none focus-visible:ring-1 focus-visible:ring-accent"
+						title="Open Agent Dashboard"
+					>
+						<div className="flex items-start gap-2.5">
+							<div className="mt-0.5">{ICON_MAP[n.type]}</div>
+							<div className="flex-1 min-w-0">
+								<p className="text-[11px] font-bold text-ink1 truncate">
+									{n.message}
+								</p>
+								{n.detail && (
+									<p className="text-[9px] text-ink3 mt-0.5 font-mono truncate">
+										{n.detail}
+									</p>
+								)}
+							</div>
+						</div>
 					</div>
 					<button
 						onClick={() => dismiss(n.id)}
 						className="p-1 rounded-md hover:bg-surface2 flex-shrink-0 transition-colors"
+						aria-label="Dismiss notification"
 					>
 						<X size={10} className="text-ink3" />
 					</button>

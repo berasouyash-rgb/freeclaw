@@ -22,6 +22,7 @@ import { sanitizeError } from "./_error.js";
 import { EVENT_TYPES, emitEvent } from "./_events.js";
 import { serverModerate } from "./_moderation.js";
 import { callLLMChain } from "./_providers.js";
+import { getNotifyPrefs } from "./_notify-prefs.js";
 import { createTask } from "./_workforce.js";
 
 // ─── Agent Definitions ─────────────────────────────────────────
@@ -210,6 +211,20 @@ async function setThreadState(threadId, state) {
 			},
 			{ onConflict: "key" },
 		);
+}
+
+// ─── Global AI-mode switch (admin-controlled) ──────────────────
+async function getInboxAiConfig() {
+	try {
+		const { data } = await supabase
+			.from("settings")
+			.select("value")
+			.eq("key", "inbox_ai_config")
+			.maybeSingle();
+		return { enabled: data?.value?.enabled !== false };
+	} catch {
+		return { enabled: true };
+	}
 }
 
 // ─── AI Reply Generation ───────────────────────────────────────
@@ -503,6 +518,14 @@ export default async function handler(req, res) {
 		// ── GET: admin views all threads ──────────────────────────
 		if (req.method === "GET") {
 			const { thread_id, threads, insights } = req.query;
+
+			// Global AI-mode state for the admin toggle
+			if (req.query.action === "ai_mode") {
+				if (!(await isAdmin(req)))
+					return res.status(403).json({ error: "Admin only" });
+				const cfg = await getInboxAiConfig();
+				return res.status(200).json(cfg);
+			}
 
 			// Admin: aggregate insights + sentiment trend
 			if (insights === "1") {
@@ -894,6 +917,23 @@ export default async function handler(req, res) {
 				return res.status(200).json({ ok: true, state });
 			}
 
+			if (admin && b.action === "set_ai_mode") {
+				const enabled = b.enabled !== false;
+				await supabase.from("settings").upsert(
+					{
+						key: "inbox_ai_config",
+						value: { enabled, updated_at: new Date().toISOString() },
+					},
+					{ onConflict: "key" },
+				);
+				await auditLog(
+					"admin",
+					"inbox_ai_mode",
+					`Inbox AI replies ${enabled ? "enabled" : "disabled"} platform-wide`,
+				);
+				return res.status(200).json({ ok: true, enabled });
+			}
+
 			// ── Agent Operations Center actions ────────────────────
 			if (admin && b.action === "triage") {
 				const triage = await triageThread(threadId);
@@ -1146,6 +1186,44 @@ export default async function handler(req, res) {
 				return res
 					.status(201)
 					.json({ message: savedMsg, auto_reply: null, emotion: null });
+			}
+
+			// ── AI-mode gate ─────────────────────────────────────────
+			// The user can turn AI auto-replies off for their own inbox
+			// (notify_prefs.ai_chat_enabled) and admins can disable them
+			// platform-wide (inbox_ai_config.enabled). With AI off the message
+			// is saved and waits for a human admin — no LLM call, no fallback
+			// bot message.
+			let userPrefs = null;
+			try {
+				userPrefs = await getNotifyPrefs(threadId);
+			} catch {
+				/* prefs unavailable → default to AI on */
+			}
+			const globalAi = await getInboxAiConfig();
+			const userAiOn = !userPrefs || userPrefs.ai_chat_enabled !== false;
+			if (!userAiOn || !globalAi.enabled) {
+				await auditLog(
+					"user",
+					"inbox_message",
+					`Thread ${threadId}: AI off (user=${!userAiOn}, global=${!globalAi.enabled})`,
+				);
+				emitEvent(EVENT_TYPES.INBOX_MESSAGE, {
+					thread_id: threadId,
+					sender: "user",
+					emotion: "none",
+					level: "none",
+				}).catch(() => {});
+				return res.status(201).json({
+					message: savedMsg,
+					auto_reply: null,
+					emotion: { level: "none", emotion: "none" },
+					agent: "off",
+					handoff: false,
+					admin_online: false,
+					escalate: false,
+					ai_mode: false,
+				});
 			}
 
 			// 2. Generate AI reply with timeout (must complete before response)

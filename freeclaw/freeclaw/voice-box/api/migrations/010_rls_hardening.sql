@@ -1,0 +1,72 @@
+-- 010 — Harden RLS and function search_path (advisor remediation)
+-- Addresses Supabase linter findings:
+--  • ~48 tables with RLS enabled but no policies (INFO) — add explicit
+--    service_role bypass policies to make intent clear and silence linter
+--  • 2 functions with mutable search_path (WARN) — lock to public, pg_temp
+-- Idempotent: safe to run multiple times.
+
+-- 1) Lock function search_path
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'exec_sql') THEN
+    EXECUTE 'ALTER FUNCTION public.exec_sql(text) SET search_path = public, pg_temp';
+  END IF;
+  IF EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'execute_sql') THEN
+    EXECUTE 'ALTER FUNCTION public.execute_sql(text) SET search_path = public, pg_temp';
+  END IF;
+END $$;
+
+-- 2) Explicit service_role policies for every table flagged by linter
+-- RLS is already enabled; service_role bypasses RLS, but an explicit
+-- policy documents intent and silences the "RLS Enabled No Policy" lint.
+-- We use DO blocks to keep the migration idempotent.
+
+DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname='public' AND tablename='activity_logs' AND policyname='service_role_all') THEN CREATE POLICY service_role_all ON public.activity_logs FOR ALL TO service_role USING (true) WITH CHECK (true); END IF; END $$;
+DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname='public' AND tablename='admin_feedback' AND policyname='service_role_all') THEN CREATE POLICY service_role_all ON public.admin_feedback FOR ALL TO service_role USING (true) WITH CHECK (true); END IF; END $$;
+DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname='public' AND tablename='admin_tabs' AND policyname='service_role_all') THEN CREATE POLICY service_role_all ON public.admin_tabs FOR ALL TO service_role USING (true) WITH CHECK (true); END IF; END $$;
+DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname='public' AND tablename='agent_activity_log' AND policyname='service_role_all') THEN CREATE POLICY service_role_all ON public.agent_activity_log FOR ALL TO service_role USING (true) WITH CHECK (true); END IF; END $$;
+DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname='public' AND tablename='agent_config' AND policyname='service_role_all') THEN CREATE POLICY service_role_all ON public.agent_config FOR ALL TO service_role USING (true) WITH CHECK (true); END IF; END $$;
+DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname='public' AND tablename='agent_conversations' AND policyname='service_role_all') THEN CREATE POLICY service_role_all ON public.agent_conversations FOR ALL TO service_role USING (true) WITH CHECK (true); END IF; END $$;
+DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname='public' AND tablename='agent_executions' AND policyname='service_role_all') THEN CREATE POLICY service_role_all ON public.agent_executions FOR ALL TO service_role USING (true) WITH CHECK (true); END IF; END $$;
+DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname='public' AND tablename='agent_goals' AND policyname='service_role_all') THEN CREATE POLICY service_role_all ON public.agent_goals FOR ALL TO service_role USING (true) WITH CHECK (true); END IF; END $$;
+DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname='public' AND tablename='agent_insights' AND policyname='service_role_all') THEN CREATE POLICY service_role_all ON public.agent_insights FOR ALL TO service_role USING (true) WITH CHECK (true); END IF; END $$;
+DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname='public' AND tablename='agent_knowledge' AND policyname='service_role_all') THEN CREATE POLICY service_role_all ON public.agent_knowledge FOR ALL TO service_role USING (true) WITH CHECK (true); END IF; END $$;
+DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname='public' AND tablename='agent_learning' AND policyname='service_role_all') THEN CREATE POLICY service_role_all ON public.agent_learning FOR ALL TO service_role USING (true) WITH CHECK (true); END IF; END $$;
+DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname='public' AND tablename='agent_memory' AND policyname='service_role_all') THEN CREATE POLICY service_role_all ON public.agent_memory FOR ALL TO service_role USING (true) WITH CHECK (true); END IF; END $$;
+DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname='public' AND tablename='agent_reports' AND policyname='service_role_all') THEN CREATE POLICY service_role_all ON public.agent_reports FOR ALL TO service_role USING (true) WITH CHECK (true); END IF; END $$;
+DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname='public' AND tablename='agent_suggestions' AND policyname='service_role_all') THEN CREATE POLICY service_role_all ON public.agent_suggestions FOR ALL TO service_role USING (true) WITH CHECK (true); END IF; END $$;
+DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname='public' AND tablename='agent_tasks' AND policyname='service_role_all') THEN CREATE POLICY service_role_all ON public.agent_tasks FOR ALL TO service_role USING (true) WITH CHECK (true); END IF; END $$;
+DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname='public' AND tablename='app_data' AND policyname='service_role_all') THEN CREATE POLICY service_role_all ON public.app_data FOR ALL TO service_role USING (true) WITH CHECK (true); END IF; END $$;
+DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname='public' AND tablename='approvals' AND policyname='service_role_all') THEN CREATE POLICY service_role_all ON public.approvals FOR ALL TO service_role USING (true) WITH CHECK (true); END IF; END $$;
+DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname='public' AND tablename='audit_logs' AND policyname='service_role_all') THEN CREATE POLICY service_role_all ON public.audit_logs FOR ALL TO service_role USING (true) WITH CHECK (true); END IF; END $$;
+DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname='public' AND tablename='awards' AND policyname='service_role_all') THEN CREATE POLICY service_role_all ON public.awards FOR ALL TO service_role USING (true) WITH CHECK (true); END IF; END $$;
+DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname='public' AND tablename='chat' AND policyname='service_role_all') THEN CREATE POLICY service_role_all ON public.chat FOR ALL TO service_role USING (true) WITH CHECK (true); END IF; END $$;
+DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname='public' AND tablename='chat_polls' AND policyname='service_role_all') THEN CREATE POLICY service_role_all ON public.chat_polls FOR ALL TO service_role USING (true) WITH CHECK (true); END IF; END $$;
+DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname='public' AND tablename='conversations' AND policyname='service_role_all') THEN CREATE POLICY service_role_all ON public.conversations FOR ALL TO service_role USING (true) WITH CHECK (true); END IF; END $$;
+DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname='public' AND tablename='cricket_matches' AND policyname='service_role_all') THEN CREATE POLICY service_role_all ON public.cricket_matches FOR ALL TO service_role USING (true) WITH CHECK (true); END IF; END $$;
+DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname='public' AND tablename='death_overs' AND policyname='service_role_all') THEN CREATE POLICY service_role_all ON public.death_overs FOR ALL TO service_role USING (true) WITH CHECK (true); END IF; END $$;
+DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname='public' AND tablename='diet_log' AND policyname='service_role_all') THEN CREATE POLICY service_role_all ON public.diet_log FOR ALL TO service_role USING (true) WITH CHECK (true); END IF; END $$;
+DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname='public' AND tablename='equipment' AND policyname='service_role_all') THEN CREATE POLICY service_role_all ON public.equipment FOR ALL TO service_role USING (true) WITH CHECK (true); END IF; END $$;
+DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname='public' AND tablename='fitness_log' AND policyname='service_role_all') THEN CREATE POLICY service_role_all ON public.fitness_log FOR ALL TO service_role USING (true) WITH CHECK (true); END IF; END $$;
+DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname='public' AND tablename='injuries' AND policyname='service_role_all') THEN CREATE POLICY service_role_all ON public.injuries FOR ALL TO service_role USING (true) WITH CHECK (true); END IF; END $$;
+DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname='public' AND tablename='knowledge_base' AND policyname='service_role_all') THEN CREATE POLICY service_role_all ON public.knowledge_base FOR ALL TO service_role USING (true) WITH CHECK (true); END IF; END $$;
+DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname='public' AND tablename='match_schedule' AND policyname='service_role_all') THEN CREATE POLICY service_role_all ON public.match_schedule FOR ALL TO service_role USING (true) WITH CHECK (true); END IF; END $$;
+DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname='public' AND tablename='matches' AND policyname='service_role_all') THEN CREATE POLICY service_role_all ON public.matches FOR ALL TO service_role USING (true) WITH CHECK (true); END IF; END $$;
+DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname='public' AND tablename='messages' AND policyname='service_role_all') THEN CREATE POLICY service_role_all ON public.messages FOR ALL TO service_role USING (true) WITH CHECK (true); END IF; END $$;
+DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname='public' AND tablename='notifications' AND policyname='service_role_all') THEN CREATE POLICY service_role_all ON public.notifications FOR ALL TO service_role USING (true) WITH CHECK (true); END IF; END $$;
+DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname='public' AND tablename='opponents' AND policyname='service_role_all') THEN CREATE POLICY service_role_all ON public.opponents FOR ALL TO service_role USING (true) WITH CHECK (true); END IF; END $$;
+DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname='public' AND tablename='performance_data' AND policyname='service_role_all') THEN CREATE POLICY service_role_all ON public.performance_data FOR ALL TO service_role USING (true) WITH CHECK (true); END IF; END $$;
+DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname='public' AND tablename='player_stats' AND policyname='service_role_all') THEN CREATE POLICY service_role_all ON public.player_stats FOR ALL TO service_role USING (true) WITH CHECK (true); END IF; END $$;
+DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname='public' AND tablename='players' AND policyname='service_role_all') THEN CREATE POLICY service_role_all ON public.players FOR ALL TO service_role USING (true) WITH CHECK (true); END IF; END $$;
+DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname='public' AND tablename='points_table' AND policyname='service_role_all') THEN CREATE POLICY service_role_all ON public.points_table FOR ALL TO service_role USING (true) WITH CHECK (true); END IF; END $$;
+DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname='public' AND tablename='powerplay_data' AND policyname='service_role_all') THEN CREATE POLICY service_role_all ON public.powerplay_data FOR ALL TO service_role USING (true) WITH CHECK (true); END IF; END $$;
+DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname='public' AND tablename='rcbian_log' AND policyname='service_role_all') THEN CREATE POLICY service_role_all ON public.rcbian_log FOR ALL TO service_role USING (true) WITH CHECK (true); END IF; END $$;
+DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname='public' AND tablename='settings' AND policyname='service_role_all') THEN CREATE POLICY service_role_all ON public.settings FOR ALL TO service_role USING (true) WITH CHECK (true); END IF; END $$;
+DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname='public' AND tablename='sync_log' AND policyname='service_role_all') THEN CREATE POLICY service_role_all ON public.sync_log FOR ALL TO service_role USING (true) WITH CHECK (true); END IF; END $$;
+DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname='public' AND tablename='system_metrics' AND policyname='service_role_all') THEN CREATE POLICY service_role_all ON public.system_metrics FOR ALL TO service_role USING (true) WITH CHECK (true); END IF; END $$;
+DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname='public' AND tablename='tool_calls' AND policyname='service_role_all') THEN CREATE POLICY service_role_all ON public.tool_calls FOR ALL TO service_role USING (true) WITH CHECK (true); END IF; END $$;
+DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname='public' AND tablename='tool_evidence' AND policyname='service_role_all') THEN CREATE POLICY service_role_all ON public.tool_evidence FOR ALL TO service_role USING (true) WITH CHECK (true); END IF; END $$;
+DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname='public' AND tablename='tournaments' AND policyname='service_role_all') THEN CREATE POLICY service_role_all ON public.tournaments FOR ALL TO service_role USING (true) WITH CHECK (true); END IF; END $$;
+DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname='public' AND tablename='training_sessions' AND policyname='service_role_all') THEN CREATE POLICY service_role_all ON public.training_sessions FOR ALL TO service_role USING (true) WITH CHECK (true); END IF; END $$;
+DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname='public' AND tablename='trips' AND policyname='service_role_all') THEN CREATE POLICY service_role_all ON public.trips FOR ALL TO service_role USING (true) WITH CHECK (true); END IF; END $$;
+DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname='public' AND tablename='users_meta' AND policyname='service_role_all') THEN CREATE POLICY service_role_all ON public.users_meta FOR ALL TO service_role USING (true) WITH CHECK (true); END IF; END $$;

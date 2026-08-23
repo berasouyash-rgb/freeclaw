@@ -33,6 +33,17 @@ export default async function handler(req, res) {
 				paginate,
 			} = req.query;
 			const admin = all === "1" ? await isAdmin(req) : false;
+			// Private-post guard: comments on a private post are visible only to
+			// its author and admins — mirrors the posts visibility model.
+			let privatePostOwner = null;
+			if (post_id && !admin) {
+				const { data: prow } = await supabase
+					.from("posts")
+					.select("id,visibility,author_id")
+					.eq("id", post_id)
+					.maybeSingle();
+				if (prow?.visibility === "private") privatePostOwner = prow.author_id;
+			}
 			const isPaginated = paginate === "1" || paginate === "true";
 			const PAGE_LIMIT = Math.min(parseInt(limitParam) || 30, 100);
 
@@ -72,6 +83,13 @@ export default async function handler(req, res) {
 			// admin included (mirrors _search.js, which already filters comment
 			// bodies). Rows stay intact in the DB; they are only hidden.
 			const cleanRows = (data || []).filter((c) => !isTestArtifact(c.body));
+
+			// Strangers may not read comments on a private post (owner can).
+			if (
+				privatePostOwner !== null &&
+				clean(viewer, 40) !== privatePostOwner
+			)
+				return res.status(403).json({ error: "Not authorized" });
 
 			if (isPaginated) {
 				const rows = cleanRows;
@@ -158,16 +176,23 @@ export default async function handler(req, res) {
 					});
 				}
 			}
-			// Respect locked posts
+			// Respect locked posts + private-post ownership in ONE lookup
 			const { data: post } = await supabase
 				.from("posts")
-				.select("locked")
+				.select("locked,visibility,author_id")
 				.eq("id", b.post_id)
 				.maybeSingle();
 			if (post?.locked && !is_admin_msg)
 				return res
 					.status(403)
 					.json({ error: "Comments are locked on this post." });
+			// Private posts accept comments only from their author (admins exempt)
+			if (
+				post?.visibility === "private" &&
+				!is_admin_msg &&
+				post.author_id !== author_id
+			)
+				return res.status(403).json({ error: "Not authorized" });
 			const row = {
 				id: `cmt_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`,
 				post_id: clean(b.post_id, 60),
