@@ -103,7 +103,7 @@ describe("useRealtime — hidden-tab optimization", () => {
 		});
 
 		act(() => {
-			vi.advanceTimersByTime(10_000);
+			vi.advanceTimersByTime(30_000); // poll interval is now load-safe 30s
 		});
 		expect(onChange).toHaveBeenCalledWith(
 			"visible_poll",
@@ -231,7 +231,7 @@ describe("useRealtime — hidden-tab optimization", () => {
 			simulateStatus("recover", "CHANNEL_ERROR");
 		});
 		act(() => {
-			vi.advanceTimersByTime(10_000);
+			vi.advanceTimersByTime(30_000); // poll interval = 30s (load-safe)
 		});
 		expect(onChange).toHaveBeenCalledWith(
 			"recover",
@@ -243,7 +243,7 @@ describe("useRealtime — hidden-tab optimization", () => {
 			simulateStatus("recover", "SUBSCRIBED");
 		});
 		act(() => {
-			vi.advanceTimersByTime(20_000);
+			vi.advanceTimersByTime(60_000); // two would-be poll ticks — none may fire
 		});
 		const pollCalls = onChange.mock.calls.filter(
 			(c) => c[1]?.eventType === "POLL",
@@ -251,18 +251,18 @@ describe("useRealtime — hidden-tab optimization", () => {
 		expect(pollCalls).toBe(1); // no further POLL ticks after recovery
 	});
 
-	it("re-enables polling when a SUBSCRIBED channel goes stale (30s silence)", () => {
+	it("re-enables polling when a SUBSCRIBED channel goes stale (2min silence)", () => {
 		const onChange = vi.fn();
 		renderHook(() => useRealtime(["stale"], onChange, 0));
 
 		act(() => {
 			simulateStatus("stale", "SUBSCRIBED");
 		});
-		// Staleness threshold is 30s: poll starts on the first staleness tick past
-		// 30s (t=40s) and ticks at 50s → POLL fires. The t=50s staleness tick also
-		// hits the `if (entry.poll) return` guard (no second interval).
+		// Staleness threshold is 120s of realtime silence: the staleness
+		// watchdog (10s cadence) trips at t=120s, polling starts, and the first
+		// 30s poll tick fires at t=150s. A calm feed must NOT trigger this.
 		act(() => {
-			vi.advanceTimersByTime(60_000);
+			vi.advanceTimersByTime(185_000);
 		});
 		expect(onChange).toHaveBeenCalledWith(
 			"stale",
@@ -379,7 +379,7 @@ describe("useRealtime — hidden-tab optimization", () => {
 			simulateStatus("teardown_poll", "CHANNEL_ERROR");
 		});
 		act(() => {
-			vi.advanceTimersByTime(10_000);
+			vi.advanceTimersByTime(30_000); // poll interval = 30s (load-safe)
 		});
 		expect(onChange).toHaveBeenCalledWith(
 			"teardown_poll",

@@ -62,7 +62,9 @@ function getOrCreate(key: string): ChannelEntry {
 
 	const startPolling = () => {
 		if (entry!.poll) return;
-		// Adaptive polling: start at 10s, use backoff if no realtime connection
+		// Load-safe polling: 30s cadence. Supabase Realtime remains the instant
+		// path; polling exists only as a safety net, so it must never multiply
+		// into a per-client request storm when the feed is calm.
 		entry!.poll = setInterval(() => {
 			// Never poll in a hidden tab — the user can't see updates anyway.
 			// This saves API calls (and Vercel function invocations) on background tabs.
@@ -74,7 +76,7 @@ function getOrCreate(key: string): ChannelEntry {
 			for (const [, sub] of entry!.subscribers) {
 				sub.callback(firstTable, { eventType: "POLL" });
 			}
-		}, 10000);
+		}, 30_000);
 	};
 
 	const stopPolling = () => {
@@ -146,10 +148,15 @@ function getOrCreate(key: string): ChannelEntry {
 		startPolling();
 	}
 
-	// Staleness detection: if SUBSCRIBED but no events for 30s, re-enable polling
+	// Staleness detection: only fall back to polling after a LONG quiet period
+	// (2 minutes). A calm feed is healthy, not stale — restarting polls on every
+	// 30s of silence turned 100 open tabs into a permanent request storm.
 	entry.stalenessCheck = setInterval(() => {
 		if (document.hidden) return;
-		if (entry!.realtimeConnected && Date.now() - entry!.lastEventAt > 30000) {
+		if (
+			entry!.realtimeConnected &&
+			Date.now() - entry!.lastEventAt > 120_000
+		) {
 			startPolling();
 		}
 	}, 10000);

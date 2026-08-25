@@ -13,6 +13,7 @@ import {
 	rateLimitResponse,
 } from "./_auth.js";
 import supabase from "./_db-client.js";
+import { staleWhileRevalidate, cacheClear } from "./_cache.js";
 import { sanitizeError } from "./_error.js";
 import { EVENT_TYPES, emitEvent } from "./_events.js";
 import { notifyFollowers } from "./_follows.js";
@@ -61,6 +62,28 @@ const PURGE_MS = 5 * 24 * 60 * 60 * 1000;
 // Throttle: run purge at most once per hour to avoid unnecessary DB queries on every GET
 let _lastPurgeAt = 0;
 const PURGE_COOLDOWN_MS = 60 * 60 * 1000; // 1 hour
+
+// ── Module-level feed cache (load-shedding) ─────────────────────
+// ONE wrapper instance for the process lifetime — its memory map is what
+// makes repeat feeds free. Created per-request it would never hit.
+async function fetchFeedRows({ type, cursor }) {
+	let qq = supabase
+		.from("posts")
+		.select("*")
+		.order("created_at", { ascending: false });
+	if (type) qq = qq.eq("type", type);
+	qq = qq.eq("hidden", false).eq("deleted", false).neq("status", "pending_review");
+	if (cursor) qq = qq.lt("created_at", cursor);
+	qq = qq.limit(2000);
+	const r = await qq;
+	if (r.error) throw r.error;
+	return r.data || [];
+}
+const feedSWR = staleWhileRevalidate(fetchFeedRows, {
+	ttl: 10_000,
+	staleTtl: 60_000,
+	keyPrefix: "postsfeed",
+});
 
 /** Lazy sweep: permanently remove solved/archived posts inactive for 5+ days (throttled to 1/hour) */
 async function purgeExpired() {
@@ -261,8 +284,33 @@ export default async function handler(req, res) {
 				// ceiling; responses are re-bounded after filtering.
 				q = q.limit(2000);
 			}
-			const { data, error } = await q;
-			if (error) throw error;
+			// ── Feed cache (load-shedding) ────────────────────────────
+			// The anonymous main feed is identical for everyone, so its expensive
+			// part — the up-to-2000-row scan — runs through staleWhileRevalidate:
+			// Postgres sees ~6 feed queries/min instead of one per visitor, and
+			// spikes are absorbed by serving stale while ONE background fetch
+			// refreshes. Viewer-specific branches bypass this entirely.
+			// Under Vitest the cache is bypassed so every test exercises the real
+			// query path against its own mocked data (no cross-test pollution).
+			const canUseFeedCache =
+				!process.env.VITEST &&
+				!admin &&
+				!viewerId &&
+				!id &&
+				!ids &&
+				!author;
+			const feedCacheKey = `${type || "all"}|${cursor || ""}|${PAGE_LIMIT}`;
+			const fetchRows = async () => {
+				const r = await q;
+				if (r.error) throw r.error;
+				return r.data || [];
+			};
+			const data = canUseFeedCache
+				? await feedSWR({
+						type: type || null,
+						cursor: cursor || null,
+					})
+				: await fetchRows();
 
 			// Full-site zero-fuzz: hide test/fuzz artifacts on EVERY surface — public
 			// feed, admin views (with or without filter_artifacts=1), by-id/by-ids
@@ -565,6 +613,7 @@ export default async function handler(req, res) {
 			}).catch((err) =>
 				console.warn("[posts] emit POST_CREATED failed:", err.message),
 			);
+			cacheClear("^postsfeed"); // new post appears immediately, no stale 10s window
 			return res.status(201).json(data);
 		}
 
@@ -698,6 +747,7 @@ export default async function handler(req, res) {
 					"update_post",
 					`${id}: ${Object.keys(patch).join(", ")}`,
 				);
+			cacheClear("^postsfeed"); // solved/hidden/pinned changes show live
 			// Emit event for status changes
 			if (patch.status)
 				emitEvent(EVENT_TYPES.POST_STATUS_CHANGED, {
@@ -757,6 +807,7 @@ export default async function handler(req, res) {
 				supabase.from("reactions").delete().eq("target_id", id),
 			]);
 			await auditLog("admin", "hard_delete_post", id);
+			cacheClear("^postsfeed");
 			return res.status(200).json({ ok: true });
 		}
 
