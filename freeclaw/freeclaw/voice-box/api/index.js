@@ -70,7 +70,8 @@ import routing from "./_routing.js";
 import saved from "./_saved.js";
 import search from "./_search.js";
 import {
-	detectPromptInjection,
+	detectPromptInjection,		peekBodyIdentity,
+
 	securityCheck,
 	setSecurityHeaders,
 } from "./_security.js";
@@ -272,8 +273,18 @@ export default async function handler(req, res) {
 	// Set security headers on every response
 	setSecurityHeaders(res);
 
-	// Security check (abuse prevention, request size)
-	const secCheck = securityCheck(req);
+	// Peek at the body to extract user identity BEFORE abuse check.
+	// This lets the rate limiter key per-user instead of per-IP, which
+	// prevents a whole school/office NAT from sharing one rate-limit bucket.
+	let _identity = null;
+	try {
+		_identity = await peekBodyIdentity(req);
+	} catch {
+		/* non-fatal — falls back to IP-only rate limiting */
+	}
+
+	// Security check (abuse prevention, request size) — keyed on identity+IP
+	const secCheck = securityCheck(req, _identity);
 	if (!secCheck.ok) {
 		corsFn(res, req);
 		if (secCheck.retryAfter) {

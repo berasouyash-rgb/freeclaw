@@ -5,7 +5,8 @@ import { checkUser, clean, cors, isAdmin, rateLimitResponse } from "./_auth.js";
 import supabase from "./_db-client.js";
 import { sanitizeError } from "./_error.js";
 import {
-	cleanupAbuseTracker,
+	cleanupAbuseTracker,		peekBodyIdentity,
+
 	recordError,
 	sanitizeInput,
 	securityCheck,
@@ -133,10 +134,18 @@ async function logRequest(req, res, startTime) {
 
 // ─── Gateway Middleware ────────────────────────────────────────
 export function createGateway(handler) {
-	return async function gatewayHandler(req, res) {
-		const startTime = Date.now();
+	return async function gatewayHandler(req, res) {		const startTime = Date.now();
 		const ip =
 			req.headers["x-forwarded-for"]?.split(",")[0]?.trim() || "unknown";
+
+		// Peek at body early to extract user identity for per-user rate limiting.
+		// This is outside the main try/catch so recordError can also use it.
+		let _identity = null;
+		try {
+			_identity = await peekBodyIdentity(req);
+		} catch {
+			/* non-fatal — falls back to IP-only rate limiting */
+		}
 
 		try {
 			// 1. CORS + Security headers
@@ -144,8 +153,8 @@ export function createGateway(handler) {
 			setSecurityHeaders(res);
 			if (req.method === "OPTIONS") return res.status(204).end();
 
-			// 2. Security checks (abuse prevention, request size)
-			const secCheck = securityCheck(req);
+			// 2. Security check (abuse prevention, request size) — keyed on identity+IP
+			const secCheck = securityCheck(req, _identity);
 			if (!secCheck.ok) {
 				if (secCheck.retryAfter) {
 					res.setHeader("Retry-After", String(secCheck.retryAfter));
@@ -169,8 +178,8 @@ export function createGateway(handler) {
 			// 6. Log request
 			await logRequest(req, res, startTime);
 		} catch (error) {
-			// Track errors for abuse detection
-			recordError(ip);
+			// Track errors for abuse detection (keyed on identity+IP)
+			recordError(ip, _identity);
 
 			// 7. Global error handler — log the request BEFORE sanitizing so the
 			//    error status is captured (sanitizeError ends the response).
