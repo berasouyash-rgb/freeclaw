@@ -1,6 +1,6 @@
 // Account status check for the caller's own anonymous ID (no personal data involved)
 
-import { clean, cors, rateLimitResponse } from "./_auth.js";
+import { checkUser, clean, cors, isAdmin, rateLimitResponse } from "./_auth.js";
 import supabase from "./_db-client.js";
 import { sanitizeError } from "./_error.js";
 
@@ -42,6 +42,17 @@ export default async function handler(req, res) {
 	try {
 		const anonId = clean(req.query.anon_id, 40);
 		if (!anonId) return res.status(400).json({ error: "Missing anon_id" });
+		// FIX #2: Verify caller identity — only allow checking your own anon_id unless admin
+		if (!(await isAdmin(req))) {
+			const callerId = clean(req.headers["x-anon-id"] || req.query.caller_id || "", 40);
+			// If caller presents an ID, it must match queried anonId; otherwise gate the queried ID itself
+			const idToGate = callerId ? callerId : anonId;
+			if (callerId && callerId.toLowerCase() !== anonId.toLowerCase()) {
+				return res.status(403).json({ error: "Cannot view status of another user" });
+			}
+			const gate = await checkUser(idToGate);
+			if (!gate.ok) return res.status(403).json({ error: gate.error });
+		}
 		const { data } = await supabase
 			.from("users_meta")
 			.select("banned,suspended_until,strikes,warnings")

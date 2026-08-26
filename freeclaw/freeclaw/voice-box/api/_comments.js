@@ -107,7 +107,7 @@ export default async function handler(req, res) {
 						author_id:
 							admin || is_mine || c.author_id === "ADMIN"
 								? c.author_id
-								: c.author_id.slice(0, 9) + "…",
+								: c.author_id.slice(0, 9) + "...",
 					};
 				});
 				let totalQ = supabase
@@ -130,7 +130,7 @@ export default async function handler(req, res) {
 					author_id:
 						admin || is_mine || c.author_id === "ADMIN"
 							? c.author_id
-							: c.author_id.slice(0, 9) + "…",
+							: c.author_id.slice(0, 9) + "...",
 				};
 			});
 			return res.status(200).json(masked);

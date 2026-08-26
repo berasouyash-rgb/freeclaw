@@ -46,7 +46,7 @@ export default async function handler(req, res) {
 					...r,
 					is_mine,
 					author_id:
-						admin || is_mine ? r.author_id : r.author_id.slice(0, 9) + "…",
+						admin || is_mine ? r.author_id : r.author_id.slice(0, 9) + "...",
 				};
 			});
 			// Viewer-scoped data (per-?author rows with is_mine) must never be served

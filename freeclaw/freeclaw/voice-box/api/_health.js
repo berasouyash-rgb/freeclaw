@@ -108,13 +108,13 @@ export default async function handler(req, res) {
 						return {
 							status: error ? "error" : "ok",
 							latency_ms: Date.now() - t,
-							error: error?.message,
+							error: error?.message ? "unavailable" : undefined,
 						};
 					} catch (e) {
 						return {
 							status: "error",
 							latency_ms: Date.now() - t,
-							error: e.message,
+							error: "unavailable",
 						};
 					}
 				})(),

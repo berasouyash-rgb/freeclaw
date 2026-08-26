@@ -160,6 +160,11 @@ export default async function handler(req, res) {
 					"admin",
 				);
 			} else if (action === "ban") {
+				// FIX #18: Require explicit confirmation token for instant-ban (prevents accidental/ CSRF-triggered bans)
+				const body = req.body || {};
+				if (body.confirm !== true && body.confirm !== "true" && body.confirmToken !== item.author_id) {
+					return res.status(400).json({ error: "Ban requires confirmation: pass { confirm: true } or { confirmToken: author_id }", code: "CONFIRM_REQUIRED" });
+				}
 				// Ban the author (append warning so the user sees a strike popup too)
 				if (!item.author_id || item.author_id === "anonymous") {
 					return res

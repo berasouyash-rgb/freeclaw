@@ -352,6 +352,11 @@ export default async function handler(req, res) {
 				b.author_id &&
 				b.author_id !== "ADMIN" &&
 				b.author_id === poll.author_id;
+			// FIX #16: Validate owner identity via checkUser so banned users cannot modify
+			if (!admin && isOwner) {
+				const gate = await checkUser(b.author_id);
+				if (!gate.ok) return res.status(403).json({ error: gate.error });
+			}
 			if (!admin && !isOwner)
 				return res.status(403).json({ error: "Not authorized" });
 			const patch = {};

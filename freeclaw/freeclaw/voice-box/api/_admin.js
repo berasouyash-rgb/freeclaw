@@ -251,13 +251,19 @@ export default async function handler(req, res) {
 				const counts =
 					anonIds.length > 0
 						? await Promise.all([
+								// Counts must reflect REAL content: soft-deleted posts and
+								// deleted/hidden comments are invisible to users, so they
+								// must not inflate admin stats either.
 								supabase
 									.from("posts")
 									.select("author_id")
+									.eq("deleted", false)
 									.in("author_id", anonIds),
 								supabase
 									.from("comments")
 									.select("author_id")
+									.eq("deleted", false)
+									.eq("hidden", false)
 									.in("author_id", anonIds),
 								supabase
 									.from("reactions")
@@ -286,13 +292,17 @@ export default async function handler(req, res) {
 
 			// Non-paginated: fetch user counts per-user without loading all reactions/comments into memory
 			const anonIds = (rows || []).map((u) => u.anon_id);
+			// Same visibility semantics as the paginated path: only real content.
+			const TABLE_FILTERS = {
+				posts: (q) => q.eq("deleted", false),
+				comments: (q) => q.eq("deleted", false).eq("hidden", false),
+				reactions: (q) => q,
+			};
 			const countForUser = async (table, ids) => {
 				if (!ids.length) return {};
-				// Batch count per user using select + groupby equivalent
-				const { data } = await supabase
-					.from(table)
-					.select("author_id")
-					.in("author_id", ids);
+				let query = supabase.from(table).select("author_id").in("author_id", ids);
+				query = TABLE_FILTERS[table]?.(query) ?? query;
+				const { data } = await query;
 				const map = {};
 				(data || []).forEach((r) => {
 					map[r.author_id] = (map[r.author_id] || 0) + 1;

@@ -204,7 +204,7 @@ describe("GET /api/comments", () => {
 		);
 		expect(res.statusCode).toBe(200);
 		const body = res.body as Array<{ author_id: string; is_mine: boolean }>;
-		expect(body[0].author_id).toBe("anon-99…");
+		expect(body[0].author_id).toBe("anon-99...");
 		expect(body[0].is_mine).toBe(false);
 		expect(body[1].author_id).toBe("anon-2");
 		expect(body[1].is_mine).toBe(true);

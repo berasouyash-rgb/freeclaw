@@ -13,8 +13,9 @@ const COMMENT_RETENTION_DAYS = 30; // comments
 const LOG_RETENTION_DAYS = 30; // activity logs, chat messages
 const BATCH_SIZE = 50;
 
-let lastRunAt = 0;
+let lastRunAtMem = 0;
 const COOLDOWN_MS = 60 * 60 * 1000; // 1 hour between auto-runs
+// FIX #38: Persist last run in Supabase so cleanup survives cold starts / scales across instances
 
 function daysAgo(days) {
 	const d = new Date();
@@ -75,8 +76,15 @@ async function deleteBatch(
 
 async function runCleanup() {
 	const now = Date.now();
-	if (now - lastRunAt < COOLDOWN_MS) return null;
-	lastRunAt = now;
+	if (now - lastRunAtMem < COOLDOWN_MS) return null;
+	// FIX #38: Check persisted timestamp so cooldown survives cold starts
+	try {
+		const { data: state } = await supabase.from("settings").select("value").eq("key", "cleanup_state").maybeSingle();
+		const lastAt = state?.value?.last_run_at ? new Date(state.value.last_run_at).getTime() : 0;
+		if (now - lastAt < COOLDOWN_MS) { lastRunAtMem = lastAt; return null; }
+	} catch { /* fall through */ }
+	lastRunAtMem = now;
+	try { await supabase.from("settings").upsert({ key: "cleanup_state", value: { last_run_at: new Date().toISOString() } }, { onConflict: "key" }); } catch {}
 
 	const results = {};
 

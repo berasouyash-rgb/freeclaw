@@ -663,6 +663,7 @@ async function getProviders() {
 
 async function saveProviders(providers) {
 	_providersCache = { at: 0, value: null }; // invalidate cache first
+	invalidateChainCache();
 	invalidateLLMStatus(); // LLM availability may change now — never serve a stale degraded/fine verdict
 	const { data } = await supabase
 		.from("settings")
@@ -755,8 +756,16 @@ export async function getDefaultProviderId() {
 	return sorted[0]?.[0] || null;
 }
 
+// FIX #19: Cache provider chain 60s to avoid DB hit per LLM call
+let _chainCache = null;
+let _chainExpiry = 0;
+const CHAIN_TTL_MS = 60_000;
+export function invalidateChainCache() { _chainCache = null; _chainExpiry = 0; }
+
 // ─── Build failover chain ─────────────────────────────────────────
 export async function buildChain() {
+	const now = Date.now();
+	if (_chainCache && _chainExpiry > now) return _chainCache;
 	const db = await getProviders();
 	const chain = [];
 	let defaultId = null;
@@ -796,6 +805,8 @@ export async function buildChain() {
 		const key = process.env[def.envKey];
 		if (key) chain.push({ id, ...def, key, model: def.defaultModel });
 	}
+	_chainCache = chain;
+	_chainExpiry = Date.now() + CHAIN_TTL_MS;
 	return chain;
 }
 
@@ -1328,17 +1339,26 @@ export default async function handler(req, res) {
 		}
 
 		if (req.method === "GET" && action === "list") {
+			// FIX #7: Provider config (incl. masked keys) is admin-only — was public
+			if (!(await isAdmin(req))) return res.status(403).json({ error: "Admin only" });
 			const db = await getProviders();
 			const filterCategory = req.query.category || null;
 			const filterEnabledOnly =
 				req.query.enabled_only === "true" || req.query.enabled_only === "1";
-			const result = {};
-			for (const [id, def] of Object.entries(PROVIDER_DEFS)) {
+			// FIX #35: Pagination/filtering to avoid ~15KB payload — support limit/offset/category/enabled_only
+			const hasPagination = req.query.limit !== undefined || req.query.offset !== undefined;
+			const limit = Math.min(parseInt(req.query.limit) || 50, 50);
+			const offset = Math.max(parseInt(req.query.offset) || 0, 0);
+			const entries = Object.entries(PROVIDER_DEFS).filter(([id, def]) => {
 				const cfg = db[id] || {};
-				// FIX-L3: filter by category if provided
-				if (filterCategory && def.category !== filterCategory) continue;
-				// FIX-L3: filter to enabled-only if requested
-				if (filterEnabledOnly && !cfg.enabled) continue;
+				if (filterCategory && def.category !== filterCategory) return false;
+				if (filterEnabledOnly && !cfg.enabled) return false;
+				return true;
+			});
+			const paged = hasPagination ? entries.slice(offset, offset + limit) : entries;
+			const result = {};
+			for (const [id, def] of paged) {
+				const cfg = db[id] || {};
 				result[id] = {
 					id,
 					name: def.name,
@@ -1359,6 +1379,7 @@ export default async function handler(req, res) {
 					category: def.category || "other",
 				};
 			}
+			if (hasPagination) return res.status(200).json({ providers: result, total: entries.length, limit, offset });
 			return res.status(200).json(result);
 		}
 

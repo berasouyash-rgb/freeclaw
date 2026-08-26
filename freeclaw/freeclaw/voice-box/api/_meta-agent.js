@@ -72,7 +72,22 @@ const TOOL_TEMPLATES = {
 					);
 				if (!Object.keys(updates).length)
 					throw new Error("updates object required");
-				// Block dangerous column updates
+				// FIX #6: Whitelist allowed columns per table (was blacklist-only)
+				const ALLOWED_COLS = {
+					posts: ["status","category","priority","hidden","deleted","assigned_to","admin_reply","pinned","featured","locked","official","progress","eta"],
+					comments: ["hidden","deleted","body"],
+					reactions: [],
+					users_meta: ["banned","suspended_until","warnings","notes"],
+					polls: ["archived","deleted","expires_at"],
+					reports: ["status","assigned_to"],
+					chat_messages: ["read"],
+					activity_logs: [],
+				};
+				const allowed = ALLOWED_COLS[table] || [];
+				for (const col of Object.keys(updates)) {
+					if (!allowed.includes(col)) throw new Error(`Column not allowed for ${table}: ${col}`);
+				}
+				// Block dangerous column updates (defense in depth)
 				const BLOCKED_COLS = ["id", "created_at", "anon_id", "author_id"];
 				for (const col of BLOCKED_COLS) {
 					if (col in updates)
@@ -627,12 +642,16 @@ No explanation, ONLY JSON.`;
 				.replace(/```\n?/g, "")
 				.trim(),
 		);
-		// Execute the generated plan
+		// FIX #20: Whitelist generated query plan — only posts table, capped limit, no arbitrary columns
+		const safeLimit = Math.min(Math.max(parseInt(parsed.params?.limit) || 20, 1), 100);
+		const allowedTables = ["posts"];
+		const reqTable = parsed.params?.table || "posts";
+		if (!allowedTables.includes(reqTable)) throw new Error(`Table not allowed: ${reqTable}`);
 		const { data } = await supabase
 			.from("posts")
 			.select("*")
 			.order("created_at", { ascending: false })
-			.limit(parsed.params?.limit || 20);
+			.limit(safeLimit);
 		return {
 			tool: parsed.tool_name,
 			description: parsed.description,

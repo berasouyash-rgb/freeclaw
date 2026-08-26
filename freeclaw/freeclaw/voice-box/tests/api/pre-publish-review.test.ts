@@ -275,7 +275,7 @@ describe("POST /api/pre-publish/review — actions", () => {
 		await handler(
 			{
 				method: "POST",
-				body: { key: QUEUE_ITEM.key, action: "ban" },
+				body: { key: QUEUE_ITEM.key, action: "ban", confirm: true },
 				headers: { "x-admin-token": "t" },
 			},
 			res,
@@ -307,7 +307,7 @@ describe("POST /api/pre-publish/review — actions", () => {
 		await handler(
 			{
 				method: "POST",
-				body: { key: QUEUE_ITEM.key, action: "ban" },
+				body: { key: QUEUE_ITEM.key, action: "ban", confirm: true },
 				headers: { "x-admin-token": "t" },
 			},
 			res,
@@ -332,13 +332,33 @@ describe("POST /api/pre-publish/review — actions", () => {
 		await handler(
 			{
 				method: "POST",
-				body: { key: "k", action: "ban" },
+				body: { key: "k", action: "ban", confirm: true },
 				headers: { "x-admin-token": "t" },
 			},
 			res,
 		);
 		expect(res.statusCode).toBe(400);
 		expect(usersMetaUpsertFn).not.toHaveBeenCalled();
+	});
+
+	it("ban without confirm → 400 CONFIRM_REQUIRED (FIX #18)", async () => {
+		mockTables({
+			settingsGet: { data: QUEUE_ITEM, error: null },
+		});
+		const { default: handler } = await import(
+			"../../api/_pre-publish-review.js"
+		);
+		const res = response();
+		await handler(
+			{
+				method: "POST",
+				body: { key: QUEUE_ITEM.key, action: "ban" },
+				headers: { "x-admin-token": "t" },
+			},
+			res,
+		);
+		expect(res.statusCode).toBe(400);
+		expect(res.body.code).toBe("CONFIRM_REQUIRED");
 	});
 
 	it("keep_private with a failing update → 500 and item kept", async () => {

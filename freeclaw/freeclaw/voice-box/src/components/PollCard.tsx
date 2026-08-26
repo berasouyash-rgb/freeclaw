@@ -97,11 +97,20 @@ const PollCard = memo(function PollCard({
 		}
 	}, [myVote, changingVote]);
 
-	// Poll-close notification — tell the author their poll has closed (once).
+	// Poll-close notification — tell the author their poll has closed ONCE
+	// per browser, not on every visit to a page containing the expired poll.
 	const notifiedClose = useRef(false);
 	useEffect(() => {
 		if (closed && isOwner && !notifiedClose.current) {
 			notifiedClose.current = true;
+			// Session-level dedupe: the ref above only survives this mount.
+			const dedupeKey = `vb:pollclosed:${p.id}`;
+			try {
+				if (sessionStorage.getItem(dedupeKey)) return;
+				sessionStorage.setItem(dedupeKey, "1");
+			} catch {
+				/* storage unavailable — ref guard still prevents same-mount spam */
+			}
 			api
 				.post("/api/polls", {
 					action: "closed",

@@ -531,16 +531,29 @@ export default function AdminAI() {
 				},
 			);
 			if (Array.isArray(data)) {
+				// Per-row safe parse: one corrupted `actions` payload must never
+				// poison the WHOLE history load (old code threw inside .map(),
+				// the outer catch fired, and every message disappeared).
 				setMessagesImmediate(
-					data.map((d: Record<string, unknown>) => ({
-						role: d.role as ChatMessage["role"],
-						content: d.content as string,
-						created_at: d.created_at as string,
-						toolResults: d.actions
-							? JSON.parse(d.actions as string)
-							: undefined,
-						hasToolUse: !!d.actions,
-					})),
+					data.map((d: Record<string, unknown>) => {
+						let toolResults: ChatMessage["toolResults"] = undefined;
+						if (d.actions) {
+							try {
+								toolResults = JSON.parse(
+									d.actions as string,
+								) as ChatMessage["toolResults"];
+							} catch {
+								toolResults = undefined;
+							}
+						}
+						return {
+							role: d.role as ChatMessage["role"],
+							content: d.content as string,
+							created_at: d.created_at as string,
+							toolResults,
+							hasToolUse: !!d.actions,
+						};
+					}),
 				);
 			}
 		} catch (e: unknown) {

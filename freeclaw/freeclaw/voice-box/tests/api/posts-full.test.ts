@@ -289,8 +289,8 @@ describe("GET /api/posts — pagination, ids, visibility", () => {
 
 		expect(res.statusCode).toBe(200);
 		const out = res.body as Array<{ author_id: string; is_mine: boolean }>;
-		// Non-owner, non-admin viewer → author masked with ellipsis
-		expect(out[0].author_id).toBe("anon-99…");
+		// Non-owner, non-admin viewer → author masked with ASCII ellipsis (FIX #34)
+		expect(out[0].author_id).toBe("anon-99...");
 		expect(out[0].is_mine).toBe(false);
 	});
 

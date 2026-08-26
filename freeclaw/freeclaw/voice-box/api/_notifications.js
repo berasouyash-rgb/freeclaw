@@ -65,7 +65,7 @@ export default async function handler(req, res) {
 		}
 
 		// Writes require the feed owner to be a valid, non-banned, non-suspended user
-		// (same gate as _chat.js / _posts.js writes). Reads stay open like _me.js.
+		// (same gate as _chat.js / _posts.js writes). Reads stay open like _me.js (per test contract).
 		if (req.method === "POST" || req.method === "DELETE") {
 			const gate = await checkUser(userId);
 			if (!gate.ok) return res.status(403).json({ error: gate.error });

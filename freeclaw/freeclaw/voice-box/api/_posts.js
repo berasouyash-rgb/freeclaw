@@ -120,9 +120,9 @@ const READY_THRESHOLD = 10;
 // Any reaction or comment bumps updated_at and resets the countdown.
 const PURGE_MS = 5 * 24 * 60 * 60 * 1000;
 
-// Throttle: run purge at most once per hour to avoid unnecessary DB queries on every GET
-let _lastPurgeAt = 0;
+// FIX #10: Persist purge throttle in settings so it survives cold starts / scales across serverless instances
 const PURGE_COOLDOWN_MS = 60 * 60 * 1000; // 1 hour
+let _lastPurgeAtMem = 0; // in-memory fast-path; DB is source of truth
 
 // ── Module-level feed cache (load-shedding) ─────────────────────
 // ONE wrapper instance for the process lifetime — its memory map is what
@@ -149,8 +149,17 @@ const feedSWR = staleWhileRevalidate(fetchFeedRows, {
 /** Lazy sweep: permanently remove solved/archived posts inactive for 5+ days (throttled to 1/hour) */
 async function purgeExpired() {
 	const now = Date.now();
-	if (now - _lastPurgeAt < PURGE_COOLDOWN_MS) return;
-	_lastPurgeAt = now;
+	if (now - _lastPurgeAtMem < PURGE_COOLDOWN_MS) return;
+	// FIX #10: Check persisted throttle in settings (survives cold starts)
+	try {
+		const { data: state } = await supabase.from("settings").select("value").eq("key", "purge_state").maybeSingle();
+		const lastAt = state?.value?.last_purge_at ? new Date(state.value.last_purge_at).getTime() : 0;
+		if (now - lastAt < PURGE_COOLDOWN_MS) {
+			_lastPurgeAtMem = lastAt;
+			return;
+		}
+	} catch { /* best-effort — fall through to purge */ }
+	_lastPurgeAtMem = now;
 	try {
 		const cutoff = new Date(Date.now() - PURGE_MS).toISOString();
 		const { data: expired } = await supabase
@@ -167,6 +176,10 @@ async function purgeExpired() {
 				supabase.from("reactions").delete().in("target_id", ids),
 			]);
 		}
+		// FIX #10: Persist last purge timestamp so throttle survives cold starts
+		try {
+			await supabase.from("settings").upsert({ key: "purge_state", value: { last_purge_at: new Date().toISOString() } }, { onConflict: "key" });
+		} catch { /* best-effort */ }
 	} catch {
 		/* sweep is best-effort */
 	}
@@ -419,7 +432,7 @@ export default async function handler(req, res) {
 						...p,
 						is_mine,
 						author_id:
-							admin || is_mine ? p.author_id : p.author_id.slice(0, 9) + "…",
+							admin || is_mine ? p.author_id : p.author_id.slice(0, 9) + "...",
 					};
 				});
 				// Get total count (separate query, lightweight)
@@ -445,7 +458,7 @@ export default async function handler(req, res) {
 					...p,
 					is_mine,
 					author_id:
-						admin || is_mine ? p.author_id : p.author_id.slice(0, 9) + "…",
+						admin || is_mine ? p.author_id : p.author_id.slice(0, 9) + "...",
 				};
 			});
 			// Single-post fetch (by ID) returns wrapped format for PostDetail page
@@ -693,7 +706,12 @@ export default async function handler(req, res) {
 				.maybeSingle();
 			if (!post) return res.status(404).json({ error: "Post not found" });
 			const admin = await isAdmin(req);
-			const isOwner = b.author_id && b.author_id === post.author_id;
+			// FIX #17: Block spoofing author_id='ADMIN' (public constant) to hijack admin posts; validate caller identity
+			const isOwner = b.author_id && b.author_id !== "ADMIN" && b.author_id === post.author_id;
+			if (isOwner) {
+				const gate = await checkUser(b.author_id);
+				if (!gate.ok) return res.status(403).json({ error: gate.error });
+			}
 
 			const patch = {};
 			if (isOwner || admin) {

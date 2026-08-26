@@ -201,16 +201,39 @@ async function getThreadState(threadId) {
 	);
 }
 
+// FIX #24: Validate thread_id format (prevents injection / garbage keys)
+function validThreadId(id) {
+	return typeof id === "string" && id.length >= 3 && id.length <= 40 && /^[a-zA-Z0-9_-]+$/.test(id);
+}
+// FIX #11: Rate limit admin takeover/release/transfer (10 per 60s per IP/token)
+const _inboxAdminHits = new Map();
+function inboxAdminRateLimited(key, windowMs = 60000, limit = 10) {
+	const now = Date.now();
+	const e = _inboxAdminHits.get(key);
+	if (!e || now - e.start > windowMs) { _inboxAdminHits.set(key, { start: now, count: 1 }); return false; }
+	e.count++; return e.count > limit;
+}
+
 async function setThreadState(threadId, state) {
-	await supabase
-		.from("settings")
-		.upsert(
-			{
-				key: `inbox_state:${threadId}`,
-				value: { ...state, updated_at: new Date().toISOString() },
-			},
-			{ onConflict: "key" },
-		);
+	// FIX #8: Add error handling + 1 retry so silent failures don't lose handoff state
+	for (let attempt = 0; attempt < 2; attempt++) {
+		try {
+			const { error } = await supabase
+				.from("settings")
+				.upsert(
+					{
+						key: `inbox_state:${threadId}`,
+						value: { ...state, updated_at: new Date().toISOString() },
+					},
+					{ onConflict: "key" },
+				);
+			if (error) throw error;
+			return;
+		} catch (e) {
+			console.error(`[inbox] setThreadState failed (attempt ${attempt + 1}):`, e.message);
+			if (attempt === 1) throw e;
+		}
+	}
 }
 
 // ─── Global AI-mode switch (admin-controlled) ──────────────────
@@ -330,7 +353,7 @@ async function notifyAdmin(threadId, message, emotion, agent) {
 				{
 					key: "notifications:admin",
 					value: {
-						notifications: notifs.slice(0, 100),
+						notifications: notifs.slice(0, 50),
 						updated_at: new Date().toISOString(),
 					},
 				},
@@ -621,6 +644,7 @@ export default async function handler(req, res) {
 
 			// Get messages for a specific thread (limit to last 100 for performance)
 			if (thread_id) {
+				if (!validThreadId(thread_id)) return res.status(400).json({ error: "Invalid thread_id format" });
 				// Gate message-history reads like _chat.js: admins pass; anonymous
 				// requesters must present a valid (non-banned) anon id so message
 				// history is not readable by anyone who guesses a thread id.
@@ -865,6 +889,11 @@ export default async function handler(req, res) {
 				return res.status(400).json({ error: "Invalid thread_id format" });
 
 			// ── Admin actions ────────────────────────────────────
+			// FIX #11: rate-limit admin state mutations to prevent takeover spam
+			const adminKey = req.headers["x-admin-token"] || req.headers["x-forwarded-for"]?.split(",")[0]?.trim() || "admin";
+			if (admin && ["takeover","release","transfer_emotional"].includes(b.action) && inboxAdminRateLimited(String(adminKey))) {
+				return rateLimitResponse(res, 60, "Too many admin actions — slow down");
+			}
 			if (admin && b.action === "takeover") {
 				const state = await getThreadState(threadId);
 				state.handoff = true;
