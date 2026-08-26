@@ -102,7 +102,6 @@ export default function Submit() {
 	const [desc, setDesc] = useState("");
 	const [category, setCategory] = useState("Academics");
 	const categories = useCategories();
-	const [priority, setPriority] = useState("medium");
 	const [tags, setTags] = useState("");
 	/** Private post → visible only to admins/moderators (and you) */
 	const [isPrivate, setIsPrivate] = useState(false);
@@ -364,7 +363,6 @@ export default function Submit() {
 			setTitle(d.title || "");
 			setDesc(d.desc || "");
 			setCategory(d.category || "Academics");
-			setPriority(d.priority || "medium");
 			setTags(d.tags || "");
 			setType(d.type || initialType);
 			toast("Draft restored", "info");
@@ -379,7 +377,6 @@ export default function Submit() {
 					title,
 					desc,
 					category,
-					priority,
 					tags,
 					type,
 					savedAt: new Date().toISOString(),
@@ -389,7 +386,7 @@ export default function Submit() {
 			}
 		}, 900);
 		return () => clearTimeout(t);
-	}, [title, desc, category, priority, tags, type]);
+	}, [title, desc, category, tags, type]);
 
 	const pickImage = (f: File) => {
 		if (f.size > 3 * 1024 * 1024) {
@@ -542,9 +539,7 @@ export default function Submit() {
 					type,
 					title: maskedTitle,
 					description: maskedDesc,
-					category,
-					priority,
-					author_id: anonId,
+					category,						author_id: anonId,
 					image_url,
 					tags: tags
 						.split(",")
@@ -1238,18 +1233,7 @@ export default function Submit() {
 											{category}
 										</span>
 									)}
-									{aiSuggest.priority && aiSuggest.priority !== priority && (
-										<button
-											type="button"
-											className="chip cursor-pointer !bg-surface hover:!border-accent transition-all capitalize"
-											onClick={() =>
-												setPriority(aiSuggest.priority ?? "medium")
-											}
-										>
-											<Zap size={11} /> {aiSuggest.priority} priority{" "}
-											<span className="text-accent font-bold">apply</span>
-										</button>
-									)}
+	
 									{(aiSuggest.tags || [])
 										.filter(
 											(t: string) =>
@@ -1305,25 +1289,6 @@ export default function Submit() {
 											{CAT_EMOJI[c]} {c}
 										</option>
 									))}
-								</select>
-							</div>
-							<div>
-								<label
-									className="text-xs font-semibold text-ink2 block mb-1.5"
-									htmlFor="f-prio"
-								>
-									Priority
-								</label>
-								<select
-									id="f-prio"
-									className="input"
-									value={priority}
-									onChange={(e) => setPriority(e.target.value)}
-								>
-									<option value="low">Low</option>
-									<option value="medium">Medium</option>
-									<option value="high">High</option>
-									<option value="critical">Critical</option>
 								</select>
 							</div>
 						</div>
@@ -1456,7 +1421,6 @@ export default function Submit() {
 						</p>
 						<div className="flex gap-2 mb-1.5">
 							<span className="chip">{category}</span>
-							<span className="chip capitalize">{priority}</span>
 						</div>
 						<h3 className="font-display font-semibold">
 							{title || "Your title"}

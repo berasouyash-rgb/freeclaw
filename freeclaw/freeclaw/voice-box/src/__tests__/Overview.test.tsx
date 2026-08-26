@@ -289,7 +289,7 @@ describe("Overview (dashboard home)", () => {
 		// “Emergency” also appears as an attention-band shortcut — scope to the strip
 		const strip = screen.getByText("Open reports").closest("div.card");
 		expect(strip).not.toBeNull();
-		expect(within(strip as HTMLElement).getByText("Emergency")).toBeInTheDocument();
+		expect(within(strip as HTMLElement).getByText("Open issues")).toBeInTheDocument();
 		expect(within(strip as HTMLElement).getByText("Posts · week")).toBeInTheDocument();
 		expect(within(strip as HTMLElement).getByText("Engagement")).toBeInTheDocument();
 		expect(within(strip as HTMLElement).getByText("Suggestions")).toBeInTheDocument();
@@ -297,7 +297,7 @@ describe("Overview (dashboard home)", () => {
 		expect(within(strip as HTMLElement).getByText("Resolution")).toBeInTheDocument();
 	});
 
-	it("lists recent activity as a table with category, priority, status and time", async () => {
+	it("lists recent activity as a table with category, status and time", async () => {
 		seedData();
 		render(<Overview />);
 
@@ -305,12 +305,11 @@ describe("Overview (dashboard home)", () => {
 		fireEvent.click(await screen.findByRole("tab", { name: /Recent/ }));
 		const section = await screen.findByText("RECENT ACTIVITY");
 		const table = section.closest("section") as HTMLElement;
-		// The same post title also shows in Trending/Emergency — scope to the table
+		// The same post title also shows in Trending/Open Issues — scope to the table
 		await waitFor(() => {
 			expect(within(table).getByText("Broken lift in Block C")).toBeInTheDocument();
 		});
 		expect(within(table).getAllByText(/Facilities/).length).toBeGreaterThan(0);
-		expect(within(table).getByText("high")).toBeInTheDocument();
 		// newest first: suggestion (10m) precedes lift (2m)
 		const rows = within(table).getAllByRole("row");
 		expect(rows.length).toBeGreaterThan(1);
@@ -381,26 +380,20 @@ describe("Overview (dashboard home)", () => {
 		});
 	});
 
-	it("shows high-priority posts in the Open Issues tab without a manual priority option", async () => {
+	it("shows posts in the Open Issues tab", async () => {
 		seedData();
 		render(<Overview />);
 
 		fireEvent.click(await screen.findByRole("tab", { name: /Open Issues/ }));
 		await waitFor(() => {
 			expect(
-				screen.getByText("OPEN ISSUES · HIGH PRIORITY"),
+				screen.getByText("OPEN ISSUES"),
 			).toBeInTheDocument();
 		});
 		const section = screen
-			.getByText("OPEN ISSUES · HIGH PRIORITY")
+			.getByText("OPEN ISSUES")
 			.closest("section") as HTMLElement;
 		expect(within(section).getByText("Broken lift in Block C")).toBeInTheDocument();
-		// Priority is AUTO — the dashboard surfaces it as a heading, never as a
-		// per-row editable option.
-		expect(
-			within(section).queryByRole("button", { name: /priority/i }),
-		).not.toBeInTheDocument();
-		expect(within(section).queryByText("URGENCY")).not.toBeInTheDocument();
 	});
 
 	it("shows a calm empty state when there are no open issues", async () => {
@@ -410,7 +403,7 @@ describe("Overview (dashboard home)", () => {
 		fireEvent.click(await screen.findByRole("tab", { name: /Open Issues/ }));
 		await waitFor(() => {
 			expect(
-				screen.getByText("No open high-priority issues — all calm. ✓"),
+				screen.getByText("No open issues — all calm. ✓"),
 			).toBeInTheDocument();
 		});
 	});

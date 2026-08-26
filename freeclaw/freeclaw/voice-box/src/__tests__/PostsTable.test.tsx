@@ -177,13 +177,12 @@ describe("PostsTable — variants and list rendering", () => {
 		expect(await screen.findByText("Suggestions")).toBeInTheDocument();
 	});
 
-	it("renders row metadata: category, priority, author, age", async () => {
+	it("renders row metadata: category, author, age", async () => {
 		render(<PostsTable type="problem" />);
 		await screen.findByText("Broken lift in block C");
 		// 'Facilities' also appears as a category <option> — scope to the table
 		const row = screen.getByText("Broken lift in block C").closest("tr") as HTMLElement;
 		expect(within(row).getByText("Facilities")).toBeInTheDocument();
-		expect(within(row).getByText("high")).toBeInTheDocument();
 		expect(within(row).getByText("anon_alpha".slice(0, 10))).toBeInTheDocument();
 		expect(within(row).getByText("2d ago")).toBeInTheDocument();
 	});
@@ -332,18 +331,7 @@ describe("PostsTable — detail drawer", () => {
 		expect(screen.getByPlaceholderText("Private moderator notes…")).toBeInTheDocument();
 	});
 
-	it("shows priority as automatic in the drawer (no manual override)", async () => {
-		const user = userEvent.setup();
-		render(<PostsTable type="problem" />);
-		await screen.findByText("Broken lift in block C");
-		await user.click(screen.getByText("Broken lift in block C"));
 
-		// Priority is computed server-side from content urgency — displayed
-		// read-only, never editable.
-		expect(screen.queryByRole("combobox", { name: /Priority/i })).not.toBeInTheDocument();
-		const drawer = screen.getByPlaceholderText("Private moderator notes…").closest(".fixed") as HTMLElement;
-		expect(within(drawer).getByText("auto")).toBeInTheDocument();
-	});
 
 	it("pins and features from the drawer", async () => {
 		const user = userEvent.setup();

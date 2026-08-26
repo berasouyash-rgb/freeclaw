@@ -2,7 +2,7 @@
 // Advanced Search page — /search
 // ═══════════════════════════════════════════════════════════════════
 // Locks the contract:
-//   1. Renders the search input + type/category/status/priority filters.
+//   1. Renders the search input + type/category/status filters.
 //   2. Submitting a query calls /api/search and renders post results
 //      (linked to /post/:id).
 //   3. Empty results → "No results" state.
@@ -94,7 +94,7 @@ describe("Search — filters render", () => {
 		expect(screen.getByLabelText(/filter by type/i)).toBeInTheDocument();
 		expect(screen.getByLabelText(/filter by category/i)).toBeInTheDocument();
 		expect(screen.getByLabelText(/filter by status/i)).toBeInTheDocument();
-		expect(screen.getByLabelText(/filter by priority/i)).toBeInTheDocument();
+
 	});
 });
 
@@ -163,11 +163,6 @@ describe("Search — query flow", () => {
 			screen.getByLabelText(/filter by status/i),
 			"solved",
 		);
-		await user.selectOptions(
-			screen.getByLabelText(/filter by priority/i),
-			"medium",
-		);
-
 		await waitFor(() => {
 			const searchCalls = mocks.get.mock.calls.filter(([u]) =>
 				String(u).includes("/api/search"),
@@ -176,7 +171,6 @@ describe("Search — query flow", () => {
 			const url = String(searchCalls[searchCalls.length - 1]?.[0] ?? "");
 			expect(url).toContain("type=posts");
 			expect(url).toContain("status=solved");
-			expect(url).toContain("priority=medium");
 		});
 	});
 

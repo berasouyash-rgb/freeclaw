@@ -28,7 +28,6 @@ import { api } from "../../lib/api";
 import { useRealtime } from "../../lib/useRealtime";
 import {
 	CATEGORIES,
-	PRIORITY_META,
 	STATUS_META,
 	sanitize,
 	timeAgo,
@@ -288,7 +287,6 @@ export default function PostsTable({
 								<th className="px-4 py-3">Title</th>
 								<th className="px-2 py-3">Category</th>
 								<th className="px-2 py-3">Status</th>
-								<th className="px-2 py-3">Priority</th>
 								<th className="px-2 py-3">Author</th>
 								<th className="px-2 py-3">Age</th>
 								<th className="px-2 py-3" title="Supports · Comments · Poll votes — live">
@@ -328,7 +326,6 @@ export default function PostsTable({
 											))}
 										</select>
 									</td>
-									<td className="px-2 py-3 text-xs capitalize">{p.priority}</td>
 									<td className="px-2 py-3 font-mono text-[11px] text-ink3">
 										{p.author_id?.slice(0, 10) ?? "anon"}
 									</td>
@@ -490,23 +487,7 @@ export default function PostsTable({
 									))}
 								</select>
 							</label>
-							<div className="text-xs">
-								<span className="font-semibold text-ink2">Priority</span>
-								<div
-									className="input !py-1.5 mt-1 flex items-center gap-1.5 capitalize"
-									title="Priority is set automatically based on how urgent the issue sounds"
-								>
-									<span
-										className="w-2 h-2 rounded-full shrink-0"
-										style={{
-											background:
-												PRIORITY_META[selected.priority]?.color ?? "#8e8ea5",
-										}}
-									/>
-									{selected.priority}
-									<span className="ml-auto text-[10px] text-ink3">auto</span>
-								</div>
-							</div>
+
 							<label className="text-xs">
 								<span className="font-semibold text-ink2">Category</span>
 								<select

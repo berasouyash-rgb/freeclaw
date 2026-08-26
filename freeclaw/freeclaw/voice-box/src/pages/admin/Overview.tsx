@@ -40,7 +40,6 @@ import { useRealtime } from "../../lib/useRealtime";
 import {
 	CAT_EMOJI,
 	downloadFile,
-	PRIORITY_META,
 	safeStringify,
 	STATUS_META,
 	timeAgo,
@@ -303,12 +302,9 @@ export default function Overview() {
 			),
 		);
 
-		// Emergency = high/critical priority, not yet closed
-		// (priority itself is AUTO — the system scores it; the dashboard never
-		// exposes a manual priority option.)
-		const emergency = problems.filter(
+		// Open issues = not yet solved or archived (any status, priority ignored)
+		const openIssues = problems.filter(
 			(p) =>
-				(p.priority === "high" || p.priority === "critical") &&
 				p.status !== "solved" &&
 				p.status !== "archived",
 		);
@@ -357,7 +353,7 @@ export default function Overview() {
 				n: problems.filter((p) => p.status === s).length,
 			})),
 			problemsCount: problems.length,
-			emergency,
+			emergency: openIssues,
 			activePolls,
 		};
 	}, [posts, comments, reports, users, polls]);
@@ -483,13 +479,12 @@ export default function Overview() {
 			trend: { cur: stats.wk.reports, prev: stats.wk.reportsPrev, invert: true },
 			spark: series.reports,
 		},
-		{
-			label: "Emergency",
-			value: stats.emergency.length,
-			sub: "high/critical open",
-			icon: AlertOctagon,
-			tone: stats.emergency.length > 0 ? "text-bad" : "text-good",
-		},
+		{				label: "Open issues",
+				value: stats.emergency.length,
+				sub: "awaiting attention",
+				icon: AlertOctagon,
+				tone: stats.emergency.length > 0 ? "text-warn" : "text-good",
+			},
 		{
 			label: "Posts · week",
 			value: stats.week,
@@ -830,9 +825,6 @@ export default function Overview() {
 										Category
 									</th>
 									<th className="px-3 py-2 font-semibold hidden md:table-cell">
-										Priority
-									</th>
-									<th className="px-3 py-2 font-semibold hidden md:table-cell">
 										Status
 									</th>
 									<th className="px-3 py-2 font-semibold hidden sm:table-cell">
@@ -860,21 +852,6 @@ export default function Overview() {
 										</td>
 										<td className="px-3 py-2.5 text-[11px] text-ink2 hidden sm:table-cell">
 											{CAT_EMOJI[p.category]} {p.category || "—"}
-										</td>
-										<td className="px-3 py-2.5 hidden md:table-cell">
-											<span
-												className="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-semibold"
-												style={{
-													color:
-														PRIORITY_META[p.priority]?.color ??
-														"var(--vb-ink3)",
-													borderColor: `color-mix(in srgb, ${
-														PRIORITY_META[p.priority]?.color ?? "#888"
-													} 30%, transparent)`,
-												}}
-											>
-												{p.priority}
-											</span>
 										</td>
 										<td className="px-3 py-2.5 hidden md:table-cell">
 											<span
@@ -928,7 +905,7 @@ export default function Overview() {
 							<span className="grid place-items-center w-6 h-6 rounded-md bg-red-500/10 text-red-400">
 								<AlertOctagon size={13} />
 							</span>
-							OPEN ISSUES · HIGH PRIORITY
+							OPEN ISSUES
 							{stats.emergency.length > 0 && (
 								<span className="chip !text-[9px] !bg-red-500/10 !text-red-400 !border-red-500/25">
 									{stats.emergency.length}
@@ -944,7 +921,7 @@ export default function Overview() {
 					</header>
 					{stats.emergency.length === 0 ? (
 						<div className="rounded-lg border border-dashed border-border px-4 py-6 text-center text-xs text-ink3">
-							No open high-priority issues — all calm. ✓
+							No open issues — all calm. ✓
 						</div>
 					) : (
 						<div className="space-y-1.5">

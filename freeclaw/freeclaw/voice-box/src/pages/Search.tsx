@@ -11,7 +11,7 @@ import { useCallback, useMemo, useState } from "react";
 import { Link } from "react-router";
 import { useCategories } from "../hooks/useCategories";
 import { api } from "../lib/api";
-import { CAT_EMOJI, PRIORITY_META, STATUS_META, timeAgo } from "../lib/utils";
+import { CAT_EMOJI, STATUS_META, timeAgo } from "../lib/utils";
 
 type SearchResult = {
 	type: "post" | "comment" | "poll";
@@ -22,7 +22,7 @@ type SearchResult = {
 	post_id?: string;
 	category?: string;
 	status?: string;
-	priority?: string;
+	tags?: string[];
 	ptype?: string;
 	created_at: string;
 	relevance_score?: number;
@@ -41,7 +41,7 @@ export default function Search() {
 	const [type, setType] = useState("all");
 	const [category, setCategory] = useState("all");
 	const [status, setStatus] = useState("all");
-	const [priority, setPriority] = useState("all");
+	const [tagFilter, setTagFilter] = useState("");
 	const [results, setResults] = useState<SearchResult[]>([]);
 	const [total, setTotal] = useState(0);
 	const [loading, setLoading] = useState(false);
@@ -55,20 +55,17 @@ export default function Search() {
 				type: string;
 				category: string;
 				status: string;
-				priority: string;
-			}>,
+		}>,
 		) => {
 			const params = new URLSearchParams();
 			const query = (overrides?.q ?? q).trim();
 			const t = overrides?.type ?? type;
 			const c = overrides?.category ?? category;
 			const s = overrides?.status ?? status;
-			const p = overrides?.priority ?? priority;
 			if (query) params.set("q", query);
 			if (t !== "all") params.set("type", t);
 			if (c !== "all") params.set("category", c);
 			if (s !== "all") params.set("status", s);
-			if (p !== "all") params.set("priority", p);
 			params.set("viewer", "");
 			setLoading(true);
 			setError("");
@@ -86,7 +83,7 @@ export default function Search() {
 			}
 			setLoading(false);
 		},
-		[q, type, category, status, priority],
+		[q, type, category, status],
 	);
 
 	const onSubmit = () => {
@@ -94,7 +91,7 @@ export default function Search() {
 	};
 
 	const filterChange = (
-		key: "type" | "category" | "status" | "priority",
+		key: "type" | "category" | "status",
 		setter: (v: string) => void,
 		v: string,
 	) => {
@@ -250,21 +247,7 @@ export default function Search() {
 							</option>
 						))}
 					</select>
-					<select
-						className="input !py-2 text-sm"
-						value={priority}
-						onChange={(e) =>
-							filterChange("priority", setPriority, e.target.value)
-						}
-						aria-label="Filter by priority"
-					>
-						<option value="all">All priorities</option>
-						{Object.entries(PRIORITY_META).map(([k, v]) => (
-							<option key={k} value={k}>
-								{v.label}
-							</option>
-						))}
-					</select>
+
 				</div>
 				<button
 					className="btn btn-primary w-full"
@@ -328,7 +311,7 @@ export default function Search() {
 									: r.body;
 						const sub =
 							r.type === "post"
-								? `${CAT_EMOJI[r.category || ""] || "📌"} ${r.category || ""} · ${STATUS_META[r.status || ""]?.label || r.status} · ${PRIORITY_META[r.priority || ""]?.label || r.priority}`
+								? `${CAT_EMOJI[r.category || ""] || "📌"} ${r.category || ""} · ${STATUS_META[r.status || ""]?.label || r.status}`
 								: r.type === "comment"
 									? "Comment on a post"
 									: r.ptype === "ranked"
