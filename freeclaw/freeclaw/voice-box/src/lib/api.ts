@@ -1,5 +1,6 @@
 /** Thin fetch wrapper for Voice Box API routes with offline queue for failed writes. */
 
+import { getAnonId } from "./identity";
 import { flushQueue, queueAction, queuedCount } from "./offline";
 
 function adminToken(): string | null {
@@ -119,6 +120,11 @@ async function request<T = unknown>(
 	};
 	const t = adminToken();
 	if (t) headers["X-Admin-Token"] = t;
+	// Send per-user identity for rate limiting (each user gets their own bucket)
+	try {
+		const aid = getAnonId();
+		if (aid) headers["x-anon-id"] = aid;
+	} catch { /* identity module not ready */ }
 
 	// For GET requests: check cache, deduplicate in-flight
 	if (method === "GET") {

@@ -123,18 +123,20 @@ const SEARCH_TERMS = [
 	"classroom",
 ];
 
-function request(label, method, path, body) {
+function request(label, method, path, body, identity) {
 	return new Promise((resolve) => {
 		const started = performance.now();
 		const payload = body ? JSON.stringify(body) : null;
+		const headers = {
+			"content-type": "application/json",
+			...(payload ? { "content-length": Buffer.byteLength(payload) } : {}),
+		};
+		if (identity) headers["x-anon-id"] = identity;
 		const req = http.request(
 			`${BASE_URL}${path}`,
 			{
 				method,
-				headers: {
-					"content-type": "application/json",
-					...(payload ? { "content-length": Buffer.byteLength(payload) } : {}),
-				},
+				headers,
 				timeout: 15_000,
 			},
 			(res) => {
@@ -158,19 +160,21 @@ function request(label, method, path, body) {
 }
 
 // ─── Buffered request (journey logic needs response data) ───────
-function requestJson(label, method, path, body) {
+function requestJson(label, method, path, body, identity) {
 	return new Promise((resolve) => {
 		const started = performance.now();
 		const payload = body ? JSON.stringify(body) : null;
+		const headers = {
+			"content-type": "application/json",
+			...(payload ? { "content-length": Buffer.byteLength(payload) } : {}),
+		};
+		if (identity) headers["x-anon-id"] = identity;
 		const chunks = [];
 		const req = http.request(
 			`${BASE_URL}${path}`,
 			{
 				method,
-				headers: {
-					"content-type": "application/json",
-					...(payload ? { "content-length": Buffer.byteLength(payload) } : {}),
-				},
+				headers,
 				timeout: 15_000,
 			},
 			(res) => {
@@ -206,58 +210,66 @@ async function virtualUser(stopAt, onDone) {
 		try {
 			const roll = Math.random();
 			if (roll < 0.45) {
-				await requestJson("GET /posts", "GET", "/api/posts?limit=20");
+				await requestJson("GET /posts", "GET", "/api/posts?limit=20", null, anonId);
 			} else if (roll < 0.65) {
 				// Read one post + its comments (feed → detail flow)
 				const feed = await requestJson(
 					"GET /posts",
 					"GET",
 					"/api/posts?limit=20",
+					null,
+					onId,
 				);
 				const postId = feed?.data?.data?.[0]?.id ?? feed?.data?.[0]?.id;
 				if (postId) {
-					await requestJson("GET /posts/:id", "GET", `/api/posts/${postId}`);
+					await requestJson("GET /posts/:id", "GET", `/api/posts/${postId}`, null, anonId);
 					await requestJson(
 						"GET /comments/:id",
 						"GET",
 						`/api/comments/${postId}?paginate=1&limit=20`,
+						null,
+						onId,
 					);
 				}
 			} else if (roll < 0.77) {
 				const term =
 					SEARCH_TERMS[Math.floor(Math.random() * SEARCH_TERMS.length)];
-				await requestJson("GET /search", "GET", `/api/search?q=${term}`);
+				await requestJson("GET /search", "GET", `/api/search?q=${term}`, null, anonId);
 			} else if (roll < 0.85) {
-				await requestJson("GET /polls", "GET", "/api/polls");
+				await requestJson("GET /polls", "GET", "/api/polls", null, anonId);
 			} else if (roll < 0.91) {
-				await requestJson("GET /suggestions", "GET", "/api/suggestions");
+				await requestJson("GET /suggestions", "GET", "/api/suggestions", null, anonId);
 			} else if (roll < 0.95) {
 				await request("POST /posts", "POST", "/api/posts", {
-					title: `Load test issue ${randomUUID().slice(0, 6)}`,
+					title: `Load test test-issue ${randomUUID().slice(0, 6)}`,
 					description:
-						"Automated load-test submission describing a genuine-sounding campus problem.",
+						"Automated load-test test-submission describing a genuine-sounding campus test-problem.",
 					category: "Other",
 					type: "issue",
 					author_id: anonId,
-				});
+				}, anonId);
 			} else if (roll < 0.98) {
 				const feed = await requestJson(
 					"GET /posts",
 					"GET",
 					"/api/posts?limit=20",
+					null,
+					onId,
 				);
 				const postId = feed?.data?.data?.[0]?.id ?? feed?.data?.[0]?.id;
 				if (postId) {
 					await request("POST /comments", "POST", `/api/comments/${postId}`, {
-						body: "Automated load-test comment agreeing with this report.",
+						body: "Automated load-test test-comment agreeing with this test-report.",
 						author_id: anonId,
-					});
+					}, anonId);
 				}
 			} else if (roll < 0.999) {
 				const feed = await requestJson(
 					"GET /posts",
 					"GET",
 					"/api/posts?limit=20",
+					null,
+					onId,
 				);
 				const postId = feed?.data?.data?.[0]?.id ?? feed?.data?.[0]?.id;
 				if (postId) {
@@ -266,13 +278,15 @@ async function virtualUser(stopAt, onDone) {
 						target_id: postId,
 						kind: "support",
 						author_id: anonId,
-					});
+					}, anonId);
 				}
 			} else {
 				const feed = await requestJson(
 					"GET /posts",
 					"GET",
 					"/api/posts?limit=20",
+					null,
+					onId,
 				);
 				const postId = feed?.data?.data?.[0]?.id ?? feed?.data?.[0]?.id;
 				if (postId) {
@@ -280,9 +294,9 @@ async function virtualUser(stopAt, onDone) {
 						target_type: "post",
 						target_id: postId,
 						reason: "spam",
-						details: "Automated load-test report — test artifact, safe to ignore.",
+						details: "Automated load-test test-report — test artifact, safe to ignore.",
 						reported_by: anonId,
-					});
+					}, anonId);
 				}
 			}
 		} catch {

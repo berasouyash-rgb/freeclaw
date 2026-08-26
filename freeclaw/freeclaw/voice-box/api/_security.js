@@ -331,6 +331,14 @@ export function validateRequestSize(req) {
 export function securityCheck(req, identity = null) {
 	const ip = req.headers["x-forwarded-for"]?.split(",")[0]?.trim() || "unknown";
 
+	// Accept identity from header for GET requests too (load-test / client identification)
+	if (!identity) {
+		const headerId = req.headers["x-anon-id"];
+		if (headerId && typeof headerId === "string" && headerId.trim()) {
+			identity = headerId.trim();
+		}
+	}
+
 	// 1. Check abuse patterns — keyed on identity when available
 	const abuseCheck = checkAbuse(ip, identity);
 	if (!abuseCheck.allowed) {
