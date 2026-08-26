@@ -180,6 +180,7 @@ export function staleWhileRevalidate(fn, options = {}) {
 		ttl = DEFAULT_TTL,
 		staleTtl = ttl * 5, // Serve stale for 5x the normal TTL
 		keyPrefix = fn.name || "swr",
+		maxEntries = 300, // Bound memory when keys are unbounded (e.g. user queries)
 	} = options;
 
 	const _swrCache = new Map();
@@ -192,6 +193,17 @@ export function staleWhileRevalidate(fn, options = {}) {
 		const cacheKey = `${keyPrefix}:${JSON.stringify(args).slice(0, 200)}`;
 		const entry = _swrCache.get(cacheKey);
 		const now = Date.now();
+
+		// Memory bound: if the key space is unbounded (e.g. arbitrary search
+		// queries), evict the OLDEST entries (Map preserves insertion order) once
+		// we exceed maxEntries so warm serverless instances cannot grow forever.
+		if (!entry && _swrCache.size >= maxEntries) {
+			let toEvict = Math.floor(maxEntries * 0.2);
+			for (const k of _swrCache.keys()) {
+				_swrCache.delete(k);
+				if (--toEvict <= 0) break;
+			}
+		}
 
 		// Fresh cache hit
 		if (entry && entry.expiresAt > now) {
