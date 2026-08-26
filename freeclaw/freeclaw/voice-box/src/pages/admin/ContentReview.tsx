@@ -4,7 +4,6 @@ import {
 	ChevronDown,
 	ChevronUp,
 	Clock,
-	ExternalLink,
 	Eye,
 	EyeOff,
 	Image,
@@ -850,15 +849,6 @@ export default function ContentReview() {
 													<XCircle size={12} /> Archive
 												</button>
 											)}
-											<a
-												href={`/post/${post.id}`}
-												target="_blank"
-												rel="noopener noreferrer"
-												className="btn btn-ghost !text-[10px] sm:!text-xs w-full sm:w-auto !col-span-2 sm:!col-auto text-center"
-												onClick={(e) => e.stopPropagation()}
-											>
-												<ExternalLink size={12} /> View Live
-											</a>
 											<button
 												className="btn btn-ghost !text-[10px] sm:!text-xs text-bad w-full sm:w-auto sm:ml-auto"
 												onClick={() => deletePost(post.id)}

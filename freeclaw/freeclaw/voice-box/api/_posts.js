@@ -53,6 +53,67 @@ const STATUSES = [
 // enforced on every read path in this file and in _comments.js.
 const VISIBILITIES = ["public", "private"];
 
+// ─── Automatic priority scoring ─────────────────────────────────────
+// Deterministic keyword scorer: the platform decides priority from the
+// content's urgency, so no author (or admin) can hand-pick it. Real
+// emergencies surface as critical; everything else stays honest.
+const PRIORITY_KEYWORDS = {
+	critical: [
+		"emergency",
+		"danger",
+		"injur",
+		"bleeding",
+		"fire",
+		"accident",
+		"ambulance",
+		"hospital",
+		"threat",
+		"weapon",
+		"gas leak",
+	],
+	high: [
+		"harass",
+		"bully",
+		"abuse",
+		"stolen",
+		"theft",
+		"fight",
+		"unsafe",
+		"broken",
+		"leak",
+		"not working",
+		"crash",
+		"urgent",
+		"asap",
+		"immediately",
+		"safety",
+		"risk",
+		"damage",
+	],
+	low: [
+		"minor",
+		"cosmetic",
+		"sometimes",
+		"occasionally",
+		"small issue",
+		"nice to have",
+		"whenever possible",
+	],
+};
+
+/** Compute priority from content urgency. Order matters: critical > high > low > medium. */
+export function computeAutoPriority(...texts) {
+	const hay = texts
+		.filter((t) => typeof t === "string")
+		.join(" ")
+		.toLowerCase();
+	for (const w of PRIORITY_KEYWORDS.critical)
+		if (hay.includes(w)) return "critical";
+	for (const w of PRIORITY_KEYWORDS.high) if (hay.includes(w)) return "high";
+	for (const w of PRIORITY_KEYWORDS.low) if (hay.includes(w)) return "low";
+	return "medium";
+}
+
 // Co-sign threshold: posts with this many supports are auto-flagged "ready for decision"
 const READY_THRESHOLD = 10;
 // Solved/archived posts are permanently deleted after 5 days of NO activity.
@@ -265,8 +326,14 @@ export default async function handler(req, res) {
 						.neq("status", "pending_review");
 			} else if (author) {
 				q = q.eq("author_id", clean(author, 40)).eq("deleted", false);
-				// Author listing is public data — apply the same visibility filter as the main feed
-				if (!admin) q = q.eq("hidden", false).neq("status", "pending_review");
+				// Author listing is public data — apply the same visibility filter as
+				// the main feed, EXCEPT the author always sees their own held posts
+				// (otherwise a queued submission silently vanishes from My Activity).
+				if (!admin) {
+					q = q.eq("hidden", false);
+					const isSelfView = !!viewerId && viewerId === clean(author, 40);
+					if (!isSelfView) q = q.neq("status", "pending_review");
+				}
 				// Widen the fetch window: the JS artifact filter below can thin the set.
 				q = q.limit(2000);
 			} else {
@@ -512,11 +579,9 @@ export default async function handler(req, res) {
 			const initialStatus = holdForReview ? "pending_review" : "reported";
 
 			const type = b.type === "suggestion" ? "suggestion" : "problem";
-			const priority = ["low", "medium", "high", "critical"].includes(
-				b.priority,
-			)
-				? b.priority
-				: "medium";
+			// Priority is computed automatically from content urgency —
+			// authors never pick it (everyone would choose "critical").
+			const priority = computeAutoPriority(title, description);
 			const tags = Array.isArray(b.tags)
 				? b.tags
 						.slice(0, 6)
@@ -676,7 +741,12 @@ export default async function handler(req, res) {
 					patch.ai_summary = clean(b.ai_summary, 2000);
 				if (b.category !== undefined && CATEGORIES.includes(b.category))
 					patch.category = b.category;
-				if (b.priority !== undefined) patch.priority = b.priority;
+			// Priority is automatic: recompute when the content itself is edited.
+			if (b.title !== undefined || b.description !== undefined)
+				patch.priority = computeAutoPriority(
+					patch.title ?? post.title,
+					patch.description ?? post.description,
+				);
 				if (b.eta !== undefined) patch.eta = clean(b.eta, 60);
 				if (b.assigned_to !== undefined)
 					patch.assigned_to = clean(b.assigned_to, 60);

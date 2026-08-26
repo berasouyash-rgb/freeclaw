@@ -5,7 +5,6 @@ import {
 	ChevronDown,
 	ChevronUp,
 	Clock,
-	ExternalLink,
 	Eye,
 	EyeOff,
 	Flag,
@@ -1052,21 +1051,8 @@ export default function Reports() {
 													{timeAgo(r.created_at)}
 												</p>
 											</div>
-											<div className="flex items-center gap-2 shrink-0">
-												{r.target_type === "post" && (
-													<a
-														className="btn btn-ghost !p-2"
-														href={`/post/${r.target_id}`}
-														target="_blank"
-														rel="noreferrer"
-														title="Open target"
-														aria-label={`Open target post ${r.target_id}`}
-														onClick={(e) => e.stopPropagation()}
-													>
-														<ExternalLink size={14} />
-													</a>
-												)}
-												<button
+							<div className="flex items-center gap-2 shrink-0">
+								<button
 													className="btn btn-ghost !p-2 text-purple-400"
 													title="Escalate to Approval Center"
 													onClick={(e) => {
@@ -1555,15 +1541,6 @@ export default function Reports() {
 														>
 															<ArrowUpRight size={12} /> Escalate
 														</button>
-														<a
-															href={`/post/${post.id}`}
-															target="_blank"
-															rel="noopener noreferrer"
-															className="btn btn-ghost !text-[10px] sm:!text-xs w-full sm:w-auto !col-span-2 sm:!col-auto text-center"
-															onClick={(e) => e.stopPropagation()}
-														>
-															<ExternalLink size={12} /> View Live
-														</a>
 														<button
 															className="btn btn-ghost !text-[10px] sm:!text-xs text-bad w-full sm:w-auto sm:ml-auto"
 															onClick={() => deletePost(post.id)}

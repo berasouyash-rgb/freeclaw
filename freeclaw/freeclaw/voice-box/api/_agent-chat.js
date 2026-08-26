@@ -767,20 +767,18 @@ const INTENTS = [
 	// ─── Set priority on a post ──────────────────────────────────────
 	{
 		patterns:
-			/\b(set|change|make)\s*(?:the\s*)?(?:priority|urgency)\s*(?:of\s*)?(?:post)?\s*(\w{8,})\s*(?:to)?\s*(high|medium|low|critical|urgent)/i,
+			/\b(set|change|make)\s*(?:the\s*)?(?:priority|urgency)\s*(?:of\s*)?(?:post)?\s*(\w{8,})?(?:\s*(?:to)?\s*(high|medium|low|critical|urgent)?)?/i,
 		handler: async (msg) => {
 			const match = msg.match(
-				/\b(set|change|make)\s*(?:the\s*)?(?:priority|urgency)\s*(?:of\s*)?(?:post)?\s*(\w{8,})\s*(?:to)?\s*(high|medium|low|critical|urgent)/i,
+				/\b(set|change|make)\s*(?:the\s*)?(?:priority|urgency)\s*(?:of\s*)?(?:post)?\s*(\w{8,})?(?:\s*(?:to)?\s*(high|medium|low|critical|urgent)?)?/i,
 			);
 			const postId = match?.[2];
-			const priority = match?.[3]?.toLowerCase();
 			if (!postId)
 				return {
-					reply: 'Usage: "set priority [post_id] to high"',
+					reply:
+						'Usage: "set priority [post_id]" — I will show the current priority.',
 					actions: [],
 				};
-			if (priority === "critical" || priority === "urgent")
-				return { reply: "Priority must be high, medium, or low.", actions: [] };
 			const { data: post } = await supabase
 				.from("posts")
 				.select("id,title,priority")
@@ -788,15 +786,8 @@ const INTENTS = [
 				.maybeSingle();
 			if (!post) return { reply: `Post \`${postId}\` not found.`, actions: [] };
 			return {
-				reply: `⬆️ **Set Priority**\n\nPost: **${post.title}**\nCurrent: ${post.priority}\nNew: ${priority}\n\nClick Execute to update.`,
-				actions: [
-					{
-						tool: "set_priority",
-						args: { post_id: postId, priority },
-						reason: `Set "${post.title}" priority to ${priority}`,
-						destructive: false,
-					},
-				],
+				reply: `⚡ **Priority is automatic**\n\nPost: **${post.title}**\nCurrent priority: **${post.priority}**\n\nThe platform computes priority from how urgent the content reads (words like *emergency*, *broken*, *harassment* raise it). Manual overrides are disabled so no one can mark their own post critical — the queue stays honest.`,
+				actions: [],
 			};
 		},
 	},

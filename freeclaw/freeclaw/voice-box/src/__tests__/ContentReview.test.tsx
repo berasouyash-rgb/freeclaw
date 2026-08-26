@@ -521,13 +521,13 @@ describe("ContentReview — post expand/detail", () => {
 		expect(screen.getByRole("button", { name: /Show image/ })).toBeInTheDocument();
 	});
 
-	it("links to the live post page", async () => {
+	it("no longer links out to a live post page (open-post options removed)", async () => {
 		seedData();
 		renderPage();
 		await screen.findByText("Broken lift in block C");
 		fireEvent.click(screen.getByText("Broken lift in block C"));
-		const link = screen.getByRole("link", { name: /View Live/ });
-		expect(link).toHaveAttribute("href", "/post/post-1");
-		expect(link).toHaveAttribute("target", "_blank");
+		// The confusing external "View Live / Open post" option was removed —
+		// admins act on content directly inside the review view.
+		expect(screen.queryByRole("link", { name: /View Live/ })).not.toBeInTheDocument();
 	});
 });

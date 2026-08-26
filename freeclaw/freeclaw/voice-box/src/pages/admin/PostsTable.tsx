@@ -26,8 +26,14 @@ import { useCategories } from "../../hooks/useCategories";
 import { useInfiniteScroll } from "../../hooks/useInfiniteScroll";
 import { api } from "../../lib/api";
 import { useRealtime } from "../../lib/useRealtime";
-import { CATEGORIES, STATUS_META, sanitize, timeAgo } from "../../lib/utils";
-import type { PostData, PostStatus, Priority } from "../../types";
+import {
+	CATEGORIES,
+	PRIORITY_META,
+	STATUS_META,
+	sanitize,
+	timeAgo,
+} from "../../lib/utils";
+import type { PostData, PostStatus } from "../../types";
 
 export default function PostsTable({
 	type,
@@ -484,24 +490,23 @@ export default function PostsTable({
 									))}
 								</select>
 							</label>
-							<label className="text-xs">
+							<div className="text-xs">
 								<span className="font-semibold text-ink2">Priority</span>
-								<select
-									className="input !py-1.5 mt-1"
-									value={selected.priority}
-									onChange={(e) =>
-										update(selected.id, {
-											priority: e.target.value as Priority,
-										})
-									}
+								<div
+									className="input !py-1.5 mt-1 flex items-center gap-1.5 capitalize"
+									title="Priority is set automatically based on how urgent the issue sounds"
 								>
-									{["low", "medium", "high", "critical"].map((p) => (
-										<option key={p} value={p}>
-											{p}
-										</option>
-									))}
-								</select>
-							</label>
+									<span
+										className="w-2 h-2 rounded-full shrink-0"
+										style={{
+											background:
+												PRIORITY_META[selected.priority]?.color ?? "#8e8ea5",
+										}}
+									/>
+									{selected.priority}
+									<span className="ml-auto text-[10px] text-ink3">auto</span>
+								</div>
+							</div>
 							<label className="text-xs">
 								<span className="font-semibold text-ink2">Category</span>
 								<select

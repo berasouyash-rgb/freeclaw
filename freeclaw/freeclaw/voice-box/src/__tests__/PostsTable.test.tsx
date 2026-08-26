@@ -67,6 +67,12 @@ vi.mock("../lib/useRealtime", () => ({
 
 vi.mock("../lib/utils", () => ({
 	CATEGORIES: ["Facilities", "Academics"],
+	PRIORITY_META: {
+		low: { label: "Low", color: "#8e8ea5" },
+		medium: { label: "Medium", color: "#d98a0b" },
+		high: { label: "High", color: "#e2574c" },
+		critical: { label: "Critical", color: "#dc4b4b" },
+	},
 	STATUS_META: {
 		reported: { label: "Reported", color: "#dc4b4b" },
 		open: { label: "Open", color: "#5652d6" },
@@ -326,22 +332,17 @@ describe("PostsTable — detail drawer", () => {
 		expect(screen.getByPlaceholderText("Private moderator notes…")).toBeInTheDocument();
 	});
 
-	it("changes priority from the drawer select", async () => {
+	it("shows priority as automatic in the drawer (no manual override)", async () => {
 		const user = userEvent.setup();
 		render(<PostsTable type="problem" />);
 		await screen.findByText("Broken lift in block C");
 		await user.click(screen.getByText("Broken lift in block C"));
 
+		// Priority is computed server-side from content urgency — displayed
+		// read-only, never editable.
+		expect(screen.queryByRole("combobox", { name: /Priority/i })).not.toBeInTheDocument();
 		const drawer = screen.getByPlaceholderText("Private moderator notes…").closest(".fixed") as HTMLElement;
-		const labels = within(drawer).getAllByText("Priority");
-		const prioritySelect = labels[0]!.closest("label") as HTMLElement;
-		await user.selectOptions(within(prioritySelect).getByRole("combobox"), "critical");
-		await waitFor(() => {
-			expect(mocks.put).toHaveBeenCalledWith("/api/posts", {
-				id: "post_1",
-				priority: "critical",
-			});
-		});
+		expect(within(drawer).getByText("auto")).toBeInTheDocument();
 	});
 
 	it("pins and features from the drawer", async () => {
