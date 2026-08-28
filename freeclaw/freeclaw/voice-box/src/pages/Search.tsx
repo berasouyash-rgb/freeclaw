@@ -6,8 +6,9 @@ import {
 	MessageCircle,
 	MessageSquare,
 	Search as SearchIcon,
+	X,
 } from "lucide-react";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router";
 import { useCategories } from "../hooks/useCategories";
 import { api } from "../lib/api";
@@ -85,8 +86,36 @@ export default function Search() {
 		[q, type, category, status],
 	);
 
+	const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+
+	// Debounced instant search — fires 300ms after the user stops typing
+	useEffect(() => {
+		if (!q.trim()) {
+			setResults([]);
+			setTotal(0);
+			setSearched(false);
+			return;
+		}
+		clearTimeout(debounceRef.current);
+		debounceRef.current = setTimeout(() => run(undefined), 300);
+		return () => clearTimeout(debounceRef.current);
+	}, [q, run]);
+
+	// Keyboard shortcut: / focuses the search input
+	useEffect(() => {
+		const h = (e: KeyboardEvent) => {
+			if (e.key === "/" && document.activeElement?.tagName !== "INPUT") {
+				e.preventDefault();
+				document.getElementById("advanced-search-input")?.focus();
+			}
+		};
+		window.addEventListener("keydown", h);
+		return () => window.removeEventListener("keydown", h);
+	}, []);
+
 	const onSubmit = () => {
-		if (q.trim().length >= 1) run();
+		clearTimeout(debounceRef.current);
+		if (q.trim().length >= 1) run(undefined);
 	};
 
 	const filterChange = (
@@ -95,8 +124,8 @@ export default function Search() {
 		v: string,
 	) => {
 		setter(v);
-		// run() is memoized on state, so the just-set value is stale — pass it explicitly
-		if (q.trim().length >= 1) run({ [key]: v }).catch(() => {});
+		clearTimeout(debounceRef.current);
+		debounceRef.current = setTimeout(() => run({ [key]: v }).catch(() => {}), 200);
 	};
 
 	const typeLabel = (r: SearchResult) =>
@@ -195,15 +224,36 @@ export default function Search() {
 						className="absolute left-3 top-1/2 -translate-y-1/2 text-ink3"
 						aria-hidden
 					/>
-					<input
-						id="advanced-search-input"
-						className="input !pl-9 !py-2.5"
-						placeholder="Search everything…"
-						value={q}
-						onChange={(e) => setQ(e.target.value)}
-						onKeyDown={(e) => e.key === "Enter" && onSubmit()}
-						aria-label="Search everything"
-					/>
+					<div className="relative">
+						<input
+							id="advanced-search-input"
+							className="input !pl-9 !py-2.5 !pr-16"
+							placeholder="Search everything… (press /)"
+							value={q}
+							onChange={(e) => setQ(e.target.value)}
+							onKeyDown={(e) => e.key === "Enter" && onSubmit()}
+							aria-label="Search everything"
+						/>
+						<div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1">
+							{q && (
+								<button
+									type="button"
+									onClick={() => {
+										setQ("");
+										setResults([]);
+										setSearched(false);
+									}}
+									className="text-ink3 hover:text-ink transition-colors"
+									aria-label="Clear search"
+								>
+									<X size={14} />
+								</button>
+							)}
+							<kbd className="hidden sm:inline-flex items-center gap-0.5 text-[9px] font-semibold text-ink3 border border-border rounded px-1 py-px">
+								/
+							</kbd>
+						</div>
+					</div>
 				</div>
 				<div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
 					<select
@@ -275,7 +325,7 @@ export default function Search() {
 			{error && (
 				<div className="card p-6 text-center">
 					<p className="text-bad font-medium text-sm">{error}</p>
-					<button className="btn btn-soft mt-3" onClick={() => run()}>
+					<button className="btn btn-soft mt-3" onClick={() => run(undefined)}>
 						Retry
 					</button>
 				</div>

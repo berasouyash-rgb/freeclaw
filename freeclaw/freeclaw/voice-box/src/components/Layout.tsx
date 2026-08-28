@@ -87,6 +87,14 @@ export default function Layout() {
 	} | null>(null);
 	const [offline, setOffline] = useState(!navigator.onLine);
 	const [queued, setQueued] = useState(queuedCount());
+	const [showTop, setShowTop] = useState(false);
+
+	// Back-to-top visibility — show after scrolling 400px
+	useEffect(() => {
+		const h = () => setShowTop(window.scrollY > 400);
+		window.addEventListener("scroll", h, { passive: true });
+		return () => window.removeEventListener("scroll", h);
+	}, []);
 
 	// offline detection + queued-action flush on reconnect
 	useEffect(() => {
@@ -592,6 +600,18 @@ export default function Layout() {
 			<Tutorial />
 
 			<CommandPalette />
+
+			{/* Back-to-top button — appears after scrolling down */}
+			{showTop && (
+				<button
+					onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}
+					className="fixed bottom-20 lg:bottom-8 right-4 z-50 w-10 h-10 rounded-full bg-surface border border-border shadow-lg grid place-items-center text-ink3 hover:text-accent hover:border-accent/40 transition-all vb-rise"
+					aria-label="Back to top"
+					title="Back to top"
+				>
+					↑
+				</button>
+			)}
 
 			{/* Toasts — container must never intercept clicks (pointer-events-none),
           only the toast cards themselves are clickable */}

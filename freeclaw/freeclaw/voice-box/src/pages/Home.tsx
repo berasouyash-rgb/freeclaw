@@ -37,6 +37,7 @@ const SORTS = [
 	{ key: "discussed", label: "Most Discussed", icon: MessageCircle },
 	{ key: "supported", label: "Most Supported", icon: ThumbsUp },
 ];
+const PAGE_SIZE = 20;
 
 export default function Home() {
 	const { anonId } = useApp();
@@ -51,6 +52,7 @@ export default function Home() {
 	const [statusFilter, setStatusFilter] = useState("all");
 	const [showFilters, setShowFilters] = useState(false);
 	const [pendingNew, setPendingNew] = useState(0);
+	const [visible, setVisible] = useState(PAGE_SIZE);
 	const knownIdsRef = useRef<Set<string>>(new Set());
 
 	const load = useCallback(
@@ -106,8 +108,12 @@ export default function Home() {
 		load(true),
 	);
 
+	// Reset visible count when filters change so user doesn't see stale page
+	useEffect(() => setVisible(PAGE_SIZE), [cat, sort, statusFilter, query]);
+
 	const showPending = () => {
 		window.scrollTo({ top: 0, behavior: "smooth" });
+		setVisible(PAGE_SIZE);
 		load(false);
 	};
 
@@ -503,14 +509,23 @@ export default function Home() {
 						<PlusCircle size={15} /> Report a problem
 					</Link>
 				</div>
-			)}
-			<div className="space-y-3 vb-feed-list">
-				{filtered.map((p, i) => (
-					<div key={p.id} {...(i === 0 ? { "data-tour": "post-card" } : {})}>
-						<PostCard post={p} myReactions={myReactions[p.id]} />
+			)}					<div className="space-y-3 vb-feed-list">
+						{filtered.slice(0, visible).map((p, i) => (
+							<div key={p.id} {...(i === 0 ? { "data-tour": "post-card" } : {})}>
+								<PostCard post={p} myReactions={myReactions[p.id]} />
+							</div>
+						))}
 					</div>
-				))}
-			</div>
+					{visible < filtered.length && (
+						<div className="text-center py-4">
+							<button
+								className="btn btn-soft"
+								onClick={() => setVisible((v) => v + PAGE_SIZE)}
+							>
+								Load more ({filtered.length - visible} remaining)
+							</button>
+						</div>
+					)}
 		</div>
 	);
 }
