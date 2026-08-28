@@ -1064,12 +1064,6 @@ export default function OpsCenter() {
 				>
 					{(() => {
 						const pulse = data.platform!.pulse!;
-						const prioColor = (p?: string) =>
-							p === "critical"
-								? "text-red-400"
-								: p === "high"
-									? "text-amber-400"
-									: "text-ink3";
 						return (
 							<div className="space-y-4">
 								{/* Emergency strip — only when something is actually critical/high */}
@@ -1086,12 +1080,9 @@ export default function OpsCenter() {
 													<div
 														key={p.id}
 														className="flex items-center gap-2 text-[11px]"
-													>
-														<span
-																className={`chip !text-[9px] ${prioColor(p.priority)}`}
-															>
-															{p.priority}
-															</span>
+													>																<span className="chip !text-[9px] !text-warn !border-warn/25">
+																	Open
+																</span>
 														<span className="truncate min-w-0">{p.title}</span>
 													</div>
 												))}
