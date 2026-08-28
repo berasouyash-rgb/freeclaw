@@ -294,7 +294,7 @@ const _prio = undefined; // keep import tree stable
 									className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-semibold transition-all duration-200 ${
 										active
 											? "vb-pop ring-1"
-											: "text-ink3 hover:bg-surface2 hover:-translate-y-0.5 hover:shadow-sm"
+											: "text-ink3 hover:text-accent"
 									}`}
 									style={
 										active
@@ -325,8 +325,7 @@ const _prio = undefined; // keep import tree stable
 						})}
 						<Link
 							to={`/post/${post.id}`}
-							data-tour="comments-link"
-							className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-semibold text-ink3 hover:bg-surface2 hover:text-accent transition-all duration-200"
+							data-tour="comments-link"								className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-semibold text-ink3 hover:text-accent transition-colors duration-200"
 						>
 							<MessageCircle
 								size={13}
@@ -336,8 +335,7 @@ const _prio = undefined; // keep import tree stable
 						</Link>
 						{post.linked_poll && (
 							<Link
-								to={`/post/${post.id}`}
-								className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-semibold text-accent hover:bg-accent-soft transition-all duration-200"
+								to={`/post/${post.id}`}									className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-semibold text-accent transition-colors duration-200"
 								title="This post has a live poll"
 							>
 								<BarChart3 size={13} /> Poll ·{" "}
@@ -358,7 +356,7 @@ const _prio = undefined; // keep import tree stable
 							}}
 							aria-label="Bookmark"
 							aria-pressed={bookmarks.includes(post.id)}
-							className={`px-2.5 py-1.5 rounded-lg transition-all duration-200 ${bookmarks.includes(post.id) ? "text-accent vb-pop" : "text-ink3 hover:text-accent hover:-translate-y-0.5 hover:bg-surface2"}`}
+							className={`px-2.5 py-1.5 rounded-lg transition-colors duration-200 ${bookmarks.includes(post.id) ? "text-accent vb-pop" : "text-ink3 hover:text-accent"}`}
 						>
 							<Bookmark
 								size={13}
@@ -370,7 +368,7 @@ const _prio = undefined; // keep import tree stable
 							onClick={() => setReportOpen(true)}
 							aria-label="Report this post"
 							title="Report this post"
-							className="px-2.5 py-1.5 rounded-lg text-ink3 hover:text-bad hover:-translate-y-0.5 hover:bg-surface2 transition-all duration-200"
+							className="px-2.5 py-1.5 rounded-lg text-ink3 hover:text-bad transition-colors duration-200"
 						>
 							<Flag size={13} className="transition-transform duration-200" />
 						</button>
@@ -397,7 +395,7 @@ const _prio = undefined; // keep import tree stable
 										disabled={!!busy}
 										onClick={() => adminSet({ status: "in_progress" })}
 										title="Mark in progress"
-										className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold text-warn bg-warn/10 border border-warn/25 hover:bg-warn/20 transition-colors disabled:opacity-40"
+										className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold text-warn bg-warn/10 border border-warn/25 transition-colors disabled:opacity-40"
 									>
 										<Play size={13} /> In progress
 									</button>
@@ -407,8 +405,7 @@ const _prio = undefined; // keep import tree stable
 										type="button"
 										disabled={!!busy}
 										onClick={() => adminSet({ status: "verified" })}
-										title="Verify this post"
-										className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold text-blue-400 bg-blue-500/10 border border-blue-500/25 hover:bg-blue-500/20 transition-colors disabled:opacity-40"
+										title="Verify this post"											className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold text-blue-400 bg-blue-500/10 border border-blue-500/25 transition-colors disabled:opacity-40"
 									>
 										<ShieldCheck size={13} /> Verify
 									</button>
@@ -417,8 +414,7 @@ const _prio = undefined; // keep import tree stable
 									type="button"
 									disabled={!!busy}
 									onClick={() => adminSet({ status: "solved" })}
-									title="Mark solved"
-									className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-xs font-bold text-good bg-good/15 border border-good/30 hover:bg-good/25 transition-colors disabled:opacity-40"
+									title="Mark solved"										className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-xs font-bold text-good bg-good/15 border border-good/30 transition-colors disabled:opacity-40"
 								>
 									<CheckCircle2 size={14} /> Solve
 								</button>
@@ -431,8 +427,7 @@ const _prio = undefined; // keep import tree stable
 							title={post.official ? "Remove official badge" : "Mark as official"}
 							className={`inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold transition-colors disabled:opacity-40 ${
 								post.official
-									? "text-amber-400 bg-amber-500/15 border border-amber-500/30"
-									: "text-amber-400 bg-amber-500/5 border border-amber-500/20 hover:bg-amber-500/15"
+									? "text-amber-400 bg-amber-500/15 border border-amber-500/30"										: "text-amber-400 bg-amber-500/5 border border-amber-500/20"
 							}`}
 						>
 							<Sparkles size={13} />
@@ -445,8 +440,7 @@ const _prio = undefined; // keep import tree stable
 							title={post.hidden ? "Unhide post" : "Hide post"}
 							className={`inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold transition-colors disabled:opacity-40 ${
 								post.hidden
-									? "text-red-400 bg-red-500/15 border border-red-500/30"
-									: "text-red-400 bg-red-500/5 border border-red-500/20 hover:bg-red-500/15"
+									? "text-red-400 bg-red-500/15 border border-red-500/30"										: "text-red-400 bg-red-500/5 border border-red-500/20"
 							}`}
 						>
 							<EyeOff size={13} /> {post.hidden ? "Unhide" : "Hide"}
@@ -455,7 +449,7 @@ const _prio = undefined; // keep import tree stable
 							type="button"
 							onClick={() => setReplyOpen((o) => !o)}
 							title="Post an official admin reply on this post"
-							className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold text-accent bg-accent/10 border border-accent/25 hover:bg-accent/20 transition-colors"
+							className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold text-accent bg-accent/10 border border-accent/25 transition-colors"
 						>
 							<Send size={13} /> {replyOpen ? "Close" : "Official reply"}
 						</button>

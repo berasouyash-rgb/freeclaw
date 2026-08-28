@@ -1482,24 +1482,27 @@ html[data-scale="110"] { font-size: 110%; }
    forever, leaving colored backgrounds that make text unreadable.
    ═══════════════════════════════════════════════════════════════ */
 @media (hover: none) and (pointer: coarse) {
-  /* Kill all hover background fills — cards, buttons, nav items */
-  .card-hover:hover,
-  .card-shimmer:hover,
-  .btn:hover,
-  .btn-ghost:hover,
-  .btn-danger:hover,
-  .btn-soft:hover {
+  /* Kill ALL hover states globally — covers every Tailwind hover: class */
+  *:hover {
+    background-color: unset !important;
+    border-color: unset !important;
+    color: unset !important;
     transform: none !important;
-    box-shadow: var(--vb-shadow-xs) !important;
-    background: inherit !important;
-    border-color: inherit !important;
-    color: inherit !important;
+    box-shadow: unset !important;
   }
-  /* Keep only :active (press) feedback — brief tactile scale */
+  /* Restore active (press) feedback on interactive elements */
   .btn:active:not(:disabled) {
     transform: scale(0.97) !important;
+    opacity: 0.85 !important;
   }
   .card-hover:active {
     transform: scale(0.985) !important;
+  }
+  /* Keep transition-colors working for instant text-color changes
+     only — no background or border transitions on touch */
+  .card,
+  .card * {
+    transition-property: color, opacity !important;
+    transition-duration: 0.15s !important;
   }
 }
