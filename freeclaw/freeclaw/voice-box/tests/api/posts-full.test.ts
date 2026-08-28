@@ -62,6 +62,12 @@ vi.mock("../../api/_moderation.js", () => ({
 		Promise.resolve({ approved: 0, blocked: 0 }),
 	),
 	recordModerationDecision: vi.fn(() => Promise.resolve()),
+	spamAnalyze: vi.fn(() => ({
+		spam_score: 0,
+		signals: {},
+		action: "allow",
+		details: {},
+	})),
 }));
 vi.mock("../../api/_follows.js", () => ({
 	notifyFollowers: vi.fn(() => Promise.resolve()),

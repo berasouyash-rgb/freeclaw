@@ -18,6 +18,7 @@ import {
 	ScrollText,
 	Search,
 	Settings as SettingsIcon,
+	Shield,
 	ShieldCheck,
 	Sun,
 	Table2,
@@ -62,6 +63,7 @@ const OpsCenter = retryLazy(() => import("./admin/OpsCenter"));
 const AgentDashboard = retryLazy(() => import("./admin/AgentDashboard"));
 // Reports — classic Report queue merged with Content Review + Approvals.
 const Reports = retryLazy(() => import("./admin/Reports"));
+const SpamDetection = retryLazy(() => import("./admin/SpamDetection"));
 const AdminLeaderboard = retryLazy(() => import("./admin/AdminLeaderboard"));
 const ErrorTracking = retryLazy(() => import("./admin/ErrorTracking"));
 
@@ -94,6 +96,7 @@ const TAB_GROUPS: { title: string; tabs: AdminTab[] }[] = [
 		title: "Moderation",
 		tabs: [
 			{ key: "reports", label: "Reports", icon: Flag },
+			{ key: "spam", label: "Spam Detection", icon: Shield },
 			{ key: "inbox", label: "Inbox", icon: Inbox },
 			{ key: "posts", label: "Feed", icon: Table2 },
 			{ key: "suggestions", label: "Suggestions", icon: Lightbulb },
@@ -578,6 +581,11 @@ export default function Admin() {
 						{tab === "reports" && (
 							<ErrorBoundary key="reports">
 								<Reports />
+							</ErrorBoundary>
+						)}
+						{tab === "spam" && (
+							<ErrorBoundary key="spam">
+								<SpamDetection />
 							</ErrorBoundary>
 						)}
 						{tab === "command-center" && (
