@@ -394,22 +394,22 @@ export default function Admin() {
 						className="absolute inset-0 bg-black/50"
 						onClick={() => setMobileNav(false)}
 					/>
-					<div className="absolute left-0 top-0 bottom-0 w-64 bg-surface p-4 pt-[max(1rem,env(safe-area-inset-top))] pb-[max(1rem,env(safe-area-inset-bottom))] overflow-y-auto vb-rise">
-						<div className="flex justify-between items-center mb-4">
+					<div className="absolute left-0 top-0 bottom-0 w-72 max-w-[85vw] bg-surface p-4 pt-[max(1rem,env(safe-area-inset-top))] pb-[max(1.5rem,env(safe-area-inset-bottom))] overflow-y-auto vb-rise">
+						<div className="flex justify-between items-center mb-5">
 							<span className="font-display font-bold text-sm">
 								Voice Box Admin
 							</span>
 							<button
-								className="btn btn-ghost !p-2"
+								className="btn btn-ghost !p-2.5 !rounded-xl"
 								onClick={() => setMobileNav(false)}
 								aria-label="Close menu"
 							>
-								<X size={16} />
+								<X size={18} />
 							</button>
 						</div>
 						{nav}
 						<button
-							className="btn btn-ghost w-full mt-4 !text-xs !text-bad !border-bad/25"
+							className="btn btn-ghost w-full mt-4 !text-sm !py-3 !text-bad !border-bad/25"
 							onClick={logout}
 						>
 							<LogOut size={13} /> Sign out
@@ -422,13 +422,13 @@ export default function Admin() {
 				{/* ── Top app bar — breadcrumb · search · actions ───────── */}
 				<header className="vb-admin-topbar sticky top-0 z-40">
 					{/* Mobile row */}
-					<div className="md:hidden flex items-center gap-3 px-4 py-2 pt-[max(0.5rem,env(safe-area-inset-top))]">
+					<div className="md:hidden flex items-center gap-3 px-4 py-3 pt-[max(0.75rem,env(safe-area-inset-top))] border-b border-border bg-surface">
 						<button
-							className="btn btn-ghost !p-2"
+							className="btn btn-ghost !p-2.5 !rounded-xl"
 							onClick={() => setMobileNav(true)}
 							aria-label="Open menu"
 						>
-							<Menu size={17} />
+							<Menu size={18} />
 						</button>
 						<div className="min-w-0">
 							<div className="text-[10px] text-ink3 leading-none">

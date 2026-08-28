@@ -518,6 +518,14 @@ h1,h2,h3,h4 { font-family: var(--font-display); letter-spacing: -0.01em; }
   border-radius: 6px;
   padding: 7px 10px;
   transition: background-color .12s ease, color .12s ease;
+  min-height: 36px;
+}
+@media (max-width: 767px) {
+  .admin-shell .vb-admin-nav {
+    padding: 10px 12px;
+    min-height: 44px;
+    font-size: 14px;
+  }
 }
 .admin-shell .vb-admin-nav:hover {
   background: var(--vb-surface2);
