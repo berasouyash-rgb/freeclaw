@@ -26,7 +26,7 @@ import { useApp } from "../contexts/AppContext";
 import { api, hasAdminSession } from "../lib/api";
 import { readAloud, speechOutputSupported, stopReading } from "../lib/speech";
 import { useRealtime } from "../lib/useRealtime";
-import { CAT_EMOJI, PRIORITY_META, timeAgo } from "../lib/utils";
+import { CAT_EMOJI, timeAgo } from "../lib/utils";
 import type { PollData, PostData } from "../types";
 
 export default function PostDetail() {
@@ -145,13 +145,31 @@ export default function PostDetail() {
 	// is already correct from the optimistic update; showing "Failed to load post"
 	// after a successful reaction is worse than keeping stale-but-correct data.
 	useRealtime(
-		["polls", "poll_votes", "reactions", "comments"],
+		["reactions", "comments"],
 		() => {
-			fetchPost().catch(() => {});
+			// Only update counts/mine — do NOT replace the entire post object,
+			// which causes the page to feel like it "resets" on every reaction.
+			// Full post refresh only happens on explicit user action or mount.
+			api.getFresh<{
+				post: PostData;
+				counts: Record<string, number>;
+				mine: string[];
+			}>(`/api/posts?id=${postId}&viewer=${anonId}`).then((res) => {
+				setCounts(res.counts || {});
+				setMine(res.mine || []);
+			}).catch(() => {});
+		},
+		1500,
+	);
+
+	// Poll changes trigger a lighter update — only the linked poll data.
+	useRealtime(
+		["polls", "poll_votes"],
+		() => {
 			fetchPoll().catch(() => {});
 			fetchMyVotes().catch(() => {});
 		},
-		600,
+		2000,
 	);
 
 	const toggleFollow = async () => {
@@ -304,31 +322,39 @@ export default function PostDetail() {
 				</div>
 			</div>
 		);
-	}
-
-	if (error || !p) {
-		return (
-			<div className="max-w-3xl mx-auto">
-				<button className="btn btn-ghost !px-3 mb-4" onClick={() => nav(-1)}>
-					<ArrowLeft size={15} /> Back
-				</button>
-				<div className="card p-8 text-center">
-					<div className="vb-empty-icon mx-auto mb-3">
-						<span className="inline-flex items-center justify-center w-12 h-12 rounded-full bg-red-100 text-red-500">
-							<Link2 size={24} />
-						</span>
-					</div>
-					<p className="text-ink2 font-semibold mb-1">Post not found</p>
-					<p className="text-sm text-ink3">
-						{error || "This post may have been removed or the link is invalid."}
-					</p>
+	}		if (error || !p) {
+			return (
+				<div className="max-w-3xl mx-auto vb-page-enter">
+					<button className="btn btn-ghost !px-3 mb-4" onClick={() => nav(-1)}>
+						<ArrowLeft size={15} /> Back
+					</button>
+					<div className="card p-8 text-center">
+						<div className="vb-empty-icon mx-auto mb-3">
+							<span className="inline-flex items-center justify-center w-12 h-12 rounded-full bg-red-100 text-red-500">
+								<Link2 size={24} />
+							</span>
+						</div>
+						<p className="text-ink2 font-semibold mb-1">Post not found</p>
+						<p className="text-sm text-ink3 mb-4">
+							{error || "This post may have been removed or the link is invalid."}
+						</p>
+						<div className="flex flex-wrap items-center justify-center gap-2">
+							<button className="btn btn-primary !text-xs" onClick={() => nav("/")}>
+								Go to Home
+							</button>
+							<button className="btn btn-ghost !text-xs" onClick={() => nav("/submit")}>
+								Submit a post
+							</button>
+							{error && (
+								<button className="btn btn-ghost !text-xs" onClick={fetchPost}>
+									Retry
+								</button>
+							)}
+						</div>
 				</div>
 			</div>
-		);
-	}
-
-	const prio = PRIORITY_META[p.priority] ??
-		PRIORITY_META.medium ?? { label: "Medium", color: "#888" };
+			);
+		}
 
 	return (
 		<div className="max-w-3xl mx-auto vb-page-enter">
@@ -341,12 +367,6 @@ export default function PostDetail() {
 				<div className="flex flex-wrap items-center gap-1.5 mb-3">
 					<span className="chip">
 						{CAT_EMOJI[p.category]} {p.category}
-					</span>
-					<span
-						className="chip"
-						style={{ color: prio.color, borderColor: `${prio.color}44` }}
-					>
-						{prio.label} priority
 					</span>
 					{p.locked && (
 						<span className="chip">

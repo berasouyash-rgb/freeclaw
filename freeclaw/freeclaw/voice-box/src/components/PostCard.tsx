@@ -24,7 +24,7 @@ import { useApp } from "../contexts/AppContext";
 import { api, hasAdminSession } from "../lib/api";
 import {
 	CAT_EMOJI,
-	PRIORITY_META,
+
 	STATUS_META,
 	timeAgo,
 	trendingScore,
@@ -139,8 +139,8 @@ function PostCardInner({ post, myReactions, onReacted }: PostCardProps) {
 
 	const status = STATUS_META[post.status] ??
 		STATUS_META.reported ?? { label: "Unknown", color: "#888", pct: 0 };
-	const prio = PRIORITY_META[post.priority] ??
-		PRIORITY_META.medium ?? { label: "Medium", color: "#888" };
+// priority removed — server computes auto-priority, no UI exposure
+const _prio = undefined; // keep import tree stable
 	// Trending: fast-rising support relative to age
 	const isTrending =
 		trendingScore(post) > 1.2 &&
@@ -253,15 +253,8 @@ function PostCardInner({ post, myReactions, onReacted }: PostCardProps) {
 							>
 								<Lock size={11} /> Private · admins only
 							</span>
-						)}
-						<span className="chip">{post.category}</span>
-						<span
-							className="chip"
-							style={{ color: prio.color, borderColor: `${prio.color}44` }}
-						>
-							{prio.label}
-						</span>
-						<span
+						)}							<span className="chip">{post.category}</span>
+							<span
 							className="chip"
 							style={{ color: status.color, borderColor: `${status.color}44` }}
 						>
