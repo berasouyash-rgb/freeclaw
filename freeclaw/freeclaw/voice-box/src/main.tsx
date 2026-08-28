@@ -5,11 +5,14 @@ import App from "./App.tsx";
 import { isChunkLoadError, reloadOnceForStaleChunk } from "./lib/retryLazy";
 import { initSentry } from "./lib/sentry";
 import { initVitals } from "./lib/vitals";
+import { initErrorCapture } from "./lib/errors";
 
 // Initialize Sentry error tracking as early as possible
 initSentry();
 // Collect real Core Web Vitals and report to backend
 initVitals();
+// Capture real JS errors and send to backend for admin visibility
+initErrorCapture();
 
 /** Remove the HTML splash. Safe to call multiple times. */
 function killSplash() {

@@ -107,6 +107,48 @@ export default function ErrorTracking() {
 		msg: string;
 	} | null>(null);
 
+	// ── Frontend JS errors (real browser telemetry) ──
+	interface FrontendErrorRow {
+		id: string;
+		message: string;
+		source: string;
+		filename?: string;
+		count: number;
+		first: string;
+		last: string;
+		devices: Record<string, number>;
+		samples: { stack?: string; url?: string; timestamp: string }[];
+	}
+	const [feErrors, setFeErrors] = useState<FrontendErrorRow[]>([]);
+	const [feSummary, setFeSummary] = useState<{
+		total_unique: number;
+		total_reports: number;
+		by_source: Record<string, number>;
+	} | null>(null);
+	const [feLoading, setFeLoading] = useState(true);
+
+	const loadFeErrors = useCallback(async () => {
+		setFeLoading(true);
+		try {
+			const r = await api.get<{
+				ok: boolean;
+				summary: typeof feSummary;
+				errors: FrontendErrorRow[];
+			}>("/api/errors");
+			setFeErrors(r.errors || []);
+			setFeSummary(r.summary || null);
+		} catch {
+			/* non-fatal */
+		}
+		setFeLoading(false);
+	}, []);
+
+	useEffect(() => {
+		loadFeErrors();
+		const iv = setInterval(loadFeErrors, 30000);
+		return () => clearInterval(iv);
+	}, [loadFeErrors]);
+
 	const loadHealth = useCallback(async (fresh = false) => {
 		setHealthLoading(true);
 		try {
@@ -539,6 +581,99 @@ export default function ErrorTracking() {
 								</div>
 							</div>
 						))}
+					</div>
+				)}
+			</div>
+
+			{/* ── Frontend JS Errors (real browser telemetry) ────────── */}
+			<div className="card p-5">
+				<div className="flex items-center justify-between mb-3">
+					<h2 className="font-display font-semibold text-sm flex items-center gap-2">
+						<Bug size={14} className="text-bad" /> Frontend JS Errors
+						<span className="chip !text-[9px]">real browser data</span>
+					</h2>
+					<button
+						className="btn btn-ghost !text-[10px] !py-1"
+						onClick={loadFeErrors}
+					>
+						<RefreshCcw size={10} /> Refresh
+					</button>
+				</div>
+				{feSummary && (
+					<div className="flex gap-3 mb-3">
+						<div className="bg-surface2/60 rounded-lg px-3 py-2">
+							<p className="font-display font-bold text-lg">
+								{feSummary.total_unique}
+							</p>
+							<p className="text-[10px] text-ink3">unique errors</p>
+						</div>
+						<div className="bg-surface2/60 rounded-lg px-3 py-2">
+							<p className="font-display font-bold text-lg">
+								{feSummary.total_reports}
+							</p>
+							<p className="text-[10px] text-ink3">total reports</p>
+						</div>
+						{Object.entries(feSummary.by_source).map(([src, cnt]) => (
+							<div key={src} className="bg-surface2/60 rounded-lg px-3 py-2">
+								<p className="font-display font-bold text-lg">{cnt}</p>
+								<p className="text-[10px] text-ink3">{src}</p>
+							</div>
+						))}
+					</div>
+				)}
+				{feLoading && feErrors.length === 0 ? (
+					<div className="space-y-2">
+						{[1, 2, 3].map((i) => (
+							<div key={i} className="skeleton h-12" />
+						))}
+					</div>
+				) : feErrors.length === 0 ? (
+					<div className="text-center py-8">
+						<p className="text-3xl mb-2">✨</p>
+						<p className="text-sm font-semibold">No frontend errors yet</p>
+						<p className="text-xs text-ink3 mt-1">
+							JS errors from real browsers will appear here automatically.
+						</p>
+					</div>
+				) : (
+					<div className="divide-y divide-border">
+						{feErrors.slice(0, 20).map((e) => (
+							<details key={e.id} className="group py-2.5">
+								<summary className="flex items-center gap-3 cursor-pointer">
+									<span className="shrink-0 w-7 h-7 rounded-lg bg-bad/10 text-bad grid place-items-center">
+										<XCircle size={13} />
+									</span>
+									<div className="min-w-0 flex-1">
+										<p className="text-xs font-semibold truncate">
+											{e.message}
+										</p>
+										<p className="text-[10px] text-ink3">
+											{e.source} · {e.count}x · {e.filename || "inline"}
+										</p>
+									</div>
+									<div className="text-right shrink-0">
+										<p className="text-[9px] text-ink3">
+											{Object.entries(e.devices)
+												.map(([d, c]) => `${d}:${c}`)
+												.join(" · ")}
+										</p>
+										<p className="text-[9px] text-ink3">
+											{timeAgo(e.last)}
+										</p>
+									</div>
+								</summary>
+								{e.samples.length > 0 && (
+									<pre className="mt-2 ml-10 p-2 rounded-lg bg-surface2/60 text-[9px] text-ink2 overflow-auto max-h-32 font-mono whitespace-pre-wrap">
+									{e.samples[0]?.stack || "No stack trace"}
+								</pre>
+								)}
+							</details>
+						))}
+						{feErrors.length > 20 && (
+							<p className="text-center text-[10px] text-ink3 py-2">
+								+{feErrors.length - 20} more errors
+							</p>
+						)}
 					</div>
 				)}
 			</div>
