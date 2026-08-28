@@ -49,6 +49,111 @@ import {
 import type { CommentData, PollData, PostData } from "../../types";
 import QuickActions from "./QuickActions";
 
+// ─── Web Vitals section — real browser telemetry ──────────────
+interface VitalStats {
+	total: number;
+	good: number;
+	needsImprovement: number;
+	poor: number;
+	goodRate: number;
+	avg: number;
+	p50: number;
+	p75: number;
+	p95: number;
+	p99: number;
+}
+
+function WebVitalsSection() {
+	const [vitals, setVitals] = useState<Record<string, VitalStats> | null>(null);
+
+	useEffect(() => {
+		let active = true;
+		const load = async () => {
+			try {
+				const r = await api.get('/api/vitals') as { vitals: Record<string, VitalStats> };
+				if (active) setVitals(r.vitals);
+			} catch {
+				/* vitals are best-effort */
+			}
+		};
+			load();
+			const iv = setInterval(load, 30000);
+			return () => {
+				active = false;
+				clearInterval(iv);
+			};
+		}, []);
+
+	if (!vitals || Object.keys(vitals).length === 0) {
+		return (
+			<section className="card p-4">
+				<h2 className="font-display font-semibold text-sm mb-2">
+					Web Vitals
+				</h2>
+				<p className="text-xs text-ink3">
+					No browser telemetry yet. Metrics appear as users visit the site.
+				</p>
+			</section>
+		);
+	}
+
+	const metrics = [
+		{ key: 'LCP', label: 'Largest Contentful Paint', unit: 'ms', good: 2500, poor: 4000 },
+		{ key: 'CLS', label: 'Cumulative Layout Shift', unit: '', good: 100, poor: 250 },
+		{ key: 'FID', label: 'First Input Delay', unit: 'ms', good: 100, poor: 300 },
+		{ key: 'INP', label: 'Interaction to Next Paint', unit: 'ms', good: 200, poor: 500 },
+		{ key: 'TTFB', label: 'Time to First Byte', unit: 'ms', good: 800, poor: 1800 },
+	];
+
+	return (
+		<section className="card p-4">
+			<div className="flex items-center justify-between mb-3">
+				<h2 className="font-display font-semibold text-sm">
+					Web Vitals — Real Browser Data
+				</h2>
+				<span className="text-[10px] text-ink3 bg-surface2 px-2 py-0.5 rounded-full">
+					Live
+				</span>
+			</div>
+			<div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
+				{metrics.map(({ key, label, unit }) => {
+					const v = vitals[key];
+					if (!v) return null;
+					const p50 = key === 'CLS' ? (v.p50 / 1000).toFixed(2) : v.p50;
+					const color =
+						v.goodRate >= 75
+							? 'text-good'
+							: v.goodRate >= 50
+								? 'text-warn'
+								: 'text-bad';
+					return (
+						<div key={key} className="bg-surface2 rounded-lg p-2.5">
+							<p className="text-[9px] font-bold uppercase tracking-wider text-ink3">
+								{key}
+							</p>
+							<p className={`font-display font-bold text-lg leading-tight ${color}`}>
+								{p50}{unit}
+							</p>
+							<p className="text-[10px] text-ink3 leading-tight mt-0.5">{label}</p>
+							<div className="flex items-center gap-1 mt-1.5">
+								<div className="flex-1 h-1 rounded-full bg-bad/20 overflow-hidden">
+									<div
+										className="h-full rounded-full bg-good"
+										style={{ width: `${v.goodRate}%` }}
+									/>
+								</div>
+								<span className="text-[9px] font-semibold text-ink3">
+									{v.goodRate}%
+								</span>
+							</div>
+						</div>
+					);
+				})}
+			</div>
+		</section>
+	);
+}
+
 const DAY = 86400000;
 
 interface ReportRow {
@@ -1149,6 +1254,9 @@ export default function Overview() {
 					)}
 				</section>
 			)}
+
+{/* ── Real Web Vitals from actual browsers ───────────── */}
+			<WebVitalsSection />
 
 {/* ── Quick actions: broadcast + triage ────────────────────── */}
 			<QuickActions posts={posts} onStatusChange={setStatus} />
