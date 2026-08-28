@@ -284,7 +284,12 @@ export default async function handler(req, res) {
 
 		if (req.method === "POST") {
 			const b = req.body || {};
-			const author_id = clean(b.author_id, 40);
+			// P0 SECURITY FIX: Derive author_id from x-anon-id header, NOT from client body
+			const headerId = clean(req.headers["x-anon-id"] || "", 40);
+			const admin = await isAdmin(req);
+			const author_id = headerId || (admin ? "ADMIN" : "");
+			if (!author_id)
+				return res.status(403).json({ error: "Missing session identity (x-anon-id header)" });
 			const gate = await checkUser(author_id);
 			if (!gate.ok) return res.status(403).json({ error: gate.error });
 			if (await rateLimited("reports", author_id, 300, 10)) {

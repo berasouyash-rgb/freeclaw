@@ -138,8 +138,12 @@ export default async function handler(req, res) {
 
 		if (req.method === "POST") {
 			const b = req.body || {};
-			const author_id = clean(b.author_id, 40);
+			// P0 SECURITY FIX: Derive author_id from x-anon-id header, NOT from client body
+			const headerId = clean(req.headers["x-anon-id"] || "", 40);
 			const is_admin_msg = b.is_admin === true && (await isAdmin(req));
+			const author_id = headerId || (is_admin_msg ? "ADMIN" : "");
+			if (!author_id)
+				return res.status(403).json({ error: "Missing session identity (x-anon-id header)" });
 			if (!is_admin_msg) {
 				const gate = await checkUser(author_id);
 				if (!gate.ok) return res.status(403).json({ error: gate.error });
@@ -233,8 +237,10 @@ export default async function handler(req, res) {
 			const admin = await isAdmin(req);
 			// 'ADMIN' comments may only be edited by verified admins — a plain user
 			// could otherwise spoof author_id='ADMIN' (a public constant) to edit them.
+			// P0 SECURITY FIX: Derive caller identity from x-anon-id header, not client body
+			const callerId = clean(req.headers["x-anon-id"] || "", 40);
 			const isOwner =
-				b.author_id && b.author_id !== "ADMIN" && b.author_id === cmt.author_id;
+				callerId && callerId !== "ADMIN" && callerId === cmt.author_id;
 			if (!isOwner && !admin)
 				return res.status(403).json({ error: "Not authorized" });
 			const patch = {};

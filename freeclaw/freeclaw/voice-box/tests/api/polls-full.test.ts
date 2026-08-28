@@ -229,7 +229,7 @@ describe("GET /api/polls", () => {
 		const { default: handler } = await import("../../api/_polls.js");
 		const res = response();
 		await handler(
-			{ method: "GET", query: { voter: "anon-2" }, body: {}, headers: {} },
+			{ method: "GET", query: { voter: "anon-2" }, body: {}, headers: { "x-anon-id": "anon-1" } },
 			res,
 		);
 		expect(res.statusCode).toBe(200);
@@ -243,7 +243,7 @@ describe("GET /api/polls", () => {
 		const { default: handler } = await import("../../api/_polls.js");
 		const res = response();
 		await handler(
-			{ method: "GET", query: { viewer: "anon-7" }, body: {}, headers: {} },
+			{ method: "GET", query: { viewer: "anon-7" }, body: {}, headers: { "x-anon-id": "anon-1" } },
 			res,
 		);
 		expect(res.statusCode).toBe(200);
@@ -258,7 +258,7 @@ describe("GET /api/polls", () => {
 		state.posts = [];
 		const { default: handler } = await import("../../api/_polls.js");
 		const res = response();
-		await handler({ method: "GET", query: {}, body: {}, headers: {} }, res);
+		await handler({ method: "GET", query: {}, body: {}, headers: { "x-anon-id": "anon-1" } }, res);
 		expect(res.statusCode).toBe(200);
 		const [p] = res.body as Array<{ author_id: string }>;
 		expect(p.author_id).toBe("anon-99...");
@@ -270,7 +270,7 @@ describe("GET /api/polls", () => {
 		state.posts = [];
 		const { default: handler } = await import("../../api/_polls.js");
 		const res = response();
-		await handler({ method: "GET", query: {}, body: {}, headers: {} }, res);
+		await handler({ method: "GET", query: {}, body: {}, headers: { "x-anon-id": "anon-1" } }, res);
 		expect(res.statusCode).toBe(200);
 		const [p] = res.body as Array<{ author_id: string }>;
 		expect(p.author_id).toBe("ADMIN");
@@ -288,7 +288,7 @@ describe("GET /api/polls", () => {
 		state.posts = []; // linked post does not exist → orphan
 		const { default: handler } = await import("../../api/_polls.js");
 		const res = response();
-		await handler({ method: "GET", query: {}, body: {}, headers: {} }, res);
+		await handler({ method: "GET", query: {}, body: {}, headers: { "x-anon-id": "anon-1" } }, res);
 		expect(res.statusCode).toBe(200);
 		const [p] = res.body as Array<{ post_id: string | null }>;
 		expect(p.post_id).toBeNull();
@@ -303,7 +303,7 @@ describe("GET /api/polls", () => {
 		state.posts = [{ id: "post-1" }];
 		const { default: handler } = await import("../../api/_polls.js");
 		const res = response();
-		await handler({ method: "GET", query: {}, body: {}, headers: {} }, res);
+		await handler({ method: "GET", query: {}, body: {}, headers: { "x-anon-id": "anon-1" } }, res);
 		expect(res.statusCode).toBe(200);
 		const [p] = res.body as Array<{ post_id: string | null }>;
 		expect(p.post_id).toBe("post-1");
@@ -320,7 +320,7 @@ describe("GET /api/polls", () => {
 		(isAdmin as ReturnType<typeof vi.fn>).mockResolvedValueOnce(true);
 		const { default: handler } = await import("../../api/_polls.js");
 		const res = response();
-		await handler({ method: "GET", query: {}, body: {}, headers: {} }, res);
+		await handler({ method: "GET", query: {}, body: {}, headers: { "x-anon-id": "anon-1" } }, res);
 		expect(res.statusCode).toBe(200);
 		const [p] = res.body as Array<{ deleted: boolean }>;
 		expect(p.deleted).toBe(true);
@@ -346,7 +346,7 @@ describe("POST /api/polls { action: vote }", () => {
 					choices: [0],
 					author_id: "anon-2",
 				},
-				headers: {},
+				headers: { "x-anon-id": "anon-2" },
 			},
 			res,
 		);
@@ -367,7 +367,7 @@ describe("POST /api/polls { action: vote }", () => {
 					choices: [0],
 					author_id: "anon-2",
 				},
-				headers: {},
+				headers: { "x-anon-id": "anon-2" },
 			},
 			res,
 		);
@@ -388,7 +388,7 @@ describe("POST /api/polls { action: vote }", () => {
 					choices: [0],
 					author_id: "anon-2",
 				},
-				headers: {},
+				headers: { "x-anon-id": "anon-2" },
 			},
 			res,
 		);
@@ -409,7 +409,7 @@ describe("POST /api/polls { action: vote }", () => {
 					choices: [0],
 					author_id: "anon-2",
 				},
-				headers: {},
+				headers: { "x-anon-id": "anon-2" },
 			},
 			res,
 		);
@@ -431,7 +431,7 @@ describe("POST /api/polls { action: vote }", () => {
 					choices: [0],
 					author_id: "anon-2",
 				},
-				headers: {},
+				headers: { "x-anon-id": "anon-2" },
 			},
 			res,
 		);
@@ -453,7 +453,7 @@ describe("POST /api/polls { action: vote }", () => {
 					choices: [],
 					author_id: "anon-2",
 				},
-				headers: {},
+				headers: { "x-anon-id": "anon-2" },
 			},
 			res,
 		);
@@ -475,7 +475,7 @@ describe("POST /api/polls { action: vote }", () => {
 					choices: [0, 1],
 					author_id: "anon-2",
 				},
-				headers: {},
+				headers: { "x-anon-id": "anon-2" },
 			},
 			res,
 		);
@@ -498,7 +498,7 @@ describe("POST /api/polls { action: vote }", () => {
 					choices: [0],
 					author_id: "anon-2",
 				},
-				headers: {},
+				headers: { "x-anon-id": "anon-2" },
 			},
 			res,
 		);
@@ -527,7 +527,7 @@ describe("POST /api/polls { action: vote }", () => {
 					choices: [0],
 					author_id: "anon-2",
 				},
-				headers: {},
+				headers: { "x-anon-id": "anon-2" },
 			},
 			res,
 		);
@@ -558,7 +558,7 @@ describe("POST /api/polls { action: vote }", () => {
 						choices: [0],
 						author_id: "anon-2",
 					},
-					headers: {},
+					headers: { "x-anon-id": "anon-2" },
 				},
 				res,
 			),
@@ -583,7 +583,7 @@ describe("POST /api/polls { action: vote }", () => {
 						choices: [0],
 						author_id: "anon-2",
 					},
-					headers: {},
+					headers: { "x-anon-id": "anon-2" },
 				},
 				res,
 			),
@@ -608,7 +608,7 @@ describe("POST /api/polls { action: vote }", () => {
 						choices: [0],
 						author_id: "anon-2",
 					},
-					headers: {},
+					headers: { "x-anon-id": "anon-2" },
 				},
 				res,
 			),
@@ -633,7 +633,7 @@ describe("POST /api/polls { action: vote }", () => {
 						choices: [0],
 						author_id: "anon-2",
 					},
-					headers: {},
+					headers: { "x-anon-id": "anon-2" },
 				},
 				res,
 			),
@@ -651,7 +651,7 @@ describe("POST /api/polls — create", () => {
 				method: "POST",
 				query: {},
 				body: { title: "Should the library open longer?", author_id: "anon-2" },
-				headers: {},
+				headers: { "x-anon-id": "anon-2" },
 			},
 			res,
 		);
@@ -674,7 +674,7 @@ describe("POST /api/polls — create", () => {
 				method: "POST",
 				query: {},
 				body: { title: "Should we change the schedule?", author_id: "anon-2" },
-				headers: {},
+				headers: { "x-anon-id": "anon-2" },
 			},
 			res,
 		);
@@ -689,7 +689,7 @@ describe("POST /api/polls — create", () => {
 				method: "POST",
 				query: {},
 				body: { title: "Ques", author_id: "anon-2" },
-				headers: {},
+				headers: { "x-anon-id": "anon-2" },
 			},
 			res,
 		);
@@ -710,7 +710,7 @@ describe("POST /api/polls — create", () => {
 					options: ["Only one"],
 					author_id: "anon-2",
 				},
-				headers: {},
+				headers: { "x-anon-id": "anon-2" },
 			},
 			res,
 		);
@@ -731,7 +731,7 @@ describe("POST /api/polls — create", () => {
 				method: "POST",
 				query: {},
 				body: { title: "Where does Alex live?", author_id: "anon-2" },
-				headers: {},
+				headers: { "x-anon-id": "anon-2" },
 			},
 			res,
 		);
@@ -757,7 +757,7 @@ describe("POST /api/polls — create", () => {
 				method: "POST",
 				query: {},
 				body: { title: "A dangerous question", author_id: "anon-2" },
-				headers: {},
+				headers: { "x-anon-id": "anon-2" },
 			},
 			res,
 		);
@@ -777,7 +777,7 @@ describe("POST /api/polls — create", () => {
 					expires_at: "2099-05-01T12:00:00Z",
 					author_id: "anon-2",
 				},
-				headers: {},
+				headers: { "x-anon-id": "anon-2" },
 			},
 			res1,
 		);
@@ -796,7 +796,7 @@ describe("POST /api/polls — create", () => {
 					expires_at: "not-a-date",
 					author_id: "anon-2",
 				},
-				headers: {},
+				headers: { "x-anon-id": "anon-2" },
 			},
 			res2,
 		);
@@ -816,7 +816,7 @@ describe("POST /api/polls — create", () => {
 				method: "POST",
 				query: {},
 				body: { title: "Official town hall poll?" },
-				headers: {},
+				headers: { "x-anon-id": "anon-1" },
 			},
 			res,
 		);
@@ -836,7 +836,7 @@ describe("PUT /api/polls", () => {
 				method: "PUT",
 				query: {},
 				body: { id: "nope", archived: true, author_id: "anon-2" },
-				headers: {},
+				headers: { "x-anon-id": "anon-2" },
 			},
 			res,
 		);
@@ -852,7 +852,7 @@ describe("PUT /api/polls", () => {
 				method: "PUT",
 				query: {},
 				body: { id: "poll-1", archived: true, author_id: "ADMIN" },
-				headers: {},
+				headers: { "x-anon-id": "anon-1" },
 			},
 			res,
 		);
@@ -868,7 +868,7 @@ describe("PUT /api/polls", () => {
 				method: "PUT",
 				query: {},
 				body: { id: "poll-1", archived: true, author_id: "anon-9" },
-				headers: {},
+				headers: { "x-anon-id": "anon-9" },
 			},
 			res,
 		);
@@ -884,7 +884,7 @@ describe("PUT /api/polls", () => {
 				method: "PUT",
 				query: {},
 				body: { id: "poll-1", archived: true, author_id: "anon-2" },
-				headers: {},
+				headers: { "x-anon-id": "anon-2" },
 			},
 			res,
 		);
@@ -904,7 +904,7 @@ describe("PUT /api/polls", () => {
 				method: "PUT",
 				query: {},
 				body: { id: "poll-1", expires_at: "2099-01-01T00:00:00Z" },
-				headers: {},
+				headers: { "x-anon-id": "anon-1" },
 			},
 			res,
 		);
@@ -923,7 +923,7 @@ describe("DELETE /api/polls", () => {
 		const { default: handler } = await import("../../api/_polls.js");
 		const res = response();
 		await handler(
-			{ method: "DELETE", query: {}, body: { id: "poll-1" }, headers: {} },
+			{ method: "DELETE", query: {}, body: { id: "poll-1" }, headers: { "x-anon-id": "anon-1" } },
 			res,
 		);
 		expect(res.statusCode).toBe(403);
@@ -935,7 +935,7 @@ describe("DELETE /api/polls", () => {
 		const { default: handler } = await import("../../api/_polls.js");
 		const res = response();
 		await handler(
-			{ method: "DELETE", query: {}, body: { id: "poll-1" }, headers: {} },
+			{ method: "DELETE", query: {}, body: { id: "poll-1" }, headers: { "x-anon-id": "anon-1" } },
 			res,
 		);
 		expect(res.statusCode).toBe(200);
@@ -952,7 +952,7 @@ describe("method routing", () => {
 	it("answers OPTIONS with 204", async () => {
 		const { default: handler } = await import("../../api/_polls.js");
 		const res = response();
-		await handler({ method: "OPTIONS", query: {}, body: {}, headers: {} }, res);
+		await handler({ method: "OPTIONS", query: {}, body: {}, headers: { "x-anon-id": "anon-1" } }, res);
 		expect(res.statusCode).toBe(204);
 	});
 });

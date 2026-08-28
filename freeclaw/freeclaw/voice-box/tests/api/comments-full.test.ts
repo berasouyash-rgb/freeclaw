@@ -330,7 +330,7 @@ describe("POST /api/comments", () => {
 				method: "POST",
 				query: {},
 				body: { post_id: "p1", body: "hello there", author_id: "anon-2" },
-				headers: {},
+				headers: { "x-anon-id": "anon-2" },
 			},
 			res,
 		);
@@ -348,7 +348,7 @@ describe("POST /api/comments", () => {
 				method: "POST",
 				query: {},
 				body: { post_id: "p1", body: "hello there", author_id: "anon-2" },
-				headers: {},
+				headers: { "x-anon-id": "anon-2" },
 			},
 			res,
 		);
@@ -363,7 +363,7 @@ describe("POST /api/comments", () => {
 				method: "POST",
 				query: {},
 				body: { post_id: "p1", body: "x", author_id: "anon-2" },
-				headers: {},
+				headers: { "x-anon-id": "anon-2" },
 			},
 			res,
 		);
@@ -387,7 +387,7 @@ describe("POST /api/comments", () => {
 					body: "call me at 555-0100",
 					author_id: "anon-2",
 				},
-				headers: {},
+				headers: { "x-anon-id": "anon-2" },
 			},
 			res,
 		);
@@ -413,7 +413,7 @@ describe("POST /api/comments", () => {
 				method: "POST",
 				query: {},
 				body: { post_id: "p1", body: "a nasty message", author_id: "anon-2" },
-				headers: {},
+				headers: { "x-anon-id": "anon-2" },
 			},
 			res,
 		);
@@ -430,7 +430,7 @@ describe("POST /api/comments", () => {
 				method: "POST",
 				query: {},
 				body: { post_id: "p1", body: "hello there", author_id: "anon-2" },
-				headers: {},
+				headers: { "x-anon-id": "anon-2" },
 			},
 			res,
 		);
@@ -453,7 +453,7 @@ describe("POST /api/comments", () => {
 					body: "hello there",
 					author_id: "anon-2",
 				},
-				headers: {},
+				headers: { "x-anon-id": "anon-2" },
 			},
 			res,
 		);
@@ -506,7 +506,7 @@ describe("PUT /api/comments", () => {
 				method: "PUT",
 				query: {},
 				body: { id: "nope", body: "edit", author_id: "anon-2" },
-				headers: {},
+				headers: { "x-anon-id": "anon-2" },
 			},
 			res,
 		);
@@ -538,7 +538,7 @@ describe("PUT /api/comments", () => {
 				method: "PUT",
 				query: {},
 				body: { id: "c1", body: "edit", author_id: "anon-9" },
-				headers: {},
+				headers: { "x-anon-id": "anon-9" },
 			},
 			res,
 		);
@@ -555,7 +555,7 @@ describe("PUT /api/comments", () => {
 				method: "PUT",
 				query: {},
 				body: { id: "c1", body: "my updated comment", author_id: "anon-2" },
-				headers: {},
+				headers: { "x-anon-id": "anon-2" },
 			},
 			res,
 		);
@@ -586,7 +586,7 @@ describe("PUT /api/comments", () => {
 					body: "my address is 1 Main St",
 					author_id: "anon-2",
 				},
-				headers: {},
+				headers: { "x-anon-id": "anon-2" },
 			},
 			res,
 		);
@@ -603,7 +603,7 @@ describe("PUT /api/comments", () => {
 				method: "PUT",
 				query: {},
 				body: { id: "c1", deleted: true, author_id: "anon-2" },
-				headers: {},
+				headers: { "x-anon-id": "anon-2" },
 			},
 			res,
 		);

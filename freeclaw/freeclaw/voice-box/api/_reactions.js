@@ -58,7 +58,12 @@ export default async function handler(req, res) {
 
 		if (req.method === "POST") {
 			const b = req.body || {};
-			const author_id = clean(b.author_id, 40);
+			// P0 SECURITY FIX: Derive author_id from x-anon-id header, NOT from client body
+			const headerId = clean(req.headers["x-anon-id"] || "", 40);
+			const admin = await isAdmin(req);
+			const author_id = headerId || (admin ? "ADMIN" : "");
+			if (!author_id)
+				return res.status(403).json({ error: "Missing session identity (x-anon-id header)" });
 			const kind = NORMALIZE[b.kind] || null;
 			const target_id = clean(b.target_id, 60);
 			const target_type = ["post", "comment", "suggestion"].includes(

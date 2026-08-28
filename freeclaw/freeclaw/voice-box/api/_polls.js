@@ -128,7 +128,13 @@ export default async function handler(req, res) {
 
 		if (req.method === "POST") {
 			const b = req.body || {};
-			const author_id = clean(b.author_id, 40);
+			// P0 SECURITY FIX: Derive author_id from x-anon-id header, NOT from client body
+			const headerId = clean(req.headers["x-anon-id"] || "", 40);
+			const admin = await isAdmin(req);
+			// Admin callers use 'ADMIN' as author; anon users get their header identity
+			const author_id = admin ? "ADMIN" : headerId;
+			if (!author_id)
+				return res.status(403).json({ error: "Missing session identity (x-anon-id header)" });
 
 			if (b.action === "closed") {
 				// Poll-close notification — notifies the poll's author that it has
@@ -264,7 +270,6 @@ export default async function handler(req, res) {
 			}
 
 			// Create poll
-			const admin = await isAdmin(req);
 			if (!admin) {
 				const gate = await checkUser(author_id);
 				if (!gate.ok) return res.status(403).json({ error: gate.error });
@@ -346,15 +351,14 @@ export default async function handler(req, res) {
 				.eq("id", b.id)
 				.maybeSingle();
 			if (!poll) return res.status(404).json({ error: "Poll not found" });
-			// 'ADMIN' polls may only be modified by verified admins — a plain user
-			// could otherwise spoof author_id='ADMIN' (a public constant) to delete them.
+			// P0 SECURITY FIX: Derive caller identity from x-anon-id header, not client body
+			const callerId = clean(req.headers["x-anon-id"] || "", 40);
 			const isOwner =
-				b.author_id &&
-				b.author_id !== "ADMIN" &&
-				b.author_id === poll.author_id;
-			// FIX #16: Validate owner identity via checkUser so banned users cannot modify
+				callerId &&
+				callerId !== "ADMIN" &&
+				callerId === poll.author_id;
 			if (!admin && isOwner) {
-				const gate = await checkUser(b.author_id);
+				const gate = await checkUser(callerId);
 				if (!gate.ok) return res.status(403).json({ error: gate.error });
 			}
 			if (!admin && !isOwner)

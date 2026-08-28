@@ -465,7 +465,7 @@ describe("POST /api/posts — gate, validation, duplicate, moderation", () => {
 					title: "Valid title here",
 					description: "Valid description text",
 				},
-				headers: {},
+				headers: { "x-anon-id": "anon-2" },
 			},
 			res,
 		);
@@ -488,7 +488,7 @@ describe("POST /api/posts — gate, validation, duplicate, moderation", () => {
 					title: "Valid title here",
 					description: "Valid description text",
 				},
-				headers: {},
+				headers: { "x-anon-id": "anon-2" },
 			},
 			res,
 		);
@@ -507,7 +507,7 @@ describe("POST /api/posts — gate, validation, duplicate, moderation", () => {
 					title: "shrt",
 					description: "Valid description text",
 				},
-				headers: {},
+				headers: { "x-anon-id": "anon-2" },
 			},
 			res,
 		);
@@ -527,7 +527,7 @@ describe("POST /api/posts — gate, validation, duplicate, moderation", () => {
 					title: "Valid title here",
 					description: "too short",
 				},
-				headers: {},
+				headers: { "x-anon-id": "anon-2" },
 			},
 			res,
 		);
@@ -556,7 +556,7 @@ describe("POST /api/posts — gate, validation, duplicate, moderation", () => {
 					description: "It shuts down after ten minutes",
 					category: "Facilities",
 				},
-				headers: {},
+				headers: { "x-anon-id": "anon-2" },
 			},
 			res,
 		);
@@ -585,7 +585,7 @@ describe("POST /api/posts — gate, validation, duplicate, moderation", () => {
 					description: "It shuts down after ten minutes",
 					category: "Facilities",
 				},
-				headers: {},
+				headers: { "x-anon-id": "anon-2" },
 			},
 			res,
 		);
@@ -611,7 +611,7 @@ describe("POST /api/posts — gate, validation, duplicate, moderation", () => {
 					title: "Valid title here",
 					description: "Valid description text",
 				},
-				headers: {},
+				headers: { "x-anon-id": "anon-2" },
 			},
 			res,
 		);
@@ -643,7 +643,7 @@ describe("POST /api/posts — gate, validation, duplicate, moderation", () => {
 					title: "Valid title here",
 					description: "Valid description text",
 				},
-				headers: {},
+				headers: { "x-anon-id": "anon-2" },
 			},
 			res,
 		);
@@ -670,7 +670,7 @@ describe("POST /api/posts — gate, validation, duplicate, moderation", () => {
 					title: "Valid title here",
 					description: "Valid description text",
 				},
-				headers: {},
+				headers: { "x-anon-id": "anon-2" },
 			},
 			res,
 		);
@@ -704,7 +704,7 @@ describe("POST /api/posts — gate, validation, duplicate, moderation", () => {
 					title: "Valid title here",
 					description: "Valid description text",
 				},
-				headers: {},
+				headers: { "x-anon-id": "anon-2" },
 			},
 			res,
 		);
@@ -731,7 +731,7 @@ describe("POST /api/posts — gate, validation, duplicate, moderation", () => {
 					tags: ["tech", "repair"],
 					category: "Facilities",
 				},
-				headers: {},
+				headers: { "x-anon-id": "anon-2" },
 			},
 			res,
 		);
@@ -767,7 +767,7 @@ describe("POST /api/posts — gate, validation, duplicate, moderation", () => {
 					type: "weird",
 					priority: "urgent",
 				},
-				headers: {},
+				headers: { "x-anon-id": "anon-2" },
 			},
 			res,
 		);
@@ -811,7 +811,7 @@ describe("PUT /api/posts — ownership, admin patches, moderation", () => {
 				method: "PUT",
 				query: {},
 				body: { id: "p1", author_id: "anon-2" },
-				headers: {},
+				headers: { "x-anon-id": "anon-2" },
 			},
 			res,
 		);
@@ -832,7 +832,7 @@ describe("PUT /api/posts — ownership, admin patches, moderation", () => {
 					title: "Fixed title now",
 					description: "A longer description that is definitely valid",
 				},
-				headers: {},
+				headers: { "x-anon-id": "anon-2" },
 			},
 			res,
 		);
@@ -865,7 +865,7 @@ describe("PUT /api/posts — ownership, admin patches, moderation", () => {
 					title: "New title",
 					description: "New description",
 				},
-				headers: {},
+				headers: { "x-anon-id": "anon-2" },
 			},
 			res,
 		);
@@ -894,7 +894,7 @@ describe("PUT /api/posts — ownership, admin patches, moderation", () => {
 					title: "New title",
 					description: "New description",
 				},
-				headers: {},
+				headers: { "x-anon-id": "anon-2" },
 			},
 			res,
 		);
@@ -919,7 +919,7 @@ describe("PUT /api/posts — ownership, admin patches, moderation", () => {
 				method: "PUT",
 				query: {},
 				body: { id: "p1", author_id: "anon-2" },
-				headers: {},
+				headers: { "x-anon-id": "anon-2" },
 			},
 			res,
 		);

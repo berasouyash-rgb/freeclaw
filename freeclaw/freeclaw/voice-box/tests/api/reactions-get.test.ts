@@ -185,7 +185,7 @@ describe("POST /api/reactions — counts error fallback", () => {
 			{
 				method: "POST",
 				query: {},
-				headers: {},
+				headers: { "x-anon-id": "anon-1" },
 				body: {
 					author_id: "anon-1",
 					target_id: "post-1",
@@ -206,7 +206,7 @@ describe("method routing", () => {
 	it("answers OPTIONS with 204", async () => {
 		const { default: handler } = await import("../../api/_reactions.js");
 		const res = response();
-		await handler({ method: "OPTIONS", query: {}, body: {}, headers: {} }, res);
+		await handler({ method: "OPTIONS", query: {}, body: {}, headers: { "x-anon-id": "anon-1" } }, res);
 		expect(res.statusCode).toBe(204);
 	});
 

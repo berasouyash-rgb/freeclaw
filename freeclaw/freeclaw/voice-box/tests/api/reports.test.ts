@@ -218,7 +218,7 @@ describe("POST /api/reports", () => {
 	it("inserts the report and auto-strikes the target author once", async () => {
 		seedPostTarget();
 		const res = response();
-		await handler({ method: "POST", body: { ...REPORT }, headers: {} }, res);
+		await handler({ method: "POST", body: { ...REPORT }, headers: { "x-anon-id": "anon_reporter" } }, res);
 
 		expect(res.statusCode).toBe(201);
 		expect(res.body.target_id).toBe("p1");
@@ -238,7 +238,7 @@ describe("POST /api/reports", () => {
 	it("400s when target_id is missing", async () => {
 		const res = response();
 		await handler(
-			{ method: "POST", body: { ...REPORT, target_id: "" }, headers: {} },
+			{ method: "POST", body: { ...REPORT, target_id: "" }, headers: { "x-anon-id": "anon_reporter" } },
 			res,
 		);
 		expect(res.statusCode).toBe(400);
@@ -252,7 +252,7 @@ describe("POST /api/reports", () => {
 			error: "This anonymous ID has been permanently banned.",
 		});
 		const res = response();
-		await handler({ method: "POST", body: { ...REPORT }, headers: {} }, res);
+		await handler({ method: "POST", body: { ...REPORT }, headers: { "x-anon-id": "anon_reporter" } }, res);
 		expect(res.statusCode).toBe(403);
 		expect(state["reports:lastInsert"]).toBeUndefined();
 	});
@@ -260,7 +260,7 @@ describe("POST /api/reports", () => {
 	it("429s when rate limited (max 10 reports / 5 min)", async () => {
 		authMocks.rateLimited.mockResolvedValue(true);
 		const res = response();
-		await handler({ method: "POST", body: { ...REPORT }, headers: {} }, res);
+		await handler({ method: "POST", body: { ...REPORT }, headers: { "x-anon-id": "anon_reporter" } }, res);
 		expect(res.statusCode).toBe(429);
 	});
 
@@ -271,7 +271,7 @@ describe("POST /api/reports", () => {
 			{
 				method: "POST",
 				body: { ...REPORT, target_type: "garbage" },
-				headers: {},
+				headers: { "x-anon-id": "anon_reporter" },
 			},
 			res,
 		);
@@ -282,7 +282,7 @@ describe("POST /api/reports", () => {
 		// pre-publish fallback id ('anonymous') and admin are not strikable
 		state["posts:singleRow"] = { id: "p1", author_id: "anonymous", title: "x" };
 		const res = response();
-		await handler({ method: "POST", body: { ...REPORT }, headers: {} }, res);
+		await handler({ method: "POST", body: { ...REPORT }, headers: { "x-anon-id": "anon_reporter" } }, res);
 		expect(res.body.enforcement).toEqual({ strike_applied: false, strikes: 0 });
 		expect(state["users_meta:lastUpdate"]).toBeUndefined();
 	});
@@ -294,7 +294,7 @@ describe("POST /api/reports", () => {
 			title: "self",
 		};
 		const res = response();
-		await handler({ method: "POST", body: { ...REPORT }, headers: {} }, res);
+		await handler({ method: "POST", body: { ...REPORT }, headers: { "x-anon-id": "anon_reporter" } }, res);
 		expect(res.body.enforcement.strike_applied).toBe(false);
 		expect(state["users_meta:lastUpdate"]).toBeUndefined();
 	});
@@ -308,7 +308,7 @@ describe("POST /api/reports", () => {
 		state["reports:recent"] = [{ id: "r-old" }, { id: "r-new" }]; // this insert + a prior one
 		state["users_meta:preWarnings"] = { warnings: [] };
 		const res = response();
-		await handler({ method: "POST", body: { ...REPORT }, headers: {} }, res);
+		await handler({ method: "POST", body: { ...REPORT }, headers: { "x-anon-id": "anon_reporter" } }, res);
 		expect(res.body.enforcement).toEqual({ strike_applied: false, strikes: 0 });
 		expect(state["users_meta:lastUpdate"]).toBeUndefined();
 	});
@@ -330,7 +330,7 @@ describe("POST /api/reports", () => {
 			],
 		};
 		const res = response();
-		await handler({ method: "POST", body: { ...REPORT }, headers: {} }, res);
+		await handler({ method: "POST", body: { ...REPORT }, headers: { "x-anon-id": "anon_reporter" } }, res);
 		expect(res.body.enforcement).toEqual({ strike_applied: false, strikes: 0 });
 		expect(state["users_meta:lastUpdate"]).toBeUndefined();
 	});
@@ -354,7 +354,7 @@ describe("POST /api/reports", () => {
 		};
 		state["settings:row"] = { value: { notifications: [] } };
 		const res = response();
-		await handler({ method: "POST", body: { ...REPORT }, headers: {} }, res);
+		await handler({ method: "POST", body: { ...REPORT }, headers: { "x-anon-id": "anon_reporter" } }, res);
 		expect(res.body.enforcement).toEqual({ strike_applied: true, strikes: 3 });
 		expect(
 			(state["users_meta:lastUpdate"] as { suspended_until?: string })
@@ -389,7 +389,7 @@ describe("POST /api/reports", () => {
 		};
 		state["settings:row"] = { value: { notifications: [] } };
 		const res = response();
-		await handler({ method: "POST", body: { ...REPORT }, headers: {} }, res);
+		await handler({ method: "POST", body: { ...REPORT }, headers: { "x-anon-id": "anon_reporter" } }, res);
 		expect(res.body.enforcement).toEqual({ strike_applied: true, strikes: 6 });
 		expect(state["users_meta:lastUpdate"]).toMatchObject({ banned: true });
 		expect(authMocks.notifyUser).toHaveBeenCalledWith(
@@ -419,7 +419,7 @@ describe("POST /api/reports", () => {
 			{
 				method: "POST",
 				body: { ...REPORT, target_id: "c1", target_type: "comment" },
-				headers: {},
+				headers: { "x-anon-id": "anon_reporter" },
 			},
 			res,
 		);

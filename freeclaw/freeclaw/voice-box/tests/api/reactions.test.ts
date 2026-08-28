@@ -124,7 +124,7 @@ describe("POST /api/reactions — optimized toggle contract", () => {
 		const { default: handler } = await import("../../api/_reactions.js");
 		const res = response();
 		await handler(
-			{ method: "POST", query: {}, body: body(), headers: {} },
+			{ method: "POST", query: {}, body: body(), headers: { "x-anon-id": "anon-1" } },
 			res,
 		);
 
@@ -153,7 +153,7 @@ describe("POST /api/reactions — optimized toggle contract", () => {
 		const { default: handler } = await import("../../api/_reactions.js");
 		const res = response();
 		await handler(
-			{ method: "POST", query: {}, body: body(), headers: {} },
+			{ method: "POST", query: {}, body: body(), headers: { "x-anon-id": "anon-1" } },
 			res,
 		);
 
@@ -179,7 +179,7 @@ describe("POST /api/reactions — optimized toggle contract", () => {
 		const { default: handler } = await import("../../api/_reactions.js");
 		const res = response();
 		await handler(
-			{ method: "POST", query: {}, body: body(), headers: {} },
+			{ method: "POST", query: {}, body: body(), headers: { "x-anon-id": "anon-1" } },
 			res,
 		);
 
@@ -199,7 +199,7 @@ describe("POST /api/reactions — optimized toggle contract", () => {
 				method: "POST",
 				query: {},
 				body: { ...body(), kind: "nonsense" },
-				headers: {},
+				headers: { "x-anon-id": "anon-1" },
 			},
 			res,
 		);
@@ -219,7 +219,7 @@ describe("POST /api/reactions — optimized toggle contract", () => {
 		const { default: handler } = await import("../../api/_reactions.js");
 		const res = response();
 		await handler(
-			{ method: "POST", query: {}, body: body(), headers: {} },
+			{ method: "POST", query: {}, body: body(), headers: { "x-anon-id": "anon-1" } },
 			res,
 		);
 
@@ -237,7 +237,7 @@ describe("POST /api/reactions — optimized toggle contract", () => {
 			{
 				method: "POST",
 				query: {},
-				headers: {},
+				headers: { "x-anon-id": "anon-1" },
 				body: {
 					author_id: "anon-1",
 					target_id: "sug-1",
