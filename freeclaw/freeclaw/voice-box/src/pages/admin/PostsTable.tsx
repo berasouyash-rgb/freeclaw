@@ -281,9 +281,8 @@ export default function PostsTable({
 				</div>
 			) : (
 				<div>
-					{/* Desktop table — hidden on mobile */}
-					<div className="hidden md:block card overflow-x-auto">
-					<table className="w-full text-sm min-w-[760px]">
+					<div className="card overflow-x-auto">
+						<table className="w-full text-sm min-w-[760px]">
 						<thead>
 							<tr className="text-left text-[11px] uppercase tracking-wide text-ink3 border-b border-border">
 								<th className="px-4 py-3">Title</th>
@@ -397,82 +396,6 @@ export default function PostsTable({
 							All {total} posts loaded
 						</p>
 					)}
-					</div>
-
-					{/* Mobile cards — shown on small screens, hidden on md+ */}
-					<div className="md:hidden space-y-2">
-						{filtered.map((p) => (
-							<div
-								key={p.id}
-								className="card p-3 cursor-pointer hover:bg-surface2/60 transition-colors"
-								onClick={() => setSelected(p)}
-							>
-								<div className="flex items-start justify-between gap-2 mb-1.5">
-									<p className="font-medium text-sm leading-snug line-clamp-2 flex-1">
-										{p.title}
-								</p>
-									<select
-										className="input !py-0.5 !px-1.5 !text-[10px] !w-auto font-semibold !rounded shrink-0"
-										style={{ color: STATUS_META[p.status]?.color }}
-										value={p.status}
-									onChange={(e) => {
-										e.stopPropagation();
-										setStatusDialog({ id: p.id, status: e.target.value });
-									}}
-										aria-label={`Status for ${p.title}`}
-									>
-										{Object.entries(STATUS_META).map(([k, v]) => (
-											<option key={k} value={k}>{v.label}</option>
-										))}
-									</select>
-								</div>
-								<div className="flex items-center gap-2 flex-wrap text-[11px] text-ink3">
-									<span className="chip !text-[9px] !py-0">{p.category}</span>
-									<span className="font-mono">{p.author_id?.slice(0, 8)}</span>
-									<span>·</span>
-									<span>{timeAgo(p.created_at)}</span>
-								</div>
-								<div className="flex items-center gap-3 mt-1.5 text-[11px]">
-									<span className="text-good">▲{p.reactions?.support ?? 0}</span>
-									<span className="text-bad">♥{p.reactions?.heart ?? 0}</span>
-									<span className="inline-flex items-center gap-0.5">
-										<MessageSquare size={10} />{p.comment_count ?? 0}
-									</span>
-									{p.linked_poll != null && (
-										<span className="text-accent inline-flex items-center gap-0.5">
-											<BarChart3 size={10} />{p.linked_poll_votes ?? 0}
-										</span>
-									)}
-									<div className="ml-auto flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
-										<button
-											className={`p-1.5 rounded ${p.hidden ? 'text-red-400 bg-red-500/10' : 'text-ink3'}`}
-											title={p.hidden ? 'Unhide' : 'Hide'}
-											onClick={() => update(p.id, { hidden: !p.hidden })}
-										>
-											{p.hidden ? <EyeOff size={14} /> : <Eye size={14} />}
-										</button>
-										<button
-											className={`p-1.5 rounded ${p.official ? 'text-amber-400 bg-amber-500/10' : 'text-ink3'}`}
-											title={p.official ? 'Unofficial' : 'Official'}
-											onClick={() => update(p.id, { official: !p.official })}
-										>
-											<ShieldCheck size={14} />
-										</button>
-									</div>
-								</div>
-							</div>
-						))}
-						{filtered.length === 0 && !initialLoading && (
-							<div className="card p-8 text-center text-ink3 text-sm">
-								No posts match your filters.
-							</div>
-						)}
-						<div ref={sentinelRef} className="h-4" />
-						{loading && !initialLoading && (
-							<div className="flex items-center justify-center py-3 gap-2 text-ink3 text-xs">
-								<Loader2 size={14} className="animate-spin" /> Loading more…
-							</div>
-						)}
 					</div>
 				</div>
 			)}

@@ -162,8 +162,8 @@ export default function UserManager() {
 				</div>
 			) : (
 				<div>
-					{/* Desktop table */}
-					<div className="hidden md:block card overflow-x-auto">
+					{/* Table — always visible, scroll on small screens */}
+					<div className="card overflow-x-auto">
 					<table className="w-full text-sm min-w-[640px]">
 						<thead>
 							<tr className="text-left text-[11px] uppercase text-ink3 border-b border-border">
@@ -231,43 +231,6 @@ export default function UserManager() {
 							All {total} users loaded
 						</p>
 					)}
-					</div>
-
-					{/* Mobile cards */}
-					<div className="md:hidden space-y-2">
-						{filtered.map((u) => (
-							<div
-								key={u.anon_id}
-								className="card p-3 cursor-pointer hover:bg-surface2/60 transition-colors"
-								onClick={() => openDetail(u.anon_id)}
-							>
-								<div className="flex items-center justify-between gap-2 mb-1.5">
-									<p className="font-mono text-xs truncate flex-1">{u.anon_id}</p>
-									{u.banned ? (
-										<span className="chip !text-bad !text-[9px]">Banned</span>
-									) : u.suspended_until && new Date(u.suspended_until) > new Date() ? (
-										<span className="chip !text-warn !text-[9px]">Suspended</span>
-									) : (
-										<span className="chip !text-good !text-[9px]">Active</span>
-									)}
-								</div>
-								<div className="flex items-center gap-3 text-[11px] text-ink3">
-									<span>📝 {u.post_count}</span>
-									<span>💬 {u.comment_count}</span>
-									<span>❤️ {u.reaction_count}</span>
-									{(u.strikes ?? 0) > 0 && <span className="text-warn">⚠️ {u.strikes}</span>}
-								</div>
-							</div>
-						))}
-						{filtered.length === 0 && !initialLoading && (
-							<div className="card p-8 text-center text-ink3 text-sm">No users found.</div>
-						)}
-						<div ref={sentinelRef} className="h-4" />
-						{loading && !initialLoading && (
-							<div className="flex items-center justify-center py-3 gap-2 text-ink3 text-xs">
-								<Loader2 size={14} className="animate-spin" /> Loading more…
-							</div>
-						)}
 					</div>
 				</div>
 			)}

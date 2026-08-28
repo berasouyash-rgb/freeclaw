@@ -301,7 +301,7 @@ describe("ErrorTracking — error events + Sentry", () => {
 
 		fireEvent.click(screen.getByRole("button", { name: /Refresh all/ }));
 		await waitFor(() => {
-			expect(mocks.get).toHaveBeenCalledTimes(2); // initial + refresh
+			expect(mocks.get).toHaveBeenCalledTimes(4); // initial(3) + refresh frontend-errors
 		});
 		expect(mocks.getFresh).toHaveBeenCalledTimes(2);
 		expect(global.fetch).toHaveBeenCalledTimes(2);

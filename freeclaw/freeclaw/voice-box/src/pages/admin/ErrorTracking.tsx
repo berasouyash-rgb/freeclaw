@@ -302,6 +302,7 @@ export default function ErrorTracking() {
 							loadHealth(true);
 							loadChunks();
 							loadErrors(true);
+							loadFeErrors();
 						}}
 						disabled={healthLoading}
 					>
