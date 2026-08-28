@@ -1430,3 +1430,62 @@ html[data-scale="110"] { font-size: 110%; }
   h1.font-display { letter-spacing: -0.01em; }
   .card { border-radius: var(--vb-radius-md); }
 }
+
+/* ═══════════════════════════════════════════════════════════════
+   PREMIUM ANIMATIONS — elevated micro-interactions
+   ═══════════════════════════════════════════════════════════════ */
+
+/* Gradient shift for hero elements and 404 */
+@keyframes vb-gradient-shift {
+  0%, 100% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+}
+
+/* Floating bob animation */
+@keyframes vb-float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-8px); }
+}
+
+/* Orbit animation for decorative dots */
+@keyframes vb-orbit {
+  from { transform: rotate(0deg) translateX(60px) rotate(0deg); }
+  to { transform: rotate(360deg) translateX(60px) rotate(-360deg); }
+}
+
+/* Gradient border shimmer on hover */
+.card-shimmer {
+  position: relative;
+}
+.card-shimmer::before {
+  content: '';
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  background: linear-gradient(135deg, var(--vb-accent), var(--vb-accent2), #38BDF8, var(--vb-accent));
+  background-size: 300% 300%;
+  opacity: 0;
+  transition: opacity .3s ease;
+  z-index: -1;
+  animation: vb-gradient-shift 4s ease infinite;
+}
+.card-shimmer:hover::before {
+  opacity: 1;
+}
+
+/* Smooth page transition wrapper */
+.vb-page-enter {
+  animation: vb-page-in .3s cubic-bezier(.22,.9,.3,1) both;
+}
+
+/* Hero gradient refinement */
+.hero-gradient {
+  background: linear-gradient(135deg, #5652d6 0%, #6f63e8 40%, #8a7bf2 70%, #38BDF8 100%);
+  background-size: 200% 200%;
+  animation: vb-gradient-shift 8s ease infinite;
+}
+
+/* Subtle glow behind primary buttons on hover */
+.btn-primary-glow:hover {
+  box-shadow: var(--vb-shadow-md), 0 0 30px -8px color-mix(in srgb, var(--vb-accent) 40%, transparent);
+}

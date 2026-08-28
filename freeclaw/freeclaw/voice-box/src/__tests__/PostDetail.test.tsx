@@ -253,7 +253,7 @@ describe("PostDetail — loading and error states", () => {
 		});
 		render(<PostDetail />);
 
-		expect(document.querySelector(".vb-shimmer")).toBeTruthy();
+		expect(document.querySelector(".skeleton")).toBeTruthy();
 		resolvePost({ post: POST, counts: {}, mine: [] });
 		await screen.findByText("Broken projector in Room 204");
 	});

@@ -311,14 +311,26 @@ export default function PostDetail() {
 
 	if (loading) {
 		return (
-			<div className="max-w-3xl mx-auto">
+			<div className="max-w-3xl mx-auto vb-page-enter">
 				<button className="btn btn-ghost !px-3 mb-4" onClick={() => nav(-1)}>
 					<ArrowLeft size={15} /> Back
 				</button>
-				<div className="card p-6 space-y-3">
-					<div className="h-4 bg-surface2 rounded vb-shimmer w-1/3" />
-					<div className="h-6 bg-surface2 rounded vb-shimmer w-2/3" />
-					<div className="h-20 bg-surface2 rounded vb-shimmer" />
+				<div className="card p-6 sm:p-8 space-y-4">
+					<div className="flex gap-2 mb-2">
+						<div className="skeleton h-6 w-20 rounded-full" />
+						<div className="skeleton h-6 w-16 rounded-full" />
+					</div>
+					<div className="skeleton h-7 w-3/4 rounded" />
+					<div className="space-y-2">
+						<div className="skeleton h-4 w-full rounded" />
+						<div className="skeleton h-4 w-5/6 rounded" />
+						<div className="skeleton h-4 w-2/3 rounded" />
+					</div>
+					<div className="flex gap-2 pt-2">
+						<div className="skeleton h-8 w-20 rounded-lg" />
+						<div className="skeleton h-8 w-20 rounded-lg" />
+						<div className="skeleton h-8 w-20 rounded-lg" />
+					</div>
 				</div>
 			</div>
 		);
@@ -327,31 +339,28 @@ export default function PostDetail() {
 				<div className="max-w-3xl mx-auto vb-page-enter">
 					<button className="btn btn-ghost !px-3 mb-4" onClick={() => nav(-1)}>
 						<ArrowLeft size={15} /> Back
-					</button>
-					<div className="card p-8 text-center">
-						<div className="vb-empty-icon mx-auto mb-3">
-							<span className="inline-flex items-center justify-center w-12 h-12 rounded-full bg-red-100 text-red-500">
-								<Link2 size={24} />
-							</span>
+					</button>					<div className="card p-8 sm:p-12 text-center">
+						<div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-bad/10 text-bad mb-4">
+							<Link2 size={26} />
 						</div>
-						<p className="text-ink2 font-semibold mb-1">Post not found</p>
-						<p className="text-sm text-ink3 mb-4">
+						<p className="font-display font-bold text-lg text-ink mb-1">Post not found</p>
+						<p className="text-sm text-ink3 mb-6 max-w-xs mx-auto leading-relaxed">
 							{error || "This post may have been removed or the link is invalid."}
 						</p>
 						<div className="flex flex-wrap items-center justify-center gap-2">
-							<button className="btn btn-primary !text-xs" onClick={() => nav("/")}>
+							<button className="btn btn-primary" onClick={() => nav("/")}>
 								Go to Home
 							</button>
-							<button className="btn btn-ghost !text-xs" onClick={() => nav("/submit")}>
+							<button className="btn btn-ghost" onClick={() => nav("/submit")}>
 								Submit a post
 							</button>
 							{error && (
-								<button className="btn btn-ghost !text-xs" onClick={fetchPost}>
+								<button className="btn btn-ghost" onClick={fetchPost}>
 									Retry
 								</button>
 							)}
 						</div>
-				</div>
+					</div>
 			</div>
 			);
 		}

@@ -198,14 +198,10 @@ export default function Home() {
 				</button>
 			)}
 
-			{/* Hero — plain CSS gradient + rgba colors (works on ALL browsers, no color-mix/oklab) */}
+			{/* Hero — animated gradient, premium feel */}
 			<section
-				className="card !border-transparent mb-6 relative overflow-hidden vb-rise"
-				style={{
-					background:
-						"linear-gradient(120deg, #5652d6 0%, #6f63e8 55%, #8a7bf2 100%)",
-					color: "#ffffff",
-				}}
+				className="card !border-transparent mb-6 relative overflow-hidden vb-rise hero-gradient"
+				style={{ color: "#ffffff" }}
 			>
 				<div
 					className="absolute -right-10 -top-10 w-52 h-52 rounded-full"
