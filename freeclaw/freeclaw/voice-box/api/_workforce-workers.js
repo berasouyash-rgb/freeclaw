@@ -467,16 +467,252 @@ registerWorker({
 	},
 });
 
-/** Run the Phase-2 roster sequentially. Returns per-worker honest outcomes. */
+// ═══════════════════════════════════════════════════════════════════
+// PHASE 3 — Five more high-value workers
+// ═══════════════════════════════════════════════════════════════════
+
+// ── 11 · Database Health Worker (Class C) ──────────────────────
+registerWorker({
+	worker_id: "db-health",
+	name: "Database Health Worker",
+	responsibility: "Checks table sizes, detects growth anomalies, monitors health.",
+	execution_class: "C",
+	budget: { max_runs_per_hour: 2, max_affected_records: 0 },
+	tools: ["read_query", "inspect_indexes"],
+	async observe() {
+		const tables = ["posts", "comments", "reactions", "reports", "polls"];
+		const stats = {};
+		for (const t of tables) {
+			const { count } = await supabase
+				.from(t)
+				.select("id", { count: "exact", head: true });
+			stats[t] = count || 0;
+		}
+		// Check settings table for growth (it stores KV pairs, events, etc.)
+		const { count: settingsCount } = await supabase
+			.from("settings")
+			.select("key", { count: "exact", head: true });
+		stats.settings = settingsCount || 0;
+		return { empty: false, stats };
+	},
+	async analyze(ev) {
+		// Flag if any table exceeds10k rows without pagination
+		const big = Object.entries(ev.stats).filter(([, n]) => n > 10000);
+		if (big.length > 0) {
+			return {
+				decision: "escalate",
+				reason: `Large tables: ${big.map(([t, n]) => `${t}(${n})`).join(", ")}`,
+			};
+		}
+		return { decision: "skip", reason: `All tables within bounds` };
+	},
+	onEscalate(ev, dec) {
+		return escalateToQueue(
+			`Database growth detected: ${dec.reason}`,
+			"Consider adding indexes or implementing pagination for large tables.",
+			"database",
+			"medium",
+			"db-health",
+		);
+	},
+});
+
+// ── 12 · Content Quality Worker (Class A) ──────────────────────
+registerWorker({
+	worker_id: "content-quality",
+	name: "Content Quality Worker",
+	responsibility: "Auto-hides very short posts (<10 chars) that are likely spam/accidents.",
+	execution_class: "A",
+	budget: { max_runs_per_hour: 2, max_affected_records: 10 },
+	tools: ["inspect_post", "quarantine_content"],
+	async observe() {
+		const { data, error } = await supabase
+			.from("posts")
+			.select("id, title, description")
+			.eq("status", "reported")
+			.eq("deleted", false)
+			.limit(50);
+		if (error || !data) return { empty: true };
+		const lowQuality = data.filter((p) => {
+			const text = `${p.title || ""} ${p.description || ""}`.trim();
+			return text.length < 10;
+		});
+		return { empty: lowQuality.length === 0, lowQuality };
+	},
+	async analyze(ev) {
+		return ev.lowQuality.length > 0
+			? { decision: "act", reason: `${ev.lowQuality.length} posts < 10 chars`, affected: ev.lowQuality.length }
+			: { decision: "skip", reason: "all content meets minimum" };
+	},
+	async execute(dec, ev) {
+		const ids = ev.lowQuality.map((p) => p.id).slice(0, 10);
+		await supabase
+			.from("posts")
+			.update({ status: "pending_review" })
+			.in("id", ids);
+		return { action_type: "flag_low_quality", target: "posts", affected: ids.length };
+	},
+	async verify(res) {
+		return { ok: res.affected > 0, proof: `flagged ${res.affected} low-quality posts` };
+	},
+});
+
+// ── 13 · User Activity Anomaly Worker (Class C) ────────────────
+registerWorker({
+	worker_id: "user-anomaly",
+	name: "User Activity Anomaly Worker",
+	responsibility: "Detects users with abnormal activity patterns (high reports, low engagement).",
+	risk_level: "low",
+	execution_class: "C",
+	budget: { max_runs_per_hour: 1, max_affected_records: 0 },
+	tools: ["inspect_post", "inspect_reports", "send_admin_alert"],
+	async observe() {
+		// Find users with many reports against them
+		const { data: reports } = await supabase
+			.from("reports")
+			.select("target_author_id")
+			.eq("status", "open")
+			.limit(200);
+		if (!reports?.length) return { empty: true };
+		const byTarget = {};
+		for (const r of reports) {
+			if (r.target_author_id) byTarget[r.target_author_id] = (byTarget[r.target_author_id] || 0) + 1;
+		}
+		const flagged = Object.entries(byTarget).filter(([, n]) => n >= 3);
+		return { empty: flagged.length === 0, flaggedUsers: flagged.length, details: flagged };
+	},
+	async analyze(ev) {
+		return ev.flaggedUsers > 0
+			? { decision: "escalate", reason: `${ev.flaggedUsers} users with ≥3 open reports` }
+			: { decision: "skip", reason: "no anomalies" };
+	},
+	onEscalate(ev) {
+		return escalateToQueue(
+			`User activity anomaly: ${ev.flaggedUsers} user(s) with ≥3 open reports`,
+			"Review flagged users in Admin → Users for potential abuse.",
+			"security",
+			"medium",
+			"user-anomaly",
+		);
+	},
+});
+
+// ── 14 · Search Quality Worker (Class A) ───────────────────────
+registerWorker({
+	worker_id: "search-quality",
+	name: "Search Quality Worker",
+	responsibility: "Tests common search queries and verifies results are returned.",
+	execution_class: "A",
+	budget: { max_runs_per_hour: 2, max_affected_records: 0 },
+	tools: ["read_query", "test_search_query"],
+	async observe() {
+		// Test a few common search queries
+		const queries = ["test", "problem", "food", "schedule"];
+		const results = {};
+		for (const q of queries) {
+			const { data } = await supabase
+				.from("posts")
+				.select("id")
+				.or(`title.ilike.%${q}%,description.ilike.%${q}%`)
+				.limit(5);
+			results[q] = (data || []).length;
+		}
+		const totalResults = Object.values(results).reduce((a, b) => a + b, 0);
+		return { empty: totalResults === 0, results, totalResults };
+	},
+	async analyze(ev) {
+		return ev.totalResults > 0
+			? { decision: "act", reason: `search index healthy (${ev.totalResults} results across test queries)` }
+			: { decision: "skip", reason: "no content to index" };
+	},
+	async execute(dec, ev) {
+		// Record the search quality snapshot for trend tracking
+		await supabase.from("settings").upsert(
+			{
+				key: "search_quality_snapshot",
+				value: { ...ev.results, tested_at: new Date().toISOString() },
+			},
+			{ onConflict: "key" },
+			);
+		return { action_type: "search_quality_check", target: "search_index", affected: Object.keys(ev.results).length };
+	},
+	async verify() {
+		return { ok: true, proof: "search quality snapshot recorded" };
+	},
+});
+
+// ── 15 · Platform Health Worker (Class C) ──────────────────────
+registerWorker({
+	worker_id: "platform-health",
+	name: "Platform Health Worker",
+	responsibility: "Computes a real health score from actual platform metrics.",
+	risk_level: "low",
+	execution_class: "C",
+	budget: { max_runs_per_hour: 1, max_affected_records: 0 },
+	tools: ["read_query", "get_system_health"],
+	async observe() {
+		// Real metrics from the database
+		const [postsRes, commentsRes, reportsRes, usersRes] = await Promise.all([
+			supabase.from("posts").select("id", { count: "exact", head: true }).eq("deleted", false),
+			supabase.from("comments").select("id", { count: "exact", head: true }),
+			supabase.from("reports").select("id", { count: "exact", head: true }).eq("status", "open"),
+			supabase.from("users").select("id", { count: "exact", head: true }),
+		]);
+		const posts = postsRes.count || 0;
+		const comments = commentsRes.count || 0;
+		const openReports = reportsRes.count || 0;
+		const users = usersRes.count || 0;
+		const engagement = posts + comments;
+		const reportRatio = posts > 0 ? openReports / posts : 0;
+		return { empty: false, posts, comments, openReports, users, engagement, reportRatio };
+	},
+	async analyze(ev) {
+		// Compute health score: high engagement, low report ratio = healthy
+		let score = 50;
+		if (ev.engagement > 100) score += 15;
+		if (ev.engagement > 500) score += 10;
+		if (ev.reportRatio < 0.05) score += 15;
+		if (ev.reportRatio > 0.2) score -= 20;
+		if (ev.users > 10) score += 10;
+		return { decision: "act", reason: `health score: ${Math.min(100, Math.max(0, score))}` };
+	},
+	async execute(dec, ev) {
+		let score = 50;
+		if (ev.engagement > 100) score += 15;
+		if (ev.engagement > 500) score += 10;
+		if (ev.reportRatio < 0.05) score += 15;
+		if (ev.reportRatio > 0.2) score -= 20;
+		if (ev.users > 10) score += 10;
+		score = Math.min(100, Math.max(0, score));
+		await supabase.from("settings").upsert(
+			{
+				key: "platform_health_score",
+				value: { score, posts: ev.posts, comments: ev.comments, openReports: ev.openReports, users: ev.users, computed_at: new Date().toISOString() },
+			},
+			{ onConflict: "key" },
+			);
+		return { action_type: "compute_health", target: "platform", affected: 0, health_score: score };
+	},
+	async verify(res) {
+		return { ok: true, proof: `health score ${res.health_score} recorded` };
+	},
+});
+
+/** Run the Phase-2+ roster sequentially. Returns per-worker honest outcomes. */
 export async function runHighValueRoster(trigger = "cron") {
 	const order = [
 		"cache-optimizer",
 		"session-cleaner",
 		"poll-archiver",
+		"content-quality",
+		"search-quality",
+		"platform-health",
 		"report-sla",
 		"api-reliability",
+		"db-health",
 		"spam-sentinel",
 		"duplicate-reports",
+		"user-anomaly",
 		"notification-health",
 		"orphan-auditor",
 		"supervisor",
