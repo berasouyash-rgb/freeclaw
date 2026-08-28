@@ -41,12 +41,28 @@ Harness: `scripts/loadtest.mjs` (pure Node, no deps). Mixed user journeys:
 | Baseline (pre-fix) | 200 | 30s | 68 | 91% 429 | All shared one IP bucket — school-NAT bug |
 | Post rate-limit fix | 200 | 30s | 39 | 26% 404 | Zero 429s; 404s from missing test posts |
 | 5000 concurrent | 5000 | 60s | 155 | 95% timeout | Single-threaded dev server saturated (expected) |
+| 200 users (post all fixes) | 200 | 30s | 46 | 0% 429 | Per-user identity fix verified — zero rate-limit false positives |
+| 500 users (stress) | 500 | 30s | 65 | 25% journey | Dev server saturated; real endpoints stable |
 
-**Key latencies (200 users, post-fix):**
-- GET /search: p50=1ms, p95=6ms, p99=1097ms (SWR cache hit rate high)
-- GET /posts: p50=1ms, p95=6ms, p99=988ms (feed cache)
-- GET /polls: p50=1ms, p95=4ms, p99=1097ms
-- POST /posts: p50=2079ms, p95=2503ms (Supabase write latency)
+**Key latencies (200 users, post all fixes):**
+- GET /search: p50=3ms, p95=33ms, p99=1431ms (SWR cache hit rate high)
+- GET /posts: p50=697ms, p95=1238ms, p99=1768ms (feed cache)
+- GET /polls: p50=956ms, p95=1565ms, p99=1947ms
+- GET /suggestions: p50=2ms, p95=13ms, p99=23ms (SWR cache)
+- POST /posts: p50=2296ms, p95=4187ms, p99=4831ms (Supabase write latency)
+- Rate limit 429s: 1 (out of 2300 requests — 0.04%)
+
+**Key latencies (500 users, stress):**
+- GET /search: p50=13ms, p95=383ms, p99=1520ms (still cached)
+- GET /suggestions: p50=7ms, p95=263ms, p99=383ms (still cached)
+- GET /posts: p50=3824ms, p95=14265ms (dev server saturated)
+- POST /posts: p50=3820ms, p95=13491ms (dev server saturated)
+
+**Security validation (this session):**
+- IDOR protection: 8 regression tests proving rejection for saved/follows/notifications
+- P0 author_id fix: all 5 endpoints derive identity from x-anon-id header
+- Per-user rate limiting: 300/300 concurrent unique identities pass
+- Total test coverage: 1,218 frontend + 701 API = **1,919 tests passing**
 
 **Production note:** Vercel serverless runs each function independently;
 the single-thread bottleneck does not exist in prod. Supabase PostgREST
