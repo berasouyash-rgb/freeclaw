@@ -563,10 +563,12 @@ h1,h2,h3,h4 { font-family: var(--font-display); letter-spacing: -0.01em; }
   border-color: var(--vb-accent);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--vb-accent) 18%, transparent);
 }
-.card-hover:hover {
-  border-color: var(--vb-accent);
-  box-shadow: var(--vb-shadow-lg);
-  transform: translateY(-2px);
+@media (hover: hover) and (pointer: fine) {
+  .card-hover:hover {
+    border-color: var(--vb-accent);
+    box-shadow: var(--vb-shadow-lg);
+    transform: translateY(-2px);
+  }
 }
 
 .btn {
@@ -1453,25 +1455,7 @@ html[data-scale="110"] { font-size: 110%; }
   to { transform: rotate(360deg) translateX(60px) rotate(-360deg); }
 }
 
-/* Gradient border shimmer on hover */
-.card-shimmer {
-  position: relative;
-}
-.card-shimmer::before {
-  content: '';
-  position: absolute;
-  inset: -1px;
-  border-radius: inherit;
-  background: linear-gradient(135deg, var(--vb-accent), var(--vb-accent2), #38BDF8, var(--vb-accent));
-  background-size: 300% 300%;
-  opacity: 0;
-  transition: opacity .3s ease;
-  z-index: -1;
-  animation: vb-gradient-shift 4s ease infinite;
-}
-.card-shimmer:hover::before {
-  opacity: 1;
-}
+/* Card shimmer removed — caused unreadable colored fills on touch */
 
 /* Smooth page transition wrapper */
 .vb-page-enter {
@@ -1485,7 +1469,37 @@ html[data-scale="110"] { font-size: 110%; }
   animation: vb-gradient-shift 8s ease infinite;
 }
 
-/* Subtle glow behind primary buttons on hover */
-.btn-primary-glow:hover {
-  box-shadow: var(--vb-shadow-md), 0 0 30px -8px color-mix(in srgb, var(--vb-accent) 40%, transparent);
+/* Subtle glow behind primary buttons — desktop only */
+@media (hover: hover) and (pointer: fine) {
+  .btn-primary-glow:hover {
+    box-shadow: var(--vb-shadow-md), 0 0 30px -8px color-mix(in srgb, var(--vb-accent) 40%, transparent);
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   TOUCH DEVICE FIX — prevent :hover getting stuck with colored fills
+   On mobile/touch, once you tap an element it stays in :hover state
+   forever, leaving colored backgrounds that make text unreadable.
+   ═══════════════════════════════════════════════════════════════ */
+@media (hover: none) and (pointer: coarse) {
+  /* Kill all hover background fills — cards, buttons, nav items */
+  .card-hover:hover,
+  .card-shimmer:hover,
+  .btn:hover,
+  .btn-ghost:hover,
+  .btn-danger:hover,
+  .btn-soft:hover {
+    transform: none !important;
+    box-shadow: var(--vb-shadow-xs) !important;
+    background: inherit !important;
+    border-color: inherit !important;
+    color: inherit !important;
+  }
+  /* Keep only :active (press) feedback — brief tactile scale */
+  .btn:active:not(:disabled) {
+    transform: scale(0.97) !important;
+  }
+  .card-hover:active {
+    transform: scale(0.985) !important;
+  }
 }

@@ -205,7 +205,7 @@ const _prio = undefined; // keep import tree stable
 	);
 
 	return (
-		<article className="card card-hover card-shimmer p-4 sm:p-5 vb-rise vb-card-press">
+		<article className="card card-hover p-4 sm:p-5 vb-rise vb-card-press">
 			<div className="flex items-start gap-3">
 				<span className="text-xl leading-none mt-0.5 shrink-0" aria-hidden>
 					{CAT_EMOJI[post.category] || "📌"}
