@@ -41,7 +41,6 @@ export default function Search() {
 	const [type, setType] = useState("all");
 	const [category, setCategory] = useState("all");
 	const [status, setStatus] = useState("all");
-	const [tagFilter, setTagFilter] = useState("");
 	const [results, setResults] = useState<SearchResult[]>([]);
 	const [total, setTotal] = useState(0);
 	const [loading, setLoading] = useState(false);

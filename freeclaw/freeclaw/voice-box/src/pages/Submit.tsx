@@ -17,7 +17,6 @@
 	ShieldCheck,
 	Sparkles,
 	X,
-	Zap,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router";
