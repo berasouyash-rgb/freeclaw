@@ -139,8 +139,6 @@ function PostCardInner({ post, myReactions, onReacted }: PostCardProps) {
 
 	const status = STATUS_META[post.status] ??
 		STATUS_META.reported ?? { label: "Unknown", color: "#888", pct: 0 };
-// priority removed — server computes auto-priority, no UI exposure
-const _prio = undefined; // keep import tree stable
 	// Trending: fast-rising support relative to age
 	const isTrending =
 		trendingScore(post) > 1.2 &&

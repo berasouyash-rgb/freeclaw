@@ -51,7 +51,6 @@ export default function PostDetail() {
 	// only returns aggregate results, so the raw ?voter= rows carry the per-viewer
 	// state that makes the linked card show "liked"/voted on first render.
 	const [myVotes, setMyVotes] = useState<Record<string, number[]>>({});
-	const _readRef = useRef(false);
 	// Tracks which postId has already rendered. Background refreshes (realtime
 	// polling fallback, post-vote refresh) must NOT setLoading(true) — that
 	// collapses the whole page to a skeleton, unmounting Comments and wiping
