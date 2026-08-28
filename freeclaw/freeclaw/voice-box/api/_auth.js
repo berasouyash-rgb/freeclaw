@@ -434,3 +434,40 @@ export async function rateLimited(table, authorId, seconds, limit) {
 	}
 	return currentCount >= limit;
 }
+
+// ─── Session-based caller verification ──────────────────────────
+// P0 SECURITY FIX: Never trust client-supplied user_id/author_id alone.
+// Verify that the x-anon-id header matches the claimed identity.
+// Admin callers are always allowed (they act on behalf of the system).
+// Returns { ok: true, callerId } or { ok: false, status, error }.
+export async function verifyCallerIdentity(req, claimedUserId, opts = {}) {
+	// Admins bypass caller verification — they act on behalf of the system
+	if (await isAdmin(req)) return { ok: true, callerId: claimedUserId };
+
+	const headerId = (req.headers["x-anon-id"] || "").toString().trim().toLowerCase();
+	const id = String(claimedUserId || "").trim().toLowerCase();
+
+	// No header sent → cannot verify → deny
+	if (!headerId)
+		return { ok: false, status: 403, error: "Missing session identity (x-anon-id header)" };
+
+	// Header must match claimed user_id
+	if (headerId !== id)
+		return { ok: false, status: 403, error: "Cannot operate on another user's data" };
+
+	// Validate the anon_id format
+	if (!validAnonId(headerId))
+		return { ok: false, status: 403, error: "Invalid session identity" };
+
+	return { ok: true, callerId: headerId };
+}
+
+// Shared anon_id format validation (matches checkUser + users_meta)
+function validAnonId(id) {
+	return (
+		typeof id === "string" &&
+		id.length >= 5 &&
+		id.length <= 40 &&
+		/^anon_[a-z0-9]+$/.test(id)
+	);
+}

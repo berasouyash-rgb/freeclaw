@@ -10,7 +10,7 @@
 // inbox AI auto-reply in _inbox.js. Reading prefs is public; writes require
 // a valid, non-banned, non-suspended user (same gate as _posts.js).
 
-import { checkUser, clean, cors, rateLimitResponse } from "./_auth.js";
+import { checkUser, clean, cors, rateLimitResponse, verifyCallerIdentity } from "./_auth.js";
 import supabase from "./_db-client.js";
 import { sanitizeError } from "./_error.js";
 import { normalizePhone, validEmail } from "./_dispatch.js";
@@ -90,6 +90,11 @@ export default async function handler(req, res) {
 
 		// POST: save prefs
 		if (req.method === "POST") {
+			// P0 SECURITY FIX: Verify caller identity
+			const caller = await verifyCallerIdentity(req, userId);
+			if (!caller.ok)
+				return res.status(caller.status).json({ error: caller.error });
+
 			if (writeRateLimited(userId))
 				return rateLimitResponse(
 					res,

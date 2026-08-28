@@ -28,6 +28,7 @@ vi.mock("../../api/_auth.js", () => ({
 	rateLimitResponse: vi.fn((res) =>
 		res.status(429).json({ error: "Too many requests" }),
 	),
+	verifyCallerIdentity: vi.fn().mockResolvedValue({ ok: true, callerId: "anon_abc123" }),
 }));
 
 function response() {

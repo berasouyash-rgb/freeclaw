@@ -7,7 +7,7 @@
 // Persists in the settings table under key `saved:${userId}` as
 // { saved: [postId, ...] } — the same storage pattern as follows/notifications.
 
-import { clean, cors, rateLimitResponse } from "./_auth.js";
+import { clean, cors, rateLimitResponse, verifyCallerIdentity } from "./_auth.js";
 import supabase from "./_db-client.js";
 
 function savedKey(userId) {
@@ -46,6 +46,13 @@ export default async function handler(req, res) {
 	try {
 		const userId = clean(req.query.user_id || req.body?.user_id, 40);
 		if (!userId) return res.status(400).json({ error: "user_id required" });
+
+		// P0 SECURITY FIX: Verify caller identity on all operations
+		if (req.method !== "OPTIONS") {
+			const caller = await verifyCallerIdentity(req, userId);
+			if (!caller.ok)
+				return res.status(caller.status).json({ error: caller.error });
+		}
 
 		if (req.method === "GET") {
 			const saved = await getSaved(userId);

@@ -4,7 +4,7 @@
 // POST /api/notifications/read { notification_id, user_id }        →  mark as read
 // DELETE /api/notifications { user_id }         →  clear all notifications
 
-import { checkUser, clean, cors, rateLimitResponse } from "./_auth.js";
+import { checkUser, clean, cors, rateLimitResponse, verifyCallerIdentity } from "./_auth.js";
 import supabase from "./_db-client.js";
 import { sanitizeError } from "./_error.js";
 
@@ -64,8 +64,14 @@ export default async function handler(req, res) {
 			);
 		}
 
+		// P0 SECURITY FIX: Verify caller identity — prevent reading/other-user's notifications
+		if (req.method === "GET" || req.method === "DELETE") {
+			const caller = await verifyCallerIdentity(req, userId);
+			if (!caller.ok)
+				return res.status(caller.status).json({ error: caller.error });
+		}
+
 		// Writes require the feed owner to be a valid, non-banned, non-suspended user
-		// (same gate as _chat.js / _posts.js writes). Reads stay open like _me.js (per test contract).
 		if (req.method === "POST" || req.method === "DELETE") {
 			const gate = await checkUser(userId);
 			if (!gate.ok) return res.status(403).json({ error: gate.error });
