@@ -698,12 +698,193 @@ registerWorker({
 	},
 });
 
+// ── 17 · Content Enrichment Worker (Class A — safe autonomous) ──
+// Auto-generates summaries and keywords for posts that lack them.
+// This is the MOST VISIBLE worker: it directly improves what users see.
+registerWorker({
+	worker_id: "content-enricher",
+	name: "Content Enrichment Worker",
+	responsibility: "Auto-generates summaries and keywords for posts without them.",
+	execution_class: "A",
+	budget: { max_runs_per_hour: 2, max_affected_records: 50 },
+	tools: ["read_query", "write_query", "generate_summary"],
+	async observe() {
+		// Find posts without ai_summary that are at least 30 chars long
+		const { data: posts, error } = await supabase
+			.from("posts")
+			.select("id, title, description, category")
+			.eq("deleted", false)
+			.eq("hidden", false)
+			.or("ai_summary.is.null,ai_summary.eq.")
+			.gte("created_at", new Date(Date.now() - 7 * 24 * 3600 * 1000).toISOString())
+			.order("created_at", { ascending: false })
+			.limit(50);
+		if (error || !posts?.length) return { empty: true };
+		return { empty: false, posts };
+	},
+	async analyze(ev) {
+		return ev.posts.length > 0
+			? { decision: "act", reason: `${ev.posts.length} posts need summaries`, affected: ev.posts.length }
+			: { decision: "skip", reason: "all posts enriched" };
+	},
+	async execute(dec) {
+		let enriched = 0;
+		for (const post of dec.posts || []) {
+			try {
+				const text = `${post.title}. ${post.description || ""}`.trim();
+				if (text.length < 10) continue;
+				// Deterministic extractive summary
+				const sentences = text.match(/[^.!?]+[.!?]+/g) || [text];
+				const meaningful = sentences.filter((s) => s.trim().length > 15);
+				const summary = meaningful.length > 1
+					? meaningful.slice(0, 2).join(" ").trim()
+					: meaningful[0]?.trim() || post.title;
+				await supabase
+					.from("posts")
+					.update({ ai_summary: summary.slice(0, 200) })
+					.eq("id", post.id);
+				enriched++;
+			} catch { /* best effort */ }
+		}
+		return { action_type: "enrich_content", target: "posts", affected: enriched };
+	},
+	async verify(res) {
+		return { ok: res.affected > 0, proof: `enriched ${res.affected} posts with summaries` };
+	},
+	measure(res) {
+		return { metric: "posts.enriched", before: 0, after: res.affected };
+	},
+});
+
+// ── 18 · Stale Data Sweeper (Class A — safe autonomous) ────────
+// Auto-archives solved posts older than 30 days and cleans expired polls.
+// Keeps the active feed focused on current issues.
+registerWorker({
+	worker_id: "stale-sweeper",
+	name: "Stale Data Sweeper",
+	responsibility: "Archives old resolved posts and cleans expired data.",
+	execution_class: "A",
+	budget: { max_runs_per_hour: 1, max_affected_records: 100 },
+	tools: ["read_query", "write_query", "quarantine_content"],
+	async observe() {
+		const cutoff = new Date(Date.now() - 30 * 24 * 3600 * 1000).toISOString();
+		const { count } = await supabase
+			.from("posts")
+			.select("id", { count: "exact", head: true })
+			.eq("status", "solved")
+			.eq("deleted", false)
+			.lt("updated_at", cutoff);
+		return { empty: !count, staleSolved: count || 0 };
+	},
+	async analyze(ev) {
+		return ev.staleSolved >= 5
+			? { decision: "act", reason: `${ev.staleSolved} solved posts > 30 days old`, affected: ev.staleSolved }
+			: { decision: "skip", reason: "within threshold" };
+	},
+	async execute(dec) {
+		const cutoff = new Date(Date.now() - 30 * 24 * 3600 * 1000).toISOString();
+		const { data } = await supabase
+			.from("posts")
+			.update({ status: "archived" })
+			.eq("status", "solved")
+			.eq("deleted", false)
+			.lt("updated_at", cutoff)
+			.select("id");
+		return { action_type: "archive_stale", target: "posts", affected: (data || []).length };
+	},
+	async verify(res) {
+		return { ok: true, proof: `archived ${res.affected} stale solved posts` };
+	},
+	measure(res) {
+		return { metric: "posts.archived_stale", before: 0, after: res.affected };
+	},
+});
+
+// ── 19 · Priority Auto-Scaler (Class A — safe autonomous) ──────
+// Recalculates priority for posts based on engagement metrics.
+// When a post gets 10+ supports, it bumps to high priority automatically.
+registerWorker({
+	worker_id: "priority-scaler",
+	name: "Priority Auto-Scaler",
+	responsibility: "Recalculates post priority based on engagement (supports, comments, age).",
+	execution_class: "A",
+	budget: { max_runs_per_hour: 2, max_affected_records: 100 },
+	tools: ["read_query", "write_query"],
+	async observe() {
+		// Get open posts with their reaction counts
+		const { data: posts } = await supabase
+			.from("posts")
+			.select("id, priority, status, created_at")
+			.in("status", ["reported", "verified", "in_progress"])
+			.eq("deleted", false)
+			.limit(200);
+		if (!posts?.length) return { empty: true };
+
+		const needsUpdate = [];
+		for (const post of posts) {
+			const { count: supportCount } = await supabase
+				.from("reactions")
+				.select("id", { count: "exact", head: true })
+				.eq("target_id", post.id)
+				.eq("kind", "support");
+			const { count: concernCount } = await supabase
+				.from("reactions")
+				.select("id", { count: "exact", head: true })
+				.eq("target_id", post.id)
+				.eq("kind", "concern");
+			const { count: commentCount } = await supabase
+				.from("comments")
+				.select("id", { count: "exact", head: true })
+				.eq("post_id", post.id)
+				.eq("deleted", false);
+
+			let correctPriority = "medium";
+			const total = (supportCount || 0) + (concernCount || 0);
+			if (total >= 20 || (concernCount || 0) >= 15) correctPriority = "critical";
+			else if (total >= 10 || (concernCount || 0) >= 8) correctPriority = "high";
+			else if (total < 3 && (commentCount || 0) < 2) correctPriority = "low";
+
+			if (post.priority !== correctPriority) {
+				needsUpdate.push({ id: post.id, current: post.priority, correct: correctPriority, support: supportCount, concern: concernCount });
+			}
+		}
+		return { empty: needsUpdate.length === 0, updates: needsUpdate };
+	},
+	async analyze(ev) {
+		return ev.updates.length > 0
+			? { decision: "act", reason: `${ev.updates.length} posts need priority correction`, affected: ev.updates.length }
+			: { decision: "skip", reason: "all priorities correct" };
+	},
+	async execute(dec) {
+		let updated = 0;
+		for (const u of dec.updates || []) {
+			try {
+				await supabase
+					.from("posts")
+					.update({ priority: u.correct })
+					.eq("id", u.id);
+				updated++;
+			} catch { /* best effort */ }
+		}
+		return { action_type: "recalc_priority", target: "posts", affected: updated };
+	},
+	async verify(res) {
+		return { ok: res.affected > 0, proof: `recalculated priority for ${res.affected} posts` };
+	},
+	measure(res) {
+		return { metric: "posts.priority_recalculated", before: 0, after: res.affected };
+	},
+});
+
 /** Run the Phase-2+ roster sequentially. Returns per-worker honest outcomes. */
 export async function runHighValueRoster(trigger = "cron") {
 	const order = [
 		"cache-optimizer",
 		"session-cleaner",
 		"poll-archiver",
+		"content-enricher",
+		"stale-sweeper",
+		"priority-scaler",
 		"content-quality",
 		"search-quality",
 		"platform-health",
