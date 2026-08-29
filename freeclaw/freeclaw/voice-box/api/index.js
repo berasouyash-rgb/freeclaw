@@ -33,6 +33,7 @@ import chat from "./_chat.js";
 import communities from "./_communities.js";
 import { cleanupHandler, triggerAutoCleanup } from "./_cleanup.js";
 import commandCenter from "./_command-center.js";
+import dbStats from "./_db-stats.js";
 import comments from "./_comments.js";
 import conversationAssist from "./_conversation-assist.js";
 import duplicates from "./_duplicates.js";
@@ -43,6 +44,7 @@ import dataExport from "./_export.js";
 import follows from "./_follows.js";
 import notifyPrefs from "./_notify-prefs.js";
 import improvements from "./_improvements.js";
+import workforceBridge from "./_workforce-bridge.js";
 import workforceCenter from "./_workforce-center.js";
 import health from "./_health.js";
 import inbox from "./_inbox.js";
@@ -231,12 +233,14 @@ const routes = {
 	"notify-prefs": protect(notifyPrefs, "notify-prefs"),
 	"improvements": protect(improvements, "improvements"),
 	"workforce-center": protect(workforceCenter, "workforce-center"),
+	"workforce-bridge": protect(workforceBridge, "workforce-bridge"),
 	saved: protect(saved, "saved"),
 	insights: protect(insights, "insights"),
 	categories: protect(categories, "categories"),
 	"data-export": protect(dataExport, "data-export"),
 	badges: protect(badges, "badges"),
 	cleanup: protect(cleanupHandler, "cleanup"),
+	db_stats: protect(dbStats, "db_stats"),
 	// V3 Enterprise routes
 	"v3/stream": protect(v3Stream, "v3-stream"),
 	"v3/audit": protect(v3Audit, "v3-audit"),
@@ -268,6 +272,19 @@ export default async function handler(req, res) {
 	let endpoint = parts[1]; // ['api', 'posts', â€¦] â†’ 'posts'
 	if (endpoint === "v3" && parts[2]) {
 		endpoint = `v3/${parts[2]}`;
+	}
+
+	// Ensure req.query is always a plain object — the Vercel runtime populates
+	// this automatically, and the api-dev shim does too, but defensive coding
+	// prevents 500s when neither runs (e.g. edge cases in local dev).
+	if (!req.query) {
+		const u = new URL(req.url || "/", "http://localhost");
+		const q = {};
+		for (const key of u.searchParams.keys()) {
+			const all = u.searchParams.getAll(key);
+			q[key] = all.length > 1 ? all : all[0];
+		}
+		req.query = q;
 	}
 
 	// Set security headers on every response

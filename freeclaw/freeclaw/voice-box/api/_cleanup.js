@@ -14,7 +14,7 @@ const LOG_RETENTION_DAYS = 30; // activity logs, chat messages
 const BATCH_SIZE = 50;
 
 let lastRunAtMem = 0;
-const COOLDOWN_MS = 60 * 60 * 1000; // 1 hour between auto-runs
+const COOLDOWN_MS = 15 * 60 * 1000; // 15 minutes between auto-runs (was 1 hour)
 // FIX #38: Persist last run in Supabase so cleanup survives cold starts / scales across instances
 
 function daysAgo(days) {
@@ -262,6 +262,155 @@ async function runCleanup() {
 		}
 	} catch (e) {
 		console.error("[cleanup] polls archive sweep failed:", e.message);
+	}
+
+	// 8. Orphaned poll_votes (polls deleted but votes remain)
+	try {
+		const { data: allVotes } = await supabase
+			.from("poll_votes")
+			.select("id,poll_id")
+			.limit(500);
+		if (allVotes && allVotes.length > 0) {
+			const pollIds = [...new Set(allVotes.map((v) => v.poll_id))];
+			const { data: existingPolls } = await supabase
+				.from("polls")
+				.select("id")
+				.in("id", pollIds);
+			const existingSet = new Set((existingPolls || []).map((p) => p.id));
+			const orphanIds = allVotes
+				.filter((v) => !existingSet.has(v.poll_id))
+				.map((v) => v.id);
+			if (orphanIds.length > 0) {
+				await supabase
+					.from("poll_votes")
+					.delete()
+					.in("id", orphanIds.slice(0, BATCH_SIZE));
+				results.deleted_orphan_votes = orphanIds.length;
+			}
+		}
+	} catch (e) {
+		console.error("[cleanup] orphan poll_votes sweep failed:", e.message);
+	}
+
+	// 9. Expired admin session tokens from settings
+	try {
+		const { data: settings } = await supabase
+			.from("settings")
+			.select("key,value")
+			.like("key", "admin_sessions:%");
+		if (settings && settings.length > 0) {
+			const now = Date.now();
+			let cleared = 0;
+			for (const s of settings) {
+				const tokens = s.value?.tokens || [];
+				const valid = tokens.filter(
+					(t) => t.exp && t.exp * 1000 > now,
+				);
+				if (valid.length < tokens.length) {
+					await supabase
+						.from("settings")
+						.upsert(
+							{ key: s.key, value: { ...s.value, tokens: valid } },
+							{ onConflict: "key" },
+						);
+					cleared += tokens.length - valid.length;
+				}
+			}
+			if (cleared > 0) results.cleared_session_tokens = cleared;
+		}
+	} catch (e) {
+		console.error("[cleanup] session token sweep failed:", e.message);
+	}
+
+	// 10. Stale user notification arrays (keep max 100 per user)
+	try {
+		const { data: notifSettings } = await supabase
+			.from("settings")
+			.select("key,value")
+			.like("key", "notifications:%");
+		if (notifSettings && notifSettings.length > 0) {
+			let trimmed = 0;
+			for (const s of notifSettings) {
+				const notifs = s.value?.notifications || [];
+				if (notifs.length > 100) {
+					const pruned = notifs.slice(0, 100);
+					await supabase
+						.from("settings")
+						.upsert(
+							{ key: s.key, value: { ...s.value, notifications: pruned } },
+							{ onConflict: "key" },
+						);
+					trimmed += notifs.length - 100;
+				}
+			}
+			if (trimmed > 0) results.trimmed_notifications = trimmed;
+		}
+	} catch (e) {
+		console.error("[cleanup] notification trim failed:", e.message);
+	}
+
+	// 11. Orphaned reactions (target post/comment deleted)
+	try {
+		const { data: allReactions } = await supabase
+			.from("reactions")
+			.select("id,target_id,target_type")
+			.limit(500);
+		if (allReactions && allReactions.length > 0) {
+			const postIds = allReactions
+				.filter((r) => r.target_type === "post")
+				.map((r) => r.target_id);
+			if (postIds.length > 0) {
+				const { data: existingPosts } = await supabase
+					.from("posts")
+					.select("id")
+					.in("id", postIds);
+				const existingSet = new Set(
+					(existingPosts || []).map((p) => p.id),
+				);
+				const orphanIds = allReactions
+					.filter(
+						(r) =>
+							r.target_type === "post" &&
+							!existingSet.has(r.target_id),
+					)
+					.map((r) => r.id);
+				if (orphanIds.length > 0) {
+					await supabase
+						.from("reactions")
+						.delete()
+						.in("id", orphanIds.slice(0, BATCH_SIZE));
+					results.deleted_orphan_reactions = orphanIds.length;
+				}
+			}
+		}
+	} catch (e) {
+		console.error("[cleanup] orphan reactions sweep failed:", e.message);
+	}
+
+	// 12. Duplicate reports (same target_id + author_id)
+	try {
+		const { data: dupes } = await supabase
+			.from("reports")
+			.select("id,target_id,author_id")
+			.limit(500);
+		if (dupes && dupes.length > 1) {
+			const seen = new Map();
+			const toDelete = [];
+			for (const r of dupes) {
+				const key = `${r.target_id}:${r.author_id}`;
+				if (seen.has(key)) toDelete.push(r.id);
+				else seen.set(key, r.id);
+			}
+			if (toDelete.length > 0) {
+				await supabase
+					.from("reports")
+					.delete()
+					.in("id", toDelete.slice(0, BATCH_SIZE));
+				results.deleted_duplicate_reports = toDelete.length;
+			}
+		}
+	} catch (e) {
+		console.error("[cleanup] duplicate reports sweep failed:", e.message);
 	}
 
 	// NOTE: Bans are NEVER auto-removed. Only admins can unban users.

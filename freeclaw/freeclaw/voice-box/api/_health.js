@@ -96,6 +96,31 @@ export default async function handler(req, res) {
 		const start = Date.now();
 
 		// Run all checks in parallel
+		// Table sizes + row counts for all critical tables
+		const TABLES = [
+			"posts", "comments", "reactions", "polls", "poll_votes",
+			"reports", "users_meta", "settings", "activity_logs",
+			"chat_messages", "agent_conversations", "notifications",
+		];
+		const tableSizes = await Promise.all(
+			TABLES.map(async (t) => {
+				const start = Date.now();
+				try {
+					const { count, error } = await supabase
+						.from(t)
+						.select("*", { count: "exact", head: true });
+					if (error) throw error;
+					return {
+						table: t,
+						rows: count || 0,
+						latency_ms: Date.now() - start,
+					};
+				} catch {
+					return { table: t, rows: -1, latency_ms: Date.now() - start };
+				}
+			}),
+		);
+
 		const [dbCheck, postsCheck, commentsCheck, usersCheck, reportsCheck] =
 			await Promise.all([
 				(async () => {
@@ -174,6 +199,7 @@ export default async function handler(req, res) {
 			status: overallStatus,
 			timestamp: new Date().toISOString(),
 			checks,
+			table_sizes: tableSizes,
 			circuits: circuitStatus,
 			cache: cacheInfo,
 			system: systemHealth,
