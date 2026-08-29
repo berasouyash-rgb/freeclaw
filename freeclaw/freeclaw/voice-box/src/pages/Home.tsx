@@ -29,7 +29,7 @@ import { useCategories } from "../hooks/useCategories";
 import { api } from "../lib/api";
 import { useRealtime } from "../lib/useRealtime";
 import { trendingScore } from "../lib/utils";
-import type { PostData, ReactionEntry } from "../types";
+import type { PollData, PostData, ReactionEntry } from "../types";
 
 const SORTS = [
 	{ key: "trending", label: "Trending", icon: TrendingUp },
@@ -53,6 +53,8 @@ export default function Home() {
 	const [showFilters, setShowFilters] = useState(false);
 	const [pendingNew, setPendingNew] = useState(0);
 	const [visible, setVisible] = useState(PAGE_SIZE);
+	const [pollsMap, setPollsMap] = useState<Record<string, PollData>>({});
+	const [myPollVotes, setMyPollVotes] = useState<Record<string, number[]>>({});
 	const knownIdsRef = useRef<Set<string>>(new Set());
 
 	const load = useCallback(
@@ -99,9 +101,53 @@ export default function Home() {
 		[anonId],
 	);
 
+	// Fetch poll data + user's poll votes for posts that have linked_poll.
+	// Runs after every post load so the feed always has up-to-date poll info.
+	const fetchPolls = useCallback(
+		async (postList: PostData[]) => {
+			const pollIds = postList
+				.map((p) => p.linked_poll)
+				.filter((id): id is string => !!id);
+			if (!pollIds.length) {
+				setPollsMap({});
+				return;
+			}
+			// Batch: fetch all polls in parallel + user votes
+			const pollFetches = pollIds.map((pid) =>
+				api.getFresh<PollData[]>(`/api/polls?id=${pid}&viewer=${anonId}`).catch(() => []),
+			);
+			const votesFetch = anonId
+				? api.getFresh<{ poll_id: string; choices: number[] }[]>(
+					`/api/polls?voter=${anonId}`,
+				).catch(() => [])
+				: Promise.resolve([]);
+			const [pollResults, votes] = await Promise.all([
+				Promise.all(pollFetches),
+				votesFetch,
+			]);
+			const pMap: Record<string, PollData> = {};
+			pollResults.forEach((arr) => {
+				if (Array.isArray(arr) && arr[0]) pMap[arr[0].id] = arr[0];
+			});
+			setPollsMap(pMap);
+			if (Array.isArray(votes)) {
+				const vMap: Record<string, number[]> = {};
+				for (const v of votes)
+					if (v?.poll_id) vMap[v.poll_id] = v.choices || [];
+				setMyPollVotes(vMap);
+			}
+		},
+		[anonId],
+	);
+
 	useEffect(() => {
 		load();
 	}, [load]);
+
+	// Fetch polls whenever posts change
+	useEffect(() => {
+		if (posts.length) fetchPolls(posts);
+	}, [posts, fetchPolls]);
 
 	// 🔴 Realtime: posts, votes and comment counts update live for everyone
 	useRealtime(["posts", "reactions", "comments", "polls", "poll_votes"], () =>
@@ -508,7 +554,13 @@ export default function Home() {
 			)}					<div className="space-y-3 vb-feed-list">
 						{filtered.slice(0, visible).map((p, i) => (
 							<div key={p.id} {...(i === 0 ? { "data-tour": "post-card" } : {})}>
-								<PostCard post={p} myReactions={myReactions[p.id]} />
+											<PostCard
+										post={p}
+										myReactions={myReactions[p.id]}
+										pollData={p.linked_poll ? pollsMap[p.linked_poll] ?? null : null}
+										myPollVote={p.linked_poll ? myPollVotes[p.linked_poll] : undefined}
+										onPollVoted={() => fetchPolls(posts)}
+									/>
 							</div>
 						))}
 					</div>

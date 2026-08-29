@@ -29,7 +29,8 @@ import {
 	timeAgo,
 	trendingScore,
 } from "../lib/utils";
-import type { PostData, ReactionMeta } from "../types";
+import type { PollData, PostData, ReactionMeta } from "../types";
+import PollCard from "./PollCard";
 import { ReportDialog } from "./ui";
 
 export const REACTION_META: ReactionMeta[] = [
@@ -58,9 +59,12 @@ interface PostCardProps {
 		kind: string,
 		toggled: boolean,
 	) => void;
+	pollData?: PollData | null;
+	myPollVote?: number[];
+	onPollVoted?: () => void;
 }
 
-function PostCardInner({ post, myReactions, onReacted }: PostCardProps) {
+function PostCardInner({ post, myReactions, onReacted, pollData, myPollVote, onPollVoted }: PostCardProps) {
 	const { anonId, bookmarks, toggleBookmark, toast } = useApp();
 	const [busy, setBusy] = useState<string | null>(null);
 	const [reportOpen, setReportOpen] = useState(false);
@@ -332,15 +336,15 @@ function PostCardInner({ post, myReactions, onReacted }: PostCardProps) {
 							{post.comment_count || 0}
 						</Link>
 						{post.linked_poll && (
-							<Link
-								to={`/post/${post.id}`}									className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-semibold text-accent transition-colors duration-200"
-								title="This post has a live poll"
+							<span
+								className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-semibold text-accent"
+								title="This post has a live poll — see below"
 							>
 								<BarChart3 size={13} /> Poll ·{" "}
 								{(post.linked_poll_votes ?? 0) === 1
 									? "1 vote"
 									: `${post.linked_poll_votes ?? 0} votes`}
-							</Link>
+							</span>
 						)}
 						<button
 							onClick={() => {
@@ -377,6 +381,18 @@ function PostCardInner({ post, myReactions, onReacted }: PostCardProps) {
 				</div>
 			</div>
 
+			{/* ── Inline poll — when a linked poll exists and data is loaded, show
+			    the full PollCard so users can see options, results, and vote state
+			    without leaving the feed. */}
+			{post.linked_poll && pollData && (
+				<div className="mt-3 border-t border-border pt-3">
+					<PollCard
+						poll={pollData}
+						myVote={myPollVote}
+						onVoted={onPollVoted}
+					/>
+				</div>
+			)}
 			{/* ── Admin-only moderation — large, obvious controls (visible only
 			    while an admin session is active) ── */}
 			{hasAdminSession() && (

@@ -15,35 +15,51 @@ import { useEffect, useState } from "react";
 
 export type PreloaderTextKey =
 	| "starting"
-	| "loading"
+	| "environment"
+	| "fonts"
+	| "authentication"
+	| "database"
+	| "realtime"
+	| "resources"
 	| "verifying"
 	| "ready"
 	| "error"
 	| "retry"
 	| "continue"
-	| "errorMsg";
+	| "errorMsg"
+	| "errorMsgDetail";
 
-type LocaleStrings = Record<PreloaderTextKey, string>;
+type LocaleStrings = Partial<Record<PreloaderTextKey, string>>;
 
 const EN: LocaleStrings = {
-	starting: "Starting",
-	loading: "Preparing your workspace",
-	verifying: "Verifying",
+	starting: "Starting Voice Box…",
+	environment: "Checking environment…",
+	fonts: "Preparing your workspace…",
+	authentication: "Checking your session…",
+	database: "Connecting securely…",
+	realtime: "Preparing live updates…",
+	resources: "Loading essentials…",
+	verifying: "Verifying…",
 	ready: "Ready",
 	error: "Something needs attention",
-	retry: "Retry",
-	continue: "Continue",
-	errorMsg:
-		"We couldn't fully prepare your workspace. You can retry, or continue with a limited experience.",
+	retry: "Try again",
+	continue: "Continue with limited access",
+	errorMsg: "Voice Box couldn't finish loading.",
+	errorMsgDetail: "Live updates couldn't be connected. You can continue, but some real-time features may be unavailable.",
 };
 
 /** Locale → strings. Add a language here to make the preloader speak it. */
 export const PRELOADER_STRINGS: Record<string, LocaleStrings> = {
 	en: EN,
 	es: {
-		starting: "Iniciando",
-		loading: "Preparando tu espacio de trabajo",
-		verifying: "Verificando",
+	starting: "Iniciando",
+	environment: "Verificando entorno",
+	fonts: "Preparando tu espacio de trabajo",
+	authentication: "Verificando sesión",
+	database: "Conectando",
+	realtime: "Preparando actualizaciones",
+	resources: "Cargando",
+	verifying: "Verificando",
 		ready: "Listo",
 		error: "Algo requiere atención",
 		retry: "Reintentar",
@@ -52,9 +68,14 @@ export const PRELOADER_STRINGS: Record<string, LocaleStrings> = {
 			"No pudimos preparar completamente tu espacio de trabajo. Puedes reintentar o continuar con una experiencia limitada.",
 	},
 	fr: {
-		starting: "Démarrage",
-		loading: "Préparation de votre espace de travail",
-		verifying: "Vérification",
+	starting: "Démarrage",
+	environment: "Vérification de l'environnement",
+	fonts: "Préparation de votre espace de travail",
+	authentication: "Vérification de session",
+	database: "Connexion",
+	realtime: "Préparation des mises à jour",
+	resources: "Chargement",
+	verifying: "Vérification",
 		ready: "Prêt",
 		error: "Quelque chose nécessite votre attention",
 		retry: "Réessayer",
@@ -63,9 +84,14 @@ export const PRELOADER_STRINGS: Record<string, LocaleStrings> = {
 			"Nous n'avons pas pu préparer entièrement votre espace de travail. Vous pouvez réessayer ou continuer avec une expérience limitée.",
 	},
 	de: {
-		starting: "Starten",
-		loading: "Ihr Arbeitsbereich wird vorbereitet",
-		verifying: "Wird geprüft",
+	starting: "Starten",
+	environment: "Umgebung wird geprüft",
+	fonts: "Ihr Arbeitsbereich wird vorbereitet",
+	authentication: "Sitzung wird geprüft",
+	database: "Verbindung wird hergestellt",
+	realtime: "Live-Updates werden vorbereitet",
+	resources: "Wird geladen",
+	verifying: "Wird geprüft",
 		ready: "Bereit",
 		error: "Etwas erfordert Ihre Aufmerksamkeit",
 		retry: "Erneut versuchen",
@@ -74,9 +100,14 @@ export const PRELOADER_STRINGS: Record<string, LocaleStrings> = {
 			"Wir konnten Ihren Arbeitsbereich nicht vollständig vorbereiten. Sie können es erneut versuchen oder mit einer eingeschränkten Erfahrung fortfahren.",
 	},
 	it: {
-		starting: "Avvio",
-		loading: "Preparazione dell'area di lavoro",
-		verifying: "Verifica",
+	starting: "Avvio",
+	environment: "Verifica dell'ambiente",
+	fonts: "Preparazione dell'area di lavoro",
+	authentication: "Verifica della sessione",
+	database: "Connessione",
+	realtime: "Preparazione aggiornamenti",
+	resources: "Caricamento",
+	verifying: "Verifica",
 		ready: "Pronto",
 		error: "Qualcosa richiede attenzione",
 		retry: "Riprova",
@@ -85,9 +116,14 @@ export const PRELOADER_STRINGS: Record<string, LocaleStrings> = {
 			"Non siamo riusciti a preparare completamente il tuo spazio di lavoro. Puoi riprovare o continuare con un'esperienza limitata.",
 	},
 	pt: {
-		starting: "Iniciando",
-		loading: "Preparando seu espaço de trabalho",
-		verifying: "Verificando",
+	starting: "Iniciando",
+	environment: "Verificando ambiente",
+	fonts: "Preparando seu espaço de trabalho",
+	authentication: "Verificando sessão",
+	database: "Conectando",
+	realtime: "Preparando atualizações",
+	resources: "Carregando",
+	verifying: "Verificando",
 		ready: "Pronto",
 		error: "Algo precisa de atenção",
 		retry: "Tentar novamente",
@@ -96,9 +132,14 @@ export const PRELOADER_STRINGS: Record<string, LocaleStrings> = {
 			"Não foi possível preparar totalmente seu espaço de trabalho. Você pode tentar novamente ou continuar com uma experiência limitada.",
 	},
 	nl: {
-		starting: "Starten",
-		loading: "Uw werkruimte wordt voorbereid",
-		verifying: "Controleren",
+	starting: "Starten",
+	environment: "Omgeving controleren",
+	fonts: "Uw werkruimte wordt voorbereid",
+	authentication: "Sessie controleren",
+	database: "Verbinden",
+	realtime: "Live-updates voorbereiden",
+	resources: "Laden",
+	verifying: "Controleren",
 		ready: "Klaar",
 		error: "Er is aandacht nodig",
 		retry: "Opnieuw proberen",
@@ -107,9 +148,14 @@ export const PRELOADER_STRINGS: Record<string, LocaleStrings> = {
 			"We konden uw werkruimte niet volledig voorbereiden. U kunt het opnieuw proberen of doorgaan met een beperkte ervaring.",
 	},
 	pl: {
-		starting: "Uruchamianie",
-		loading: "Przygotowywanie przestrzeni roboczej",
-		verifying: "Weryfikowanie",
+	starting: "Uruchamianie",
+	environment: "Sprawdzanie środowiska",
+	fonts: "Przygotowywanie przestrzeni roboczej",
+	authentication: "Sprawdzanie sesji",
+	database: "Łączenie",
+	realtime: "Przygotowywanie aktualizacji",
+	resources: "Ładowanie",
+	verifying: "Weryfikowanie",
 		ready: "Gotowe",
 		error: "Coś wymaga uwagi",
 		retry: "Ponów",
@@ -118,9 +164,14 @@ export const PRELOADER_STRINGS: Record<string, LocaleStrings> = {
 			"Nie udało nam się w pełni przygotować Twojej przestrzeni roboczej. Możesz spróbować ponownie lub kontynuować z ograniczonym doświadczeniem.",
 	},
 	ru: {
-		starting: "Запуск",
-		loading: "Подготовка рабочего пространства",
-		verifying: "Проверка",
+	starting: "Запуск",
+	environment: "Проверка среды",
+	fonts: "Подготовка рабочего пространства",
+	authentication: "Проверка сессии",
+	database: "Подключение",
+	realtime: "Подготовка обновлений",
+	resources: "Загрузка",
+	verifying: "Проверка",
 		ready: "Готово",
 		error: "Требуется внимание",
 		retry: "Повторить",
@@ -129,9 +180,14 @@ export const PRELOADER_STRINGS: Record<string, LocaleStrings> = {
 			"Не удалось полностью подготовить ваше рабочее пространство. Вы можете повторить попытку или продолжить с ограниченными возможностями.",
 	},
 	uk: {
-		starting: "Запуск",
-		loading: "Підготовка робочого простору",
-		verifying: "Перевірка",
+	starting: "Запуск",
+	environment: "Перевірка середовища",
+	fonts: "Підготовка робочого простору",
+	authentication: "Перевірка сесії",
+	database: "Підключення",
+	realtime: "Підготовка оновлень",
+	resources: "Завантаження",
+	verifying: "Перевірка",
 		ready: "Готово",
 		error: "Потрібна увага",
 		retry: "Повторити",
@@ -140,9 +196,14 @@ export const PRELOADER_STRINGS: Record<string, LocaleStrings> = {
 			"Не вдалося повністю підготувати ваш робочий простір. Ви можете повторити спробу або продовжити з обмеженими можливостями.",
 	},
 	tr: {
-		starting: "Başlatılıyor",
-		loading: "Çalışma alanınız hazırlanıyor",
-		verifying: "Doğrulanıyor",
+	starting: "Başlatılıyor",
+	environment: "Ortam kontrol ediliyor",
+	fonts: "Çalışma alanınız hazırlanıyor",
+	authentication: "Oturum kontrol ediliyor",
+	database: "Bağlanıyor",
+	realtime: "Canlı güncellemeler hazırlanıyor",
+	resources: "Yükleniyor",
+	verifying: "Doğrulanıyor",
 		ready: "Hazır",
 		error: "Dikkat gerektiren bir şey var",
 		retry: "Yeniden dene",
@@ -151,9 +212,14 @@ export const PRELOADER_STRINGS: Record<string, LocaleStrings> = {
 			"Çalışma alanınız tam olarak hazırlanamadı. Yeniden deneyebilir veya sınırlı bir deneyimle devam edebilirsiniz.",
 	},
 	ar: {
-		starting: "جارٍ التشغيل",
-		loading: "جارٍ تجهيز مساحة العمل",
-		verifying: "جارٍ التحقق",
+	starting: "جارٍ التشغيل",
+	environment: "جارٍ التحقق من البيئة",
+	fonts: "جارٍ تجهيز مساحة العمل",
+	authentication: "جارٍ التحقق من الجلسة",
+	database: "جارٍ الاتصال",
+	realtime: "جارٍ تجهيز التحديثات",
+	resources: "جارٍ التحميل",
+	verifying: "جارٍ التحقق",
 		ready: "جاهز",
 		error: "هناك ما يحتاج إلى انتباه",
 		retry: "إعادة المحاولة",
@@ -162,9 +228,14 @@ export const PRELOADER_STRINGS: Record<string, LocaleStrings> = {
 			"تعذّر تجهيز مساحة العمل بالكامل. يمكنك إعادة المحاولة أو المتابعة بتجربة محدودة.",
 	},
 	he: {
-		starting: "מתחיל",
-		loading: "מכין את סביבת העבודה",
-		verifying: "מוודא",
+	starting: "מתחיל",
+	environment: "בודק סביבה",
+	fonts: "מכין את סביבת העבודה",
+	authentication: "בודק הפעלה",
+	database: "מתחבר",
+	realtime: "מכין עדכונים חיים",
+	resources: "טוען",
+	verifying: "מוודא",
 		ready: "מוכן",
 		error: "משהו דורש תשומת לב",
 		retry: "נסה שוב",
@@ -173,9 +244,14 @@ export const PRELOADER_STRINGS: Record<string, LocaleStrings> = {
 			"לא הצלחנו להכין את סביבת העבודה במלואה. ניתן לנסות שוב או להמשיך עם חוויה מוגבלת.",
 	},
 	hi: {
-		starting: "प्रारंभ हो रहा है",
-		loading: "आपका कार्यक्षेत्र तैयार हो रहा है",
-		verifying: "सत्यापित हो रहा है",
+	starting: "प्रारंभ हो रहा है",
+	environment: "वातावरण जाँच",
+	fonts: "आपका कार्यक्षेत्र तैयार हो रहा है",
+	authentication: "सत्र जाँच",
+	database: "कनेक्ट हो रहा है",
+	realtime: "लाइव अपडेट तैयार हो रहे हैं",
+	resources: "लोड हो रहा है",
+	verifying: "सत्यापित हो रहा है",
 		ready: "तैयार",
 		error: "कुछ ध्यान देने की आवश्यकता है",
 		retry: "पुनः प्रयास करें",
@@ -184,9 +260,14 @@ export const PRELOADER_STRINGS: Record<string, LocaleStrings> = {
 			"हम आपका कार्यक्षेत्र पूरी तरह तैयार नहीं कर सके। आप पुनः प्रयास कर सकते हैं या सीमित अनुभव के साथ जारी रख सकते हैं।",
 	},
 	bn: {
-		starting: "শুরু হচ্ছে",
-		loading: "আপনার কর্মক্ষেত্র প্রস্তুত করা হচ্ছে",
-		verifying: "যাচাই করা হচ্ছে",
+	starting: "শুরু হচ্ছে",
+	environment: "পরিবেশ যাচাই",
+	fonts: "আপনার কর্মক্ষেত্র প্রস্তুত করা হচ্ছে",
+	authentication: "সেশন যাচাই",
+	database: "সংযোগ হচ্ছে",
+	realtime: "লাইভ আপডেট প্রস্তুত হচ্ছে",
+	resources: "লোড হচ্ছে",
+	verifying: "যাচাই করা হচ্ছে",
 		ready: "প্রস্তুত",
 		error: "কিছু মনোযোগ প্রয়োজন",
 		retry: "আবার চেষ্টা করুন",
@@ -195,9 +276,14 @@ export const PRELOADER_STRINGS: Record<string, LocaleStrings> = {
 			"আমরা আপনার কর্মক্ষেত্র সম্পূর্ণভাবে প্রস্তুত করতে পারিনি। আপনি আবার চেষ্টা করতে পারেন বা সীমিত অভিজ্ঞতার সাথে চালিয়ে যেতে পারেন।",
 	},
 	"zh-CN": {
-		starting: "正在启动",
-		loading: "正在准备您的工作区",
-		verifying: "正在验证",
+	starting: "正在启动",
+	environment: "检查环境",
+	fonts: "正在准备您的工作区",
+	authentication: "检查会话",
+	database: "连接中",
+	realtime: "准备实时更新",
+	resources: "加载中",
+	verifying: "正在验证",
 		ready: "就绪",
 		error: "有事项需要注意",
 		retry: "重试",
@@ -205,9 +291,14 @@ export const PRELOADER_STRINGS: Record<string, LocaleStrings> = {
 		errorMsg: "我们无法完全准备您的工作区。您可以重试，或继续使用有限的功能。",
 	},
 	"zh-TW": {
-		starting: "正在啟動",
-		loading: "正在準備您的工作區",
-		verifying: "正在驗證",
+	starting: "正在啟動",
+	environment: "檢查環境",
+	fonts: "正在準備您的工作區",
+	authentication: "檢查工作階段",
+	database: "連線中",
+	realtime: "準備即時更新",
+	resources: "載入中",
+	verifying: "正在驗證",
 		ready: "就緒",
 		error: "有事項需要注意",
 		retry: "重試",
@@ -215,9 +306,14 @@ export const PRELOADER_STRINGS: Record<string, LocaleStrings> = {
 		errorMsg: "我們無法完全準備您的工作區。您可以重試，或繼續使用有限的功能。",
 	},
 	ja: {
-		starting: "起動中",
-		loading: "ワークスペースを準備しています",
-		verifying: "確認中",
+	starting: "起動中",
+	environment: "環境を確認中",
+	fonts: "ワークスペースを準備しています",
+	authentication: "セッションを確認中",
+	database: "接続中",
+	realtime: "ライブ更新を準備中",
+	resources: "読み込み中",
+	verifying: "確認中",
 		ready: "準備完了",
 		error: "対応が必要な項目があります",
 		retry: "再試行",
@@ -226,9 +322,14 @@ export const PRELOADER_STRINGS: Record<string, LocaleStrings> = {
 			"ワークスペースを完全に準備できませんでした。再試行するか、限定的な機能で続行できます。",
 	},
 	ko: {
-		starting: "시작 중",
-		loading: "작업 공간을 준비하는 중",
-		verifying: "확인 중",
+	starting: "시작 중",
+	environment: "환경 확인 중",
+	fonts: "작업 공간을 준비하는 중",
+	authentication: "세션 확인 중",
+	database: "연결 중",
+	realtime: "실시간 업데이트 준비 중",
+	resources: "로딩 중",
+	verifying: "확인 중",
 		ready: "준비 완료",
 		error: "주의가 필요한 항목이 있습니다",
 		retry: "다시 시도",
@@ -237,9 +338,14 @@ export const PRELOADER_STRINGS: Record<string, LocaleStrings> = {
 			"작업 공간을 완전히 준비하지 못했습니다. 다시 시도하거나 제한된 환경에서 계속할 수 있습니다.",
 	},
 	vi: {
-		starting: "Đang khởi động",
-		loading: "Đang chuẩn bị không gian làm việc",
-		verifying: "Đang xác minh",
+	starting: "Đang khởi động",
+	environment: "Kiểm tra môi trường",
+	fonts: "Đang chuẩn bị không gian làm việc",
+	authentication: "Kiểm tra phiên",
+	database: "Đang kết nối",
+	realtime: "Chuẩn bị cập nhật",
+	resources: "Đang tải",
+	verifying: "Đang xác minh",
 		ready: "Sẵn sàng",
 		error: "Có điều cần chú ý",
 		retry: "Thử lại",
@@ -248,9 +354,14 @@ export const PRELOADER_STRINGS: Record<string, LocaleStrings> = {
 			"Không thể chuẩn bị đầy đủ không gian làm việc của bạn. Bạn có thể thử lại hoặc tiếp tục với trải nghiệm hạn chế.",
 	},
 	th: {
-		starting: "กำลังเริ่มต้น",
-		loading: "กำลังเตรียมพื้นที่ทำงานของคุณ",
-		verifying: "กำลังตรวจสอบ",
+	starting: "กำลังเริ่มต้น",
+	environment: "กำลังตรวจสอบสภาพแวดล้อม",
+	fonts: "กำลังเตรียมพื้นที่ทำงานของคุณ",
+	authentication: "กำลังตรวจสอบเซสชัน",
+	database: "กำลังเชื่อมต่อ",
+	realtime: "กำลังเตรียมอัปเดต",
+	resources: "กำลังโหลด",
+	verifying: "กำลังตรวจสอบ",
 		ready: "พร้อม",
 		error: "มีบางอย่างที่ต้องให้ความสนใจ",
 		retry: "ลองอีกครั้ง",
@@ -259,9 +370,14 @@ export const PRELOADER_STRINGS: Record<string, LocaleStrings> = {
 			"เราไม่สามารถเตรียมพื้นที่ทำงานของคุณได้อย่างสมบูรณ์ คุณสามารถลองอีกครั้งหรือดำเนินการต่อด้วยประสบการณ์ที่จำกัด",
 	},
 	id: {
-		starting: "Memulai",
-		loading: "Menyiapkan ruang kerja Anda",
-		verifying: "Memverifikasi",
+	starting: "Memulai",
+	environment: "Memeriksa lingkungan",
+	fonts: "Menyiapkan ruang kerja Anda",
+	authentication: "Memeriksa sesi",
+	database: "Menghubungkan",
+	realtime: "Menyiapkan pembaruan",
+	resources: "Memuat",
+	verifying: "Memverifikasi",
 		ready: "Siap",
 		error: "Ada yang memerlukan perhatian",
 		retry: "Coba lagi",
@@ -270,9 +386,14 @@ export const PRELOADER_STRINGS: Record<string, LocaleStrings> = {
 			"Kami tidak dapat menyiapkan ruang kerja Anda sepenuhnya. Anda dapat mencoba lagi atau melanjutkan dengan pengalaman terbatas.",
 	},
 	ms: {
-		starting: "Memulakan",
-		loading: "Menyediakan ruang kerja anda",
-		verifying: "Mengesahkan",
+	starting: "Memulakan",
+	environment: "Memeriksa persekitaran",
+	fonts: "Menyediakan ruang kerja anda",
+	authentication: "Memeriksa sesi",
+	database: "Menyambung",
+	realtime: "Menyediakan kemas kini",
+	resources: "Memuatkan",
+	verifying: "Mengesahkan",
 		ready: "Sedia",
 		error: "Ada yang memerlukan perhatian",
 		retry: "Cuba semula",
@@ -282,7 +403,6 @@ export const PRELOADER_STRINGS: Record<string, LocaleStrings> = {
 	},
 	sv: {
 		starting: "Startar",
-		loading: "Förbereder din arbetsyta",
 		verifying: "Verifierar",
 		ready: "Redo",
 		error: "Något kräver uppmärksamhet",
@@ -293,7 +413,6 @@ export const PRELOADER_STRINGS: Record<string, LocaleStrings> = {
 	},
 	da: {
 		starting: "Starter",
-		loading: "Forbereder din arbejdsplads",
 		verifying: "Verificerer",
 		ready: "Klar",
 		error: "Noget kræver opmærksomhed",
@@ -304,7 +423,6 @@ export const PRELOADER_STRINGS: Record<string, LocaleStrings> = {
 	},
 	fi: {
 		starting: "Käynnistetään",
-		loading: "Valmistellaan työtilaasi",
 		verifying: "Varmistetaan",
 		ready: "Valmis",
 		error: "Jokin vaatii huomiota",
@@ -315,7 +433,6 @@ export const PRELOADER_STRINGS: Record<string, LocaleStrings> = {
 	},
 	nb: {
 		starting: "Starter",
-		loading: "Forbereder arbeidsområdet ditt",
 		verifying: "Verifiserer",
 		ready: "Klar",
 		error: "Noe krever oppmerksomhet",
@@ -326,7 +443,6 @@ export const PRELOADER_STRINGS: Record<string, LocaleStrings> = {
 	},
 	cs: {
 		starting: "Spouštění",
-		loading: "Příprava vašeho pracovního prostoru",
 		verifying: "Ověřování",
 		ready: "Připraveno",
 		error: "Něco vyžaduje pozornost",
@@ -337,7 +453,6 @@ export const PRELOADER_STRINGS: Record<string, LocaleStrings> = {
 	},
 	sk: {
 		starting: "Spúšťanie",
-		loading: "Príprava vášho pracovného priestoru",
 		verifying: "Overovanie",
 		ready: "Pripravené",
 		error: "Niečo si vyžaduje pozornosť",
@@ -348,7 +463,6 @@ export const PRELOADER_STRINGS: Record<string, LocaleStrings> = {
 	},
 	hu: {
 		starting: "Indítás",
-		loading: "A munkaterület előkészítése",
 		verifying: "Ellenőrzés",
 		ready: "Kész",
 		error: "Valami figyelmet igényel",
@@ -359,7 +473,6 @@ export const PRELOADER_STRINGS: Record<string, LocaleStrings> = {
 	},
 	ro: {
 		starting: "Pornire",
-		loading: "Se pregătește spațiul de lucru",
 		verifying: "Se verifică",
 		ready: "Gata",
 		error: "Ceva necesită atenție",
@@ -370,7 +483,6 @@ export const PRELOADER_STRINGS: Record<string, LocaleStrings> = {
 	},
 	bg: {
 		starting: "Стартиране",
-		loading: "Подготовка на работното пространство",
 		verifying: "Проверка",
 		ready: "Готово",
 		error: "Нещо изисква внимание",
@@ -381,7 +493,6 @@ export const PRELOADER_STRINGS: Record<string, LocaleStrings> = {
 	},
 	el: {
 		starting: "Εκκίνηση",
-		loading: "Προετοιμασία του χώρου εργασίας σας",
 		verifying: "Επαλήθευση",
 		ready: "Έτοιμο",
 		error: "Κάτι χρειάζεται προσοχή",
@@ -392,7 +503,6 @@ export const PRELOADER_STRINGS: Record<string, LocaleStrings> = {
 	},
 	hr: {
 		starting: "Pokretanje",
-		loading: "Priprema vašeg radnog prostora",
 		verifying: "Provjera",
 		ready: "Spremno",
 		error: "Nešto zahtijeva pozornost",
@@ -403,7 +513,6 @@ export const PRELOADER_STRINGS: Record<string, LocaleStrings> = {
 	},
 	sr: {
 		starting: "Покретање",
-		loading: "Припрема вашег радног простора",
 		verifying: "Провера",
 		ready: "Спреман",
 		error: "Нешто захтева пажњу",
@@ -414,7 +523,6 @@ export const PRELOADER_STRINGS: Record<string, LocaleStrings> = {
 	},
 	lt: {
 		starting: "Paleidimas",
-		loading: "Ruošiama jūsų darbo erdvė",
 		verifying: "Tikrinama",
 		ready: "Paruošta",
 		error: "Kažkas reikalauja dėmesio",
@@ -425,7 +533,6 @@ export const PRELOADER_STRINGS: Record<string, LocaleStrings> = {
 	},
 	lv: {
 		starting: "Palaišana",
-		loading: "Jūsu darbvietes sagatavošana",
 		verifying: "Pārbaude",
 		ready: "Gatavs",
 		error: "Kaut kam nepieciešama uzmanība",
@@ -436,7 +543,6 @@ export const PRELOADER_STRINGS: Record<string, LocaleStrings> = {
 	},
 	et: {
 		starting: "Käivitamine",
-		loading: "Teie tööruumi ettevalmistamine",
 		verifying: "Kontrollimine",
 		ready: "Valmis",
 		error: "Miski vajab tähelepanu",
@@ -447,7 +553,6 @@ export const PRELOADER_STRINGS: Record<string, LocaleStrings> = {
 	},
 	sl: {
 		starting: "Zagon",
-		loading: "Pripravljanje vašega delovnega prostora",
 		verifying: "Preverjanje",
 		ready: "Pripravljeno",
 		error: "Nekaj zahteva pozornost",
@@ -458,7 +563,6 @@ export const PRELOADER_STRINGS: Record<string, LocaleStrings> = {
 	},
 	fa: {
 		starting: "در حال راه‌اندازی",
-		loading: "در حال آماده‌سازی فضای کاری شما",
 		verifying: "در حال تأیید",
 		ready: "آماده",
 		error: "چیزی نیاز به توجه دارد",
@@ -469,7 +573,6 @@ export const PRELOADER_STRINGS: Record<string, LocaleStrings> = {
 	},
 	ur: {
 		starting: "شروع ہو رہا ہے",
-		loading: "آپ کی ورک اسپیس تیار ہو رہی ہے",
 		verifying: "تصدیق ہو رہی ہے",
 		ready: "تیار",
 		error: "کسی چیز پر توجہ کی ضرورت ہے",
@@ -480,7 +583,6 @@ export const PRELOADER_STRINGS: Record<string, LocaleStrings> = {
 	},
 	ta: {
 		starting: "தொடங்குகிறது",
-		loading: "உங்கள் பணியிடம் தயாராகிறது",
 		verifying: "சரிபார்க்கிறது",
 		ready: "தயார்",
 		error: "கவனம் தேவைப்படும் ஒன்று உள்ளது",
@@ -491,7 +593,6 @@ export const PRELOADER_STRINGS: Record<string, LocaleStrings> = {
 	},
 	te: {
 		starting: "ప్రారంభిస్తోంది",
-		loading: "మీ పని ప్రదేశం సిద్ధమవుతోంది",
 		verifying: "ధృవీకరిస్తోంది",
 		ready: "సిద్ధంగా ఉంది",
 		error: "శ్రద్ధ అవసరమైన విషయం ఉంది",
@@ -502,7 +603,6 @@ export const PRELOADER_STRINGS: Record<string, LocaleStrings> = {
 	},
 	ml: {
 		starting: "ആരംഭിക്കുന്നു",
-		loading: "നിങ്ങളുടെ വർക്ക്സ്പെയ്സ് തയ്യാറാക്കുന്നു",
 		verifying: "പരിശോധിക്കുന്നു",
 		ready: "തയ്യാറാണ്",
 		error: "ശ്രദ്ധ ആവശ്യമുള്ള എന്തോ ഉണ്ട്",
@@ -513,7 +613,6 @@ export const PRELOADER_STRINGS: Record<string, LocaleStrings> = {
 	},
 	sw: {
 		starting: "Inaanzisha",
-		loading: "Inaandaa nafasi yako ya kazi",
 		verifying: "Inathibitisha",
 		ready: "Tayari",
 		error: "Kuna kitu kinachohitaji umakini",
@@ -524,7 +623,6 @@ export const PRELOADER_STRINGS: Record<string, LocaleStrings> = {
 	},
 	fil: {
 		starting: "Sinisimulan",
-		loading: "Inihahanda ang iyong workspace",
 		verifying: "Bine-verify",
 		ready: "Handa na",
 		error: "May nangangailangan ng atensyon",
@@ -570,7 +668,7 @@ export function detectLocale(): string {
 
 /** Translate a key for a given locale (falls back to English). */
 export function t(key: PreloaderTextKey, locale: string = detectLocale()): string {
-	return PRELOADER_STRINGS[locale]?.[key] ?? EN[key];
+	return PRELOADER_STRINGS[locale]?.[key] ?? EN[key] ?? "";
 }
 
 /** React hook — returns the active preloader locale, re-checking on change. */
