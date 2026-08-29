@@ -18,6 +18,7 @@ const mocks = vi.hoisted(() => ({
 	post: vi.fn(),
 	put: vi.fn(),
 	anonId: "anon-viewer",
+	isAdmin: false,
 }));
 
 vi.mock("../contexts/AppContext", () => ({
@@ -26,7 +27,7 @@ vi.mock("../contexts/AppContext", () => ({
 
 vi.mock("../lib/api", () => ({
 	api: { post: mocks.post, put: mocks.put },
-	hasAdminSession: () => false,
+	hasAdminSession: () => mocks.isAdmin,
 }));
 
 vi.mock("../lib/utils", () => ({
@@ -440,5 +441,43 @@ describe("PollCard — live countdown timer", () => {
 		await new Promise((r) => setTimeout(r, 2100));
 		const second = screen.getByText(/ends in/).textContent;
 		expect(second).not.toBe(first);
+	});
+});
+
+describe("PollCard — admin controls", () => {
+	beforeEach(() => {
+		mocks.isAdmin = false;
+	});
+
+	it("does not show admin controls for regular users", () => {
+		render(<PollCard poll={openOwn} />);
+		expect(screen.queryByText(/admin/i)).toBeNull();
+		expect(screen.queryByText(/archive/i)).toBeNull();
+		expect(screen.queryByText(/stop voting/i)).toBeNull();
+	});
+
+	it("shows archive button for admins when poll is not archived", () => {
+		mocks.isAdmin = true;
+		render(<PollCard poll={openOwn} />);
+		expect(screen.getByText(/archive/i)).toBeInTheDocument();
+	});
+
+	it("shows restore button for admins when poll is archived", () => {
+		mocks.isAdmin = true;
+		const archived = { ...BASE, archived: true, expires_at: null };
+		render(<PollCard poll={archived} />);
+		expect(screen.getByText(/restore/i)).toBeInTheDocument();
+	});
+
+	it("shows stop voting button for admins on open polls", () => {
+		mocks.isAdmin = true;
+		render(<PollCard poll={openOwn} />);
+		expect(screen.getByText(/stop voting/i)).toBeInTheDocument();
+	});
+
+	it("shows delete button for admins on any poll", () => {
+		mocks.isAdmin = true;
+		render(<PollCard poll={openOwn} />);
+		expect(screen.getByText(/delete/i)).toBeInTheDocument();
 	});
 });
