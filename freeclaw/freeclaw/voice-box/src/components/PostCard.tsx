@@ -24,7 +24,7 @@ import { useApp } from "../contexts/AppContext";
 import { api, hasAdminSession } from "../lib/api";
 import {
 	CAT_EMOJI,
-
+	PRIORITY_META,
 	STATUS_META,
 	timeAgo,
 	trendingScore,
@@ -269,14 +269,31 @@ function PostCardInner({ post, myReactions, onReacted, pollData, myPollVote, onP
 							{post.status === "solved" && <CheckCircle2 size={11} />}{" "}
 							{status.label}
 						</span>
+						{post.priority && post.priority !== "medium" && PRIORITY_META[post.priority] && (
+							<span
+								className="chip"
+								style={{ color: PRIORITY_META[post.priority].color, borderColor: `${PRIORITY_META[post.priority].color}44` }}
+								title={`Auto-assigned priority: ${PRIORITY_META[post.priority].label}`}
+							>
+								{post.priority === "critical" && "🔴"}
+								{post.priority === "high" && "🟠"}
+								{post.priority === "low" && "🟢"}
+								{" "}{PRIORITY_META[post.priority].label}
+							</span>
+						)}
 					</div>
 					<Link to={`/post/${post.id}`} className="block group">
 						<h3 className="font-display font-semibold text-[15px] sm:text-base leading-snug group-hover:text-accent transition-colors duration-200">
 							{post.title}
-						</h3>
-						<p className="text-sm text-ink2 mt-1.5 line-clamp-2 leading-relaxed">
-							{post.description}
-						</p>
+						</h3>							<p className="text-sm text-ink2 mt-1.5 line-clamp-2 leading-relaxed">
+								{post.description}
+							</p>
+							{post.ai_summary && (
+								<p className="text-xs text-accent mt-2 flex items-center gap-1.5 bg-accent/5 rounded-lg px-2.5 py-1.5">
+									<Sparkles size={11} className="shrink-0" />
+									<span className="line-clamp-1">{post.ai_summary}</span>
+								</p>
+							)}
 					</Link>
 					{post.tags && post.tags.length > 0 && (
 						<div className="flex flex-wrap gap-1.5 mt-2">
@@ -407,6 +424,11 @@ function PostCardInner({ post, myReactions, onReacted, pollData, myPollVote, onP
 			    while an admin session is active) ── */}
 			{hasAdminSession() && (
 				<div className="border-t border-border bg-surface2/40">
+					{post.status === "pending_review" && (
+						<div className="flex items-center gap-1.5 px-3 pt-2.5 pb-0 text-[11px] font-semibold text-warn">
+							🔒 Held for review — possible PII or quality issue detected by AI moderation
+						</div>
+					)}
 					<div className="flex items-center gap-1.5 px-3 pt-2.5 pb-2 flex-wrap">
 						<span className="inline-flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-[0.16em] text-accent mr-1">
 							<ShieldCheck size={13} aria-hidden /> Moderation

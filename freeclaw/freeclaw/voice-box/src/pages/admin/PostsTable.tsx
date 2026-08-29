@@ -34,6 +34,7 @@ import { api } from "../../lib/api";
 import { useRealtime } from "../../lib/useRealtime";
 import {
 	CATEGORIES,
+	PRIORITY_META,
 	STATUS_META,
 	downloadFile,
 	sanitize,
@@ -401,7 +402,8 @@ export default function PostsTable({
 							</th>
 							<th className="px-4 py-3">Title</th>
 								<th className="px-2 py-3">Category</th>
-								<th className="px-2 py-3">Status</th>
+								<th className="px-2 py-3">Priority</th>
+							<th className="px-2 py-3">Status</th>
 								<th className="px-2 py-3">Author</th>
 								<th className="px-2 py-3">Age</th>
 								<th className="px-2 py-3" title="Supports · Comments · Poll votes — live">
@@ -428,12 +430,24 @@ export default function PostsTable({
 									</td>
 									<td className="px-4 py-3 font-medium max-w-64">
 										<span className="line-clamp-1">{p.title}</span>
+										{p.status === "pending_review" && (
+											<span className="ml-1.5 text-[10px] text-warn font-semibold" title="Held for review — possible PII or quality issue">
+												🔒
+											</span>
+										)}
 									</td>
-									<td className="px-2 py-3 text-xs">{p.category}</td>
-									<td
-										className="px-2 py-3"
-										onClick={(e) => e.stopPropagation()}
-									>
+									<td className="px-2 py-3 text-xs">{p.category}</td>									<td className="px-2 py-3 text-xs" title={`Auto-assigned: ${p.priority}`}>
+										<span
+											className="inline-flex items-center gap-1 font-semibold"
+											style={{ color: PRIORITY_META[p.priority]?.color }}
+										>
+											{p.priority === "critical" && "🔴"}
+											{p.priority === "high" && "🟠"}
+											{p.priority === "low" && "🟢"}
+											{PRIORITY_META[p.priority]?.label || "Medium"}
+										</span>
+									</td>
+									<td className="px-2 py-3" onClick={(e) => e.stopPropagation()}>
 										<select
 											className="input !py-1 !px-2 !text-[11px] !w-auto font-semibold !rounded-lg"
 											style={{ color: STATUS_META[p.status]?.color }}
@@ -527,18 +541,22 @@ export default function PostsTable({
 						<span className="text-sm font-semibold">
 							{selectedIds.size} selected
 						</span>
-						<button
-							className="btn btn-soft !py-1.5 !px-3 !text-xs"
-							onClick={() => {
-								// Bulk status change
-								setStatusDialog({
-									id: "BULK",
-									status: "solved",
-								});
-							}}
-						>
-							<CheckCircle2 size={13} /> Mark solved
-						</button>
+						<select
+						className="input !py-1.5 !px-2 !text-xs !w-auto"
+						value=""
+						onChange={(e) => {
+							if (e.target.value) {
+								setStatusDialog({ id: "BULK", status: e.target.value });
+								e.target.value = "";
+							}
+						}}
+						aria-label="Bulk status change"
+					>
+						<option value="" disabled>Change status…</option>
+						{Object.entries(STATUS_META).map(([k, v]) => (
+							<option key={k} value={k}>{v.label}</option>
+						))}
+					</select>
 						<button
 							className="btn btn-danger !py-1.5 !px-3 !text-xs"
 							onClick={() => setBulkDeleteOpen(true)}
