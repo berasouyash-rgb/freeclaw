@@ -23,8 +23,8 @@ export default function Suggestions() {
 	const [mine, setMine] = useState<Record<string, string[]>>({});
 	const [loading, setLoading] = useState(true);
 	const [error, setError] = useState("");
-	const [sort, setSort] = useState<"top" | "trending" | "new">("top");
-	const [statusF, setStatusF] = useState<"all" | "open" | "accepted">("all");
+	const [sort, setSort] = useState<"top" | "trending" | "new">("new");
+	const [statusF, setStatusF] = useState<"all" | "accepted">("all");
 	const [busy, setBusy] = useState<string | null>(null);
 
 	const load = useCallback(async () => {
@@ -113,8 +113,6 @@ export default function Suggestions() {
 
 	const sorted = useMemo(() => {
 		let list = [...items];
-		if (statusF === "open")
-			list = list.filter((s) => !["solved", "archived"].includes(s.status));
 		if (statusF === "accepted")
 			list = list.filter((s) =>
 				["in_progress", "waiting", "solved"].includes(s.status),
@@ -152,12 +150,11 @@ export default function Suggestions() {
 					]}
 				/>
 				<div className="ml-auto">
-					<Segmented<"all" | "open" | "accepted">
+					<Segmented<"all" | "accepted">
 						value={statusF}
 						onChange={setStatusF}
 						options={[
 							{ value: "all", label: "All" },
-							{ value: "open", label: "Open" },
 							{ value: "accepted", label: "✓ Accepted" },
 						]}
 					/>

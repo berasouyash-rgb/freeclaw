@@ -3,13 +3,15 @@ import {
 	BarChart3,
 	CheckCircle2,
 	Clock,
+	Lock,
 	RotateCcw,
+	ShieldCheck,
 	Sparkles,
 	Trash2,
 } from "lucide-react";
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { useApp } from "../contexts/AppContext";
-import { api } from "../lib/api";
+import { api, hasAdminSession } from "../lib/api";
 import type { PollData } from "../types";
 import { ConfirmDialog } from "./ui";
 
@@ -337,6 +339,86 @@ const PollCard = memo(function PollCard({
 					)}
 				</div>
 			</div>
+			{/* Admin controls — archive, stop voting, delete */}
+			{hasAdminSession() && (
+				<div className="flex items-center gap-1.5 mt-3 pt-3 border-t border-border">
+					<span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-[0.16em] text-accent mr-1">
+						<ShieldCheck size={12} aria-hidden /> Admin
+					</span>
+					{!p.archived && !expired && (
+						<button
+							type="button"
+							disabled={busy}
+							onClick={async () => {
+								setBusy(true);
+								try {
+									await api.put("/api/polls", { id: p.id, archived: true });
+									toast("Poll archived", "ok");
+									onVoted?.();
+								} catch (e: unknown) {
+									toast(e instanceof Error ? e.message : "Failed", "err");
+								}
+								setBusy(false);
+							}}
+						className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[11px] font-semibold text-warn bg-warn/10 border border-warn/25 transition-colors disabled:opacity-40"
+						>
+							<Archive size={12} /> Archive
+						</button>
+					)}
+					{p.archived && (
+						<button
+							type="button"
+							disabled={busy}
+							onClick={async () => {
+								setBusy(true);
+								try {
+									await api.put("/api/polls", { id: p.id, archived: false });
+									toast("Poll restored", "ok");
+									onVoted?.();
+								} catch (e: unknown) {
+									toast(e instanceof Error ? e.message : "Failed", "err");
+								}
+								setBusy(false);
+							}}
+						className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[11px] font-semibold text-good bg-good/10 border border-good/25 transition-colors disabled:opacity-40"
+						>
+							<Lock size={12} /> Restore
+						</button>
+					)}
+					{!expired && (
+						<button
+							type="button"
+							disabled={busy}
+							onClick={async () => {
+								setBusy(true);
+								try {
+									await api.put("/api/polls", {
+										id: p.id,
+										expires_at: new Date().toISOString(),
+									});
+									toast("Voting stopped", "ok");
+									onVoted?.();
+								} catch (e: unknown) {
+									toast(e instanceof Error ? e.message : "Failed", "err");
+								}
+								setBusy(false);
+							}}
+						className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[11px] font-semibold text-blue-400 bg-blue-500/10 border border-blue-500/25 transition-colors disabled:opacity-40"
+						>
+							<Lock size={12} /> Stop voting
+						</button>
+					)}
+					<button
+						type="button"
+						disabled={busy}
+						onClick={() => setShowDelete(true)}
+						className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[11px] font-semibold text-red-400 bg-red-500/10 border border-red-500/25 transition-colors disabled:opacity-40"
+					>
+						<Trash2 size={12} /> Delete
+					</button>
+				</div>
+			)}
+
 			{/* AI insight on results */}
 			{showResults && total > 0 && <PollInsight poll={p} />}
 

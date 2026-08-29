@@ -48,7 +48,7 @@ export default function Home() {
 	const [error, setError] = useState("");
 	const [query, setQuery] = useState("");
 	const [cat, setCat] = useState("All");
-	const [sort, setSort] = useState("trending");
+	const [sort, setSort] = useState("newest");
 	const [statusFilter, setStatusFilter] = useState("all");
 	const [showFilters, setShowFilters] = useState(false);
 	const [pendingNew, setPendingNew] = useState(0);
@@ -166,8 +166,6 @@ export default function Home() {
 	const filtered = useMemo(() => {
 		let list = posts.filter((p) => !p.merged_into);
 		if (cat !== "All") list = list.filter((p) => p.category === cat);
-		if (statusFilter === "open")
-			list = list.filter((p) => !["solved", "archived"].includes(p.status));
 		if (statusFilter === "solved")
 			list = list.filter((p) => p.status === "solved");
 		if (query.trim()) {
@@ -500,7 +498,7 @@ export default function Home() {
 						role="tablist"
 						aria-label="Filter by status"
 					>
-						{(["all", "open", "solved"] as const).map((s) => (
+						{(["all", "solved"] as const).map((s) => (
 							<button
 								key={s}
 								role="tab"

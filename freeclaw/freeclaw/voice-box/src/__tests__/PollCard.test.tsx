@@ -26,6 +26,7 @@ vi.mock("../contexts/AppContext", () => ({
 
 vi.mock("../lib/api", () => ({
 	api: { post: mocks.post, put: mocks.put },
+	hasAdminSession: () => false,
 }));
 
 vi.mock("../lib/utils", () => ({

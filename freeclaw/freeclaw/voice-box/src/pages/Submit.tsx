@@ -826,21 +826,44 @@ export default function Submit() {
 								gauge community opinion.
 							</p>
 						</div>
-						<div>
-							<label
-								className="text-xs font-semibold text-ink2 block mb-1.5"
-								htmlFor="f-expiry"
-							>
-								Expiration date (optional)
-							</label>
-							<input
-								id="f-expiry"
-								type="datetime-local"
-								className="input"
-								value={expiry}
-								onChange={(e) => setExpiry(e.target.value)}
-								min={new Date().toISOString().slice(0, 16)}
-							/>
+						<div>								<label
+									className="text-xs font-semibold text-ink2 block mb-1.5"
+									htmlFor="f-expiry"
+								>
+									Expiration date (optional)
+								</label>
+								<div className="flex flex-wrap gap-1.5 mb-2">
+									{[
+										{ label: "1 hour", ms: 3600000 },
+										{ label: "24 hours", ms: 86400000 },
+										{ label: "7 days", ms: 604800000 },
+										{ label: "30 days", ms: 2592000000 },
+									].map((p) => (
+										<button
+											key={p.ms}
+											type="button"
+											onClick={() => {
+												const d = new Date(Date.now() + p.ms);
+												setExpiry(d.toISOString().slice(0, 16));
+											}}
+											className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold border transition-all ${
+												expiry === new Date(Date.now() + p.ms).toISOString().slice(0, 16)
+													? "border-accent bg-accent-soft text-accent"
+													: "border-border text-ink3 hover:border-accent/50"
+											}`}
+										>
+											{p.label}
+										</button>
+									))}
+								</div>
+								<input
+									id="f-expiry"
+									type="datetime-local"
+									className="input"
+									value={expiry}
+									onChange={(e) => setExpiry(e.target.value)}
+									min={new Date().toISOString().slice(0, 16)}
+								/>
 						</div>
 					</>
 				) : (
