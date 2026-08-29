@@ -1,6 +1,7 @@
 import {
 	BarChart3,
 	CheckCircle2,
+	Download,
 	Eye,
 	EyeOff,
 	GitMerge,
@@ -19,7 +20,12 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { fireConfetti } from "../../components/Confetti";
-import ExportCSVButton from "../../components/ExportCSVButton";
+import {
+	buildComplianceCSV,
+	filterByDateRange,
+	type DateRange,
+	type DateRangePreset,
+} from "../../lib/complianceCSV";
 import { ConfirmDialog, PromptDialog, StatusDialog } from "../../components/ui";
 import { useApp } from "../../contexts/AppContext";
 import { useCategories } from "../../hooks/useCategories";
@@ -29,6 +35,7 @@ import { useRealtime } from "../../lib/useRealtime";
 import {
 	CATEGORIES,
 	STATUS_META,
+	downloadFile,
 	sanitize,
 	timeAgo,
 } from "../../lib/utils";
@@ -53,6 +60,7 @@ export default function PostsTable({
 		id: string;
 		status: string;
 	} | null>(null);
+	const [dateRangePreset, setDateRangePreset] = useState<DateRangePreset>("all");
 
 	const fetchPosts = useCallback(
 		async ({ cursor, limit }: { cursor: string | null; limit: number }) => {
@@ -129,6 +137,31 @@ export default function PostsTable({
 		} while (cursor);
 		return all;
 	};
+
+	const exportComplianceCSV = async () => {
+		const all = await exportRows();
+		const range: DateRange = { preset: dateRangePreset };
+		const csv = buildComplianceCSV(all, range, type);
+		const label =
+			dateRangePreset === "all"
+				? "all-time"
+				: dateRangePreset.replace(/_/g, "-");
+		const filename = `voicebox-${type === "problem" ? "complaints" : "suggestions"}-${label}.csv`;
+		downloadFile(filename, csv, "text/csv;charset=utf-8");
+		toast(`Exported ${filterByDateRange(all, range).length} rows (${label})`, "ok");
+	};
+
+	// How many records match the current date range
+	const [rangeCount, setRangeCount] = useState<number | null>(null);
+	useEffect(() => {
+		// Update count when date range or posts change
+		if (posts.length > 0) {
+			const range: DateRange = { preset: dateRangePreset };
+			setRangeCount(filterByDateRange(posts, range).length);
+		} else {
+			setRangeCount(null);
+		}
+	}, [dateRangePreset, posts]);
 
 	const update = async (id: string, patch: Partial<PostData>) => {
 		try {
@@ -227,13 +260,30 @@ export default function PostsTable({
 				<h1 className="font-display font-bold text-xl">
 					{type === "problem" ? "Complaint management" : "Suggestions"}
 				</h1>
-				<div className="flex items-center gap-3">
-					<ExportCSVButton
-						filename={`voicebox-${type === "problem" ? "complaints" : "suggestions"}.csv`}
-						getRows={exportRows}
-						label="Export CSV"
-					/>
-					<span className="text-xs text-ink3">{liveTotal} total</span>
+				<div className="flex items-center gap-3 flex-wrap">
+					<select
+						className="input !py-1.5 !px-2.5 !text-xs !w-auto"
+						value={dateRangePreset}
+						onChange={(e) =>
+							setDateRangePreset(e.target.value as DateRangePreset)
+						}
+					>
+						<option value="all">All Time</option>
+						<option value="today">Today</option>
+						<option value="this_week">This Week</option>
+						<option value="this_month">This Month</option>
+						<option value="last_30_days">Last 30 Days</option>
+						<option value="last_90_days">Last 90 Days</option>
+					</select>
+					<button
+						className="btn btn-soft !py-1.5 !px-3 text-xs flex items-center gap-1.5"
+						onClick={exportComplianceCSV}
+					>
+						<Download size={13} /> Export Report
+					</button>
+					<span className="text-xs text-ink3">
+						{rangeCount !== null ? `${rangeCount} / ` : ""}{liveTotal} total
+					</span>
 				</div>
 			</div>
 			<div className="flex flex-wrap gap-2 mb-4">

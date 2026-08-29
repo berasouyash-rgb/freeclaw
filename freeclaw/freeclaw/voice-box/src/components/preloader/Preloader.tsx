@@ -37,7 +37,13 @@ interface PreloaderProps {
 // Map the machine status to a translatable text key.
 const STATUS_TO_KEY: Record<PreloaderStatus, PreloaderTextKey> = {
 	INITIALIZING: "starting",
-	LOADING: "loading",
+	ENVIRONMENT: "environment",
+	AUTHENTICATION: "authentication",
+	DATABASE: "database",
+	REALTIME: "realtime",
+	PERMISSIONS: "resources",
+	RESOURCES: "resources",
+	SERVICES: "resources",
 	VERIFYING: "verifying",
 	READY: "ready",
 	REVEAL: "ready",
@@ -51,6 +57,16 @@ export default function Preloader({ onFinish, debug = false }: PreloaderProps) {
 	const coordinator = useLoadingCoordinator();
 	const { status, progress, flags, elapsedMs, errored, retry, continueLimited } =
 		coordinator;
+
+	// Detect system color scheme for light/dark preloader theme
+	const [isLight, _setIsLight] = useState(() => {
+		try {
+			const saved = localStorage.getItem("vb:theme");
+			if (saved === "light") return true;
+			if (saved === "dark") return false;
+		} catch { /* ignore */ }
+		return window.matchMedia?.("(prefers-color-scheme: light)").matches ?? false;
+	});
 
 	const canvasRef = useRef<HTMLCanvasElement | null>(null);
 	const sceneRef = useRef<SceneController | null>(null);
@@ -200,7 +216,7 @@ export default function Preloader({ onFinish, debug = false }: PreloaderProps) {
 	return (
 		<div
 			ref={rootRef}
-			className="vpl-root vpl-overlay"
+			className={`vpl-root vpl-overlay${isLight ? " light" : ""}`}
 			data-testid="vpl-overlay"
 			data-status={status}
 			data-reduced-motion={reducedMotion ? "true" : "false"}
@@ -250,6 +266,7 @@ export default function Preloader({ onFinish, debug = false }: PreloaderProps) {
 			{showError && (
 				<div className="vpl-error" data-testid="vpl-error" role="alert">
 					<p className="vpl-error__msg">{t("errorMsg", locale)}</p>
+					<p className="vpl-error__detail">{t("errorMsgDetail", locale)}</p>
 					<div className="vpl-error__actions">
 						<button type="button" className="vpl-btn vpl-btn--primary" onClick={retry}>
 							{t("retry", locale)}
@@ -269,8 +286,7 @@ export default function Preloader({ onFinish, debug = false }: PreloaderProps) {
 					<span>reduced: {reducedMotion ? "yes" : "no"}</span>
 					<span>t: {Math.round(elapsedMs)}ms</span>
 					<span>
-						shell {flags.shellReady ? "✓" : "·"} fonts{" "}
-						{flags.fontsReady ? "✓" : "·"} data {flags.dataReady ? "✓" : "·"}
+						shell {flags.shellReady ? "✓" : "·"} env {flags.envReady ? "✓" : "·"} fonts {flags.fontsReady ? "✓" : "·"} auth {flags.authReady ? "✓" : "·"} db {flags.dbReady ? "✓" : "·"} rt {flags.realtimeReady ? "✓" : "·"} data {flags.dataReady ? "✓" : "·"}
 					</span>
 				</div>
 			)}
