@@ -4,7 +4,7 @@
 // verified outcomes. No simulation, no fabricated metrics.
 // ═══════════════════════════════════════════════════════════════
 
-import { getCacheStats, cleanupCache } from "./_cache.js";
+import { cacheStats as getCacheStats, cleanupCache } from "./_cache.js";
 import supabase from "./_db-client.js";
 import {
 	registerWorker,

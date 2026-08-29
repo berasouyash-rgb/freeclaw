@@ -13,6 +13,7 @@ import {
 } from "./_auth.js";
 import supabase from "./_db-client.js";
 import { sanitizeError } from "./_error.js";
+import { sendPollClosedEmail } from "./_email.js";
 import { serverModerate } from "./_moderation.js";
 
 async function attachResults(polls, strict = false) {
@@ -82,6 +83,21 @@ export default async function handler(req, res) {
 			// Full-site zero-fuzz: hide test/fuzz polls on every surface, admin
 			// included. Rows stay intact in the DB; they are only hidden.
 			const cleanRows = (data || []).filter((p) => !isTestArtifact(p.title));
+
+			// Auto-archive polls older than 7 days past expiry — results stay
+			// visible in the UI for 7 days, then the poll is archived.
+			const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
+			const now = Date.now();
+			const staleIds = cleanRows
+				.filter((p) => p.expires_at && !p.archived && (now - new Date(p.expires_at).getTime()) > SEVEN_DAYS_MS)
+				.map((p) => p.id);
+			if (staleIds.length) {
+				supabase
+					.from("polls")
+					.update({ archived: true })
+					.in("id", staleIds)
+					.then(() => {}, () => {}); // fire-and-forget
+			}
 
 			// Validate linked posts still exist — clean orphaned post_id references
 			const pollsWithLinks = cleanRows.filter((p) => p.post_id);
@@ -186,6 +202,13 @@ export default async function handler(req, res) {
 						},
 						{ onConflict: "key" },
 					);
+				// Send email notification when poll closes
+				sendPollClosedEmail({
+					pollTitle: poll.title,
+					pollId: poll.id,
+					authorId: poll.author_id,
+					postId: poll.post_id,
+				}).catch(() => {});
 				return res.status(200).json({ closed: true, notified: true });
 			}
 

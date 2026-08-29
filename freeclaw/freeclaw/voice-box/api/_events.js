@@ -241,12 +241,85 @@ export async function getEventStats() {
 	}
 }
 
+// ─── Python Workforce Bridge ──────────────────────────────────────
+// Pushes events to the Python workforce SSE endpoint when available.
+// This is fire-and-forget: if the workforce is down, events are not lost
+// because they're already persisted in the Node.js event_log.
+
+const WORKFORCE_URL = process.env.WORKFORCE_URL || "http://localhost:8000";
+let _workforceAvailable = null; // null = unknown, true/false = cached
+
+/**
+ * Push an event to the Python workforce event bus.
+ * Non-blocking, fails silently if workforce is down.
+ */
+async function pushToWorkforce(type, data = {}) {
+	try {
+		// Quick connectivity check (cached for 60s)
+		if (_workforceAvailable === false) return;
+
+		const controller = new AbortController();
+		const timer = setTimeout(() => controller.abort(), 3000);
+
+		const res = await fetch(`${WORKFORCE_URL}/api/workforce/events`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({
+				event_type: type,
+				data: { ...data, source: "nodejs_api" },
+				source: "nodejs_api",
+			}),
+			signal: controller.signal,
+		});
+
+		clearTimeout(timer);
+		if (res.ok) {
+			_workforceAvailable = true;
+		} else {
+			// Cache failures briefly
+			if (_workforceAvailable === true) {
+				setTimeout(() => { _workforceAvailable = null; }, 60000);
+			}
+		}
+	} catch {
+		// Workforce unavailable — silently degrade
+		if (_workforceAvailable === null) _workforceAvailable = false;
+	}
+}
+
+/**
+ * Emit an event AND push to Python workforce.
+ * Enhanced version of the original emitEvent that also bridges to the workforce.
+ */
+export async function emitEventAndBridge(type, data = {}) {
+	const event = await emitEvent(type, data);
+	if (event) {
+		// Map Node.js event types to Python workforce event types
+		const typeMap = {
+			"post.created": "POST_CREATED",
+			"post.updated": "POST_UPDATED",
+			"post.status_changed": "POST_STATUS_CHANGED",
+			"comment.created": "COMMENT_CREATED",
+			"inbox.message": "MESSAGE_SENT",
+			"reaction.added": "POLL_VOTED",
+			"user.reported": "REPORT_CREATED",
+			"moderation.flagged": "SPAM_DETECTED",
+			"system.alert": "SERVICE_DEGRADED",
+		};
+		const workforceType = typeMap[type] || type;
+		pushToWorkforce(workforceType, data).catch(() => {});
+	}
+	return event;
+}
+
 export { EVENT_AGENT_MAP, EVENT_TYPES };
 export default {
 	emitEvent,
+	emitEventAndBridge,
 	getRecentEvents,
 	getEventStats,
 	consumeAgentEvents,
+	pushToWorkforce,
 	EVENT_TYPES,
 	EVENT_AGENT_MAP,
 };

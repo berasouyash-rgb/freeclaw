@@ -303,10 +303,17 @@
   -webkit-backdrop-filter: blur(16px);
 }
 .vpl-error__msg {
-  font-size: 13px;
+  font-size: 14px;
+  font-weight: 600;
   line-height: 1.5;
   text-align: center;
-  color: rgba(255, 255, 255, 0.85);
+  color: rgba(255, 255, 255, 0.92);
+}
+.vpl-error__detail {
+  font-size: 12px;
+  line-height: 1.5;
+  text-align: center;
+  color: rgba(255, 255, 255, 0.6);
 }
 .vpl-error__actions {
   display: flex;
@@ -361,6 +368,39 @@
   white-space: nowrap;
   border: 0;
 }
+
+/* ── Light mode ──────────────────────────────────────────────── */
+.light .vpl-root {
+  background: #fafafe;
+  color: rgba(23, 23, 36, 0.92);
+}
+.light .vpl-bg--1 { background: #5652d6; opacity: 0.06; }
+.light .vpl-bg--2 { background: #38e1ff; opacity: 0.04; }
+.light .vpl-brand__name {
+  background: linear-gradient(100deg, rgba(23,23,36,0.92) 40%, #5652d6 50%, rgba(23,23,36,0.92) 60%);
+  background-size: 240% 100%;
+  -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
+}
+.light .vpl-status { color: rgba(86, 82, 214, 0.8); }
+.light .vpl-track { background: rgba(23, 23, 36, 0.08); }
+.light .vpl-bar { background: linear-gradient(90deg, #5652d6, #38e1ff); box-shadow: 0 0 10px rgba(86,82,214,0.3); }
+.light .vpl-brand__mark span:nth-child(1) { border-color: rgba(86,82,214,0.4); }
+.light .vpl-brand__mark span:nth-child(2) { box-shadow: 0 0 16px rgba(86,82,214,0.5); }
+.light .vpl-brand__mark span:nth-child(3) { background: #38e1ff; box-shadow: 0 0 8px rgba(56,225,255,0.7); }
+.light .vpl-fallback__glow { background: radial-gradient(circle, rgba(86,82,214,0.15) 0%, transparent 65%); }
+.light .vpl-fallback__core { background: #5652d6; box-shadow: 0 0 20px rgba(86,82,214,0.45); }
+.light .vpl-fallback__orbit { border-color: rgba(86,82,214,0.1); }
+.light .vpl-fallback__node { background: rgba(86,82,214,0.6); box-shadow: 0 0 6px rgba(86,82,214,0.4); }
+.light .vpl-fallback__signal { background: linear-gradient(90deg, transparent, rgba(86,82,214,0.6), transparent); }
+.light .vpl-fallback__status { color: rgba(86,82,214,0.6); }
+.light .vpl-error { border-color: rgba(220,75,75,0.2); background: rgba(220,75,75,0.03); }
+.light .vpl-error__msg { color: rgba(23,23,36,0.9); }
+.light .vpl-error__detail { color: rgba(23,23,36,0.55); }
+.light .vpl-btn { border-color: rgba(23,23,36,0.12); background: rgba(23,23,36,0.03); color: rgba(23,23,36,0.7); }
+.light .vpl-btn:hover { background: rgba(23,23,36,0.06); }
+.light .vpl-btn--primary { border-color: rgba(86,82,214,0.35); background: rgba(86,82,214,0.1); color: #5652d6; }
+.light .vpl-btn--primary:hover { background: rgba(86,82,214,0.18); }
+.light .vpl-debug { background: rgba(255,255,255,0.85); border-color: rgba(23,23,36,0.1); color: rgba(23,23,36,0.6); }
 
 /* ── Reduced motion ────────────────────────────────────────────── */
 @media (prefers-reduced-motion: reduce) {

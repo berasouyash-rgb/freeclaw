@@ -6,8 +6,10 @@ import Layout from "./components/Layout";
 import Preloader from "./components/preloader/Preloader";
 import { AppProvider } from "./contexts/AppContext";
 import { retryLazy } from "./lib/retryLazy";
-import Home from "./pages/Home";
 import NotFound from "./pages/NotFound";
+
+// Lazy-load the Home page to reduce initial bundle size (~50KB+ gzipped)
+const Home = retryLazy(() => import("./pages/Home"));
 
 // Code-split non-critical pages — wrapped with retryLazy to auto-recover
 // from chunk load failures (3 retries with exponential backoff)
@@ -154,7 +156,7 @@ export default function App() {
 
 						{/* App pages — with Layout wrapper */}
 						<Route element={<Layout />}>
-							<Route path="/" element={<Home />} />
+							<Route path="/" element={<SuspendWithRetry><Suspense fallback={PageFallback}><Home /></Suspense></SuspendWithRetry>} />
 							<Route
 								path="/submit"
 								element={

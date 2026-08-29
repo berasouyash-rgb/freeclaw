@@ -87,7 +87,7 @@ export default function Notifications() {
 					<h1 className="flex items-center gap-2">
 						<Bell size={22} /> Notifications
 					</h1>
-					<p>
+					<p aria-live="polite">
 						{unreadCount > 0
 							? `${unreadCount} unread notification${unreadCount !== 1 ? "s" : ""}`
 							: "All caught up"}
@@ -111,20 +111,22 @@ export default function Notifications() {
 			</div>
 
 			{/* Filters */}
-			<div className="flex flex-wrap items-center gap-2">
-				<Filter size={13} className="text-ink3" />
-				<button
-					onClick={() => setFilter("all")}
-					className={`px-3 py-1 rounded-full text-xs font-semibold transition-all duration-150 ${filter === "all" ? "bg-accent text-white shadow-sm" : "text-ink3 hover:text-ink2 hover:bg-surface2"}`}
-				>
-					All ({counts.all})
-				</button>
+			<div className="flex flex-wrap items-center gap-2" role="group" aria-label="Filter notifications">
+				<Filter size={13} className="text-ink3" />					<button
+						onClick={() => setFilter("all")}
+						aria-pressed={filter === "all"}
+						className={`px-3 py-1 rounded-full text-xs font-semibold transition-all duration-150 ${filter === "all" ? "bg-accent text-white shadow-sm" : "text-ink3 hover:text-ink2 hover:bg-surface2"}`}
+					>
+						All ({counts.all})
+					</button>
 				{ALL_KINDS.map(
 					(k) =>
 						(counts[k] ?? 0) > 0 && (
 							<button
 								key={k}
 								onClick={() => setFilter(k)}
+								aria-pressed={filter === k}
+								aria-label={`Filter by ${KIND_META[k]?.label ?? k}: ${counts[k] ?? 0} notifications`}
 								className={`px-3 py-1 rounded-full text-xs font-semibold transition-all duration-150 ${filter === k ? "bg-accent text-white shadow-sm" : "text-ink3 hover:text-ink2 hover:bg-surface2"}`}
 							>
 								{KIND_META[k]?.label ?? k} ({counts[k] ?? 0})
@@ -148,8 +150,8 @@ export default function Notifications() {
 			{/* Notification list */}
 			<div className="space-y-0.5">
 				{filtered.length === 0 && (
-					<div className="text-center py-16">
-						<div className="vb-empty-icon">
+					<div className="text-center py-16" role="status">
+						<div className="vb-empty-icon" aria-hidden>
 							<Bell size={28} />
 						</div>
 						<p className="text-sm font-medium text-ink2">

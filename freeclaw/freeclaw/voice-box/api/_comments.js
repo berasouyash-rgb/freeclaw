@@ -14,7 +14,7 @@ import {
 } from "./_auth.js";
 import supabase from "./_db-client.js";
 import { sanitizeError } from "./_error.js";
-import { EVENT_TYPES, emitEvent } from "./_events.js";
+import { EVENT_TYPES, emitEventAndBridge } from "./_events.js";
 import { serverModerate } from "./_moderation.js";
 
 export default async function handler(req, res) {
@@ -218,7 +218,7 @@ export default async function handler(req, res) {
 				.update({ updated_at: new Date().toISOString() })
 				.eq("id", row.post_id);
 			// Emit event for event-triggered agents
-			emitEvent(EVENT_TYPES.COMMENT_CREATED, {
+			emitEventAndBridge(EVENT_TYPES.COMMENT_CREATED, {
 				comment_id: data.id,
 				post_id: row.post_id,
 				author_id: row.author_id,

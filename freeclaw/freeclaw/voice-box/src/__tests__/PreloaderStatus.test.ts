@@ -3,103 +3,82 @@
 // ═══════════════════════════════════════════════════════════════════
 // Proves the boot machine is deterministic and REAL-readiness-driven:
 //   • INITIALIZING before the shell commits
-//   • LOADING until all critical flags are green
-//   • VERIFYING while the anti-flash floor elapses
-//   • READY only when critical + elapsed
+//   • Stages advance only when real readiness flags are green
+//   • READY only when all critical flags are green
 //   • REVEAL / ERROR override everything
 //   • progress is honest (failed tasks count, never fabricated)
 // ═══════════════════════════════════════════════════════════════════
 
 import { describe, expect, it } from "vitest";
 import {
-	MIN_DISPLAY_MS,
 	STATUS_LABELS,
 	progressFromTasks,
 	statusFromFlags,
 	type LoadTask,
 } from "../components/preloader/PreloaderStatus";
 
-const flags = { shellReady: true, fontsReady: true, dataReady: true };
+const allReady = {
+	shellReady: true,
+	envReady: true,
+	fontsReady: true,
+	authReady: true,
+	dbReady: true,
+	realtimeReady: true,
+	dataReady: true,
+};
 
 describe("statusFromFlags — real readiness gating", () => {
 	it("is INITIALIZING before the shell mounts", () => {
 		expect(
-			statusFromFlags({ shellReady: false, fontsReady: false, dataReady: false }),
+			statusFromFlags({ shellReady: false, envReady: false, fontsReady: false, authReady: false, dbReady: false, realtimeReady: false, dataReady: false }),
 		).toBe("INITIALIZING");
 	});
 
-	it("is LOADING while any critical flag is not green", () => {
+	it("is ENVIRONMENT when shell is ready but env is not", () => {
 		expect(
-			statusFromFlags({ shellReady: true, fontsReady: false, dataReady: true }),
-		).toBe("LOADING");
-		expect(
-			statusFromFlags({ shellReady: true, fontsReady: true, dataReady: false }),
-		).toBe("LOADING");
+			statusFromFlags({ shellReady: true, envReady: false, fontsReady: false, authReady: false, dbReady: false, realtimeReady: false, dataReady: false }),
+		).toBe("ENVIRONMENT");
 	});
 
-	it("plays INITIALIZING first even when everything is already ready (scene floor)", () => {
-		expect(statusFromFlags(flags, { elapsedMs: 0 })).toBe("INITIALIZING");
+	it("is AUTHENTICATION when env is ready but auth is not", () => {
 		expect(
-			statusFromFlags(flags, { elapsedMs: MIN_DISPLAY_MS - 1 }),
-		).toBe("INITIALIZING");
+			statusFromFlags({ shellReady: true, envReady: true, fontsReady: true, authReady: false, dbReady: false, realtimeReady: false, dataReady: false }),
+		).toBe("AUTHENTICATION");
 	});
 
-	it("advances scene-by-scene: LOADING → VERIFYING → READY at each floor", () => {
-		// Scene 2 (LOADING) starts at the first floor
-		expect(statusFromFlags(flags, { elapsedMs: MIN_DISPLAY_MS })).toBe("LOADING");
+	it("is DATABASE when auth is ready but db is not", () => {
 		expect(
-			statusFromFlags(flags, { elapsedMs: 2 * MIN_DISPLAY_MS - 1 }),
-		).toBe("LOADING");
-		// Scene 3 (VERIFYING) starts at the second floor
-		expect(
-			statusFromFlags(flags, { elapsedMs: 2 * MIN_DISPLAY_MS }),
-		).toBe("VERIFYING");
-		expect(
-			statusFromFlags(flags, { elapsedMs: 3 * MIN_DISPLAY_MS - 1 }),
-		).toBe("VERIFYING");
-		// READY after the third floor
-		expect(
-			statusFromFlags(flags, { elapsedMs: 3 * MIN_DISPLAY_MS }),
-		).toBe("READY");
-		expect(statusFromFlags(flags, { elapsedMs: 10_000 })).toBe("READY");
+			statusFromFlags({ shellReady: true, envReady: true, fontsReady: true, authReady: true, dbReady: false, realtimeReady: false, dataReady: false }),
+		).toBe("DATABASE");
 	});
 
-	it("readiness never skips ahead of the scene schedule but blocks it when slow", () => {
-		// All green but the LOADING scene is still playing
-		expect(statusFromFlags(flags, { elapsedMs: MIN_DISPLAY_MS })).toBe("LOADING");
-		// Probe still pending long after the schedule says READY → held at LOADING
+	it("is REALTIME when db is ready but realtime is not", () => {
 		expect(
-			statusFromFlags(
-				{ shellReady: true, fontsReady: true, dataReady: false },
-				{ elapsedMs: 3 * MIN_DISPLAY_MS + 1 },
-			),
-		).toBe("LOADING");
+			statusFromFlags({ shellReady: true, envReady: true, fontsReady: true, authReady: true, dbReady: true, realtimeReady: false, dataReady: false }),
+		).toBe("REALTIME");
 	});
 
-	it("elapsed is not required to reach READY (defaults to past the schedule)", () => {
-		// default elapsedMs = Infinity → past all three floors
-		expect(statusFromFlags(flags)).toBe("READY");
+	it("is RESOURCES when realtime is ready but data is not", () => {
+		expect(
+			statusFromFlags({ shellReady: true, envReady: true, fontsReady: true, authReady: true, dbReady: true, realtimeReady: true, dataReady: false }),
+		).toBe("RESOURCES");
+	});
+
+	it("is READY when all critical flags are green", () => {
+		expect(statusFromFlags(allReady)).toBe("READY");
 	});
 
 	it("REVEAL overrides every other state", () => {
+		expect(statusFromFlags(allReady, { revealing: true })).toBe("REVEAL");
 		expect(
-			statusFromFlags(flags, { elapsedMs: 0, revealing: true }),
-		).toBe("REVEAL");
-		expect(
-			statusFromFlags(
-				{ shellReady: false, fontsReady: false, dataReady: false },
-				{ revealing: true },
-			),
+			statusFromFlags({ shellReady: false, envReady: false, fontsReady: false, authReady: false, dbReady: false, realtimeReady: false, dataReady: false }, { revealing: true }),
 		).toBe("REVEAL");
 	});
 
 	it("ERROR overrides every other state", () => {
-		expect(statusFromFlags(flags, { errored: true })).toBe("ERROR");
+		expect(statusFromFlags(allReady, { errored: true })).toBe("ERROR");
 		expect(
-			statusFromFlags(
-				{ shellReady: false, fontsReady: false, dataReady: false },
-				{ errored: true },
-			),
+			statusFromFlags({ shellReady: false, envReady: false, fontsReady: false, authReady: false, dbReady: false, realtimeReady: false, dataReady: false }, { errored: true }),
 		).toBe("ERROR");
 	});
 });
@@ -108,7 +87,13 @@ describe("STATUS_LABELS — human, calm, non-technical", () => {
 	it("covers every machine state", () => {
 		for (const s of [
 			"INITIALIZING",
-			"LOADING",
+			"ENVIRONMENT",
+			"AUTHENTICATION",
+			"DATABASE",
+			"REALTIME",
+			"PERMISSIONS",
+			"RESOURCES",
+			"SERVICES",
 			"VERIFYING",
 			"READY",
 			"REVEAL",
@@ -148,7 +133,7 @@ describe("progressFromTasks — honest progress", () => {
 		const allDone: LoadTask[] = Array.from({ length: 3 }, (_, i) => ({
 			id: `t${i}`,
 			label: "x",
-			priority: "CRITICAL",
+			priority: "CRITICAL" as const,
 			done: true,
 			failed: false,
 		}));
@@ -156,7 +141,7 @@ describe("progressFromTasks — honest progress", () => {
 		const none: LoadTask[] = Array.from({ length: 3 }, (_, i) => ({
 			id: `t${i}`,
 			label: "x",
-			priority: "CRITICAL",
+			priority: "CRITICAL" as const,
 			done: false,
 			failed: false,
 		}));

@@ -42,10 +42,19 @@ export default function Polls() {
 	// 🔴 poll results update live as votes come in
 	useRealtime(["polls", "poll_votes"], () => load());
 
+	const now = Date.now();
+	const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
 	const isEnded = (p: PollData) =>
 		p.archived || (p.expires_at && new Date(p.expires_at) < new Date());
+	// After expiry, results stay visible for 7 days, then the poll is hidden
+	const isWithinResultsWindow = (p: PollData) => {
+		if (!p.expires_at) return false;
+		const expiryMs = new Date(p.expires_at).getTime();
+		return now - expiryMs < SEVEN_DAYS_MS;
+	};
+	const isHidden = (p: PollData) => isEnded(p) && !isWithinResultsWindow(p);
 	const shown = polls.filter((p) =>
-		tab === "ended" ? isEnded(p) : !isEnded(p),
+		tab === "ended" ? isEnded(p) && isWithinResultsWindow(p) : !isEnded(p) && !isHidden(p),
 	);
 
 	return (

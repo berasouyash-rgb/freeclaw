@@ -141,6 +141,8 @@ export default function Layout() {
 	useEffect(() => {
 		setMobileOpen(false);
 		setNotifOpen(false);
+		// Smooth scroll to top on route change — prevents stale scroll position
+		window.scrollTo({ top: 0, behavior: "instant" });
 	}, [loc.pathname]);
 
 	// keyboard shortcuts
@@ -292,8 +294,7 @@ export default function Layout() {
 				<header
 					className="sticky top-0 z-40 border-b border-border pt-[env(safe-area-inset-top)]"
 					style={{ background: "var(--vb-bg)" }}
-				>
-					<div className="flex items-center gap-3 px-4 sm:px-6 h-14">
+				>							<div className="flex items-center gap-3 px-4 sm:px-6 h-14" role="banner">
 						<button
 							className="lg:hidden btn btn-ghost !p-2"
 							onClick={() => setMobileOpen(true)}
@@ -362,9 +363,8 @@ export default function Layout() {
 									)
 								}
 								aria-label="Open command palette"
-							>
-								<Search size={13} /> Search…{" "}
-								<kbd className="chip !text-[9px] !py-0">⌘K</kbd>
+							>									<Search size={13} /> Search…{" "}
+									<kbd className="chip !text-[9px] !py-0" aria-label="Command K">⌘K</kbd>
 							</button>
 							<Link
 								to="/submit"
@@ -434,10 +434,10 @@ export default function Layout() {
 								</div>
 							</div>
 							<div className="max-h-80 overflow-y-auto">
-								{notifications.length === 0 && (
+									{notifications.length === 0 && (
 									<div className="text-center py-8">
 										<div className="vb-empty-icon mx-auto mb-2">
-											<Bell size={24} />
+											<Bell size={24} aria-hidden />
 										</div>
 										<p className="text-sm text-ink3">No notifications yet.</p>
 										<p className="text-xs text-ink3 mt-1">
@@ -555,45 +555,47 @@ export default function Layout() {
 					aria-label="Main content"
 				>
 					<Outlet />
-				</main>
-
-				{/* Mobile bottom nav — includes Inbox with unread badge */}
-				<nav
-					className="lg:hidden fixed bottom-0 inset-x-0 z-40 border-t border-border flex pb-[env(safe-area-inset-bottom)]"
-					style={{ background: "var(--vb-surface)" }}
-					aria-label="Mobile navigation"
-				>
-					{[NAV[0], NAV[1], NAV[2], NAV[3], NAV[6], NAV[7]].map((item) => {
-						if (!item) return null;
-						const { to, label, icon: Icon, tour } = item;
-						return (
+				</main>					{/* Mobile bottom nav — 6 tabs: Feed, Search, Submit, Inbox (with badge), Activity, Notifications */}
+					<						nav
+						className="lg:hidden fixed bottom-0 inset-x-0 z-40 border-t border-border flex pb-[env(safe-area-inset-bottom)]"
+						style={{ background: "var(--vb-surface)" }}
+						aria-label="Mobile navigation"
+					>
+						{[
+							{ to: "/", label: "Feed", icon: Home },
+							{ to: "/search", label: "Search", icon: Search },
+							{ to: "/submit", label: "Submit", icon: PlusCircle },
+							{ to: "/chat", label: "Inbox", icon: MessageSquare, badge: chatUnread },
+							{ to: "/activity", label: "Me", icon: UserCircle2 },
+						].map((item) => (
 							<NavLink
-								key={to}
-								to={to}
-								end={to === "/"}
-								{...(tour ? { "data-tour": tour } : {})}
+								key={item.to}
+								to={item.to}
+								end={item.to === "/"}
 								className={({ isActive }) =>
-									`relative flex-1 flex flex-col items-center gap-0.5 py-2.5 text-[9.5px] font-medium ${isActive ? "text-accent" : "text-ink3"}`
+									`relative flex-1 flex flex-col items-center gap-0.5 pt-2 pb-1.5 text-[9.5px] font-semibold transition-all duration-200 min-w-0 ${isActive ? "text-accent" : "text-ink3 active:text-ink2"}`
 								}
-								aria-label={label}
+								aria-label={item.badge ? `${item.label}, ${item.badge} unread` : item.label}
 							>
-								<span className="relative">
-									<Icon size={19} />
-									{to === "/chat" && chatUnread > 0 && (
-										<span className="absolute -top-1 -right-1.5 w-3.5 h-3.5 text-[8px] font-bold grid place-items-center bg-bad text-white rounded-full">
-											{chatUnread}
-										</span>
-									)}
-								</span>
-								{label === "My Activity"
-									? "Me"
-									: label === "Solving Board"
-										? "Board"
-										: label}
+								{({ isActive }) => (
+									<>
+										{isActive && (
+											<span className="absolute top-0 left-1/2 -translate-x-1/2 w-5 h-0.5 rounded-full bg-accent" aria-hidden />
+										)}
+										<span className="relative">
+											<item.icon size={20} strokeWidth={isActive ? 2.2 : 1.8} />
+											{typeof item.badge === "number" && item.badge > 0 && (
+												<span className="absolute -top-1.5 -right-2 min-w-[16px] h-4 text-[8px] font-bold grid place-items-center bg-bad text-white rounded-full px-1 vb-pop" aria-hidden>
+												{item.badge > 99 ? "99+" : item.badge}
+											</span>
+											)}
+									</span>
+										<span className="truncate leading-none">{item.label}</span>
+									</>
+								)}
 							</NavLink>
-						);
-					})}
-				</nav>
+						))}
+					</nav>
 			</div>
 
 			{/* First-visit interactive tutorial (users only — never on /admin) */}
@@ -614,11 +616,12 @@ export default function Layout() {
 			)}
 
 			{/* Toasts — container must never intercept clicks (pointer-events-none),
-          only the toast cards themselves are clickable */}
-			<div
-				className="fixed bottom-[calc(5rem_+_env(safe-area-inset-bottom))] lg:bottom-6 right-4 z-[60] flex flex-col gap-2 items-end pointer-events-none"
-				aria-live="polite"
-			>
+          only the toast cards themselves are clickable */}						<div
+							className="fixed bottom-[calc(5rem_+_env(safe-area-inset-bottom))] lg:bottom-6 right-4 z-[60] flex flex-col gap-2 items-end pointer-events-none"
+							aria-live="polite"
+							role="status"
+							aria-label="Notifications and toasts"
+						>
 				{toasts.map((t) => (
 					<div
 						key={t.id}

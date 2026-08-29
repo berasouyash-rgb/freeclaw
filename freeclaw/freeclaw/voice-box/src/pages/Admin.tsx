@@ -10,6 +10,7 @@ import {
 	Lightbulb,
 	Loader2,
 	LogOut,
+	Mail,
 	Megaphone,
 	Menu,
 	MessageCircle,
@@ -58,6 +59,7 @@ const UnifiedInbox = retryLazy(() => import("./admin/UnifiedInbox"));
 // Agent Dashboard / AI Output / Reports / Content Review workspaces.
 const AIOperations = retryLazy(() => import("./admin/AIOperations"));
 const AdminAI = retryLazy(() => import("./admin/AdminAI"));
+const EmailTemplates = retryLazy(() => import("./admin/EmailTemplates"));
 // Ops Center — the outcome-focused hidden-workforce command view (default tab).
 const OpsCenter = retryLazy(() => import("./admin/OpsCenter"));
 const AgentDashboard = retryLazy(() => import("./admin/AgentDashboard"));
@@ -116,6 +118,7 @@ const TAB_GROUPS: { title: string; tabs: AdminTab[] }[] = [
 		tabs: [
 			{ key: "error-tracking", label: "Error Tracking", icon: Bug },
 			{ key: "categories", label: "Categories", icon: Tags },
+			{ key: "email-templates", label: "Email Templates", icon: Mail },
 			{ key: "logs", label: "Activity Log", icon: ScrollText },
 			{ key: "settings", label: "Settings", icon: SettingsIcon },
 		],
@@ -641,6 +644,11 @@ export default function Admin() {
 						{tab === "categories" && (
 							<ErrorBoundary key="categories">
 								<Categories />
+							</ErrorBoundary>
+						)}
+						{tab === "email-templates" && (
+							<ErrorBoundary key="email-templates">
+								<EmailTemplates />
 							</ErrorBoundary>
 						)}
 						{tab === "logs" && (

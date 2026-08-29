@@ -15,12 +15,14 @@ import {
 import supabase from "./_db-client.js";
 import { staleWhileRevalidate, cacheClear } from "./_cache.js";
 import { sanitizeError } from "./_error.js";
-import { EVENT_TYPES, emitEvent } from "./_events.js";
+import { EVENT_TYPES, emitEventAndBridge } from "./_events.js";
 import { notifyFollowers } from "./_follows.js";
+import { sendPostSolvedEmail } from "./_email.js";
 import {
 	serverModerate,
 	getLearnedWeakStats,
 	recordModerationDecision,
+	spamAnalyze,
 } from "./_moderation.js";
 
 const CATEGORIES = [
@@ -594,7 +596,34 @@ export default async function handler(req, res) {
 			const weakPII = moderation.flags.some((f) => f.type === "privacy_weak");
 			const needsReview = moderation.requiresReview;
 			const holdForReview = needsReview || weakPII || b.pending_review === true;
-			const initialStatus = holdForReview ? "pending_review" : "reported";
+
+			// ── Real spam analysis (multi-signal, deterministic) ────────
+			const ip = (req.headers?.["x-forwarded-for"] || "unknown").split(",")[0]?.trim();
+			const spamResult = spamAnalyze(title, description, author_id, ip);
+			// High spam score → force quarantine regardless of moderation result
+			if (spamResult.spam_score >= 80) {
+				await auditLog(
+					"spam",
+					"post_quarantined",
+					`${author_id}: ${title.slice(0, 60)} [score=${spamResult.spam_score}]`,
+				);
+				return res.status(403).json({
+					error: "This post was flagged as potential spam. Please try a different approach.",
+					code: "SPAM_QUARANTINED",
+					spam_score: spamResult.spam_score,
+				});
+			}
+			// Medium spam score → hold for review (don't block, but don't auto-publish)
+			const spamHold = spamResult.spam_score >= 60;
+			if (spamHold) {
+				await auditLog(
+					"spam",
+					"post_held_for_review",
+					`${author_id}: ${title.slice(0, 60)} [score=${spamResult.spam_score}]`,
+				);
+			}
+
+			const initialStatus = (holdForReview || spamHold) ? "pending_review" : "reported";
 
 			const type = b.type === "suggestion" ? "suggestion" : "problem";
 			// Priority is computed automatically from content urgency —
@@ -686,7 +715,7 @@ export default async function handler(req, res) {
 			if (error) throw error;
 			await ensureUser(author_id);
 			// Emit event for event-triggered agents
-			emitEvent(EVENT_TYPES.POST_CREATED, {
+			emitEventAndBridge(EVENT_TYPES.POST_CREATED, {
 				post_id: data.id,
 				type,
 				category,
@@ -844,7 +873,7 @@ export default async function handler(req, res) {
 			cacheClear("^postsfeed"); // solved/hidden/pinned changes show live
 			// Emit event for status changes
 			if (patch.status)
-				emitEvent(EVENT_TYPES.POST_STATUS_CHANGED, {
+				emitEventAndBridge(EVENT_TYPES.POST_STATUS_CHANGED, {
 					post_id: id,
 					old_status: post.status,
 					new_status: patch.status,
@@ -874,18 +903,26 @@ export default async function handler(req, res) {
 				} catch {
 					/* learning is best-effort */
 				}
-			}
-			// Notify followers on status change or admin reply
-			if (admin && (patch.status || patch.admin_reply !== undefined)) {
-				const nTitle = patch.status
-					? `Status updated: ${patch.status.replace(/_/g, " ")}`
-					: "Admin replied";
-				notifyFollowers(id, {
-					type: "post",
-					title: nTitle,
-					body: post.title || "A post you follow was updated",
-				});
-			}
+			}				// Notify followers on status change or admin reply
+				if (admin && (patch.status || patch.admin_reply !== undefined)) {
+					const nTitle = patch.status
+						? `Status updated: ${patch.status.replace(/_/g, " ")}`
+						: "Admin replied";
+					notifyFollowers(id, {
+						type: "post",
+						title: nTitle,
+						body: post.title || "A post you follow was updated",
+					});
+				}
+				// Send email notification when post is solved
+				if (patch.status === "solved" && post.author_id) {
+					sendPostSolvedEmail({
+						postTitle: post.title,
+						postId: id,
+						authorId: post.author_id,
+						adminReply: patch.admin_reply || post.admin_reply,
+					}).catch(() => {});
+				}
 			return res.status(200).json(data);
 		}
 

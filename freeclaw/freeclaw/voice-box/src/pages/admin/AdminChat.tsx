@@ -1,7 +1,7 @@
 import {
 	ArrowDown,
-	Check,
-	Copy,
+	ChevronUp,
+	ChevronDown,
 	Download,
 	Image as ImageIcon,
 	Loader2,
@@ -16,6 +16,11 @@ import {
 	X,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+	CopyButton,
+	DownloadButton,
+	QUICK_REPLIES,
+} from "../../components/admin/chat-utils";
 import { PromptDialog } from "../../components/ui";
 import { useApp } from "../../contexts/AppContext";
 import { api } from "../../lib/api";
@@ -23,59 +28,6 @@ import { renderMarkdown } from "../../lib/markdown";
 import { useRealtime } from "../../lib/useRealtime";
 import { fmtDate, timeAgo } from "../../lib/utils";
 import type { ChatMessage, ChatThread } from "../../types";
-
-/* ── Copy-to-clipboard button ──────────────────────────────── */
-function CopyButton({ text }: { text: string }) {
-	const [copied, setCopied] = useState(false);
-	const copy = async () => {
-		try {
-			await navigator.clipboard.writeText(text);
-			setCopied(true);
-			setTimeout(() => setCopied(false), 2000);
-		} catch {
-			/* fallback */
-		}
-	};
-	return (
-		<button
-			onClick={copy}
-			className="copy-btn p-1.5 rounded-md hover:bg-surface2 transition-colors"
-			title="Copy message"
-		>
-			{copied ? (
-				<Check size={13} className="text-good" />
-			) : (
-				<Copy size={13} className="text-ink3" />
-			)}
-		</button>
-	);
-}
-
-/* ── Download attachment ───────────────────────────────────── */
-function DownloadButton({ url, filename }: { url: string; filename?: string }) {
-	const download = async () => {
-		try {
-			const res = await fetch(url);
-			const blob = await res.blob();
-			const a = document.createElement("a");
-			a.href = URL.createObjectURL(blob);
-			a.download = filename || url.split("/").pop() || "attachment";
-			a.click();
-			URL.revokeObjectURL(a.href);
-		} catch {
-			window.open(url, "_blank");
-		}
-	};
-	return (
-		<button
-			onClick={download}
-			className="copy-btn p-1.5 rounded-md hover:bg-surface2 transition-colors"
-			title="Download"
-		>
-			<Download size={13} className="text-ink3" />
-		</button>
-	);
-}
 
 /* ── Typing indicator ──────────────────────────────────────── */
 function _TypingIndicator() {
@@ -93,22 +45,44 @@ function _TypingIndicator() {
 	);
 }
 
+/**
+ * Highlight a search term inside an HTML-escaped string.
+ * Returns HTML with <mark> tags wrapping each match.
+ */
+function highlightHtml(text: string, query: string): string {
+	if (!query) return text;
+	const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+	return text.replace(
+		new RegExp(`(${escaped})`, "gi"),
+		'<mark class="bg-yellow-300/40 text-inherit rounded px-0.5">$1</mark>',
+	);
+}
+
 /* ── Single message bubble ─────────────────────────────────── */
 function MessageBubble({
 	msg,
 	isAdmin,
+	searchQuery,
+	isMatch,
+	matchId,
 }: {
 	msg: ChatMessage & { id: string };
 	isAdmin: boolean;
+	searchQuery?: string;
+	isMatch?: boolean;
+	matchId?: string;
 }) {
-	const htmlBody = useMemo(
-		() => (msg.body ? renderMarkdown(msg.body) : ""),
-		[msg.body],
-	);
+	const htmlBody = useMemo(() => {
+		if (!msg.body) return "";
+		const rendered = renderMarkdown(msg.body);
+		if (searchQuery) return highlightHtml(rendered, searchQuery);
+		return rendered;
+	}, [msg.body, searchQuery]);
 
 	return (
 		<div
-			className={`chat-msg-wrap group flex ${isAdmin ? "justify-end" : "justify-start"} chat-msg-anim px-4`}
+			data-match-id={matchId}
+			className={`chat-msg-wrap group flex ${isAdmin ? "justify-end" : "justify-start"} chat-msg-anim px-4 transition-opacity duration-200 ${searchQuery && !isMatch ? "opacity-30" : ""}`}
 		>
 			<div
 				className={`flex ${isAdmin ? "flex-row-reverse" : "flex-row"} items-end gap-2.5 max-w-[78%]`}
@@ -202,21 +176,15 @@ export default function AdminChat() {
 	const [showNew, setShowNew] = useState(false);
 	const [sending, setSending] = useState(false);
 	const [aiBusy, setAiBusy] = useState(false);
-	const [search, setSearch] = useState("");
+	const [threadSearch, setThreadSearch] = useState("");
+	const [chatSearch, setChatSearch] = useState("");
 	const [showSearch, setShowSearch] = useState(false);
+	const [matchIndex, setMatchIndex] = useState(0);
 	const [showScrollBtn, setShowScrollBtn] = useState(false);
 
 	const bottomRef = useRef<HTMLDivElement>(null);
 	const scrollRef = useRef<HTMLDivElement>(null);
 	const inputRef = useRef<HTMLTextAreaElement>(null);
-
-	const QUICK_REPLIES = [
-		"Thanks for reaching out — we're looking into this now.",
-		"Could you share more details (location, time, how often it happens)?",
-		"This has been forwarded to the responsible staff member.",
-		"Your issue has been verified and is now in progress. ✅",
-		"This has been resolved — please let us know if it happens again.",
-	];
 
 	// Deep-link
 	useEffect(() => {
@@ -428,16 +396,56 @@ export default function AdminChat() {
 		}
 	};
 
-	// Filter threads by search
+	// Filter threads by sidebar search
 	const filteredThreads = useMemo(() => {
-		if (!search) return threads;
-		const q = search.toLowerCase();
+		if (!threadSearch) return threads;
+		const q = threadSearch.toLowerCase();
 		return threads.filter(
 			(t) =>
 				t.thread_id.toLowerCase().includes(q) ||
 				(t.last_message || "").toLowerCase().includes(q),
 		);
-	}, [threads, search]);
+	}, [threads, threadSearch]);
+
+	// Which messages match the in-chat search (for dimming + highlighting)
+	const matchInfo = useMemo(() => {
+		if (!chatSearch) return { matchedIds: new Set<string>(), count: 0 };
+		const q = chatSearch.toLowerCase();
+		const matchedIds = new Set(
+			messages
+				.filter((m) => (m.body || "").toLowerCase().includes(q))
+				.map((m) => m.id),
+		);
+		return { matchedIds, count: matchedIds.size };
+	}, [messages, chatSearch]);
+
+	// Reset match index when search changes
+	useEffect(() => {
+		setMatchIndex(0);
+	}, [chatSearch]);
+
+	// Build ordered list of match IDs for up/down navigation
+	const matchIds = useMemo(() => {
+		if (!chatSearch) return [];
+		const q = chatSearch.toLowerCase();
+		return messages
+			.filter((m) => (m.body || "").toLowerCase().includes(q))
+			.map((m) => m.id);
+	}, [messages, chatSearch]);
+
+	// Navigate to a specific match
+	const goToMatch = useCallback(
+		(idx: number) => {
+			if (matchIds.length === 0) return;
+			const clamped = ((idx % matchIds.length) + matchIds.length) % matchIds.length;
+			setMatchIndex(clamped);
+			const el = document.querySelector(
+				`[data-match-id="match-${matchIds[clamped]}"]`,
+			);
+			if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
+		},
+		[matchIds],
+	);
 
 	// Export conversation
 	const exportChat = () => {
@@ -490,13 +498,12 @@ export default function AdminChat() {
 							<Search
 								size={13}
 								className="absolute left-3 top-1/2 -translate-y-1/2 text-ink3"
-							/>
-							<input
-								className="input !text-xs !pl-8 !py-2 !rounded-lg"
-								placeholder="Search conversations…"
-								value={search}
-								onChange={(e) => setSearch(e.target.value)}
-							/>
+							/>								<input
+									className="input !text-xs !pl-8 !py-2 !rounded-lg"
+									placeholder="Search conversations…"
+									value={threadSearch}
+									onChange={(e) => setThreadSearch(e.target.value)}
+								/>
 						</div>
 					</div>
 
@@ -516,11 +523,11 @@ export default function AdminChat() {
 									className="mx-auto text-ink3/40 mb-3"
 								/>
 								<p className="text-xs text-ink3">
-									{search
+									{threadSearch
 										? "No matching conversations"
 										: "No conversations yet"}
 								</p>
-								{!search && (
+								{!threadSearch && (
 									<button
 										className="btn btn-soft !text-xs mt-3"
 										onClick={() => setShowNew(true)}
@@ -639,18 +646,55 @@ export default function AdminChat() {
 								</div>
 							</div>
 
-							{/* Search bar */}
-							{showSearch && (
-								<div className="px-5 py-2 border-b border-border bg-surface2/50 flex items-center gap-2 chat-msg-anim">
-									<Search size={13} className="text-ink3" />
+							{/* Search bar */}								{showSearch && (
+									<div className="px-5 py-2 border-b border-border bg-surface2/50 flex items-center gap-2 chat-msg-anim">
+									<Search size={13} className="text-ink3 shrink-0" />
 									<input
 										className="input !text-xs !py-1.5 !rounded-lg flex-1"
 										placeholder="Search in this conversation…"
 										autoFocus
+										value={chatSearch}
+										onChange={(e) => setChatSearch(e.target.value)}
+										onKeyDown={(e) => {
+										if (e.key === "Enter") {
+											e.preventDefault();
+											goToMatch(matchIndex + (e.shiftKey ? -1 : 1));
+										}
+										if (e.key === "Escape") {
+											setShowSearch(false);
+											setChatSearch("");
+										}
+									}}
 									/>
+									{/* Match count + nav arrows */}
+									{chatSearch && (
+										<div className="flex items-center gap-0.5 shrink-0">
+											<span className="text-[10px] text-ink3 tabular-nums min-w-[3ch] text-center">
+												{matchInfo.count > 0
+													? `${matchIndex + 1}/${matchInfo.count}`
+													: "0"}
+											</span>
+											<button
+												onClick={() => goToMatch(matchIndex - 1)}
+												disabled={matchInfo.count === 0}
+												className="p-0.5 rounded hover:bg-surface2 disabled:opacity-30"
+												title="Previous match (Shift+Enter)"
+											>
+												<ChevronUp size={14} className="text-ink2" />
+											</button>
+											<button
+												onClick={() => goToMatch(matchIndex + 1)}
+												disabled={matchInfo.count === 0}
+												className="p-0.5 rounded hover:bg-surface2 disabled:opacity-30"
+												title="Next match (Enter)"
+											>
+												<ChevronDown size={14} className="text-ink2" />
+											</button>
+										</div>
+									)}
 									<button
-										onClick={() => setShowSearch(false)}
-										className="p-1 rounded-md hover:bg-surface2"
+										onClick={() => { setShowSearch(false); setChatSearch(""); }}
+										className="p-1 rounded-md hover:bg-surface2 shrink-0"
 									>
 										<X size={12} className="text-ink3" />
 									</button>
@@ -675,6 +719,9 @@ export default function AdminChat() {
 										key={m.id}
 										msg={m}
 										isAdmin={m.sender === "admin"}
+										searchQuery={chatSearch || undefined}
+										isMatch={matchInfo.matchedIds.has(m.id)}
+										matchId={`match-${m.id}`}
 									/>
 								))}
 								<div ref={bottomRef} />

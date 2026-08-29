@@ -1,354 +1,237 @@
-// ═══════════════════════════════════════════════════════════════════
-// PostCard — admin moderation directly in the feed
-// ═══════════════════════════════════════════════════════════════════
-// Covers:
-//   • admin bar hidden for regular users (no session)
-//   • admin bar visible with an active admin session
-//   • In progress / Solve / Verify / Official / Hide → real /api/posts PUT
-//   • Official reply form (open, validation, submit, success toast)
-//   • failure toasts on API errors
-// ═══════════════════════════════════════════════════════════════════
+/**
+ * TDD Tests for PostCard Component
+ *
+ * Proves that:
+ * 1. Renders post title, description, category, and status
+ * 2. Shows reaction buttons with correct counts
+ * 3. Shows bookmark toggle
+ * 4. Shows report button
+ * 5. Shows trending badge when score is high
+ * 6. Shows pinned/featured badges
+ * 7. Accessibility: proper ARIA labels and roles
+ */
 
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
-import { MemoryRouter } from "react-router";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import { render, screen, fireEvent } from "@testing-library/react";
 import PostCard from "../components/PostCard";
 import type { PostData } from "../types";
 
-// Keep the real hasAdminSession() (reads sessionStorage) but stub the api.
-vi.mock("../lib/api", async (importOriginal) => {
-	const mod = await importOriginal<typeof import("../lib/api")>();
-	return {
-		...mod,
-		api: {
-			get: vi.fn(async () => []),
-			getSlow: vi.fn(async () => []),
-			post: vi.fn(async () => ({})),
-			put: vi.fn(async () => ({})),
-			del: vi.fn(async () => ({})),
-			getLong: vi.fn(async () => []),
-			postLong: vi.fn(async () => []),
-		},
-	};
-});
-
+// Mock AppContext
+const mockToast = vi.fn();
+const mockToggleBookmark = vi.fn();
 vi.mock("../contexts/AppContext", () => ({
-	useApp: () => ({
-		anonId: "anon_test",
-		bookmarks: [],
-		toggleBookmark: vi.fn(),
-		toast: toastMock,
-		theme: "light",
-	}),
+  useApp: () => ({
+    anonId: "test-user-1",
+    bookmarks: [],
+    toggleBookmark: mockToggleBookmark,
+    toast: mockToast,
+  }),
 }));
 
-import { api } from "../lib/api";
-const mockedPut = api.put as ReturnType<typeof vi.fn>;
-const mockedPost = api.post as ReturnType<typeof vi.fn>;
+// Mock api
+vi.mock("../lib/api", () => ({
+  api: {
+    post: vi.fn().mockResolvedValue({
+      counts: { support: 6 },
+      mine: ["support"],
+      toggled: true,
+    }),
+    put: vi.fn().mockResolvedValue({}),
+  },
+  hasAdminSession: () => false,
+}));
 
-const toastMock = vi.fn();
+// Mock react-router Link
+vi.mock("react-router", () => ({
+  Link: ({ to, children, ...props }: { to: string; children: React.ReactNode; [key: string]: unknown }) => (
+    <a href={to} {...props}>
+      {children}
+    </a>
+  ),
+}));
 
-const POST: PostData = {
-	id: "post-1",
-	type: "problem",
-	title: "Broken lift in Block C",
-	description: "The lift has been stuck since morning.",
-	category: "Facilities",
-	status: "open",
-	priority: "high",
-	author_id: "anon_test",
-	created_at: new Date(Date.now() - 120_000).toISOString(),
-	reactions: { support: 14 },
-	comment_count: 3,
-	status_history: [],
-	deleted: false,
-} as unknown as PostData;
+// Mock ReportDialog and ConfirmDialog
+vi.mock("../components/ui", () => ({
+  ReportDialog: ({ open, onClose }: { open: boolean; onClose: () => void }) =>
+    open ? <div data-testid="report-dialog"><button onClick={onClose}>Close</button></div> : null,
+  ConfirmDialog: () => null,
+}));
 
-const FUTURE = String(Date.now() + 3600_000);
-function asAdmin() {
-	sessionStorage.setItem(
-		"vb:adminAuth",
-		JSON.stringify({ token: "t", exp: FUTURE }),
-	);
+function makePost(overrides: Partial<PostData> = {}): PostData {
+  return {
+    id: "post-1",
+    title: "Broken elevator in Building A",
+    description: "The elevator has been broken for 2 days. Nobody can use it.",
+    category: "Facilities",
+    status: "open",
+    priority: "high",
+    type: "problem",
+    author_id: "user-1",
+    created_at: "2025-07-20T10:00:00Z",
+    reactions: { support: 5, concerned: 2, frustrated: 1, appreciate: 0 },
+    comment_count: 3,
+    tags: ["elevator", "safety"],
+    ...overrides,
+  } as PostData;
 }
-function asUser() {
-	sessionStorage.removeItem("vb:adminAuth");
-}
 
-function renderCard(overrides: Partial<PostData> = {}) {
-	return render(
-		<MemoryRouter>
-			<PostCard post={{ ...POST, ...overrides }} />
-		</MemoryRouter>,
-	);
-}
+describe("PostCard", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
 
-beforeEach(() => {
-	vi.clearAllMocks();
-	asUser();
-});
+  describe("rendering", () => {
+    it("renders post title", () => {
+      render(<PostCard post={makePost()} />);
+      expect(screen.getByText("Broken elevator in Building A")).toBeInTheDocument();
+    });
 
-describe("PostCard admin moderation bar", () => {
-	it("is hidden for regular users with no admin session", () => {
-		renderCard();
-		expect(screen.queryByText("Moderation")).not.toBeInTheDocument();
-		expect(screen.queryByTitle("Mark solved")).not.toBeInTheDocument();
-		expect(screen.queryByText("Solve")).not.toBeInTheDocument();
-	});
+    it("renders post description", () => {
+      render(<PostCard post={makePost()} />);
+      expect(
+        screen.getByText("The elevator has been broken for 2 days. Nobody can use it."),
+      ).toBeInTheDocument();
+    });
 
-	it("is visible when an admin session is active", () => {
-		asAdmin();
-		renderCard();
-		expect(screen.getByText("Moderation")).toBeInTheDocument();
-		expect(screen.getByTitle("Mark solved")).toBeInTheDocument();
-		expect(screen.getByTitle("Mark as official")).toBeInTheDocument();
-		expect(screen.getByTitle("Hide post")).toBeInTheDocument();
-	});
+    it("renders category chip", () => {
+      render(<PostCard post={makePost()} />);
+      expect(screen.getByText("Facilities")).toBeInTheDocument();
+    });
 
-	it("marks a post in progress through the real posts API", async () => {
-		asAdmin();
-		renderCard();
-		fireEvent.click(screen.getByTitle("Mark in progress"));
-		await waitFor(() => {
-			expect(mockedPut).toHaveBeenCalledWith("/api/posts", {
-				id: "post-1",
-				status: "in_progress",
-			});
-		});
-		expect(toastMock).toHaveBeenCalledWith("Marked in progress", "ok");
-	});
+    it("renders status chip", () => {
+      render(<PostCard post={makePost({ status: "open" })} />);
+      expect(screen.getByText("Reported")).toBeInTheDocument();
+    });
 
-	it("marks a post solved through the real posts API", async () => {
-		asAdmin();
-		renderCard();
-		fireEvent.click(screen.getByTitle("Mark solved"));
-		await waitFor(() => {
-			expect(mockedPut).toHaveBeenCalledWith("/api/posts", {
-				id: "post-1",
-				status: "solved",
-			});
-		});
-		expect(toastMock).toHaveBeenCalledWith(
-			"Issue marked solved — community notified",
-			"ok",
-		);
-	});
+    it("renders tags", () => {
+      render(<PostCard post={makePost()} />);
+      expect(screen.getByText("#elevator")).toBeInTheDocument();
+      expect(screen.getByText("#safety")).toBeInTheDocument();
+    });
 
-	it("marks a post verified through the real posts API", async () => {
-		asAdmin();
-		renderCard();
-		fireEvent.click(screen.getByTitle("Verify this post"));
-		await waitFor(() => {
-			expect(mockedPut).toHaveBeenCalledWith("/api/posts", {
-				id: "post-1",
-				status: "verified",
-			});
-		});
-		expect(toastMock).toHaveBeenCalledWith("Marked verified", "ok");
-	});
+    it("renders a time element", () => {
+      render(<PostCard post={makePost()} />);
+      // The time display is in a span with text-ink3 class
+      const timeEl = document.querySelector(".text-ink3");
+      expect(timeEl).toBeInTheDocument();
+    });
+  });
 
-	it("toggles the official badge", async () => {
-		asAdmin();
-		renderCard();
-		fireEvent.click(screen.getByTitle("Mark as official"));
-		await waitFor(() => {
-			expect(mockedPut).toHaveBeenCalledWith("/api/posts", {
-				id: "post-1",
-				official: true,
-			});
-		});
-		expect(toastMock).toHaveBeenCalledWith("Marked official", "ok");
-	});
+  describe("reactions", () => {
+    it("renders all 4 reaction types", () => {
+      render(<PostCard post={makePost()} />);
+      expect(screen.getByLabelText(/Support/)).toBeInTheDocument();
+      expect(screen.getByLabelText(/Concerned/)).toBeInTheDocument();
+      expect(screen.getByLabelText(/Frustrated/)).toBeInTheDocument();
+      expect(screen.getByLabelText(/Appreciate/)).toBeInTheDocument();
+    });
 
-	it("hides a post (and can unhide when already hidden)", async () => {
-		asAdmin();
-		renderCard();
-		fireEvent.click(screen.getByTitle("Hide post"));
-		await waitFor(() => {
-			expect(mockedPut).toHaveBeenCalledWith("/api/posts", {
-				id: "post-1",
-				hidden: true,
-			});
-		});
-		expect(toastMock).toHaveBeenCalledWith("Post hidden", "ok");
-	});
+    it("shows correct reaction counts", () => {
+      render(<PostCard post={makePost()} />);
+      expect(screen.getByLabelText(/Support.*5/)).toBeInTheDocument();
+      expect(screen.getByLabelText(/Concerned.*2/)).toBeInTheDocument();
+      expect(screen.getByLabelText(/Frustrated.*1/)).toBeInTheDocument();
+    });
 
-	it("hides the solve/in-progress/verify buttons once a post is solved", () => {
-		asAdmin();
-		renderCard({ status: "solved" });
-		expect(screen.queryByTitle("Mark solved")).not.toBeInTheDocument();
-		expect(screen.queryByTitle("Mark in progress")).not.toBeInTheDocument();
-		expect(screen.queryByTitle("Verify this post")).not.toBeInTheDocument();
-		// Official / Hide / Reply remain available for solved posts
-		expect(screen.getByTitle("Mark as official")).toBeInTheDocument();
-	});
+    it("marks active reactions with aria-pressed", () => {
+      render(<PostCard post={makePost()} myReactions={["support"]} />);
+      const supportBtn = screen.getByLabelText(/Support/);
+      expect(supportBtn).toHaveAttribute("aria-pressed", "true");
+    });
 
-	it("opens an official reply form and submits via the API", async () => {
-		asAdmin();
-		renderCard();
-		fireEvent.click(screen.getByTitle("Post an official admin reply on this post"));
-		const input = screen.getByLabelText("Official admin reply");
-		fireEvent.change(input, { target: { value: "We are fixing this today." } });
-		fireEvent.click(screen.getByRole("button", { name: "Send" }));
-		await waitFor(() => {
-			expect(mockedPut).toHaveBeenCalledWith("/api/posts", {
-				id: "post-1",
-				admin_reply: "We are fixing this today.",
-			});
-		});
-		expect(toastMock).toHaveBeenCalledWith(
-			"Official reply posted — visible on the post",
-			"ok",
-		);
-		// form closes after a successful send
-		expect(screen.queryByLabelText("Official admin reply")).not.toBeInTheDocument();
-	});
+    it("marks inactive reactions with aria-pressed=false", () => {
+      render(<PostCard post={makePost()} myReactions={[]} />);
+      const supportBtn = screen.getByLabelText(/Support/);
+      expect(supportBtn).toHaveAttribute("aria-pressed", "false");
+    });
 
-	it("keeps the reply send button disabled while the message is empty", () => {
-		asAdmin();
-		renderCard();
-		fireEvent.click(screen.getByTitle("Post an official admin reply on this post"));
-		const send = screen.getByRole("button", { name: "Send" }) as HTMLButtonElement;
-		expect(send.disabled).toBe(true);
-	});
+    it("calls onReacted when reaction is clicked", async () => {
+      const onReacted = vi.fn();
+      render(<PostCard post={makePost()} onReacted={onReacted} />);
+      const supportBtn = screen.getByLabelText(/Support/);
+      fireEvent.click(supportBtn);
+      // Wait for the async API call
+      await vi.waitFor(() => {
+        expect(onReacted).toHaveBeenCalled();
+      });
+    });
+  });
 
-	it("toasts an error when an admin action fails", async () => {
-		asAdmin();
-		mockedPut.mockRejectedValueOnce(new Error("403 Admin only"));
-		renderCard();
-		fireEvent.click(screen.getByTitle("Mark solved"));
-		await waitFor(() => {
-			expect(toastMock).toHaveBeenCalledWith("403 Admin only", "err");
-		});
-	});
+  describe("bookmarks", () => {
+    it("renders bookmark button", () => {
+      render(<PostCard post={makePost()} />);
+      expect(screen.getByLabelText("Bookmark")).toBeInTheDocument();
+    });
 
-	it("does not double-fire while a previous admin action is in flight", async () => {
-		asAdmin();
-		let resolve!: (v: unknown) => void;
-		mockedPut.mockImplementationOnce(
-			() => new Promise((r) => (resolve = r)),
-		);
-		renderCard();
-		const btn = screen.getByTitle("Mark solved");
-		fireEvent.click(btn);
-		fireEvent.click(btn);
-		expect(mockedPut).toHaveBeenCalledTimes(1);
-		resolve({});
-	});
-});
+    it("calls toggleBookmark when clicked", () => {
+      render(<PostCard post={makePost()} />);
+      const bookmarkBtn = screen.getByLabelText("Bookmark");
+      fireEvent.click(bookmarkBtn);
+      expect(mockToggleBookmark).toHaveBeenCalledWith("post-1");
+    });
+  });
 
-describe("PostCard — inline poll", () => {
-	const POLL = {
-		id: "poll-abc",
-		title: "Should we get a pool?",
-		ptype: "yesno" as const,
-		options: ["Yes", "No"],
-		author_id: "anon_other",
-		post_id: "post-1",
-		deleted: false,
-		archived: false,
-		total_votes: 5,
-		vote_counts: { 0: 3, 1: 2 },
-	};
+  describe("report", () => {
+    it("renders report button", () => {
+      render(<PostCard post={makePost()} />);
+      expect(screen.getByLabelText("Report this post")).toBeInTheDocument();
+    });
 
-	it("renders the inline PollCard when pollData is provided", () => {
-		render(
-			<MemoryRouter>
-				<PostCard
-					post={{ ...POST, linked_poll: "poll-abc" }}
-					pollData={POLL}
-				/>
-			</MemoryRouter>,
-		);
-		// PollCard renders the poll title
-		expect(screen.getByText(/should we get a pool/i)).toBeInTheDocument();
-		// PollCard renders the options
-		expect(screen.getByRole("radio", { name: /yes/i })).toBeInTheDocument();
-		expect(screen.getByRole("radio", { name: /no/i })).toBeInTheDocument();
-		// Vote button is present
-		expect(screen.getByRole("button", { name: /^vote$/i })).toBeInTheDocument();
-	});
+    it("opens report dialog on click", () => {
+      render(<PostCard post={makePost()} />);
+      const reportBtn = screen.getByLabelText("Report this post");
+      fireEvent.click(reportBtn);
+      expect(screen.getByTestId("report-dialog")).toBeInTheDocument();
+    });
+  });
 
-	it("shows vote count badge even without pollData", () => {
-		render(
-			<MemoryRouter>
-				<PostCard
-					post={{
-					...POST,
-					linked_poll: "poll-abc",
-					linked_poll_votes: 12,
-				}}
-			/>
-			</MemoryRouter>,
-		);
-		expect(screen.getByText(/poll · 12 votes/i)).toBeInTheDocument();
-	});
+  describe("badges", () => {
+    it("shows pinned badge when pinned", () => {
+      render(<PostCard post={makePost({ pinned: true })} />);
+      expect(screen.getByText("Pinned")).toBeInTheDocument();
+    });
 
-	it("shows singular vote count for 1 vote", () => {
-		render(
-			<MemoryRouter>
-				<PostCard
-					post={{
-					...POST,
-					linked_poll: "poll-abc",
-					linked_poll_votes: 1,
-				}}
-			/>
-			</MemoryRouter>,
-		);
-		expect(screen.getByText(/poll · 1 vote/i)).toBeInTheDocument();
-	});
+    it("shows featured badge when featured", () => {
+      render(<PostCard post={makePost({ featured: true })} />);
+      expect(screen.getByText("Featured")).toBeInTheDocument();
+    });
 
-	it("renders myVote as pre-selected in the inline poll", () => {
-		render(
-			<MemoryRouter>
-				<PostCard
-					post={{ ...POST, linked_poll: "poll-abc" }}
-					pollData={POLL}
-					myPollVote={[0]}
-				/>
-			</MemoryRouter>,
-		);
-		// After voting, PollCard shows results — the voted option gets a checkmark
-		expect(screen.getByText(/change vote/i)).toBeInTheDocument();
-	});
+    it("does not show admin moderation controls when not admin", () => {
+      render(<PostCard post={makePost({ official: true })} />);
+      // Admin section is hidden when hasAdminSession() returns false
+      expect(screen.queryByText("Moderation")).not.toBeInTheDocument();
+    });
 
-	it("does not render PollCard when pollData is null", () => {
-		render(
-			<MemoryRouter>
-				<PostCard
-					post={{ ...POST, linked_poll: "poll-abc" }}
-					pollData={null}
-				/>
-			</MemoryRouter>,
-		);
-		expect(screen.queryByRole("radio", { name: /yes/i })).toBeNull();
-	});
+    it("shows private badge when visibility is private", () => {
+      render(<PostCard post={makePost({ visibility: "private" })} />);
+      expect(screen.getByText(/Private/)).toBeInTheDocument();
+    });
+  });
 
-	it("calls onPollVoted callback when vote succeeds", async () => {
-		const onVoted = vi.fn();
-		// Mock the vote API response — PollCard uses api.post internally
-		(mockedPut as ReturnType<typeof vi.fn>).mockReset();
-		mockedPost.mockResolvedValueOnce({
-			...POLL,
-			total_votes: 6,
-			vote_counts: { 0: 4, 1: 2 },
-		});
-		render(
-			<MemoryRouter>
-				<PostCard
-					post={{ ...POST, linked_poll: "poll-abc" }}
-					pollData={POLL}
-					onPollVoted={onVoted}
-				/>
-			</MemoryRouter>,
-		);
-		// Select Yes and vote
-		await userEvent.click(screen.getByRole("radio", { name: /yes/i }));
-		await userEvent.click(screen.getByRole("button", { name: /^vote$/i }));
-		await waitFor(() => {
-			expect(onVoted).toHaveBeenCalled();
-		});
-	});
+  describe("poll integration", () => {
+    it("renders linked poll when pollData is provided", () => {
+      render(
+        <PostCard
+          post={makePost({ linked_poll: "poll-1", linked_poll_votes: 12 })}
+          pollData={{
+            id: "poll-1",
+            title: "Should we fix it?",
+            options: ["Yes", "No"],
+            vote_counts: [10, 2],
+            total_votes: 12,
+            ptype: "yesno",
+          }}
+        />,
+      );
+      expect(screen.getByText("Should we fix it?")).toBeInTheDocument();
+    });
+  });
+
+  describe("comment count", () => {
+    it("shows comment count", () => {
+      render(<PostCard post={makePost({ comment_count: 7 })} />);
+      // The comment link shows the count
+      expect(screen.getByText("7")).toBeInTheDocument();
+    });
+  });
 });

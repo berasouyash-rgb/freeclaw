@@ -113,7 +113,7 @@ export default defineConfig(async ({ mode }): Promise<UserConfig> => {
 						icons: ["lucide-react"],
 						// Animation libs are used by the cinematic preloader — isolated so
 						// they load in parallel and can be cached independently from app code.
-						animation: ["framer-motion", "gsap"],
+						animation: ["framer-motion"],
 					},
 					compact: true,
 				},

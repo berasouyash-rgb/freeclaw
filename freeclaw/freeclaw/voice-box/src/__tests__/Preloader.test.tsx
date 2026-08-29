@@ -139,11 +139,13 @@ describe("readiness → reveal", () => {
 
 	it("stays up (no onFinish) while critical data is pending", async () => {
 		const onFinish = vi.fn();
-		let resolveProbe!: (v: unknown) => void;
+		// Track ALL pending fetch promises so we can resolve them all at once.
+		// (Multiple coordinator stages call fetch — each gets its own promise.)
+		const pendingResolvers: Array<(v: unknown) => void> = [];
 		global.fetch = vi.fn(
 			() =>
 				new Promise((res) => {
-					resolveProbe = res;
+					pendingResolvers.push(res as (v: unknown) => void);
 				}) as unknown as Promise<Response>,
 		) as unknown as typeof fetch;
 		render(<Preloader onFinish={onFinish} />);
@@ -151,17 +153,22 @@ describe("readiness → reveal", () => {
 		await act(async () => {
 			vi.advanceTimersByTime(1000);
 		});
+		// While probe is pending, onFinish should NOT fire
 		expect(onFinish).not.toHaveBeenCalled();
 
+		// Resolve ALL pending fetch promises (DB probe + data probe)
 		await act(async () => {
-			resolveProbe({ ok: true, json: async () => ({}) });
-			await Promise.resolve();
-			vi.advanceTimersByTime(1500);
+			pendingResolvers.forEach((r) =>
+				r({ ok: true, json: async () => ({}) }),
+			);
 		});
-		// READY committed → reveal timers scheduled → advance again
+		await flush();
+
+		// Status is now READY — the effect schedules onFinish after ~840ms.
 		await act(async () => {
-			vi.advanceTimersByTime(1500);
+			vi.advanceTimersByTime(2000);
 		});
+
 		expect(onFinish).toHaveBeenCalled();
 	});
 
@@ -187,8 +194,8 @@ describe("error state", () => {
 			vi.advanceTimersByTime(9000);
 		});
 		expect(screen.getByTestId("vpl-error")).toBeInTheDocument();
-		expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
-		expect(screen.getByRole("button", { name: "Continue" })).toBeInTheDocument();
+		expect(screen.getByRole("button", { name: /Try again/ })).toBeInTheDocument();
+		expect(screen.getByRole("button", { name: /Continue/ })).toBeInTheDocument();
 	});
 
 	it("Continue proceeds into READY and reveals the app", async () => {
@@ -199,7 +206,7 @@ describe("error state", () => {
 		await act(async () => {
 			vi.advanceTimersByTime(9000);
 		});
-		fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+		fireEvent.click(screen.getByRole("button", { name: /Continue/ }));
 		await act(async () => {
 			vi.advanceTimersByTime(1500);
 		});
@@ -222,7 +229,7 @@ describe("error state", () => {
 			vi.advanceTimersByTime(9000);
 		});
 		expect(screen.getByTestId("vpl-error")).toBeInTheDocument();
-		fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+		fireEvent.click(screen.getByRole("button", { name: /Try again/ }));
 		await act(async () => {
 			await Promise.resolve();
 			await Promise.resolve();

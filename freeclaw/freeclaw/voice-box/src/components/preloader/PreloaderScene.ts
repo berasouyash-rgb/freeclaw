@@ -22,6 +22,13 @@ import type { Quality } from "./useDeviceCapability";
 
 export type SceneStatus =
 	| "INITIALIZING"
+	| "ENVIRONMENT"
+	| "AUTHENTICATION"
+	| "DATABASE"
+	| "REALTIME"
+	| "PERMISSIONS"
+	| "RESOURCES"
+	| "SERVICES"
 	| "LOADING"
 	| "VERIFYING"
 	| "READY"

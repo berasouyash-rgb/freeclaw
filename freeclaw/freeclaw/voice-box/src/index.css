@@ -471,8 +471,16 @@ h1,h2,h3,h4 { font-family: var(--font-display); letter-spacing: -0.01em; }
   border-radius: var(--vb-radius-lg);
   box-shadow: var(--vb-shadow-xs);
   transition: border-color var(--vb-duration-normal) var(--vb-ease),
-              box-shadow var(--vb-duration-normal) var(--vb-ease);
-  will-change: transform;
+              box-shadow var(--vb-duration-normal) var(--vb-ease),
+              transform var(--vb-duration-fast) var(--vb-ease);
+}
+.card-hover { transition: border-color var(--vb-duration-normal) var(--vb-ease), box-shadow var(--vb-duration-normal) var(--vb-ease), transform var(--vb-duration-fast) var(--vb-ease); }
+@media (hover: hover) and (pointer: fine) {
+  .card-hover:hover {
+    border-color: color-mix(in srgb, var(--vb-accent) 40%, var(--vb-border));
+    box-shadow: var(--vb-shadow-md);
+    transform: translateY(-2px);
+  }
 }
 
 /* ═══════════════════════════════════════════════════════════════
@@ -579,13 +587,15 @@ h1,h2,h3,h4 { font-family: var(--font-display); letter-spacing: -0.01em; }
               border-color var(--vb-duration-fast) var(--vb-ease),
               color var(--vb-duration-fast) var(--vb-ease),
               box-shadow var(--vb-duration-fast) var(--vb-ease),
-              opacity var(--vb-duration-fast) var(--vb-ease);
+              opacity var(--vb-duration-fast) var(--vb-ease),
+              transform var(--vb-duration-fast) var(--vb-ease);
   white-space: nowrap; position: relative; overflow: hidden;
-  will-change: transform;
+  will-change: transform; user-select: none;
+  -webkit-tap-highlight-color: transparent;
 }
 .btn:active:not(:disabled) { transform: scale(0.97); }
 .btn:disabled { opacity: .5; cursor: not-allowed; }
-.btn-primary { background: var(--vb-accent); color: #fff; box-shadow: var(--vb-shadow-sm), inset 0 1px 0 rgba(255,255,255,0.1); }
+.btn-primary { background: var(--vb-accent); color: #fff; box-shadow: var(--vb-shadow-sm), inset 0 1px 0 rgba(255,255,255,0.12); }
 .btn-primary:hover:not(:disabled) {
   background: var(--vb-accent2);
   box-shadow: var(--vb-shadow-md), 0 4px 20px -4px color-mix(in srgb, var(--vb-accent) 45%, transparent);
@@ -599,16 +609,27 @@ h1,h2,h3,h4 { font-family: var(--font-display); letter-spacing: -0.01em; }
 .btn-soft:hover:not(:disabled) { filter: brightness(0.94); box-shadow: var(--vb-shadow-xs); }
 .btn-danger { background: rgba(220, 75, 75, 0.10); color: var(--vb-bad); border: 1px solid rgba(220, 75, 75, 0.15); }
 .btn-danger:hover:not(:disabled) { background: rgba(220, 75, 75, 0.18); border-color: rgba(220, 75, 75, 0.3); }
+/* Touch-optimized buttons on mobile: larger hit targets */
+@media (pointer: coarse) {
+  .btn { min-height: 44px; padding: .65rem 1.2rem; }
+  .btn-sm, .btn-xs { min-height: 36px; }
+}
 
 .input {
   width: 100%; background: var(--vb-surface); border: 1.5px solid var(--vb-border);
   border-radius: var(--vb-radius-md); padding: .65rem .9rem; font-size: .9rem; color: var(--vb-ink);
   transition: border-color var(--vb-duration-fast) var(--vb-ease),
-              box-shadow var(--vb-duration-fast) var(--vb-ease);
+              box-shadow var(--vb-duration-fast) var(--vb-ease),
+              background var(--vb-duration-fast) var(--vb-ease);
+  -webkit-appearance: none; appearance: none;
 }
-  .input:focus { outline: 2px solid var(--vb-accent); outline-offset: 2px; border-color: var(--vb-accent); background: var(--vb-surface); }
+  .input:focus { outline: 2px solid var(--vb-accent); outline-offset: 2px; border-color: var(--vb-accent); background: var(--vb-surface); box-shadow: 0 0 0 3px color-mix(in srgb, var(--vb-accent) 10%, transparent); }
 .input:hover:not(:focus) { border-color: color-mix(in srgb, var(--vb-accent) 30%, var(--vb-border)); }
 .input::placeholder { color: var(--vb-ink3); }
+/* Touch-optimized inputs on mobile */
+@media (pointer: coarse) {
+  .input { min-height: 44px; font-size: 16px; /* prevents iOS zoom */ }
+}
 
 .chip {
   display: inline-flex; align-items: center; gap: .3rem;
@@ -1385,11 +1406,6 @@ html[data-scale="110"] { font-size: 110%; }
   }
   .pb-safe { padding-bottom: max(env(safe-area-inset-bottom), 0px); }
 }
-@media (hover: none) and (pointer: coarse) {
-  .btn:hover, button:hover {
-    transform: none;
-  }
-}
 
 /* ── Mobile UX hardening (touch devices) ───────────────────────
    Fixes the classic mobile pain points:
@@ -1504,5 +1520,30 @@ html[data-scale="110"] { font-size: 110%; }
   .card * {
     transition-property: color, opacity !important;
     transition-duration: 0.15s !important;
+  }
+}
+
+/* ── Magic UI / React Bits animated components ───────────────────── */
+
+/* Shimmer sweep for ShimmerButton */
+@keyframes shimmer-slide {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(100%); }
+}
+.animate-shimmer-slide {
+  animation: shimmer-slide var(--shimmer-duration, 3s) ease-in-out infinite;
+}
+
+/* Border beam rotation for BorderBeam */
+@keyframes border-beam-rotate {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+/* Prefers-reduced-motion: disable decorative animations */
+@media (prefers-reduced-motion: reduce) {
+  .animate-shimmer-slide,
+  [style*="border-beam-rotate"] {
+    animation: none !important;
   }
 }

@@ -19,7 +19,7 @@ import {
 } from "./_auth.js";
 import supabase from "./_db-client.js";
 import { sanitizeError } from "./_error.js";
-import { EVENT_TYPES, emitEvent } from "./_events.js";
+import { EVENT_TYPES, emitEventAndBridge } from "./_events.js";
 import { serverModerate } from "./_moderation.js";
 import { callLLMChain } from "./_providers.js";
 import { getNotifyPrefs } from "./_notify-prefs.js";
@@ -1237,7 +1237,7 @@ export default async function handler(req, res) {
 					"inbox_message",
 					`Thread ${threadId}: AI off (user=${!userAiOn}, global=${!globalAi.enabled})`,
 				);
-				emitEvent(EVENT_TYPES.INBOX_MESSAGE, {
+				emitEventAndBridge(EVENT_TYPES.INBOX_MESSAGE, {
 					thread_id: threadId,
 					sender: "user",
 					emotion: "none",
@@ -1358,7 +1358,7 @@ export default async function handler(req, res) {
 					"inbox_message",
 					`Thread ${threadId}: emotion=${emotion.emotion}(${emotion.level}), agent=${replyResult.agent}, reply=${!!replyResult.reply}`,
 				);
-				emitEvent(EVENT_TYPES.INBOX_MESSAGE, {
+				emitEventAndBridge(EVENT_TYPES.INBOX_MESSAGE, {
 					thread_id: threadId,
 					sender: "user",
 					emotion: emotion.emotion,

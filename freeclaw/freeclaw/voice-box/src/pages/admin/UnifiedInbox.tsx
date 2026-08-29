@@ -4,10 +4,8 @@ import {
 	ArrowLeftRight,
 	Bot,
 	BotOff,
-	Check,
 	ChevronLeft,
 	CloudRain,
-	Copy,
 	Download,
 	Headphones,
 	Image as ImageIcon,
@@ -28,6 +26,11 @@ import {
 	X,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+	CopyButton,
+	DownloadButton,
+	QUICK_REPLIES,
+} from "../../components/admin/chat-utils";
 import { PromptDialog } from "../../components/ui";
 import { useApp } from "../../contexts/AppContext";
 import { api } from "../../lib/api";
@@ -62,61 +65,6 @@ interface ThreadState {
 	handoff?: boolean;
 	source?: string;
 	[k: string]: unknown;
-}
-
-/* ═══════════════════════════════════════════════════════════════
-   HELPERS — Copy, download
-   ═══════════════════════════════════════════════════════════════ */
-
-function CopyButton({ text }: { text: string }) {
-	const [copied, setCopied] = useState(false);
-	const copy = async () => {
-		try {
-			await navigator.clipboard.writeText(text);
-			setCopied(true);
-			setTimeout(() => setCopied(false), 2000);
-		} catch {
-			/* fallback */
-		}
-	};
-	return (
-		<button
-			onClick={copy}
-			className="p-1 rounded-md hover:bg-surface2 transition-colors"
-			title="Copy"
-		>
-			{copied ? (
-				<Check size={13} className="text-good" />
-			) : (
-				<Copy size={13} className="text-ink3" />
-			)}
-		</button>
-	);
-}
-
-function DownloadButton({ url, filename }: { url: string; filename?: string }) {
-	const download = async () => {
-		try {
-			const res = await fetch(url);
-			const blob = await res.blob();
-			const a = document.createElement("a");
-			a.href = URL.createObjectURL(blob);
-			a.download = filename || url.split("/").pop() || "attachment";
-			a.click();
-			URL.revokeObjectURL(a.href);
-		} catch {
-			window.open(url, "_blank");
-		}
-	};
-	return (
-		<button
-			onClick={download}
-			className="p-1 rounded-md hover:bg-surface2 transition-colors"
-			title="Download"
-		>
-			<Download size={13} className="text-ink3" />
-		</button>
-	);
 }
 
 /* ═══════════════════════════════════════════════════════════════
@@ -375,14 +323,6 @@ function ThreadItem({
 /* ═══════════════════════════════════════════════════════════════
    UNIFIED INBOX — merged AdminInbox + AdminChat
    ═══════════════════════════════════════════════════════════════ */
-
-const QUICK_REPLIES = [
-	"Thanks for reaching out — we're looking into this now.",
-	"Could you share more details (location, time, how often it happens)?",
-	"This has been forwarded to the responsible staff member.",
-	"Your issue has been verified and is now in progress. ✅",
-	"This has been resolved — please let us know if it happens again.",
-];
 
 export default function UnifiedInbox() {
 	const { toast } = useApp();

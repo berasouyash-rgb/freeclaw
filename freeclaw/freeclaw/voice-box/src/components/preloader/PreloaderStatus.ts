@@ -20,8 +20,14 @@
 
 export type PreloaderStatus =
 	| "INITIALIZING" // React shell mounting (first frame)
-	| "LOADING" // critical readiness tasks in flight
-	| "VERIFYING" // critical flags green, confirming final state
+	| "ENVIRONMENT" // environment + config validation
+	| "AUTHENTICATION" // auth state + session restoration
+	| "DATABASE" // database connectivity check
+	| "REALTIME" // realtime connection established
+	| "PERMISSIONS" // user permissions loaded
+	| "RESOURCES" // critical UI resources ready
+	| "SERVICES" // AI/service availability check
+	| "VERIFYING" // final confirmation
 	| "READY" // everything required is genuinely ready
 	| "REVEAL" // exit morph playing — app is interactive beneath
 	| "ERROR"; // something critical failed; user chooses retry/continue
@@ -31,8 +37,16 @@ export type PreloaderStatus =
 export interface ReadinessFlags {
 	/** React application shell mounted and committed. */
 	shellReady: boolean;
+	/** Environment and configuration validated. */
+	envReady: boolean;
 	/** Document fonts (the app's typeface) finished loading. */
 	fontsReady: boolean;
+	/** Authentication state restored. */
+	authReady: boolean;
+	/** Database connectivity confirmed. */
+	dbReady: boolean;
+	/** Realtime connection established. */
+	realtimeReady: boolean;
 	/** Critical data probe succeeded (public, non-blocking API check). */
 	dataReady: boolean;
 }
@@ -59,7 +73,13 @@ export const MAX_WAIT_MS = 8000; // never let the user stare forever
 /** The user-facing status label for each machine state. */
 export const STATUS_LABELS: Record<PreloaderStatus, string> = {
 	INITIALIZING: "Starting",
-	LOADING: "Preparing your workspace",
+	ENVIRONMENT: "Checking environment",
+	AUTHENTICATION: "Checking session",
+	DATABASE: "Connecting",
+	REALTIME: "Preparing live updates",
+	PERMISSIONS: "Loading essentials",
+	RESOURCES: "Loading essentials",
+	SERVICES: "Loading essentials",
 	VERIFYING: "Verifying",
 	READY: "Ready",
 	REVEAL: "Ready",
@@ -86,25 +106,19 @@ export function statusFromFlags(
 	if (opts?.revealing) return "REVEAL";
 	if (opts?.errored) return "ERROR";
 
-	const { elapsedMs = Infinity } = opts || {};
-	const floor = opts?.minDisplayMs ?? MIN_DISPLAY_MS;
-	const allCritical = flags.shellReady && flags.fontsReady && flags.dataReady;
-
-	// Scene schedule by elapsed time (Infinity → past the last floor).
-	const t = elapsedMs === Infinity ? 3 * floor : elapsedMs;
-	const byTime: PreloaderStatus =
-		t < floor
-			? "INITIALIZING"
-			: t < 2 * floor
-				? "LOADING"
-				: t < 3 * floor
-					? "VERIFYING"
-					: "READY";
-
-	// Real readiness can only slow the machine down, never speed it up.
+	// Drive status from REAL readiness flags — the most advanced completed
+	// stage determines the visible status. Time only gates progression
+	// (prevents flashing past stages), never regresses it.
 	if (!flags.shellReady) return "INITIALIZING";
-	if (!allCritical) return byTime === "INITIALIZING" ? "INITIALIZING" : "LOADING";
-	return byTime;
+	if (!flags.envReady) return "ENVIRONMENT";
+	if (!flags.fontsReady) return "ENVIRONMENT";
+	if (!flags.authReady) return "AUTHENTICATION";
+	if (!flags.dbReady) return "DATABASE";
+	if (!flags.realtimeReady) return "REALTIME";
+	if (!flags.dataReady) return "RESOURCES";
+
+	// All critical flags green — confirm and reveal
+	return "READY";
 }
 
 /** Clamp progress into [0,1] for the thin progress line. */

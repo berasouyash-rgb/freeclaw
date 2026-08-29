@@ -169,7 +169,7 @@ describe("PostsTable — variants and list rendering", () => {
 		render(<PostsTable type="problem" />);
 		expect(await screen.findByText("Complaint management")).toBeInTheDocument();
 		expect(screen.getByText("Broken lift in block C")).toBeInTheDocument();
-		expect(screen.getByText("2 total")).toBeInTheDocument();
+		expect(screen.getByText("2 / 2 total")).toBeInTheDocument();
 	});
 
 	it("renders the suggestions title for type=suggestion", async () => {
@@ -241,8 +241,8 @@ describe("PostsTable — filters", () => {
 		await screen.findByText("Broken lift in block C");
 
 		const selects = screen.getAllByRole("combobox");
-		// selects: [global status, global category, row1 status, row2 status]
-		await user.selectOptions(selects[0] as HTMLSelectElement, "in_progress");
+		// selects: [date range, global status, global category, row1 status, row2 status]
+		await user.selectOptions(selects[1] as HTMLSelectElement, "in_progress");
 		expect(screen.queryByText("Broken lift in block C")).not.toBeInTheDocument();
 		expect(screen.getByText("Add a nap room")).toBeInTheDocument();
 	});
@@ -253,7 +253,7 @@ describe("PostsTable — filters", () => {
 		await screen.findByText("Broken lift in block C");
 
 		const selects = screen.getAllByRole("combobox");
-		await user.selectOptions(selects[1] as HTMLSelectElement, "Academics");
+		await user.selectOptions(selects[2] as HTMLSelectElement, "Academics");
 		expect(screen.queryByText("Broken lift in block C")).not.toBeInTheDocument();
 		expect(screen.getByText("Add a nap room")).toBeInTheDocument();
 	});

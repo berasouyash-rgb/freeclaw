@@ -39,54 +39,43 @@ afterEach(() => {
 });
 
 describe("real readiness flow", () => {
-	it("reaches READY only when every critical flag is green and all scenes played", async () => {
+	it("reaches READY only when every critical flag is green", async () => {
 		const probe = deferred<unknown>();
 		const { result } = renderHook(() =>
 			useLoadingCoordinator({ dataProbe: () => probe.promise }),
 		);
 
-		// Shell mounts (effect) → scene 1 (INITIALIZING) is playing while
-		// fonts + data are still pending
-		await act(async () => {});
-		expect(result.current.status).toBe("INITIALIZING");
-
-		// Fonts resolve — still scene 1 while data is pending
+		// Shell mounts + all timed effects fire (env 80ms, auth 120ms, db 200ms, realtime 350ms)
 		await act(async () => {
-			await Promise.resolve();
+			vi.advanceTimersByTime(500);
 		});
+		expect(result.current.flags.shellReady).toBe(true);
 		expect(result.current.flags.fontsReady).toBe(true);
 		expect(result.current.flags.dataReady).toBe(false);
-		expect(result.current.status).toBe("INITIALIZING");
 
-		// Data resolves → all critical green, but the scenes must still play
+		// Data resolves → all critical green → READY
 		await act(async () => {
 			probe.resolve({ ok: true });
 			await Promise.resolve();
 		});
 		expect(result.current.flags.dataReady).toBe(true);
-		expect(result.current.status).toBe("INITIALIZING");
-
-		// All three scenes elapse (3 × 700ms floor) → READY
-		await act(async () => {
-			vi.advanceTimersByTime(2400);
-		});
 		expect(result.current.status).toBe("READY");
 	});
 
-	it("stays LOADING while the critical probe is pending (no fake completion)", async () => {
+	it("stays at RESOURCES while the critical probe is pending (no fake completion)", async () => {
 		const probe = deferred<unknown>();
 		const { result } = renderHook(() =>
 			useLoadingCoordinator({ dataProbe: () => probe.promise }),
 		);
 		await act(async () => {});
-		// Scene 1 is playing — data is not green yet
-		expect(result.current.status).toBe("INITIALIZING");
+		// env fires at 80ms — data is not green yet
+		expect(result.current.flags.dataReady).toBe(false);
 
 		await act(async () => {
 			vi.advanceTimersByTime(5000);
 		});
-		// long past the scene schedule, but the probe never answered → LOADING
-		expect(result.current.status).toBe("LOADING");
+		// long past, but the probe never answered → not READY
+		expect(result.current.status).not.toBe("READY");
 		expect(result.current.flags.dataReady).toBe(false);
 
 		await act(async () => {
@@ -164,9 +153,12 @@ describe("real readiness flow", () => {
 		const { result } = renderHook(() =>
 			useLoadingCoordinator({ dataProbe: () => probe.promise }),
 		);
-		await act(async () => {});
-		// shell done, fonts done, data pending → 2/3
-		expect(result.current.progress).toBeCloseTo(2 / 3);
+		// Advance past all timed effects (env 80ms, auth 120ms, db 200ms, realtime 350ms)
+		await act(async () => {
+			vi.advanceTimersByTime(500);
+		});
+		// shell + env + fonts + auth + db + realtime done, data pending → 6/7
+		expect(result.current.progress).toBeCloseTo(6 / 7);
 		await act(async () => {
 			probe.resolve({});
 			await Promise.resolve();
