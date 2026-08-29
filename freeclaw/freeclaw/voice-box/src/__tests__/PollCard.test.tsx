@@ -394,6 +394,31 @@ describe("PollCard — myVote prop sync", () => {
 			"false",
 		);
 	});
+
+	it("does not show voted state when myVote arrives empty (no vote cast)", async () => {
+		// Scenario: feed renders PollCard before vote data loads, then vote
+		// data arrives as [] meaning 'user has not voted on this poll'
+		const { rerender } = render(<PollCard poll={openOwn} />);
+		// Initial render: no myVote → shows Vote button
+		expect(screen.getByRole("button", { name: /^vote$/i })).toBeInTheDocument();
+		// Vote data arrives as empty array — user has NOT voted
+		rerender(<PollCard poll={openOwn} myVote={[]} />);
+		// Must still show Vote button, not 'Change vote'
+		expect(screen.getByRole("button", { name: /^vote$/i })).toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: /change vote/i })).toBeNull();
+	});
+
+	it("clears voted state when myVote transitions from voted to empty", async () => {
+		// Scenario: user voted, then their vote was removed by admin
+		const { rerender } = render(<PollCard poll={openOwn} myVote={[0]} />);
+		expect(
+			screen.getByRole("button", { name: /change vote/i }),
+		).toBeInTheDocument();
+		// Admin removes the vote — myVote becomes empty
+		rerender(<PollCard poll={openOwn} myVote={[]} />);
+		// Must revert to Vote button
+		expect(screen.getByRole("button", { name: /^vote$/i })).toBeInTheDocument();
+	});
 });
 
 describe("PollCard — live countdown timer", () => {

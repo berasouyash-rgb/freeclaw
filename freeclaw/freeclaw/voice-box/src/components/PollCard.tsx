@@ -108,12 +108,14 @@ const PollCard = memo(function PollCard({
 
 	// 2. The same poll's myVote arriving late (first fetch) or changing via
 	//    realtime (another tab's vote) flips the card into the voted state.
+	//    Also handles myVote going from voted → empty (admin removed vote,
+	//    or the 'no vote' confirmation arrived late from the server).
 	//    Never clobbers a vote change the user is still mid-making.
 	useEffect(() => {
 		if (changingVote) return;
 		const hasVote = (myVote || []).length > 0;
+		setVoted(hasVote);
 		if (hasVote) {
-			setVoted(true);
 			setSelected(myVote || []);
 		}
 	}, [myVote, changingVote]);
