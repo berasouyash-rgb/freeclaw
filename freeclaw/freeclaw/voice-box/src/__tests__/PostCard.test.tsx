@@ -10,6 +10,7 @@
 // ═══════════════════════════════════════════════════════════════════
 
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import PostCard from "../components/PostCard";
@@ -44,6 +45,7 @@ vi.mock("../contexts/AppContext", () => ({
 
 import { api } from "../lib/api";
 const mockedPut = api.put as ReturnType<typeof vi.fn>;
+const mockedPost = api.post as ReturnType<typeof vi.fn>;
 
 const toastMock = vi.fn();
 
@@ -233,5 +235,120 @@ describe("PostCard admin moderation bar", () => {
 		fireEvent.click(btn);
 		expect(mockedPut).toHaveBeenCalledTimes(1);
 		resolve({});
+	});
+});
+
+describe("PostCard — inline poll", () => {
+	const POLL = {
+		id: "poll-abc",
+		title: "Should we get a pool?",
+		ptype: "yesno" as const,
+		options: ["Yes", "No"],
+		author_id: "anon_other",
+		post_id: "post-1",
+		deleted: false,
+		archived: false,
+		total_votes: 5,
+		vote_counts: { 0: 3, 1: 2 },
+	};
+
+	it("renders the inline PollCard when pollData is provided", () => {
+		render(
+			<MemoryRouter>
+				<PostCard
+					post={{ ...POST, linked_poll: "poll-abc" }}
+					pollData={POLL}
+				/>
+			</MemoryRouter>,
+		);
+		// PollCard renders the poll title
+		expect(screen.getByText(/should we get a pool/i)).toBeInTheDocument();
+		// PollCard renders the options
+		expect(screen.getByRole("radio", { name: /yes/i })).toBeInTheDocument();
+		expect(screen.getByRole("radio", { name: /no/i })).toBeInTheDocument();
+		// Vote button is present
+		expect(screen.getByRole("button", { name: /^vote$/i })).toBeInTheDocument();
+	});
+
+	it("shows vote count badge even without pollData", () => {
+		render(
+			<MemoryRouter>
+				<PostCard
+					post={{
+					...POST,
+					linked_poll: "poll-abc",
+					linked_poll_votes: 12,
+				}}
+			/>
+			</MemoryRouter>,
+		);
+		expect(screen.getByText(/poll · 12 votes/i)).toBeInTheDocument();
+	});
+
+	it("shows singular vote count for 1 vote", () => {
+		render(
+			<MemoryRouter>
+				<PostCard
+					post={{
+					...POST,
+					linked_poll: "poll-abc",
+					linked_poll_votes: 1,
+				}}
+			/>
+			</MemoryRouter>,
+		);
+		expect(screen.getByText(/poll · 1 vote/i)).toBeInTheDocument();
+	});
+
+	it("renders myVote as pre-selected in the inline poll", () => {
+		render(
+			<MemoryRouter>
+				<PostCard
+					post={{ ...POST, linked_poll: "poll-abc" }}
+					pollData={POLL}
+					myPollVote={[0]}
+				/>
+			</MemoryRouter>,
+		);
+		// After voting, PollCard shows results — the voted option gets a checkmark
+		expect(screen.getByText(/change vote/i)).toBeInTheDocument();
+	});
+
+	it("does not render PollCard when pollData is null", () => {
+		render(
+			<MemoryRouter>
+				<PostCard
+					post={{ ...POST, linked_poll: "poll-abc" }}
+					pollData={null}
+				/>
+			</MemoryRouter>,
+		);
+		expect(screen.queryByRole("radio", { name: /yes/i })).toBeNull();
+	});
+
+	it("calls onPollVoted callback when vote succeeds", async () => {
+		const onVoted = vi.fn();
+		// Mock the vote API response — PollCard uses api.post internally
+		(mockedPut as ReturnType<typeof vi.fn>).mockReset();
+		mockedPost.mockResolvedValueOnce({
+			...POLL,
+			total_votes: 6,
+			vote_counts: { 0: 4, 1: 2 },
+		});
+		render(
+			<MemoryRouter>
+				<PostCard
+					post={{ ...POST, linked_poll: "poll-abc" }}
+					pollData={POLL}
+					onPollVoted={onVoted}
+				/>
+			</MemoryRouter>,
+		);
+		// Select Yes and vote
+		await userEvent.click(screen.getByRole("radio", { name: /yes/i }));
+		await userEvent.click(screen.getByRole("button", { name: /^vote$/i }));
+		await waitFor(() => {
+			expect(onVoted).toHaveBeenCalled();
+		});
 	});
 });

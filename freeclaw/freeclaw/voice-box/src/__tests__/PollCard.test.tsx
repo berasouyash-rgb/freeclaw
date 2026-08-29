@@ -393,3 +393,51 @@ describe("PollCard — myVote prop sync", () => {
 		);
 	});
 });
+
+describe("PollCard — live countdown timer", () => {
+	it("shows days and hours when expiry is far away", () => {
+		const future = new Date(Date.now() + 3 * 86400000 + 5 * 3600000).toISOString();
+		render(<PollCard poll={{ ...BASE, expires_at: future }} />);
+		expect(screen.getByText(/ends in/)).toBeInTheDocument();
+		expect(screen.getByText(/ends in/).textContent).toMatch(/\d+d/);
+		expect(screen.getByText(/ends in/).textContent).toMatch(/\d+h/);
+	});
+
+	it("shows hours and minutes when expiry is within a day", () => {
+		const soon = new Date(Date.now() + 2 * 3600000 + 15 * 60000).toISOString();
+		render(<PollCard poll={{ ...BASE, expires_at: soon }} />);
+		const text = screen.getByText(/ends in/).textContent || "";
+		expect(text).toMatch(/\d+h/);
+		expect(text).toMatch(/\d+m/);
+		expect(text).not.toMatch(/\d+d/);
+	});
+
+	it("shows minutes and seconds when expiry is within an hour", () => {
+		const imminent = new Date(Date.now() + 45 * 60000 + 30 * 1000).toISOString();
+		render(<PollCard poll={{ ...BASE, expires_at: imminent }} />);
+		const text = screen.getByText(/ends in/).textContent || "";
+		expect(text).toMatch(/\d+m/);
+		expect(text).toMatch(/\d+s/);
+		expect(text).not.toMatch(/\d+h/);
+	});
+
+	it("does not show countdown for expired polls", () => {
+		render(<PollCard poll={expiredOwn} />);
+		expect(screen.queryByText(/ends in/)).toBeNull();
+	});
+
+	it("does not show countdown when no expires_at is set", () => {
+		render(<PollCard poll={{ ...BASE, expires_at: null }} />);
+		expect(screen.queryByText(/ends in/)).toBeNull();
+	});
+
+	it("updates the countdown as time advances", async () => {
+		const soon = new Date(Date.now() + 65 * 1000).toISOString();
+		render(<PollCard poll={{ ...BASE, expires_at: soon }} />);
+		const first = screen.getByText(/ends in/).textContent;
+		// Advance time by 2 seconds
+		await new Promise((r) => setTimeout(r, 2100));
+		const second = screen.getByText(/ends in/).textContent;
+		expect(second).not.toBe(first);
+	});
+});
