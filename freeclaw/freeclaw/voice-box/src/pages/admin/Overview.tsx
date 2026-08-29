@@ -47,6 +47,7 @@ import {
 	trendingScore,
 } from "../../lib/utils";
 import type { CommentData, PollData, PostData } from "../../types";
+import CircularProgress from "../../components/ui/circular-progress";
 import QuickActions from "./QuickActions";
 
 // ─── Web Vitals section — real browser telemetry ──────────────
@@ -583,13 +584,16 @@ export default function Overview() {
 			tone: stats.openReports > 0 ? "text-bad" : "text-good",
 			trend: { cur: stats.wk.reports, prev: stats.wk.reportsPrev, invert: true },
 			spark: series.reports,
+			nav: "reports",
 		},
-		{				label: "Open issues",
-				value: stats.emergency.length,
-				sub: "awaiting attention",
-				icon: AlertOctagon,
-				tone: stats.emergency.length > 0 ? "text-warn" : "text-good",
-			},
+		{
+			label: "Open issues",
+			value: stats.emergency.length,
+			sub: "awaiting attention",
+			icon: AlertOctagon,
+			tone: stats.emergency.length > 0 ? "text-warn" : "text-good",
+			nav: "open",
+		},
 		{
 			label: "Posts · week",
 			value: stats.week,
@@ -597,6 +601,7 @@ export default function Overview() {
 			icon: Megaphone,
 			trend: { cur: stats.wk.posts, prev: stats.wk.postsPrev },
 			spark: series.posts,
+			nav: "trending",
 		},
 		{
 			label: "Engagement",
@@ -611,6 +616,7 @@ export default function Overview() {
 			value: stats.users,
 			sub: "seen by platform",
 			icon: Users,
+			nav: "users",
 		},
 		{
 			label: "Suggestions",
@@ -618,6 +624,7 @@ export default function Overview() {
 			sub: "improvement ideas",
 			icon: Lightbulb,
 			tone: "text-warn",
+			nav: "suggestions",
 		},
 		{
 			label: "Active polls",
@@ -625,6 +632,7 @@ export default function Overview() {
 			sub: "live now",
 			icon: BarChart3,
 			tone: "text-accent",
+			nav: "polls",
 		},
 		{
 			label: "Resolution",
@@ -634,6 +642,7 @@ export default function Overview() {
 			icon: CheckCircle2,
 			tone: "text-good",
 			trend: { cur: stats.solvedThisWeek, prev: stats.solvedPrevWeek },
+			nav: "posts",
 		},
 	];
 
@@ -700,8 +709,12 @@ export default function Overview() {
 			{/* ── Metric strip ─────────────────────────────────────────── */}
 			<div className="card overflow-hidden">
 				<div className="grid grid-cols-2 sm:grid-cols-4 xl:grid-cols-8 gap-px bg-border">
-					{METRICS.map(({ label, value, suffix, sub, icon: Icon, tone, trend, spark }) => (
-						<div key={label} className="px-3.5 py-3 min-w-0 bg-surface">
+					{METRICS.map(({ label, value, suffix, sub, icon: Icon, tone, trend, spark, nav }) => (
+						<div
+							key={label}
+							className={`px-3.5 py-3 min-w-0 bg-surface ${nav ? 'cursor-pointer hover:bg-surface2/60 transition-colors' : ''}`}
+							{...(nav ? { onClick: () => goto(nav), role: 'button' as const, tabIndex: 0, onKeyDown: (e: React.KeyboardEvent) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); goto(nav); } } } : {})}
+						>
 							<div className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-[0.08em] text-ink3">
 								<Icon size={11} className={tone ?? "text-ink3"} />
 								<span className="truncate">{label}</span>
@@ -844,7 +857,13 @@ export default function Overview() {
 											{i + 1}
 										</span>
 										<div className="flex-1 min-w-0">
-											<span className="font-medium truncate block group-hover:text-accent transition-colors text-[13px]">
+											<span
+												className="font-medium truncate block group-hover:text-accent transition-colors text-[13px] cursor-pointer"
+												onClick={() => window.dispatchEvent(new CustomEvent('vb:navigate', { detail: `/post/${p.id}` }))}
+												role="button"
+												tabIndex={0}
+												 onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); window.dispatchEvent(new CustomEvent('vb:navigate', { detail: `/post/${p.id}` })); } }}
+											>
 												{p.title}
 											</span>
 											<div className="h-1 rounded-full bg-surface2 overflow-hidden mt-1">
@@ -941,13 +960,13 @@ export default function Overview() {
 								</tr>
 							</thead>
 							<tbody>
-								{stats.recent.map((p) => (
-									<tr
-										key={p.id}
-										className="border-b border-border last:border-0 hover:bg-surface2/60 transition-colors"
-									>
+								{stats.recent.map((p) => (										<tr
+											key={p.id}
+											className="border-b border-border last:border-0 hover:bg-surface2/60 transition-colors cursor-pointer"
+											onClick={() => window.dispatchEvent(new CustomEvent('vb:navigate', { detail: `/post/${p.id}` }))}
+										>
 										<td className="px-4 py-2.5">
-											<span className="font-medium text-[13px] text-ink block truncate max-w-[26ch] sm:max-w-[36ch]">
+											<span className="font-medium text-[13px] text-accent block truncate max-w-[26ch] sm:max-w-[36ch]">
 												{p.title}
 											</span>
 											<span className="text-[10px] text-ink3 md:hidden">
@@ -1030,14 +1049,15 @@ export default function Overview() {
 						</div>
 					) : (
 						<div className="space-y-1.5">
-							{stats.emergency.slice(0, 8).map((p) => (
-								<div
-									key={p.id}
-									className="rounded-lg border border-red-500/25 bg-red-500/[0.05] px-3 py-2"
-								>											<div className="flex items-center gap-2">
-												<span className="text-xs text-ink2 truncate">
-													{p.title}
-												</span>
+							{stats.emergency.slice(0, 8).map((p) => (									<div
+										key={p.id}
+										className="rounded-lg border border-red-500/25 bg-red-500/[0.05] px-3 py-2 cursor-pointer hover:bg-red-500/10 transition-colors"
+										onClick={() => window.dispatchEvent(new CustomEvent('vb:navigate', { detail: `/post/${p.id}` }))}
+									>
+										<div className="flex items-center gap-2">
+											<span className="text-xs text-accent truncate font-medium">
+												{p.title}
+											</span>
 												<div className="ml-auto flex gap-1 shrink-0">
 													{p.status !== "solved" && (
 														<button
@@ -1421,20 +1441,31 @@ export default function Overview() {
 					<h2 className="font-display font-semibold text-sm mb-3">
 						Pipeline distribution
 					</h2>
-					<div className="flex h-3 rounded-full overflow-hidden bg-surface2">
-						{stats.statusDist
-							.filter((d) => d.n > 0)
-							.map((d) => (
-								<div
-									key={d.s}
-									className="h-full vb-bar-anim first:rounded-l-full last:rounded-r-full"
-									style={{
-										width: `${(d.n / Math.max(1, stats.problemsCount)) * 100}%`,
-										background: STATUS_META[d.s]?.color ?? "#888",
-									}}
-									title={`${STATUS_META[d.s]?.label ?? d.s}: ${d.n}`}
-								/>
-							))}
+					<div className="flex flex-col sm:flex-row items-center gap-4">
+						<div className="flex h-3 rounded-full overflow-hidden bg-surface2 flex-1 w-full">
+							{stats.statusDist
+								.filter((d) => d.n > 0)
+								.map((d) => (
+									<div
+										key={d.s}
+										className="h-full vb-bar-anim first:rounded-l-full last:rounded-r-full"
+										style={{
+											width: `${(d.n / Math.max(1, stats.problemsCount)) * 100}%`,
+											background: STATUS_META[d.s]?.color ?? "#888",
+										}}
+										title={`${STATUS_META[d.s]?.label ?? d.s}: ${d.n}`}
+									/>
+								))}
+						</div>
+						<div className="shrink-0">
+							<CircularProgress
+								value={stats.resolution}
+								size={80}
+								strokeWidth={6}
+								label="DONE"
+								sublabel={`${stats.resolution}%`}
+							/>
+						</div>
 					</div>
 					<div className="flex flex-wrap gap-x-3 gap-y-1 mt-3">
 						{stats.statusDist
@@ -1452,13 +1483,23 @@ export default function Overview() {
 								</span>
 							))}
 					</div>
-					<div className="mt-4 rounded-lg border border-border bg-bg/60 p-3 text-center">
-						<div className="font-display font-bold text-xl text-ink">
-							<CountUp value={stats.health} />
-						</div>
-						<div className="text-[10px] text-ink3 font-semibold tracking-wide">
-							COMMUNITY HEALTH
-						</div>
+					<div className="mt-4 rounded-lg border border-border bg-bg/60 p-4 flex flex-col items-center gap-2">
+						<CircularProgress
+							value={stats.health}
+							size={100}
+							strokeWidth={8}
+							label="HEALTH"
+							sublabel={
+								stats.health >= 70
+									? 'Excellent'
+									: stats.health >= 40
+										? 'Needs attention'
+										: 'Critical'
+							}
+						/>
+						<p className="text-[9px] text-ink3 text-center max-w-[200px]">
+							{stats.resolution}% resolved · {stats.avgSolve}d avg · {stats.engagement} engagements
+						</p>
 					</div>
 				</section>
 			</div>

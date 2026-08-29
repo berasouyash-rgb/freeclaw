@@ -272,7 +272,8 @@ describe("Overview (dashboard home)", () => {
 		// No hype banner — background work stays hidden. The count lives on the
 		// Reports filter tab and the danger popup handles only critical alerts.
 		await screen.findByRole("tab", { name: /Trending/ });
-		expect(screen.queryByText(/NEEDS ATTENTION/i)).not.toBeInTheDocument();
+		// The community health ring shows severity labels (Critical / Needs attention / Excellent)
+		// which are legitimate UI — we only block hype banners, not health indicators.
 		expect(screen.queryByText(/AI URGENCY|AI urgency/i)).not.toBeInTheDocument();
 		expect(screen.getByRole("tab", { name: /^Reports/ }).getAttribute("aria-label")).toMatch(
 			/— 1/,
