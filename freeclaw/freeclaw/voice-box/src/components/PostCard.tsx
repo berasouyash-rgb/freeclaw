@@ -31,7 +31,7 @@ import {
 } from "../lib/utils";
 import type { PollData, PostData, ReactionMeta } from "../types";
 import PollCard from "./PollCard";
-import { ReportDialog } from "./ui";
+import { ConfirmDialog, ReportDialog } from "./ui";
 
 export const REACTION_META: ReactionMeta[] = [
 	{
@@ -70,6 +70,12 @@ function PostCardInner({ post, myReactions, onReacted, pollData, myPollVote, onP
 	const [reportOpen, setReportOpen] = useState(false);
 	const [replyOpen, setReplyOpen] = useState(false);
 	const [replyText, setReplyText] = useState("");
+	const [confirmAction, setConfirmAction] = useState<{
+		label: string;
+		description: string;
+		fn: () => void;
+		danger?: boolean;
+	} | null>(null);
 	const [localCounts, setLocalCounts] = useState<Record<string, number> | null>(
 		null,
 	);
@@ -325,19 +331,23 @@ function PostCardInner({ post, myReactions, onReacted, pollData, myPollVote, onP
 								</button>
 							);
 						})}
-						<Link
-							to={`/post/${post.id}`}
-							data-tour="comments-link"								className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-semibold text-ink3 hover:text-accent transition-colors duration-200"
-						>
-							<MessageCircle
-								size={13}
-								className="transition-transform duration-200 hover:scale-110"
-							/>{" "}
-							{post.comment_count || 0}
-						</Link>
+					<Link
+						to={`/post/${post.id}`}
+						data-tour="comments-link"
+						aria-label={`${post.comment_count || 0} comments on ${post.title}`}
+						className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-semibold text-ink3 hover:text-accent transition-colors duration-200"
+					>
+						<MessageCircle
+							size={13}
+							className="transition-transform duration-200 hover:scale-110"
+						/>{" "}
+						{post.comment_count || 0}
+					</Link>
 						{post.linked_poll && (
 							<span
 								className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-semibold text-accent"
+								role="status"
+								aria-label={`Poll with ${post.linked_poll_votes ?? 0} votes`}
 								title="This post has a live poll — see below"
 							>
 								<BarChart3 size={13} /> Poll ·{" "}
@@ -427,8 +437,13 @@ function PostCardInner({ post, myReactions, onReacted, pollData, myPollVote, onP
 								<button
 									type="button"
 									disabled={!!busy}
-									onClick={() => adminSet({ status: "solved" })}
-									title="Mark solved"										className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-xs font-bold text-good bg-good/15 border border-good/30 transition-colors disabled:opacity-40"
+									onClick={() => setConfirmAction({
+										label: "Solve this issue?",
+										description: "This will mark the issue as solved and notify the community.",
+										fn: () => adminSet({ status: "solved" }),
+									})}
+									title="Mark solved"
+									className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-xs font-bold text-good bg-good/15 border border-good/30 transition-colors disabled:opacity-40"
 								>
 									<CheckCircle2 size={14} /> Solve
 								</button>
@@ -446,15 +461,22 @@ function PostCardInner({ post, myReactions, onReacted, pollData, myPollVote, onP
 						>
 							<Sparkles size={13} />
 							{post.official ? "Official" : "Mark official"}
-						</button>
-						<button
-							type="button"
+						</button>							<button
+								type="button"
 								disabled={!!busy}
-							onClick={() => adminSet({ hidden: !post.hidden })}
-							title={post.hidden ? "Unhide post" : "Hide post"}
-							className={`inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold transition-colors disabled:opacity-40 ${
+								onClick={() => setConfirmAction({
+									label: post.hidden ? "Unhide this post?" : "Hide this post?",
+									description: post.hidden
+										? "This will make the post visible to all users again."
+										: "This will hide the post from all non-admin users.",
+									fn: () => adminSet({ hidden: !post.hidden }),
+									danger: !post.hidden,
+								})}
+								title={post.hidden ? "Unhide post" : "Hide post"}
+								className={`inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold transition-colors disabled:opacity-40 ${
 								post.hidden
-									? "text-red-400 bg-red-500/15 border border-red-500/30"										: "text-red-400 bg-red-500/5 border border-red-500/20"
+									? "text-red-400 bg-red-500/15 border border-red-500/30"
+									: "text-red-400 bg-red-500/5 border border-red-500/20"
 							}`}
 						>
 							<EyeOff size={13} /> {post.hidden ? "Unhide" : "Hide"}
@@ -497,6 +519,21 @@ function PostCardInner({ post, myReactions, onReacted, pollData, myPollVote, onP
 			{/* Report from the feed — same flow as the detail page: sends author_id
           (the API rejects reports without it), surfaces failures honestly,
           and the API auto-strikes the target author + pushes the warning popup. */}
+			{confirmAction && (
+				<ConfirmDialog
+					open
+					onClose={() => setConfirmAction(null)}
+					onConfirm={() => {
+						confirmAction.fn();
+						setConfirmAction(null);
+					}}
+					title={confirmAction.label}
+					message={confirmAction.description}
+					confirmLabel={confirmAction.label.split("?")[0]}
+					danger={confirmAction.danger}
+				/>
+			)}
+
 			<ReportDialog
 				open={reportOpen}
 				onClose={() => setReportOpen(false)}

@@ -213,7 +213,10 @@ const PollCard = memo(function PollCard({
 					)}
 					{expired && !p.archived && (
 						<span className="chip !text-warn">
-							<Clock size={11} /> Ended
+							<Clock size={11} /> Ended{p.expires_at ? (() => {
+								const daysLeft = Math.max(0, Math.ceil((7 * 86400000 - (Date.now() - new Date(p.expires_at).getTime())) / 86400000));
+								return daysLeft > 0 ? ` · results ${daysLeft}d` : '';
+							})() : ''}
 						</span>
 					)}
 					{p.expires_at && !expired && countdown && (
@@ -280,14 +283,22 @@ const PollCard = memo(function PollCard({
 				})}
 			</div>
 			<div className="flex items-center justify-between mt-3">
-				<span className="text-xs text-ink3">
-					{total} vote{total !== 1 ? "s" : ""} ·{" "}
-					{p.ptype === "multi"
-						? "multiple choice"
-						: p.ptype === "yesno"
-							? "yes / no"
-							: "single choice"}
-				</span>
+				<div className="flex items-center gap-2">
+					<span className="text-xs text-ink3">
+						{total} vote{total !== 1 ? "s" : ""} ·{" "}
+						{p.ptype === "multi"
+							? "multiple choice"
+							: p.ptype === "yesno"
+								? "yes / no"
+								: "single choice"}
+					</span>
+					{!closed && !voted && (
+						<span className="text-[10px] text-ink3 italic">Not voted yet</span>
+					)}
+					{!closed && voted && !changingVote && (
+						<span className="text-[10px] text-accent font-medium">You voted</span>
+					)}
+				</div>
 				<div className="flex items-center gap-1.5">
 					{isOwner && (
 						<button
@@ -439,8 +450,10 @@ const PollCard = memo(function PollCard({
 
 export default PollCard;
 
-/** One-line AI insight, fetched lazily on demand */
-function PollInsight({ poll }: { poll: PollData }) {
+/** One-line AI insight, fetched lazily on demand — memoized to avoid
+    re-fetching the AI endpoint on every parent render (the feed polls
+    on realtime events). */
+const PollInsight = memo(function PollInsight({ poll }: { poll: PollData }) {
 	const [insight, setInsight] = useState<string | null>(null);
 	const [loading, setLoading] = useState(false);
 
@@ -487,4 +500,4 @@ function PollInsight({ poll }: { poll: PollData }) {
 			{loading ? "Analyzing results…" : "Get AI insight on results"}
 		</button>
 	);
-}
+});
