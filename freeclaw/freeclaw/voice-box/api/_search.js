@@ -111,8 +111,14 @@ export default async function handler(req, res) {
 		if (!q && type === "all") {
 			return res.status(200).json({ results: [], total: 0, query: "" });
 		}
-		// FIX-M3: enforce minimum query length of 3 characters
-		if (q && q.length < 3)
+		// Allow 2-char queries for exact ID matches (comment/post IDs like 'abc123')
+		// but require >= 3 chars for text search to avoid noise
+		const isExactId = /^[a-z0-9_-]{2,}$/i.test(q);
+		if (q && q.length < 2)
+			return res
+				.status(400)
+				.json({ error: "Query must be at least 2 characters" });
+		if (q && q.length < 3 && !isExactId)
 			return res
 				.status(400)
 				.json({ error: "Query must be at least 3 characters" });
@@ -154,8 +160,11 @@ export default async function handler(req, res) {
 				const titleMatch = words.some((w) => titleLower.includes(w));
 				const descMatch = words.some((w) => descLower.includes(w));
 				const tagMatch = words.some((w) => tagsStr.includes(w));
-				const score =
-					(titleMatch ? 3 : 0) + (descMatch ? 1 : 0) + (tagMatch ? 2 : 0);
+				// Exact ID match gets highest priority
+				const exactIdMatch = q && p.id && p.id.toLowerCase().includes(q.toLowerCase());
+				const score = exactIdMatch
+					? 100
+					: (titleMatch ? 3 : 0) + (descMatch ? 1 : 0) + (tagMatch ? 2 : 0);
 				results.push({
 					type: "post",
 					id: p.id,
@@ -175,6 +184,7 @@ export default async function handler(req, res) {
 		if (rows.comments) {
 			rows.comments.forEach((c) => {
 				if (isTestArtifact(c.body)) return;
+				const exactIdMatch = q && c.id && c.id.toLowerCase().includes(q.toLowerCase());
 				results.push({
 					type: "comment",
 					id: c.id,
@@ -182,7 +192,7 @@ export default async function handler(req, res) {
 					body: (c.body || "").slice(0, 200),
 					author_id: maskAuthor(c.author_id),
 					created_at: c.created_at,
-					relevance_score: 1,
+					relevance_score: exactIdMatch ? 100 : 1,
 				});
 			});
 		}

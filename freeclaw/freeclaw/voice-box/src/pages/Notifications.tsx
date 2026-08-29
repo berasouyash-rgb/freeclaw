@@ -65,9 +65,21 @@ export default function Notifications() {
 		let list = [...notifications];
 		if (filter !== "all") list = list.filter((n) => n.kind === filter);
 		if (showUnreadOnly) list = list.filter((n) => !n.read);
-		return list.sort(
+		const sorted = list.sort(
 			(a, b) => new Date(b.at).getTime() - new Date(a.at).getTime(),
 		);
+		// Group consecutive notifications with same kind + link (e.g. multiple comments on same post)
+		const grouped: (typeof sorted[0] & { _count?: number; _latest?: string })[] = [];
+		for (const n of sorted) {
+			const last = grouped[grouped.length - 1];
+			if (last && last.kind === n.kind && last.link === n.link && last.body !== n.body) {
+				last._count = (last._count || 1) + 1;
+				last._latest = n.at; // keep the newest timestamp
+			} else {
+				grouped.push({ ...n });
+			}
+		}
+		return grouped;
 	}, [notifications, filter, showUnreadOnly]);
 
 	const unreadCount = notifications.filter((n) => !n.read).length;
@@ -177,17 +189,23 @@ export default function Notifications() {
 						>
 							<div className={`mt-0.5 ${meta.color}`}>
 								<Icon size={16} />
-							</div>
-							<div className="flex-1 min-w-0">
-								<p className="text-sm font-medium">{n.title}</p>
-								<p className="text-xs text-ink3 truncate mt-0.5">{n.body}</p>
-							</div>
-							<div className="flex items-center gap-2 shrink-0">
-								{!n.read && <span className="w-2 h-2 rounded-full bg-accent" />}
-								<span className="text-[10px] text-ink3 flex items-center gap-1">
-									<Clock size={10} /> {timeAgo(n.at)}
-								</span>
-							</div>
+							</div>								<div className="flex-1 min-w-0">
+									<p className="text-sm font-medium">
+										{n.title}
+										{(n._count ?? 0) > 1 && (
+											<span className="ml-1.5 text-[10px] font-semibold bg-accent/10 text-accent rounded-full px-1.5 py-0.5">
+												×{n._count}
+											</span>
+										)}
+									</p>
+									<p className="text-xs text-ink3 truncate mt-0.5">{n.body}</p>
+								</div>
+								<div className="flex items-center gap-2 shrink-0">
+									{!n.read && <span className="w-2 h-2 rounded-full bg-accent" />}
+									<span className="text-[10px] text-ink3 flex items-center gap-1">
+										<Clock size={10} /> {timeAgo(n._latest || n.at)}
+									</span>
+								</div>
 						</Link>
 					);
 				})}
