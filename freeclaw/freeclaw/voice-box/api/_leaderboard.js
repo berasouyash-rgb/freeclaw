@@ -131,19 +131,84 @@ export default async function handler(req, res) {
 			(counts?.concerned || 0) +
 			(counts?.frustrated || 0);
 
+		// ── Multi-factor leaderboard scoring ──────────────────────────
+		// Instead of raw support count, use a weighted composite:
+		//   Quality = support × 3 + comments × 2.5 + resolution_bonus
+		//   Freshness = log(1 + hours_since_post) / 48
+		//   Participation = diversity of engagement types
+		//   Score = quality × freshness_factor + resolution_bonus
+		const fetchCommentCounts = async (ids) => {
+			const counts = {};
+			if (!ids.length) return counts;
+			try {
+				const { data } = await supabase
+					.from("comments")
+					.select("post_id")
+					.in("post_id", ids)
+					.eq("deleted", false);
+				(data || []).forEach((c) => {
+					counts[c.post_id] = (counts[c.post_id] || 0) + 1;
+				});
+			} catch { /* non-fatal */ }
+			return counts;
+		};
+
+		const computeScore = (item, commentCount, totalReactions) => {
+			const support = totalReactions;
+			const comments = commentCount || 0;
+			const hours = Math.max(0.1, (Date.now() - new Date(item.created_at).getTime()) / 3600000);
+			const isSolved = item.status === "solved";
+
+			// Quality: weighted engagement
+			const quality = support * 3 + comments * 2.5;
+
+			// Freshness: log-compressed time decay (not harsh — rewards sustained engagement)
+			const freshness = Math.log(1 + hours / 24) / 2;
+
+			// Resolution bonus: solved posts get a 20% boost
+			const resolutionBonus = isSolved ? 1.2 : 1;
+
+			// Discussion depth: posts with comments are more valuable than reaction-only
+			const depthFactor = comments > 3 ? 1.15 : comments > 0 ? 1.05 : 1;
+
+			const score = Math.round((quality + freshness) * resolutionBonus * depthFactor);
+
+			return {
+				score,
+				breakdown: {
+					support: support * 3,
+					comments: comments * 2.5,
+					freshness: Math.round(freshness * 10) / 10,
+					resolution: isSolved ? "+20%" : "—",
+					depth: depthFactor > 1 ? "+" + Math.round((depthFactor - 1) * 100) + "%" : "—",
+				},
+			};
+		};
+
 		// Full ranked lists (no hide_empty filter, no cap) — the source of truth
 		// for BOTH the visible per-section lists AND the merged board. Pinned ids
 		// resolve against these full lists so a pin can never silently no-op just
 		// because the item ranks below the page cap or has zero support.
+		// Fetch comment counts for all posts to enable discussion depth scoring
+		const commentCounts = await fetchCommentCounts(allPostIds);
+
 		const allProblems = (problems || [])
-			.map((p) => ({ ...p, support: supportOf(reactMap[p.id]) }))
+			.map((p) => {
+				const support = supportOf(reactMap[p.id]);
+				const { score, breakdown } = computeScore(p, commentCounts[p.id], support);
+				return { ...p, support, score, breakdown };
+			})
 			.filter((p) => !isTestArtifact(p.title))
-			.sort((a, b) => b.support - a.support);
+			.sort((a, b) => (b.score || 0) - (a.score || 0));
 
 		const allSuggestions = (suggestions || [])
-			.map((s) => ({ ...s, support: reactMap[s.id]?.upvote || 0 }))
+			.map((s) => {
+				const support = reactMap[s.id]?.upvote || 0;
+				const { score, breakdown } = computeScore(s, commentCounts[s.id], support);
+				return { ...s, support, score, breakdown };
+			})
 			.filter((s) => !isTestArtifact(s.title))
-			.sort((a, b) => b.support - a.support);
+			.sort((a, b) => (b.score || 0) - (a.score || 0));
 
 		const rankedProblems = allProblems
 			.filter((p) => (cfg.hide_empty ? p.support > 0 : true))
@@ -234,7 +299,8 @@ export default async function handler(req, res) {
 			type,
 			id: r.id,
 			title: r.title,
-			score: r.support,
+			score: r.score || r.support,
+			breakdown: r.breakdown,
 			category: r.category,
 			status: r.status,
 			at: r.created_at,

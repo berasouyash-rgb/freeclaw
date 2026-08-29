@@ -22,6 +22,13 @@ interface RankedItem {
 	support?: number;
 	votes?: number;
 	score?: number;
+	breakdown?: {
+		support: number;
+		comments: number;
+		freshness: number;
+		resolution: string;
+		depth: string;
+	};
 	created_at?: string;
 	type?: string;
 }
@@ -86,17 +93,25 @@ function RankRow({ item, rank }: { item: RankedItem; rank: number }) {
 					{item.created_at && <span>· {timeAgo(item.created_at)}</span>}
 				</p>
 			</div>
-			<div className="text-right shrink-0">
-				<p
-					className="font-display font-bold text-lg leading-none"
-					style={{ color: meta.color }}
-				>
-					{score}
-				</p>
-				<p className="text-[9px] text-ink3 uppercase tracking-wider">
-					{isClosed ? "final" : "supports"}
-				</p>
-			</div>
+		<div className="text-right shrink-0">
+			<p
+				className="font-display font-bold text-lg leading-none"
+				style={{ color: meta.color }}
+			>
+				{score}
+			</p>
+			<p className="text-[9px] text-ink3 uppercase tracking-wider">
+				{isClosed ? "final" : "score"}
+			</p>
+			{item.breakdown && (
+				<div className="hidden sm:block text-[8px] text-ink3 mt-1 space-y-0.5">
+					{item.breakdown.support > 0 && <div>Support: {item.breakdown.support}</div>}
+					{item.breakdown.comments > 0 && <div>Comments: {item.breakdown.comments}</div>}
+					{item.breakdown.resolution !== "—" && <div>Resolution: {item.breakdown.resolution}</div>}
+					{item.breakdown.depth !== "—" && <div>Depth: {item.breakdown.depth}</div>}
+				</div>
+			)}
+		</div>
 			<ArrowUpRight size={14} className="text-ink3/40 shrink-0" />
 		</Link>
 	);
