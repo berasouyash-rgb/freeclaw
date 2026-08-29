@@ -56,6 +56,8 @@ export function registerWorker(spec) {
 		tools: [],
 		rollback_strategy: null,
 		success_metric: null,
+		version: spec.version || "1.0.0",
+		shadow_mode: spec.shadow_mode || false,
 		...spec,
 	});
 }
@@ -176,8 +178,32 @@ export async function runWorker(workerId, trigger = "cron") {
 			return row;
 		}
 
-		// OBSERVE + COLLECT EVIDENCE
+	// SHADOW MODE — if worker is in shadow mode, observe + analyze + propose
+	// but NEVER execute. Record the proposed action for evaluation.
+	if (spec.shadow_mode) {
 		const evidence = await spec.observe();
+		row.evidence = evidence && typeof evidence === 'object'
+			? JSON.parse(JSON.stringify(evidence)).summary ?? 'collected'
+			: null;
+		if (!evidence || evidence.empty) {
+			row.outcome = 'skipped';
+			row.completed_at = new Date().toISOString();
+			row.duration_ms = Date.now() - t0;
+			await ledgerAppend(row);
+			return row;
+		}
+		const dec = await spec.analyze(evidence);
+		row.decision = `[SHADOW] ${dec.decision}: ${dec.reason || ''}`.slice(0, 300);
+		row.action_type = 'shadow_proposal';
+		row.outcome = 'skipped';
+		row.completed_at = new Date().toISOString();
+		row.duration_ms = Date.now() - t0;
+		await ledgerAppend(row);
+		return row;
+	}
+
+	// OBSERVE + COLLECT EVIDENCE
+	const evidence = await spec.observe();
 		row.evidence =
 			evidence && typeof evidence === "object"
 				? JSON.parse(JSON.stringify(evidence)).summary ?? "collected"
@@ -244,6 +270,17 @@ export async function runWorker(workerId, trigger = "cron") {
 		// VERIFY
 		const verdict = await spec.verify(execRes);
 		row.verification = verdict?.proof ? String(verdict.proof).slice(0, 300) : null;
+
+		// AUTOMATIC ROLLBACK — if verify fails and rollback_strategy exists,
+		// restore the previous known-good state before marking as failure.
+		if (!verdict?.ok && typeof spec.rollback_strategy === "function") {
+			try {
+				await spec.rollback_strategy(execRes);
+				row.verification += " [rolled back]";
+			} catch (rbErr) {
+				row.verification += ` [rollback failed: ${String(rbErr?.message || rbErr).slice(0, 100)}]`;
+			}
+		}
 
 		// MEASURE (only if worker actually measures)
 		if (typeof spec.measure === "function") {
