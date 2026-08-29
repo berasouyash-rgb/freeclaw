@@ -7,10 +7,9 @@ import {
 	Sparkles,
 	Trash2,
 } from "lucide-react";
-import { memo, useEffect, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { useApp } from "../contexts/AppContext";
 import { api } from "../lib/api";
-import { timeAgo } from "../lib/utils";
 import type { PollData } from "../types";
 import { ConfirmDialog } from "./ui";
 
@@ -65,6 +64,26 @@ const PollCard = memo(function PollCard({
 	const closed = expired || p.archived;
 	const total = p.total_votes || 0;
 	const showResults = (voted && !changingVote) || closed;
+
+	// Live countdown — tick every second so the timer updates in real time
+	const [now, setNow] = useState(() => Date.now());
+	useEffect(() => {
+		if (!p.expires_at || expired) return;
+		const id = setInterval(() => setNow(Date.now()), 1000);
+		return () => clearInterval(id);
+	}, [p.expires_at, expired]);
+	const countdown = useMemo(() => {
+		if (!p.expires_at) return null;
+		const diff = +new Date(p.expires_at) - now;
+		if (diff <= 0) return null;
+		const d = Math.floor(diff / 86400000);
+		const h = Math.floor((diff % 86400000) / 3600000);
+		const m = Math.floor((diff % 3600000) / 60000);
+		const s = Math.floor((diff % 60000) / 1000);
+		if (d > 0) return `${d}d ${h}h ${m}m`;
+		if (h > 0) return `${h}h ${m}m ${s}s`;
+		return `${m}m ${s}s`;
+	}, [p.expires_at, now]);
 
 	// Feed "liked" state sync — the card is memoized and often reused without a
 	// remount (route reuse, realtime refetch, PostDetail fetch cycles), so the
@@ -193,10 +212,9 @@ const PollCard = memo(function PollCard({
 							<Clock size={11} /> Ended
 						</span>
 					)}
-					{p.expires_at && !expired && (
+					{p.expires_at && !expired && countdown && (
 						<span className="chip">
-							<Clock size={11} /> ends{" "}
-							{timeAgo(p.expires_at).replace(" ago", "")}
+							<Clock size={11} /> ends in {countdown}
 						</span>
 					)}
 				</div>
