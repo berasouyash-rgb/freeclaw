@@ -20,6 +20,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router";
 import CountUp from "../components/CountUp";
 import GlowButton from "../components/GlowButton";
+import GridPattern from "../components/ui/grid-pattern";
+import ShimmerButton from "../components/ui/shimmer-button";
+import BorderBeam from "../components/ui/border-beam";
 import PostCard from "../components/PostCard";
 import RecapCard from "../components/RecapCard";
 import Trend, { Sparkline } from "../components/Trend";
@@ -149,9 +152,49 @@ export default function Home() {
 		if (posts.length) fetchPolls(posts);
 	}, [posts, fetchPolls]);
 
-	// 🔴 Realtime: posts, votes and comment counts update live for everyone
-	useRealtime(["posts", "reactions", "comments", "polls", "poll_votes"], () =>
-		load(true),
+	// 🔴 Realtime: posts, votes and comment counts update live for everyone.
+	// Throttled to max full reload once per 12 s so the feed never reorders
+	// under the user's finger — reaction/comment events from OTHER users are
+	// common and a full reload each time causes irritating scroll jumps.
+	const lastFullReloadRef = useRef(0);
+	const pendingRef = useRef(false);
+	useRealtime(
+		["posts", "reactions", "comments", "polls", "poll_votes"],
+		(table: string) => {
+			const now = Date.now();
+			const THROTTLE_MS = 12_000;
+			// For reactions/comments-only changes, do a lightweight targeted
+			// update: just re-fetch reactions (cheap) without reloading the
+			// entire post list.
+			if (table === "reactions" || table === "comments") {
+				if (now - lastFullReloadRef.current < THROTTLE_MS) {
+					// Lightweight: only refresh the current user's reaction map.
+					api
+						.get<ReactionEntry[]>(`/api/reactions?author=${anonId}`)
+						.then((rs) => {
+							const map: Record<string, string[]> = {};
+							rs.forEach((r) => {
+								map[r.target_id] = [
+									...(map[r.target_id] || []),
+									r.kind,
+								];
+							});
+							setMyReactions(map);
+						})
+						.catch(() => {});
+					return;
+				}
+			}
+			// For post/poll/vote changes or after throttle window: full reload.
+			if (now - lastFullReloadRef.current < THROTTLE_MS) return;
+			if (pendingRef.current) return;
+			pendingRef.current = true;
+			lastFullReloadRef.current = now;
+			load(true).then(() => {
+				pendingRef.current = false;
+			});
+		},
+		1500, // longer debounce for the batch
 	);
 
 	// Reset visible count when filters change so user doesn't see stale page
@@ -244,14 +287,21 @@ export default function Home() {
 
 			{/* Hero — animated gradient, premium feel */}
 			<section
-				className="card !border-transparent mb-6 relative overflow-hidden vb-rise hero-gradient"
+				className="card !border-transparent mb-6 relative overflow-hidden vb-rise hero-gradient group"
 				style={{ color: "#ffffff" }}
 			>
+				<GridPattern
+					cellWidth={48}
+					cellHeight={48}
+					gap={8}
+					className="text-white"
+				/>
 				<div
 					className="absolute -right-10 -top-10 w-52 h-52 rounded-full"
 					style={{ background: "rgba(255,255,255,0.09)", filter: "blur(28px)" }}
 					aria-hidden
 				/>
+				<BorderBeam duration={12} size={200} colorFrom="rgba(255,255,255,0.3)" colorTo="rgba(255,255,255,0)" />
 				<img
 					src="/hero-art.png"
 					alt=""
@@ -285,13 +335,14 @@ export default function Home() {
 						share ideas, vote in polls.
 					</p>
 					<div className="flex flex-wrap gap-2 mt-4">
-						<Link
-							to="/submit"
-							data-tour="submit"
-							className="btn"
-							style={{ background: "#ffffff", color: "#5652d6" }}
-						>
-							<PlusCircle size={15} /> Report a problem
+						<Link to="/submit" data-tour="submit">
+							<ShimmerButton
+								shimmerColor="rgba(255,255,255,0.6)"
+								background="rgba(255,255,255,0.95)"
+								className="!text-indigo-600 !font-semibold"
+							>
+								<PlusCircle size={15} /> Report a problem
+							</ShimmerButton>
 						</Link>
 						<Link
 							to="/board"
