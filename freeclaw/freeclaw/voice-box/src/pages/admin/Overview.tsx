@@ -201,6 +201,20 @@ export default function Overview() {
 	const [lastUpdate, setLastUpdate] = useState<string | null>(null);
 	const [loading, setLoading] = useState(true);
 
+	// ─── System health indicators ──────────────────────────────────
+	const [sysHealth, setSysHealth] = useState<{
+		db: 'ok' | 'slow' | 'down';
+		api: 'ok' | 'slow' | 'down';
+		cache: 'ok' | 'stale' | 'down';
+		realtime: 'ok' | 'reconnecting' | 'down';
+	} | null>(null);
+	const [agentActivity, setAgentActivity] = useState<{
+		worker: string;
+		action: string;
+		at: string;
+		impact?: string;
+	}[]>([]);
+
 	// ─── Live data ─────────────────────────────────────────────────
 	// Light content on mount (skeleton), then realtime + visibility poll.
 	// The ops-summary (alerts) is a heavier endpoint — polled separately.
@@ -256,6 +270,26 @@ export default function Overview() {
 		void loadAlerts();
 	}, [loadAll, loadAlerts]);
 
+	// Load system health and agent activity from workforce endpoint
+	const loadSystemHealth = useCallback(async () => {
+		try {
+			const r = await api.getSlow<{ health?: Record<string, string>; recent?: { worker: string; action: string; at: string; impact?: string }[] }>(
+				`/api/workforce?action=ops-summary&_=${Date.now()}`
+			);
+			if (r?.health) {
+				setSysHealth({
+					db: (r.health.db as 'ok' | 'slow' | 'down') || 'ok',
+					api: (r.health.api as 'ok' | 'slow' | 'down') || 'ok',
+					cache: (r.health.cache as 'ok' | 'stale' | 'down') || 'ok',
+					realtime: (r.health.realtime as 'ok' | 'reconnecting' | 'down') || 'ok',
+				});
+			}
+			if (r?.recent) setAgentActivity(r.recent.slice(0, 6));
+		} catch { /* best-effort */ }
+	}, []);
+
+	useEffect(() => { void loadSystemHealth(); }, [loadSystemHealth]);
+
 	// Live updates: new posts/comments/reports/polls refresh content without
 	// a manual reload (mirrors ContentReview/Home realtime idiom).
 	useRealtime(
@@ -279,6 +313,7 @@ export default function Overview() {
 			if (document.hidden) return;
 			loadAll(true);
 			loadAlerts();
+			loadSystemHealth();
 		}, 30000);
 		const onVis = () => {
 			if (!document.hidden) {
@@ -1431,6 +1466,88 @@ export default function Overview() {
 							<p className="text-xs text-ink3">No data yet</p>
 						)}
 					</div>
+				</section>
+			</div>
+
+			{/* ── System Health + Agent Activity ───────────────────────── */}
+			<div className="grid lg:grid-cols-2 gap-4">
+				{/* System health indicators */}
+				<section className="card p-4">
+					<h2 className="font-display font-semibold text-sm mb-3">
+						System Health
+					</h2>
+					{sysHealth ? (
+						<div className="grid grid-cols-2 gap-2">
+							{([
+								{ key: 'db', label: 'Database', icon: '🗄️', status: sysHealth.db },
+								{ key: 'api', label: 'API Layer', icon: '⚡', status: sysHealth.api },
+								{ key: 'cache', label: 'Cache', icon: '💾', status: sysHealth.cache },
+								{ key: 'realtime', label: 'Realtime', icon: '📡', status: sysHealth.realtime },
+							] as const).map(({ key, label, icon, status }) => (
+								<div key={key} className="rounded-lg border border-border bg-bg/60 px-3 py-2 flex items-center gap-2">
+									<span className="text-sm">{icon}</span>
+									<div className="flex-1 min-w-0">
+										<p className="text-[11px] font-medium text-ink2 truncate">{label}</p>
+										<p className="text-[9px] text-ink3 flex items-center gap-1">
+											<span className={`w-1.5 h-1.5 rounded-full ${status === 'ok' ? 'bg-good' : status === 'slow' || status === 'stale' || status === 'reconnecting' ? 'bg-warn' : 'bg-bad'}`} />
+											{status === 'ok' ? 'Healthy' : status === 'slow' ? 'Slow' : status === 'stale' ? 'Stale' : status === 'reconnecting' ? 'Reconnecting' : 'Down'}
+										</p>
+								</div>
+							</div>
+						))}
+						</div>
+					) : (
+						<div className="grid grid-cols-2 gap-2">
+							{['Database', 'API Layer', 'Cache', 'Realtime'].map((label) => (
+								<div key={label} className="rounded-lg border border-border bg-bg/60 px-3 py-2">
+									<p className="text-[11px] font-medium text-ink2">{label}</p>
+									<p className="text-[9px] text-ink3">Loading…</p>
+								</div>
+							))}
+						</div>
+					)}
+				</section>
+
+				{/* Recent agent activity feed */}
+				<section className="card p-4">
+					<header className="flex items-center justify-between mb-3">
+						<h2 className="font-display font-semibold text-sm">
+							Agent Activity
+						</h2>
+						<button
+							className="btn btn-ghost !py-1 !px-2 !text-[11px]"
+							onClick={() => goto('ai-operations')}
+						>
+							View all <ArrowUpRight size={11} />
+						</button>
+					</header>
+					{agentActivity.length > 0 ? (
+						<div className="space-y-1.5">
+							{agentActivity.map((a, i) => (
+								<div
+									key={`${a.worker}-${i}`}
+									className="rounded-lg border border-border bg-bg/60 px-3 py-2 flex items-center gap-2"
+								>
+									<span className="w-1.5 h-1.5 rounded-full bg-good shrink-0" />
+									<div className="flex-1 min-w-0">
+										<p className="text-[11px] font-medium text-ink2 truncate">
+											{a.worker}
+									</p>
+										<p className="text-[9px] text-ink3 truncate">
+											{a.action}{a.impact ? ` · ${a.impact}` : ''}
+										</p>
+									</div>
+									<span className="text-[9px] text-ink3 shrink-0">
+										{timeAgo(a.at)}
+									</span>
+								</div>
+							))}
+						</div>
+					) : (
+						<div className="rounded-lg border border-dashed border-border px-4 py-6 text-center text-xs text-ink3">
+							No recent agent activity — workers appear here after their next run.
+						</div>
+					)}
 				</section>
 			</div>
 
