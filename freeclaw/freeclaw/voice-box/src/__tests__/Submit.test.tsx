@@ -177,3 +177,59 @@ describe("Submit — publish payload integrity", () => {
 		);
 	});
 });
+
+describe("Submit — poll link selector", () => {
+	it("only shows the current user's own posts in the link dropdown", async () => {
+		// Mock API to return posts from different authors
+		mocks.get.mockImplementation((url: string) => {
+			if (String(url).includes("/api/posts")) {
+				return Promise.resolve([
+					{
+						id: "my-post-1",
+						title: "My broken lift",
+						author_id: "anon-test",
+						status: "open",
+						type: "problem",
+					},
+					{
+						id: "other-post-1",
+						title: "Someone else's complaint",
+						author_id: "anon-other",
+						status: "open",
+						type: "problem",
+					},
+					{
+						id: "my-post-2",
+						title: "Another one of mine",
+						author_id: "anon-test",
+						status: "open",
+						type: "problem",
+					},
+				]);
+			}
+			if (String(url).includes("/api/categories")) {
+				return Promise.resolve([]);
+			}
+			return Promise.resolve([]);
+		});
+
+		// Start on the poll tab
+		render(
+			<MemoryRouter initialEntries={["/submit?type=poll"]}>
+				<Submit />
+			</MemoryRouter>,
+		);
+
+		// Wait for the link dropdown to populate
+		await waitFor(() => {
+			expect(screen.getByText(/My broken lift/)).toBeInTheDocument();
+		});
+
+		// The other user's post should NOT appear
+		expect(screen.queryByText(/Someone else's complaint/)).toBeNull();
+
+		// Both of the user's posts should appear
+		expect(screen.getByText(/My broken lift/)).toBeInTheDocument();
+		expect(screen.getByText(/Another one of mine/)).toBeInTheDocument();
+	});
+});
