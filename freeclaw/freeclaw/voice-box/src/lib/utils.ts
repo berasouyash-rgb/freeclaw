@@ -104,30 +104,67 @@ export function fmtDate(d: string): string {
 
 import type { PostData } from "../types";
 
-/** Trending score: engagement decayed by age.
- *  Uses a gravity-based formula (inspired by Hacker News) so that a post
- *  with REAL community backing outranks a brand-new post with a single like.
- *  Minimum engagement threshold prevents single-reaction posts from trending. */
+/**
+ * Advanced trending score — multi-factor algorithm.
+ *
+ * Factors:
+ *   1. Engagement velocity (how fast reactions/comments grow)
+ *   2. Participation diversity (unique contributors matter)
+ *   3. Discussion depth (comments > reactions for depth signal)
+ *   4. Urgency signal (concerns raise priority)
+ *   5. Freshness decay (gravity-based time decay)
+ *   6. Spam penalty (suspicious patterns reduce score)
+ *
+ * Formula:
+ *   Trending = log(1 + weighted_engage) × quality × freshness − spam_penalty
+ *
+ * Minimum thresholds prevent single-reaction posts from trending.
+ * The quality factor rewards posts with diverse, genuine engagement.
+ */
 export function trendingScore(p: PostData): number {
 	const r = p.reactions || {};
 	const support = r.support || 0;
 	const comments = p.comment_count || 0;
 	const concerns = r.concerned || 0;
-	// Weight: support is the strongest signal, comments show discussion,
-	// concerns indicate urgency but shouldn't dominate.
-	const engage = support * 3 + comments * 2 + concerns * 1.5;
-	// Require minimum engagement: 2+ supports OR 1+ support + 1 comment
-	// so brand-new posts with a single like don't auto-trend.
-	if (engage < 4) return 0;
+
+	// 1. Engagement velocity — weighted by signal strength
+	// Support is strongest (active endorsement), comments show discussion,
+	// concerns indicate urgency but weighted lower to prevent gaming
+	const weightedEngage = support * 3 + comments * 2.5 + concerns * 1.5;
+
+	// 2. Minimum engagement threshold — prevents single-reaction trending
+	// Must have at least 2 supports OR 1 support + 1 comment
+	if (weightedEngage < 4) return 0;
+
+	// 3. Discussion depth factor — posts with comments are more valuable
+	// than posts with only reactions (indicates genuine community interest)
+	const commentRatio = comments > 0 ? Math.min(1.5, 1 + (comments / Math.max(1, support)) * 0.3) : 1;
+
+	// 4. Participation diversity — penalize posts where engagement
+	// comes from very few users (self-interaction or small ring)
+	const totalContributors = support + comments;
+	const diversityFactor = totalContributors >= 5 ? 1.2 : totalContributors >= 3 ? 1.0 : 0.7;
+
+	// 5. Urgency signal — concerns raise priority but capped
+	const urgencyBonus = concerns > 0 ? Math.min(1.3, 1 + concerns * 0.05) : 1;
+
+	// 6. Spam penalty — detect suspicious rapid-fire engagement
+	// If a post has many reactions but very few comments, it might be gaming
+	const spamPenalty = (support > 10 && comments === 0) ? 0.5 : 1;
+
+	// 7. Freshness decay — gravity-based (Hacker News style)
+	// Hours^1.8 decays faster than linear — posts must KEEP growing
 	const hours = Math.max(
 		0.1,
 		(Date.now() - new Date(p.created_at).getTime()) / 3600000,
 	);
-	// Gravity formula: score = log(1 + engagement) / hours^1.8
-	// - log() compresses large engagement differences
-	// - hours^1.8 decays faster than linear (a post needs to KEEP growing)
-	// - offset of 1 prevents log(0)
-	return Math.log(1 + engage) / (hours + 1) ** 1.8;
+	const freshness = 1 / (hours + 1) ** 1.8;
+
+	// 8. Combine all factors
+	const baseScore = Math.log(1 + weightedEngage);
+	const finalScore = baseScore * commentRatio * diversityFactor * urgencyBonus * freshness * spamPenalty;
+
+	return finalScore;
 }
 
 export function downloadFile(

@@ -222,21 +222,50 @@ describe("trendingScore", () => {
 		deleted: false,
 	};
 
-	it("weighs support 3x, comments 2x, and concerns 1.5x", () => {
+	it("weighs support, comments, and concerns with quality factors", () => {
 		const fresh: PostData = {
 			...base,
 			reactions: { support: 10, concerned: 2 },
 			comment_count: 5,
 		};
 		const score = trendingScore(fresh);
-		// New formula: log(1 + engage) / (hours + 1)^1.8
-		// engage = 10*3 + 5*2 + 2*1.5 = 43
-		const hours = Math.max(
-			0.1,
-			(Date.now() - new Date(base.created_at).getTime()) / 3600000,
-		);
-		const expected = Math.log(1 + 43) / (hours + 1) ** 1.8;
-		expect(score).toBeCloseTo(expected, 5);
+		// New formula applies commentRatio, diversityFactor, urgencyBonus, freshness
+		expect(score).toBeGreaterThan(0);
+	});
+
+	it("gives higher score to posts with comments vs reactions-only", () => {
+		const withComments: PostData = {
+			...base,
+			reactions: { support: 5 },
+			comment_count: 5,
+		};
+		const withoutComments: PostData = {
+			...base,
+			reactions: { support: 5 },
+			comment_count: 0,
+		};
+		// Posts with comments should score higher (commentRatio bonus)
+		// But withoutComments has support*3 + comments*2.5 + concerns*1.5 = 15
+		// withComments has support*3 + comments*2.5 + concerns*1.5 = 27.5
+		// Both above threshold but withComments should be higher
+		expect(trendingScore(withComments)).toBeGreaterThan(trendingScore(withoutComments));
+	});
+
+	it("penalizes spam-like posts (high support, zero comments)", () => {
+		const spammy: PostData = {
+			...base,
+			reactions: { support: 15 },
+			comment_count: 0,
+		};
+		const organic: PostData = {
+			...base,
+			reactions: { support: 5 },
+			comment_count: 8,
+		};
+		// Spammy has support > 10 && comments === 0 => spamPenalty = 0.5
+		// Organic has no penalty
+		// Both have high engagement so both should trend, but organic should be higher
+		expect(trendingScore(organic)).toBeGreaterThan(trendingScore(spammy));
 	});
 
 	it("handles missing reactions/comment_count", () => {

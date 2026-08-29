@@ -303,6 +303,7 @@ export default function Overview() {
 
 	// ── Glass filter state ───────────────────────────────────────────
 	const [filter, setFilter] = useState<FilterKey>("trending");
+	const [showHealthBreakdown, setShowHealthBreakdown] = useState(false);
 	const filterBarRef = useRef<HTMLDivElement>(null);
 	const filterRefs = useRef<Record<string, HTMLButtonElement | null>>({});
 	const [pill, setPill] = useState({ left: 0, width: 0 });
@@ -399,13 +400,61 @@ export default function Overview() {
 			}),
 		).length;
 
-		const health = Math.min(
-			100,
-			Math.round(
-				(problems.length ? (solved.length / problems.length) * 50 : 25) +
-					Math.min(25, engagement / 4) +
-					Math.min(25, wk.posts * 3),
-			),
+		// ── Real Community Health Model ───────────────────────────────
+		// Multi-factor model: Resolution + Speed + Engagement + Activity + Safety
+		// Each factor is 0-100, weighted and combined.
+		//
+		// Resolution (30%): % of problems solved
+		// Speed (20%): median resolution time (lower = better)
+		// Engagement (20%): reactions + comments per problem
+		// Activity (15%): recent posts + comments this week
+		// Safety (15%): open reports penalty + spam indicators
+
+		const resolutionRate = problems.length
+			? (solved.length / problems.length) * 100
+			: 50; // neutral when no data
+
+		const medianSolve = solveTimes.length
+			? solveTimes.sort((a, b) => a - b)[Math.floor(solveTimes.length / 2)]
+			: null;
+		// Speed: 100 if < 1 day, 80 if < 3 days, 60 if < 7 days, 40 if < 14, 20 otherwise
+		const speedScore = medianSolve === null
+			? 50 // neutral when no data
+			: medianSolve < 1 ? 100
+			: medianSolve < 3 ? 80
+			: medianSolve < 7 ? 60
+			: medianSolve < 14 ? 40
+			: 20;
+
+		// Engagement: normalize to 0-100 scale
+		const engagementPerProblem = problems.length > 0 ? engagement / problems.length : 0;
+		const engagementScore = Math.min(100, Math.round(engagementPerProblem * 10));
+
+		// Activity: based on this week's activity vs previous week
+		const activityScore = wk.posts + wk.comments > 0
+			? Math.min(100, Math.round(((wk.posts + wk.comments) / Math.max(1, wk.postsPrev + wk.commentsPrev + 1)) * 50 + 30))
+			: 20;
+
+		// Safety: penalize open reports and unresolved issues
+		const openReportCount = reports.filter((r) => !r.status || r.status === "pending").length;
+		const openIssueCount = problems.filter((p) => p.status !== "solved" && p.status !== "archived").length;
+		const safetyScore = Math.max(0, 100 - openReportCount * 10 - openIssueCount * 5);
+
+		// Weighted combination
+		const healthBreakdown = {
+			resolution: Math.round(resolutionRate),
+			speed: Math.round(speedScore),
+			engagement: Math.round(engagementScore),
+			activity: Math.round(activityScore),
+			safety: Math.min(100, Math.round(safetyScore)),
+		};
+
+		const health = Math.round(
+			healthBreakdown.resolution * 0.30 +
+			healthBreakdown.speed * 0.20 +
+			healthBreakdown.engagement * 0.20 +
+			healthBreakdown.activity * 0.15 +
+			healthBreakdown.safety * 0.15
 		);
 
 		// Open issues = not yet solved or archived (any status, priority ignored)
@@ -446,6 +495,7 @@ export default function Overview() {
 			engagement,
 			reactionsTotal,
 			health,
+			healthBreakdown,
 			catCount,
 			suggestions: posts.filter((p) => p.type === "suggestion").length,
 			trending: [...problems]
@@ -1483,23 +1533,72 @@ export default function Overview() {
 								</span>
 							))}
 					</div>
-					<div className="mt-4 rounded-lg border border-border bg-bg/60 p-4 flex flex-col items-center gap-2">
-						<CircularProgress
-							value={stats.health}
-							size={100}
-							strokeWidth={8}
-							label="HEALTH"
-							sublabel={
-								stats.health >= 70
-									? 'Excellent'
-									: stats.health >= 40
+					<div className="mt-4 rounded-lg border border-border bg-bg/60 p-4">
+						<button
+							type="button"
+							className="flex flex-col items-center gap-2 w-full cursor-pointer hover:opacity-80 transition-opacity"
+							onClick={() => setShowHealthBreakdown(!showHealthBreakdown)}
+							aria-expanded={showHealthBreakdown}
+							aria-label={`Community health: ${stats.health}%. Click to ${showHealthBreakdown ? 'hide' : 'show'} breakdown.`}
+						>
+							<CircularProgress
+								value={stats.health}
+								size={100}
+								strokeWidth={8}
+								label="HEALTH"
+								sublabel={
+									stats.health >= 70
+										? 'Excellent'
+										: stats.health >= 40
 										? 'Needs attention'
 										: 'Critical'
 							}
-						/>
-						<p className="text-[9px] text-ink3 text-center max-w-[200px]">
-							{stats.resolution}% resolved · {stats.avgSolve}d avg · {stats.engagement} engagements
-						</p>
+							/>
+							<p className="text-[9px] text-ink3 text-center max-w-[200px]">
+								{stats.resolution}% resolved · {stats.avgSolve}d avg · {stats.engagement} engagements
+							</p>
+						</button>
+
+						{/* Interactive health breakdown panel */}
+						{showHealthBreakdown && stats.healthBreakdown && (
+							<div className="mt-3 pt-3 border-t border-border space-y-2">
+								<h3 className="text-[10px] font-bold uppercase tracking-[0.1em] text-ink3">
+									Health Breakdown
+								</h3>
+								{([
+									{ key: 'resolution', label: 'Resolution', icon: '📊', weight: '30%' },
+									{ key: 'speed', label: 'Speed', icon: '⚡', weight: '20%' },
+									{ key: 'engagement', label: 'Engagement', icon: '💬', weight: '20%' },
+									{ key: 'activity', label: 'Activity', icon: '📈', weight: '15%' },
+									{ key: 'safety', label: 'Safety', icon: '🛡️', weight: '15%' },
+								] as const).map(({ key, label, icon, weight }) => {
+									const val = stats.healthBreakdown[key];
+									const color = val >= 70 ? 'bg-good' : val >= 40 ? 'bg-warn' : 'bg-bad';
+									return (
+										<div key={key} className="flex items-center gap-2">
+										<span className="text-xs w-4 text-center" title={label}>{icon}</span>
+										<div className="flex-1">
+											<div className="flex justify-between items-center mb-0.5">
+												<span className="text-[10px] text-ink2 font-medium">{label}</span>
+												<span className="text-[10px] text-ink3 font-mono">
+													{val}% <span className="text-[8px] opacity-60">({weight})</span>
+												</span>
+											</div>
+											<div className="h-1.5 rounded-full bg-surface2 overflow-hidden">
+												<div
+													className={`h-full rounded-full ${color} transition-all duration-700`}
+													style={{ width: `${val}%` }}
+												/>
+											</div>
+										</div>
+									</div>
+									);
+								})}
+								<p className="text-[8px] text-ink3 mt-2 pt-2 border-t border-border/50">
+									Confidence: {stats.problemsCount > 10 ? 'High' : stats.problemsCount > 3 ? 'Medium' : 'Low'} · Based on {stats.problemsCount} problems
+								</p>
+							</div>
+						)}
 					</div>
 				</section>
 			</div>
