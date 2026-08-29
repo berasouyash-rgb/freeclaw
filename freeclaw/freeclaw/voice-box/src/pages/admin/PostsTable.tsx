@@ -61,6 +61,8 @@ export default function PostsTable({
 		status: string;
 	} | null>(null);
 	const [dateRangePreset, setDateRangePreset] = useState<DateRangePreset>("all");
+	const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+	const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
 
 	const fetchPosts = useCallback(
 		async ({ cursor, limit }: { cursor: string | null; limit: number }) => {
@@ -136,19 +138,33 @@ export default function PostsTable({
 			cursor = r.nextCursor ?? null;
 		} while (cursor);
 		return all;
-	};
-
-	const exportComplianceCSV = async () => {
+	};	const exportComplianceCSV = async () => {
 		const all = await exportRows();
+		// Apply the same filters the table is currently showing so the
+		// export matches what the admin sees (not the entire dataset).
+		let list = all;
+		if (statusF !== "all") list = list.filter((p) => p.status === statusF);
+		if (catF !== "All") list = list.filter((p) => p.category === catF);
+		if (query.trim()) {
+			const q = query.trim().toLowerCase();
+			list = list.filter(
+				(p) =>
+					p.title.toLowerCase().includes(q) ||
+					(p.description || "").toLowerCase().includes(q) ||
+					p.author_id.toLowerCase().includes(q) ||
+					p.id.toLowerCase().includes(q),
+			);
+		}
 		const range: DateRange = { preset: dateRangePreset };
-		const csv = buildComplianceCSV(all, range, type);
+		const csv = buildComplianceCSV(list, range, type);
 		const label =
 			dateRangePreset === "all"
 				? "all-time"
 				: dateRangePreset.replace(/_/g, "-");
-		const filename = `voicebox-${type === "problem" ? "complaints" : "suggestions"}-${label}.csv`;
+		const filterLabel = statusF !== "all" ? `-${statusF}` : "";
+		const filename = `voicebox-${type === "problem" ? "complaints" : "suggestions"}${filterLabel}-${label}.csv`;
 		downloadFile(filename, csv, "text/csv;charset=utf-8");
-		toast(`Exported ${filterByDateRange(all, range).length} rows (${label})`, "ok");
+		toast(`Exported ${filterByDateRange(list, range).length} rows (${label}${statusF !== "all" ? `, status=${statusF}` : ""})`, "ok");
 	};
 
 	// How many records match the current date range
@@ -254,6 +270,45 @@ export default function PostsTable({
 		return list;
 	}, [posts, statusF, catF, query]);
 
+	// Clear selection when filters change
+	useEffect(() => setSelectedIds(new Set()), [statusF, catF, query]);
+
+	const allVisibleSelected = filtered.length > 0 && filtered.every((p) => selectedIds.has(p.id));
+
+	const toggleAll = () => {
+		if (allVisibleSelected) {
+			setSelectedIds(new Set());
+		} else {
+			setSelectedIds(new Set(filtered.map((p) => p.id)));
+		}
+	};
+
+	const toggleOne = (id: string) => {
+		setSelectedIds((prev) => {
+			const next = new Set(prev);
+			if (next.has(id)) next.delete(id);
+			else next.add(id);
+			return next;
+		});
+	};
+
+	const bulkDelete = async () => {
+		const ids = [...selectedIds];
+		let deleted = 0;
+		for (const id of ids) {
+			try {
+				await api.del("/api/posts", { id });
+				deleted++;
+			} catch {
+				// continue on failure — some may be protected
+			}
+		}
+		setItems((prev) => prev.filter((p) => !selectedIds.has(p.id)));
+		setSelectedIds(new Set());
+		setBulkDeleteOpen(false);
+		toast(`Deleted ${deleted} of ${ids.length} posts`, deleted === ids.length ? "ok" : "err");
+	};
+
 	return (
 		<div>
 			<div className="flex items-center justify-between mb-4">
@@ -334,8 +389,17 @@ export default function PostsTable({
 					<div className="card overflow-x-auto">
 						<table className="w-full text-sm min-w-[760px]">
 						<thead>
-							<tr className="text-left text-[11px] uppercase tracking-wide text-ink3 border-b border-border">
-								<th className="px-4 py-3">Title</th>
+						<tr className="text-left text-[11px] uppercase tracking-wide text-ink3 border-b border-border">
+							<th className="px-4 py-3 w-8">
+								<input
+									type="checkbox"
+									checked={allVisibleSelected}
+									onChange={toggleAll}
+									aria-label="Select all visible posts"
+									className="cursor-pointer"
+								/>
+							</th>
+							<th className="px-4 py-3">Title</th>
 								<th className="px-2 py-3">Category</th>
 								<th className="px-2 py-3">Status</th>
 								<th className="px-2 py-3">Author</th>
@@ -350,9 +414,18 @@ export default function PostsTable({
 							{filtered.map((p) => (
 								<tr
 									key={p.id}
-									className="border-b border-border last:border-0 hover:bg-surface2/60 cursor-pointer transition-colors"
+									className={`border-b border-border last:border-0 hover:bg-surface2/60 cursor-pointer transition-colors ${selectedIds.has(p.id) ? "bg-accent/5" : ""}`}
 									onClick={() => setSelected(p)}
 								>
+									<td className="px-4 py-3 w-8" onClick={(e) => e.stopPropagation()}>
+										<input
+											type="checkbox"
+											checked={selectedIds.has(p.id)}
+											onChange={() => toggleOne(p.id)}
+											aria-label={`Select ${p.title}`}
+											className="cursor-pointer"
+										/>
+									</td>
 									<td className="px-4 py-3 font-medium max-w-64">
 										<span className="line-clamp-1">{p.title}</span>
 									</td>
@@ -447,7 +520,40 @@ export default function PostsTable({
 						</p>
 					)}
 					</div>
-				</div>
+
+				{/* Bulk action bar */}
+				{selectedIds.size > 0 && (
+					<div className="fixed bottom-20 lg:bottom-6 left-1/2 -translate-x-1/2 z-50 card px-4 py-3 flex items-center gap-3 shadow-xl vb-rise">
+						<span className="text-sm font-semibold">
+							{selectedIds.size} selected
+						</span>
+						<button
+							className="btn btn-soft !py-1.5 !px-3 !text-xs"
+							onClick={() => {
+								// Bulk status change
+								setStatusDialog({
+									id: "BULK",
+									status: "solved",
+								});
+							}}
+						>
+							<CheckCircle2 size={13} /> Mark solved
+						</button>
+						<button
+							className="btn btn-danger !py-1.5 !px-3 !text-xs"
+							onClick={() => setBulkDeleteOpen(true)}
+						>
+							<Trash2 size={13} /> Delete
+						</button>
+						<button
+							className="btn btn-ghost !p-1.5 !text-xs"
+							onClick={() => setSelectedIds(new Set())}
+						>
+							<X size={14} />
+						</button>
+					</div>
+				)}
+			</div>
 			)}
 
 			{/* Detail drawer */}
@@ -736,13 +842,35 @@ export default function PostsTable({
 				onClose={() => setStatusDialog(null)}
 				status={statusDialog?.status || ""}
 				statusLabel={STATUS_META[statusDialog?.status || ""]?.label || ""}
-				onSubmit={(note) =>
-					statusDialog &&
-					update(statusDialog.id, {
-						status: statusDialog.status as PostStatus,
-						status_note: note || undefined,
-					})
-				}
+				onSubmit={(note) => {
+					if (!statusDialog) return;
+					// Bulk status change: apply to all selected posts
+					if (statusDialog.id === "BULK") {
+						const ids = [...selectedIds];
+						ids.forEach((id) =>
+							update(id, {
+								status: statusDialog.status as PostStatus,
+								status_note: note || undefined,
+							}),
+						);
+						setSelectedIds(new Set());
+					} else {
+						update(statusDialog.id, {
+							status: statusDialog.status as PostStatus,
+							status_note: note || undefined,
+						});
+					}
+					setStatusDialog(null);
+				}}
+			/>
+			<ConfirmDialog
+				open={bulkDeleteOpen}
+				onClose={() => setBulkDeleteOpen(false)}
+				onConfirm={bulkDelete}
+				title={`Delete ${selectedIds.size} posts?`}
+				message="This will permanently remove all selected posts and their comments. This action cannot be undone."
+				confirmLabel="Delete all"
+				danger
 			/>
 		</div>
 	);

@@ -1,3 +1,11 @@
+import { type ClassValue, clsx } from "clsx";
+import { twMerge } from "tailwind-merge";
+
+/** Merge Tailwind classes safely — handles conflicts and conditional classes. */
+export function cn(...inputs: ClassValue[]): string {
+	return twMerge(clsx(inputs));
+}
+
 /** Safe JSON.stringify — handles circular references, functions, undefined */
 export function safeStringify(obj: unknown, indent?: number): string {
 	try {
@@ -96,15 +104,30 @@ export function fmtDate(d: string): string {
 
 import type { PostData } from "../types";
 
-/** Trending score: engagement decayed by age */
+/** Trending score: engagement decayed by age.
+ *  Uses a gravity-based formula (inspired by Hacker News) so that a post
+ *  with REAL community backing outranks a brand-new post with a single like.
+ *  Minimum engagement threshold prevents single-reaction posts from trending. */
 export function trendingScore(p: PostData): number {
 	const r = p.reactions || {};
-	const engage = (r.support || 0) * 3 + (p.comment_count || 0) * 2;
+	const support = r.support || 0;
+	const comments = p.comment_count || 0;
+	const concerns = r.concerned || 0;
+	// Weight: support is the strongest signal, comments show discussion,
+	// concerns indicate urgency but shouldn't dominate.
+	const engage = support * 3 + comments * 2 + concerns * 1.5;
+	// Require minimum engagement: 2+ supports OR 1+ support + 1 comment
+	// so brand-new posts with a single like don't auto-trend.
+	if (engage < 4) return 0;
 	const hours = Math.max(
-		1,
+		0.1,
 		(Date.now() - new Date(p.created_at).getTime()) / 3600000,
 	);
-	return engage / (hours + 2) ** 1.2;
+	// Gravity formula: score = log(1 + engagement) / hours^1.8
+	// - log() compresses large engagement differences
+	// - hours^1.8 decays faster than linear (a post needs to KEEP growing)
+	// - offset of 1 prevents log(0)
+	return Math.log(1 + engage) / (hours + 1) ** 1.8;
 }
 
 export function downloadFile(

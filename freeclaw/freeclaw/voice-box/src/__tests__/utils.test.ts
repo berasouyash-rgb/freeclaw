@@ -222,23 +222,20 @@ describe("trendingScore", () => {
 		deleted: false,
 	};
 
-	it("weighs reactions 3x and comments 2x", () => {
+	it("weighs support 3x, comments 2x, and concerns 1.5x", () => {
 		const fresh: PostData = {
 			...base,
-			reactions: { support: 10 },
+			reactions: { support: 10, concerned: 2 },
 			comment_count: 5,
 		};
 		const score = trendingScore(fresh);
-		// `base.created_at` was stamped at describe-collection time; the test may
-		// run seconds later, so derive the expected value from the ACTUAL hours
-		// elapsed at call time instead of assuming exactly 1.0.
+		// New formula: log(1 + engage) / (hours + 1)^1.8
+		// engage = 10*3 + 5*2 + 2*1.5 = 43
 		const hours = Math.max(
-			1,
+			0.1,
 			(Date.now() - new Date(base.created_at).getTime()) / 3600000,
 		);
-		const expected = (10 * 3 + 5 * 2) / (hours + 2) ** 1.2;
-		// Two separate Date.now() reads (here and inside trendingScore) can skew by
-		// ~1e-6 under load — keep the tolerance loose enough to not flake.
+		const expected = Math.log(1 + 43) / (hours + 1) ** 1.8;
 		expect(score).toBeCloseTo(expected, 5);
 	});
 
@@ -251,10 +248,24 @@ describe("trendingScore", () => {
 		expect(trendingScore(p)).toBe(0);
 	});
 
-	it("floors hours at 1 for brand-new posts", () => {
-		const p: PostData = { ...base, created_at: new Date().toISOString() };
-		const score = trendingScore(p);
-		expect(score).toBeCloseTo(0 / (1 + 2) ** 1.2, 6);
+	it("returns 0 for posts below engagement threshold", () => {
+		// Posts with < 4 total engagement don't trend
+		const low: PostData = {
+			...base,
+			reactions: { support: 1 },
+			comment_count: 0,
+		};
+		expect(trendingScore(low)).toBe(0);
+	});
+
+	it("posts with 1 like and 1 comment (engage=5) do trend", () => {
+		const justEnough: PostData = {
+			...base,
+			reactions: { support: 1 },
+			comment_count: 1,
+		};
+		const score = trendingScore(justEnough);
+		expect(score).toBeGreaterThan(0);
 	});
 });
 

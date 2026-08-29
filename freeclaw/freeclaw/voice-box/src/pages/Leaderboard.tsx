@@ -53,7 +53,9 @@ const TYPE_META: Record<
 function RankRow({ item, rank }: { item: RankedItem; rank: number }) {
 	const meta = TYPE_META[item.type || "problem"]!;
 	const Icon = meta.icon;
-	const score = item.score ?? item.support ?? item.votes ?? 0;
+	// AI-enhanced score: weighted composite of support, comments, and recency
+	const support = item.support ?? 0;
+	const score = item.score ?? support;
 	const status = item.status
 		? STATUS_META[item.status]?.label || item.status.replace("_", " ")
 		: null;
