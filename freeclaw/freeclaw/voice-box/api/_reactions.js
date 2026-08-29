@@ -116,6 +116,25 @@ export default async function handler(req, res) {
 					counts[r.kind] = (counts[r.kind] || 0) + 1;
 					if (r.author_id === author_id) mine.push(r.kind);
 				});
+				// Real-time priority recalculation based on support count
+				if (target_type === "post" || target_type === "suggestion") {
+					const supportCount = counts["support"] || 0;
+					const concernCount = counts["concern"] || 0;
+					let newPriority = "medium";
+					if (supportCount >= 20 || concernCount >= 15) newPriority = "critical";
+					else if (supportCount >= 10 || concernCount >= 8) newPriority = "high";
+					else if (supportCount < 3 && concernCount < 3) newPriority = "low";
+					try {
+						supabase
+							.from("posts")
+							.update({ priority: newPriority })
+							.eq("id", target_id)
+							.then(() => {}) // fire-and-forget
+							.catch(() => {});
+					} catch {
+						// Best effort — don't fail the reaction
+					}
+				}
 			} catch (countErr) {
 				console.error("reactions count query error:", countErr);
 				// Still return success — the toggle itself worked

@@ -726,6 +726,20 @@ export default async function handler(req, res) {
 				console.warn("[posts] emit POST_CREATED failed:", err.message),
 			);
 			cacheClear("^postsfeed"); // new post appears immediately, no stale 10s window
+			// Background: auto-generate AI summary (non-blocking, best-effort)
+			import("./_ai-summary.js").then((mod) => {
+				if (typeof mod.default === "function") {
+					mod.default({
+						method: "POST",
+						body: {
+							post_id: data.id,
+							title: data.title,
+							description: data.description,
+							category: data.category,
+						},
+					}, { status: () => ({ json: () => {} }) }).catch(() => {});
+				}
+			}).catch(() => {});
 			return res.status(201).json(data);
 		}
 

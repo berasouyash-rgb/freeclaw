@@ -52,6 +52,7 @@ export default function PostsTable({
 	const [query, setQuery] = useState("");
 	const [statusF, setStatusF] = useState("all");
 	const [catF, setCatF] = useState("All");
+	const [priorityF, setPriorityF] = useState("all");
 	const [selected, setSelected] = useState<PostData | null>(null);
 	const [dialog, setDialog] = useState<{
 		kind: "delete" | "merge" | "poll";
@@ -146,6 +147,7 @@ export default function PostsTable({
 		let list = all;
 		if (statusF !== "all") list = list.filter((p) => p.status === statusF);
 		if (catF !== "All") list = list.filter((p) => p.category === catF);
+		if (priorityF !== "all") list = list.filter((p) => p.priority === priorityF);
 		if (query.trim()) {
 			const q = query.trim().toLowerCase();
 			list = list.filter(
@@ -257,6 +259,7 @@ export default function PostsTable({
 		let list = posts;
 		if (statusF !== "all") list = list.filter((p) => p.status === statusF);
 		if (catF !== "All") list = list.filter((p) => p.category === catF);
+		if (priorityF !== "all") list = list.filter((p) => p.priority === priorityF);
 		if (query.trim()) {
 			const q = query.trim().toLowerCase();
 			list = list.filter(
@@ -272,7 +275,7 @@ export default function PostsTable({
 	}, [posts, statusF, catF, query]);
 
 	// Clear selection when filters change
-	useEffect(() => setSelectedIds(new Set()), [statusF, catF, query]);
+	useEffect(() => setSelectedIds(new Set()), [statusF, catF, priorityF, query]);
 
 	const allVisibleSelected = filtered.length > 0 && filtered.every((p) => selectedIds.has(p.id));
 
@@ -375,6 +378,18 @@ export default function PostsTable({
 					<option>All</option>
 					{categories.map((c) => (
 						<option key={c}>{c}</option>
+					))}
+				</select>
+				<select
+					className="input !w-auto !py-2 text-sm"
+					value={priorityF}
+					onChange={(e) => setPriorityF(e.target.value)}
+				>
+					<option value="all">All priorities</option>
+					{Object.entries(PRIORITY_META).map(([k, v]) => (
+						<option key={k} value={k}>
+							{v.label}
+						</option>
 					))}
 				</select>
 			</div>
@@ -558,6 +573,19 @@ export default function PostsTable({
 						))}
 					</select>
 						<button
+							className="btn btn-soft !py-1.5 !px-3 !text-xs"
+							onClick={() => {
+								const selectedPosts = posts.filter((p) => selectedIds.has(p.id));
+								const range: DateRange = { preset: "all" };
+								const csv = buildComplianceCSV(selectedPosts, range, type);
+								const filename = `voicebox-selected-${selectedIds.size}-${type}s.csv`;
+								downloadFile(filename, csv, "text/csv;charset=utf-8");
+								toast(`Exported ${selectedIds.size} selected posts`, "ok");
+							}}
+						>
+							<Download size={13} /> Export selected
+						</button>
+						<button
 							className="btn btn-danger !py-1.5 !px-3 !text-xs"
 							onClick={() => setBulkDeleteOpen(true)}
 						>
@@ -707,6 +735,53 @@ export default function PostsTable({
 								/>
 							</label>
 						</div>
+
+						{/* PII Detection Detail Panel */}
+						{selected.status === "pending_review" && (
+							<div className="rounded-lg border border-amber-500/25 bg-amber-500/[0.04] p-3 mb-4">
+								<div className="flex items-center gap-2 mb-2">
+									<Lock size={13} className="text-amber-400" />
+									<span className="text-[11px] font-bold tracking-[0.12em] text-amber-400">
+										PII / CONTENT REVIEW
+									</span>
+								</div>
+								<p className="text-[11px] text-ink2 mb-2">
+									This post was held for review. The AI content check flagged potential issues.
+								</p>
+								<div className="space-y-1.5">
+									<div className="flex items-center gap-2 text-[11px]">
+										<span className="text-amber-400">⚠</span>
+										<span className="text-ink2">Status:</span>
+										<span className="font-semibold text-amber-400">Held for admin review</span>
+									</div>
+									<div className="flex items-center gap-2 text-[11px]">
+										<span className="text-ink3">📋</span>
+										<span className="text-ink2">Reason:</span>
+										<span className="text-ink3">Pre-publish AI check flagged this content</span>
+									</div>
+									<div className="flex items-center gap-2 text-[11px]">
+										<span className="text-ink3">🔒</span>
+										<span className="text-ink2">Action:</span>
+										<span className="text-ink3">Review and approve/reject manually</span>
+									</div>
+								</div>
+								<div className="flex gap-2 mt-3">
+									<button
+										className="btn btn-soft !py-1 !px-2.5 !text-[11px]"
+										style={{ background: "rgba(22,160,106,0.12)", color: "var(--vb-good)" }}
+										onClick={() => update(selected.id, { status: "reported" })}
+									>
+										<ShieldCheck size={11} /> Approve & publish
+									</button>
+									<button
+										className="btn btn-danger !py-1 !px-2.5 !text-[11px]"
+										onClick={() => update(selected.id, { status: "archived", hidden: true })}
+									>
+										<X size={11} /> Reject
+									</button>
+								</div>
+							</div>
+						)}
 
 						<label className="text-xs block mb-3">
 							<span className="font-semibold text-ink2">
