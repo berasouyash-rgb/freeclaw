@@ -128,21 +128,23 @@ export default function Submit() {
 	useEffect(() => {
 		if (type !== "poll") return;
 		api
-			.get<PostData[]>("/api/posts?type=problem")
-			.then((all) =>
-				setLinkablePosts(
-					all
-						.filter((p) => !["solved", "archived"].includes(p.status))
-						.slice(0, 50),
-				),
-			)
+			.get<PostData[]>("/api/posts?type=problem")				.then((all) =>
+					setLinkablePosts(
+						all
+							.filter((p) =>
+								!["solved", "archived"].includes(p.status) &&
+								p.author_id === anonId,
+						)
+							.slice(0, 50),
+					),
+				)
 			.catch((e: unknown) => {
 				console.warn(
 					"[Submit] Failed to load linkable posts:",
 					e instanceof Error ? e.message : e,
 				);
 			});
-	}, [type]);
+	}, [type, anonId]);
 	const fileRef = useRef<HTMLInputElement>(null);
 	const restoredRef = useRef(false);
 	const [duplicates, setDuplicates] = useState<PostData[]>([]);
