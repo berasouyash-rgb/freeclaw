@@ -274,7 +274,23 @@ export default function Home() {
 	}, [posts]);
 
 
-	const pullToRefresh = usePullToRefresh(load, { threshold: 80 });
+	const	const loadMoreRef = useRef<HTMLDivElement>(null);
+
+	// Infinite scroll: auto-load more when sentinel enters viewport
+	useEffect(() => {
+		const el = loadMoreRef.current;
+		if (!el) return;
+		const observer = new IntersectionObserver(
+			(entries) => {
+				if (entries[0]?.isIntersecting) {
+					setVisible((v) => v + PAGE_SIZE);
+				}
+			},
+			{ rootMargin: "200px" },
+		);
+		observer.observe(el);
+		return () => observer.disconnect();
+	}, []);
 
 	return (
 		<div
@@ -635,17 +651,17 @@ export default function Home() {
 									/>
 							</div>
 						))}
-					</div>
-					{visible < filtered.length && (
-						<div className="text-center py-4">
-							<button
-								className="btn btn-soft"
-								onClick={() => setVisible((v) => v + PAGE_SIZE)}
-							>
-								Load more ({filtered.length - visible} remaining)
-							</button>
-						</div>
-					)}
+					</div>						{/* Infinite scroll sentinel */}
+						{visible < filtered.length && (
+							<div ref={loadMoreRef} className="text-center py-6">
+								<button
+									className="btn btn-soft"
+									onClick={() => setVisible((v) => v + PAGE_SIZE)}
+								>
+									Load more ({filtered.length - visible} remaining)
+								</button>
+							</div>
+						)}
 		</div>
 	);
 }
