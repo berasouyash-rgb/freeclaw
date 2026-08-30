@@ -17,6 +17,7 @@
 	Users,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { usePullToRefresh } from "../hooks/usePullToRefresh";
 import { Link } from "react-router";
 import CountUp from "../components/CountUp";
 import GlowButton from "../components/GlowButton";
@@ -272,8 +273,30 @@ export default function Home() {
 		};
 	}, [posts]);
 
+
+	const pullToRefresh = usePullToRefresh(load, { threshold: 80 });
+
 	return (
-		<div>
+		<div
+			className="min-h-dvh"
+			onTouchStart={pullToRefresh.onTouchStart}
+			onTouchMove={pullToRefresh.onTouchMove}
+			onTouchEnd={pullToRefresh.onTouchEnd}
+		>
+			{/* Pull-to-refresh indicator */}
+			{(pullToRefresh.pulling || pullToRefresh.refreshing) && (
+				<div
+					className="flex items-center justify-center gap-2 text-accent text-sm font-medium overflow-hidden transition-all"
+					style={{ height: pullToRefresh.pullDistance, opacity: pullToRefresh.pullDistance / 80 }}
+					aria-live="polite"
+				>
+					<span className={`inline-block transition-transform ${pullToRefresh.refreshing ? "animate-spin" : ""}`}>
+						↻
+					</span>
+					{pullToRefresh.refreshing ? "Refreshing…" : "Pull to refresh"}
+				</div>
+			)}
+
 			{/* "New posts" pill — live content arrived while scrolled down */}
 			{pendingNew > 0 && (
 				<button

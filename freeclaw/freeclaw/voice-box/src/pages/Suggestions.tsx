@@ -8,7 +8,7 @@
 	ShieldCheck,
 	Sparkles,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router";
 import { Segmented } from "../components/ui";
 import { useApp } from "../contexts/AppContext";
@@ -24,24 +24,27 @@ export default function Suggestions() {
 	const [loading, setLoading] = useState(true);
 	const [error, setError] = useState("");
 	const [sort, setSort] = useState<"top" | "trending" | "new">("new");
-	const [statusF, setStatusF] = useState<"all" | "accepted">("all");
-	const [busy, setBusy] = useState<string | null>(null);
+	const [statusF, setStatusF] = useState<"all" | "accepted">("all");	const [busy, setBusy] = useState<string | null>(null);
+	const knownIdsRef = useRef(new Set<string>());
 
-	const load = useCallback(async () => {
+	const load = useCallback(async (silent = false) => {
 		try {
 			setError("");
+			const fetchFn = silent ? api.getSlowFresh : api.getSlow;
 			const [data, reactions] = await Promise.all([
-				api.getSlow<PostData[]>("/api/posts?type=suggestion"),
+				fetchFn<PostData[]>("/api/posts?type=suggestion"),
 				api.get<ReactionEntry[]>(`/api/reactions?author=${anonId}`),
-			]);
+		]);
 			setItems(data);
 			const map: Record<string, string[]> = {};
 			reactions.forEach((r) => {
 				map[r.target_id] = [...(map[r.target_id] || []), r.kind];
-			});
+		});
 			setMine(map);
+			knownIdsRef.current = new Set(data.map((s) => s.id));
 		} catch (e: unknown) {
-			setError(e instanceof Error ? e.message : "Failed to load suggestions");
+			if (!silent)
+				setError(e instanceof Error ? e.message : "Failed to load suggestions");
 		}
 		setLoading(false);
 	}, [anonId]);
@@ -50,11 +53,17 @@ export default function Suggestions() {
 		load();
 	}, [load]);
 
-	// Real-time: auto-refresh when posts or reactions change in Supabase
+	// Real-time: throttled like Home.tsx — lightweight reaction refresh within
+	// the throttle window, full reload only after 12s to prevent scroll jumps.
+	const lastFullReloadRef = useRef(0);
 	useRealtime(
 		["posts", "reactions"],
 		useCallback(() => {
-			load();
+			const now = Date.now();
+			const THROTTLE_MS = 12_000;
+			if (now - lastFullReloadRef.current < THROTTLE_MS) return;
+			lastFullReloadRef.current = now;
+			load(true);
 		}, [load]),
 		1500,
 	);

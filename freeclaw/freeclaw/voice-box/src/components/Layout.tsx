@@ -22,9 +22,10 @@
 		WifiOff,
 		X,
 	} from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, NavLink, Outlet, useLocation, useNavigate } from "react-router";
 import { useApp } from "../contexts/AppContext";
+import { useFocusTrap } from "../hooks/useFocusTrap";
 import { api } from "../lib/api";
 import { lsGet, lsSet } from "../lib/identity";
 import { flushQueue, queuedCount } from "../lib/offline";
@@ -88,6 +89,8 @@ export default function Layout() {
 	const [offline, setOffline] = useState(!navigator.onLine);
 	const [queued, setQueued] = useState(queuedCount());
 	const [showTop, setShowTop] = useState(false);
+	const mobileDrawerRef = useRef<HTMLDivElement>(null);
+	useFocusTrap(mobileDrawerRef, { active: mobileOpen, onEscape: () => setMobileOpen(false) });
 
 	// Back-to-top visibility — show after scrolling 400px
 	useEffect(() => {
@@ -260,9 +263,11 @@ export default function Layout() {
 			{/* Mobile drawer */}
 			{mobileOpen && (
 				<div
+					ref={mobileDrawerRef}
 					className="fixed inset-0 z-50 lg:hidden"
 					role="dialog"
 					aria-modal="true"
+					aria-label="Navigation menu"
 				>
 					<div
 						className="absolute inset-0 mobile-overlay-enter"

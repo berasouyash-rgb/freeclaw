@@ -1,10 +1,9 @@
-﻿import {
+import {
 	AlertCircle,
 	Angry,
 	BarChart3,
 	Bookmark,
 	CheckCircle2,
-	EyeOff,
 	Flag,
 	Flame,
 	Gavel,
@@ -12,9 +11,6 @@
 	Lock,
 	MessageCircle,
 	Pin,
-	Play,
-	Send,
-	ShieldCheck,
 	Sparkles,
 	ThumbsUp,
 } from "lucide-react";
@@ -22,6 +18,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router";
 import { useApp } from "../contexts/AppContext";
 import { api, hasAdminSession } from "../lib/api";
+import PostCardAdminBar from "./PostCardAdminBar";
 import {
 	CAT_EMOJI,
 	PRIORITY_META,
@@ -31,7 +28,7 @@ import {
 } from "../lib/utils";
 import type { PollData, PostData, ReactionMeta } from "../types";
 import PollCard from "./PollCard";
-import { ConfirmDialog, ReportDialog } from "./ui";
+import { ReportDialog } from "./ui";
 
 export const REACTION_META: ReactionMeta[] = [
 	{
@@ -68,14 +65,7 @@ function PostCardInner({ post, myReactions, onReacted, pollData, myPollVote, onP
 	const { anonId, bookmarks, toggleBookmark, toast } = useApp();
 	const [busy, setBusy] = useState<string | null>(null);
 	const [reportOpen, setReportOpen] = useState(false);
-	const [replyOpen, setReplyOpen] = useState(false);
-	const [replyText, setReplyText] = useState("");
-	const [confirmAction, setConfirmAction] = useState<{
-		label: string;
-		description: string;
-		fn: () => void;
-		danger?: boolean;
-	} | null>(null);
+	// confirmAction, replyOpen, and replyText are handled by PostCardAdminBar
 	const [localCounts, setLocalCounts] = useState<Record<string, number> | null>(
 		null,
 	);
@@ -89,50 +79,6 @@ function PostCardInner({ post, myReactions, onReacted, pollData, myPollVote, onP
 		() => localMine || myReactions || [],
 		[localMine, myReactions],
 	);
-
-	/** Admin-only moderation — the feed updates itself via the posts realtime channel. */
-	const adminSet = async (patch: {
-		status?: string;
-		official?: boolean;
-		hidden?: boolean;
-	}) => {
-		if (busy) return;
-		setBusy("admin");
-		try {
-			await api.put("/api/posts", { id: post.id, ...patch });
-			if (patch.status === "solved")
-				toast("Issue marked solved — community notified", "ok");
-			else if (patch.status === "in_progress")
-				toast("Marked in progress", "ok");
-			else if (patch.status === "verified")
-				toast("Marked verified", "ok");
-			else if (patch.official !== undefined)
-				toast(patch.official ? "Marked official" : "Removed official", "ok");
-			else if (patch.hidden !== undefined)
-				toast(patch.hidden ? "Post hidden" : "Post unhidden", "ok");
-		} catch (e: unknown) {
-			toast(e instanceof Error ? e.message : "Action failed", "err");
-		} finally {
-			setBusy(null);
-		}
-	};
-
-	const sendReply = async (e: React.FormEvent) => {
-		e.preventDefault();
-		const text = replyText.trim();
-		if (!text || busy) return;
-		setBusy("reply");
-		try {
-			await api.put("/api/posts", { id: post.id, admin_reply: text });
-			setReplyText("");
-			setReplyOpen(false);
-			toast("Official reply posted — visible on the post", "ok");
-		} catch (err: unknown) {
-			toast(err instanceof Error ? err.message : "Failed to post reply", "err");
-		} finally {
-			setBusy(null);
-		}
-	};
 
 	// Reset stale optimistic state when server data arrives (prevents double-reaction bug).
 	// Skip the reset immediately after a successful POST — onReacted() updates the parent,
@@ -270,16 +216,21 @@ function PostCardInner({ post, myReactions, onReacted, pollData, myPollVote, onP
 							{status.label}
 						</span>
 						{post.priority && post.priority !== "medium" && PRIORITY_META[post.priority] && (
-							<span
-								className="chip"
-								style={{ color: PRIORITY_META[post.priority].color, borderColor: `${PRIORITY_META[post.priority].color}44` }}
-								title={`Auto-assigned priority: ${PRIORITY_META[post.priority].label}`}
-							>
-								{post.priority === "critical" && "🔴"}
-								{post.priority === "high" && "🟠"}
-								{post.priority === "low" && "🟢"}
-								{" "}{PRIORITY_META[post.priority].label}
-							</span>
+							(() => {
+								const pm = PRIORITY_META[post.priority!];
+								return (
+									<span
+										className="chip"
+										style={{ color: pm.color, borderColor: `${pm.color}44` }}
+										title={`Auto-assigned priority: ${pm.label}`}
+									>
+										{post.priority === "critical" && "🔴"}
+										{post.priority === "high" && "🟠"}
+										{post.priority === "low" && "🟢"}
+										{" "}{pm.label}
+									</span>
+								);
+							})()
 						)}
 					</div>
 					<Link to={`/post/${post.id}`} className="block group">
@@ -419,143 +370,13 @@ function PostCardInner({ post, myReactions, onReacted, pollData, myPollVote, onP
 						onVoted={onPollVoted}
 					/>
 				</div>
-			)}
-			{/* ── Admin-only moderation — large, obvious controls (visible only
-			    while an admin session is active) ── */}
-			{hasAdminSession() && (
-				<div className="border-t border-border bg-surface2/40">
-					{post.status === "pending_review" && (
-						<div className="flex items-center gap-1.5 px-3 pt-2.5 pb-0 text-[11px] font-semibold text-warn">
-							🔒 Held for review — possible PII or quality issue detected by AI moderation
-						</div>
-					)}
-					<div className="flex items-center gap-1.5 px-3 pt-2.5 pb-2 flex-wrap">
-						<span className="inline-flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-[0.16em] text-accent mr-1">
-							<ShieldCheck size={13} aria-hidden /> Moderation
-						</span>
-						{post.status !== "solved" && post.status !== "archived" && (
-							<>
-								{post.status !== "in_progress" && (
-									<button
-										type="button"
-										disabled={!!busy}
-										onClick={() => adminSet({ status: "in_progress" })}
-										title="Mark in progress"
-										className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold text-warn bg-warn/10 border border-warn/25 transition-colors disabled:opacity-40"
-									>
-										<Play size={13} /> In progress
-									</button>
-								)}
-								{post.status !== "verified" && (
-									<button
-										type="button"
-										disabled={!!busy}
-										onClick={() => adminSet({ status: "verified" })}
-										title="Verify this post"											className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold text-blue-400 bg-blue-500/10 border border-blue-500/25 transition-colors disabled:opacity-40"
-									>
-										<ShieldCheck size={13} /> Verify
-									</button>
-								)}
-								<button
-									type="button"
-									disabled={!!busy}
-									onClick={() => setConfirmAction({
-										label: "Solve this issue?",
-										description: "This will mark the issue as solved and notify the community.",
-										fn: () => adminSet({ status: "solved" }),
-									})}
-									title="Mark solved"
-									className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-xs font-bold text-good bg-good/15 border border-good/30 transition-colors disabled:opacity-40"
-								>
-									<CheckCircle2 size={14} /> Solve
-								</button>
-							</>
-						)}
-						<button
-							type="button"
-							disabled={!!busy}
-							onClick={() => adminSet({ official: !post.official })}
-							title={post.official ? "Remove official badge" : "Mark as official"}
-							className={`inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold transition-colors disabled:opacity-40 ${
-								post.official
-									? "text-amber-400 bg-amber-500/15 border border-amber-500/30"										: "text-amber-400 bg-amber-500/5 border border-amber-500/20"
-							}`}
-						>
-							<Sparkles size={13} />
-							{post.official ? "Official" : "Mark official"}
-						</button>							<button
-								type="button"
-								disabled={!!busy}
-								onClick={() => setConfirmAction({
-									label: post.hidden ? "Unhide this post?" : "Hide this post?",
-									description: post.hidden
-										? "This will make the post visible to all users again."
-										: "This will hide the post from all non-admin users.",
-									fn: () => adminSet({ hidden: !post.hidden }),
-									danger: !post.hidden,
-								})}
-								title={post.hidden ? "Unhide post" : "Hide post"}
-								className={`inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold transition-colors disabled:opacity-40 ${
-								post.hidden
-									? "text-red-400 bg-red-500/15 border border-red-500/30"
-									: "text-red-400 bg-red-500/5 border border-red-500/20"
-							}`}
-						>
-							<EyeOff size={13} /> {post.hidden ? "Unhide" : "Hide"}
-						</button>
-						<button
-							type="button"
-							onClick={() => setReplyOpen((o) => !o)}
-							title="Post an official admin reply on this post"
-							className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold text-accent bg-accent/10 border border-accent/25 transition-colors"
-						>
-							<Send size={13} /> {replyOpen ? "Close" : "Official reply"}
-						</button>
-					</div>
-					{replyOpen && (
-						<form
-							onSubmit={sendReply}
-							className="flex items-center gap-1.5 px-3 pb-2.5"
-						>
-							<input
-								autoFocus
-								value={replyText}
-								onChange={(e) => setReplyText(e.target.value)}
-								placeholder="Write an official message for everyone viewing this post…"
-								className="input !py-2 !text-sm flex-1"
-								maxLength={1000}
-								aria-label="Official admin reply"
-							/>
-							<button
-								type="submit"
-								disabled={busy === "reply" || !replyText.trim()}
-								className="btn btn-primary !py-2 !px-4 !text-xs"
-							>
-								{busy === "reply" ? "Sending…" : "Send"}
-							</button>
-						</form>
-					)}
-				</div>
-			)}
+			)}			{/* ── Admin-only moderation — extracted to PostCardAdminBar for clean
+			    separation and memoization */}
+			{hasAdminSession() && <PostCardAdminBar post={post} />}
 
 			{/* Report from the feed — same flow as the detail page: sends author_id
           (the API rejects reports without it), surfaces failures honestly,
           and the API auto-strikes the target author + pushes the warning popup. */}
-			{confirmAction && (
-				<ConfirmDialog
-					open
-					onClose={() => setConfirmAction(null)}
-					onConfirm={() => {
-						confirmAction.fn();
-						setConfirmAction(null);
-					}}
-					title={confirmAction.label}
-					message={confirmAction.description}
-					confirmLabel={confirmAction.label.split("?")[0]}
-					danger={confirmAction.danger}
-				/>
-			)}
-
 			<ReportDialog
 				open={reportOpen}
 				onClose={() => setReportOpen(false)}
