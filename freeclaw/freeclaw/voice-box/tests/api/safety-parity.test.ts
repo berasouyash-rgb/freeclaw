@@ -4,7 +4,10 @@
 // CURRENT source (_posts.js ~line 699, _polls.js ~line 374, _comments.js
 // ~line 183) and assert decision-equality over a corpus. Any future policy
 // change must move BOTH sides together — this file fails otherwise.
-// The ONE intended delta (NFKC evasion hardening) is asserted explicitly.
+// The old intended delta (NFKC evasion hardening) is GONE: the inline gate now
+// runs the same spelling-proof matcher (api/_lexicon.js) as the pipeline, so
+// both agree on full-width, zero-width, leet, repeated-letter and
+// separated-letter evasion — asserted explicitly at the bottom of this file.
 import { describe, expect, it, vi } from "vitest";
 
 vi.mock("../../api/_db-client.js", () => ({
@@ -125,31 +128,44 @@ describe("message copy is byte-identical per surface", () => {
 	});
 });
 
-describe("intended delta: NFKC evasion hardening", () => {
-	it("full-width evasion is judged as its ASCII self by the pipeline", () => {
+describe("obfuscation is closed on BOTH gates (no more intended delta)", () => {
+	it("full-width evasion is judged as its ASCII self everywhere", () => {
 		const evasive = "this canteen food ｓｕｃｋｓ";
-		// Raw inline gate sees no ASCII slur → publishes today.
-		expect(inlineComment(evasive).blocked).toBe(false);
-		// Pipeline normalizes first → blocks under zero-tolerance.
+		// The inline gate and the pipeline now share one matcher, so neither
+		// can publish something the other would reject.
+		expect(inlineComment(evasive).blocked).toBe(true);
 		expect(pipeComment(evasive).blocked).toBe(true);
 		expect(pipeComment(evasive).code).toBe("CONTENT_BLOCKED");
 	});
 
 	it("zero-width splitter evasion is stripped before detection", () => {
 		const evasive = "sh\u200bit happens here";
+		expect(inlineComment(evasive).blocked).toBe(true);
 		expect(pipeComment(evasive).blocked).toBe(true);
 		expect(pipeComment(evasive).code).toBe("CONTENT_BLOCKED");
 	});
-});
 
-describe("known gap: spaced/dotted letter joining (documented, not silently passing)", () => {
-	// "s h i t" / "s.h.i.t" still publish: rejoining separators would
-	// endanger legitimate dotted forms ("u.s.a", "e.g.", initials) and
-	// spaced emphasis, so the gate stays silent here rather than risk
-	// false positives. If a joining detector lands, THESE TESTS MUST flip.
-	it("records the current boundary honestly", () => {
-		for (const t of ["s h i t happens", "s.h.i.t happens"]) {
-			expect(pipeComment(t).blocked).toBe(false);
+	it("spaced and dotted letter joining no longer publishes", () => {
+		// Was a documented gap: "s h i t" / "s.h.i.t" published because
+		// rejoining separators risked false positives on "u.s.a"/"e.g.".
+		// The matcher joins ONLY runs of 3+ single-letter units and then
+		// checks the joined string against the vocabulary — so the gap is
+		// closed without the false positives that were feared.
+		for (const t of ["s h i t happens", "s.h.i.t happens", "f u c k this"]) {
+			expect(inlineComment(t).blocked, t).toBe(true);
+			expect(pipeComment(t).blocked, t).toBe(true);
+		}
+	});
+
+	it("does not join ordinary abbreviations or dotted prose", () => {
+		// The reason the gap existed. These must stay publishable.
+		for (const t of [
+			"the u.s.a report is due",
+			"see e.g. the physics notes",
+			"class 8b has a test tomorrow",
+			"please pass the message to a.s. sir",
+		]) {
+			expect(pipeComment(t).blocked, t).toBe(false);
 		}
 	});
 });
