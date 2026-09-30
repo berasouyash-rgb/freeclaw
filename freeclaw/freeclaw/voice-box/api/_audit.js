@@ -24,10 +24,15 @@ export async function auditLog({
 	userAgent = null,
 }) {
 	try {
+		// actor_id is NOT NULL in the schema: a missing actor must never cost
+		// us the audit row itself. Coerce to "unknown" (the row lands, the
+		// gap stays visible) instead of failing the insert and losing the
+		// event entirely — silent audit loss on a safety platform is worse
+		// than an unattributed row.
 		const entry = {
 			action,
 			actor_type: actorType,
-			actor_id: actorId,
+			actor_id: actorId ?? "unknown",
 			resource_type: resourceType,
 			resource_id: resourceId,
 			details: typeof details === "string" ? { message: details } : details,
