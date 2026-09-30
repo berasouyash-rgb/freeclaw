@@ -87,7 +87,7 @@ export const LEXICON = [
 	{ term: "retarded", category: "profanity", severity: "high", variants: ["retrdd", "rtrded", "retart"] },
 	{ term: "retards", category: "profanity", severity: "high", variants: ["retrds"] },
 	{ term: "bollocks", category: "profanity", severity: "high", variants: ["bollox", "bullocks"] },
-	{ term: "douche", category: "profanity", severity: "high", variants: ["douchebag", "douchebags", "doosh", "douch"] },
+	{ term: "douche", category: "profanity", severity: "high", variants: ["doosh", "douch"] },
 	{ term: "douchebag", category: "profanity", severity: "high", variants: ["douchebags", "dooshbag"] },
 	{ term: "asshat", category: "profanity", severity: "high", variants: ["ashat", "azzhat"] },
 	{ term: "scumbag", category: "profanity", severity: "high", variants: ["scumbags", "scum"] },
