@@ -850,7 +850,7 @@ export default function Home() {
 			<div className="grid grid-cols-3 gap-3 mb-6">
 				{[
 					{
-						label: "Total reports",
+						label: "Reported",
 						value: stats.total,
 						icon: Megaphone,
 						color: "text-accent",
@@ -858,7 +858,7 @@ export default function Home() {
 						spark: stats.spark,
 					},
 					{
-						label: "Being worked on",
+						label: "In progress",
 						value: stats.active,
 						icon: Activity,
 						color: "text-warn",
@@ -916,8 +916,8 @@ export default function Home() {
 
 			{/* Search + filters — single clean toolbar */}
 			<div className="card p-3 mb-4 space-y-3">
-				<div className="flex gap-2">
-					<div className="relative flex-1" data-tour="search">
+				<div className="flex flex-col gap-2 sm:flex-row">
+					<div className="relative flex-1 min-w-0" data-tour="search">
 						<Search
 							size={15}
 							className="absolute left-3 top-1/2 -translate-y-1/2 text-ink3"

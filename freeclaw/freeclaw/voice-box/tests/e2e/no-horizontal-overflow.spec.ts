@@ -119,7 +119,10 @@ async function overflow(page: import("@playwright/test").Page) {
 				worst = {
 					tag: el.tagName.toLowerCase(),
 					right: Math.round(r.right),
-					cls: (el.className || "").toString().slice(0, 90),
+					// getAttribute, not el.className: on SVG elements className
+					// is an SVGAnimatedString object, which stringifies to the
+					// useless "[object SVGAnimatedString]" in failure output.
+					cls: (el.getAttribute("class") || "").slice(0, 90),
 				};
 		}
 		return {
