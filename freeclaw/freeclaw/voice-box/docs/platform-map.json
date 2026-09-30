@@ -1,0 +1,110 @@
+{
+  "_comment": "Voice Box platform map — route → page → APIs → tables → tests. Change-impact engine (slice 2 of the AI management harness): before changing a module, read its entry to see what else might break. The checker (scripts/check-platform-map.mjs, mirrored by tests/api/platform-map.test.ts) fails on BROKEN references and warns on unmapped modules. Curated by hand; verified against source 2026-09-27.",
+  "flows": [
+    {
+      "route": "/",
+      "page": "src/pages/Home.tsx",
+      "apis": ["api/_posts.js", "api/_leaderboard.js"],
+      "tables": ["posts", "comments", "reactions", "polls", "poll_votes", "settings"],
+      "tests": ["src/__tests__/Home.test.tsx", "tests/api/posts-feed.test.ts"]
+    },
+    {
+      "route": "/submit",
+      "page": "src/pages/Submit.tsx",
+      "apis": ["api/_posts.js", "api/_polls.js", "api/_transcribe.js", "api/_assist.js", "api/_upload.js"],
+      "tables": ["posts", "comments", "reactions", "polls", "poll_votes", "settings"],
+      "tests": ["src/__tests__/Submit.test.tsx", "tests/api/posts-full.test.ts", "tests/api/transcribe.test.ts", "tests/api/assist-voice.test.ts"]
+    },
+    {
+      "route": "/post/:id",
+      "page": "src/pages/PostDetail.tsx",
+      "apis": ["api/_posts.js", "api/_comments.js", "api/_reactions.js", "api/_reports.js", "api/_polls.js"],
+      "tables": ["posts", "comments", "reactions", "reports", "polls", "poll_votes", "users_meta", "activity_logs"],
+      "tests": ["src/__tests__/PostDetail.test.tsx", "tests/api/posts-full.test.ts", "tests/api/reactions.test.ts"]
+    },
+    {
+      "route": "/polls",
+      "page": "src/pages/Polls.tsx",
+      "apis": ["api/_polls.js"],
+      "tables": ["polls", "poll_votes", "posts", "settings"],
+      "tests": ["tests/api/polls-full.test.ts"]
+    },
+    {
+      "route": "/suggestions",
+      "page": "src/pages/Suggestions.tsx",
+      "apis": ["api/_posts.js"],
+      "tables": ["posts", "comments", "reactions", "polls", "poll_votes"],
+      "tests": ["tests/api/posts-feed.test.ts"]
+    },
+    {
+      "route": "/leaderboard",
+      "page": "src/pages/Leaderboard.tsx",
+      "apis": ["api/_leaderboard.js"],
+      "tables": ["settings", "posts", "polls", "reactions", "comments", "poll_votes", "agent_executions", "agent_insights"],
+      "tests": ["src/__tests__/Leaderboard.test.tsx"]
+    },
+    {
+      "route": "/communities",
+      "page": "src/pages/Communities.tsx",
+      "apis": ["api/_communities.js"],
+      "tables": ["settings"],
+      "tests": ["src/__tests__/Communities.test.tsx", "tests/api/communities.test.ts"]
+    },
+    {
+      "route": "/board",
+      "page": "src/pages/SolvingBoard.tsx",
+      "apis": ["api/_posts.js"],
+      "tables": ["posts", "comments", "reactions", "polls", "poll_votes"],
+      "tests": ["tests/api/posts-feed.test.ts"]
+    },
+    {
+      "route": "/activity",
+      "page": "src/pages/MyActivity.tsx",
+      "apis": ["api/_posts.js", "api/_me.js", "api/_saved.js"],
+      "tables": ["posts", "comments", "reactions", "polls", "poll_votes", "settings"],
+      "tests": ["src/__tests__/MyActivity.test.tsx", "tests/api/me.test.ts"]
+    },
+    {
+      "route": "/saved",
+      "page": "src/pages/Saved.tsx",
+      "apis": ["api/_saved.js", "api/_posts.js"],
+      "tables": ["settings", "posts"],
+      "tests": ["tests/api/me.test.ts"]
+    },
+    {
+      "route": "/search",
+      "page": "src/pages/Search.tsx",
+      "apis": ["api/_search.js"],
+      "tables": ["posts", "comments", "polls", "users_meta"],
+      "tests": ["tests/api/search-hashtags.test.ts"]
+    },
+    {
+      "route": "/insights",
+      "page": "src/pages/Insights.tsx",
+      "apis": ["api/_posts.js", "api/_trends.js"],
+      "tables": ["posts", "comments", "reactions", "polls", "poll_votes"],
+      "tests": ["tests/api/posts-feed.test.ts"]
+    },
+    {
+      "route": "/chat",
+      "page": "src/pages/UserChat.tsx",
+      "apis": ["api/_inbox.js", "api/_chat.js", "api/_transcribe.js"],
+      "tables": ["settings", "reports", "posts", "chat_messages", "chat_threads"],
+      "tests": ["src/__tests__/UserChat.test.tsx", "tests/api/inbox-triage.test.ts", "tests/api/inbox-admin-reply.test.ts", "tests/api/prompt-injection-evals.test.ts"]
+    },
+    {
+      "route": "/notifications",
+      "page": "src/pages/Notifications.tsx",
+      "apis": ["api/_notifications.js"],
+      "tables": ["settings"],
+      "tests": ["src/__tests__/Notifications.test.tsx", "tests/api/notify-prefs.test.ts"]
+    },
+    {
+      "route": "/admin/*",
+      "page": "src/pages/admin/",
+      "apis": ["api/_admin.js", "api/_reports.js", "api/_users.js", "api/_agent.js", "api/_agent-team.js", "api/_inbox.js", "api/_cleanup.js", "api/_db-stats.js"],
+      "tables": ["settings", "activity_logs", "users_meta", "posts", "comments", "reactions", "reports", "chat_messages", "chat_threads", "poll_votes"],
+      "tests": ["tests/api/admin-settings.test.ts", "tests/api/cleanup-proven-counts.test.ts", "tests/api/db-stats-dry-run.test.ts", "tests/api/inbox-admin-writes.test.ts", "tests/api/agent-team-activation.test.ts", "tests/api/agent-suggestion-dismiss.test.ts"]
+    }
+  ]
+}

@@ -70,7 +70,7 @@ describe("CriticalAlertBanner", () => {
 		expect(screen.getByText(/HIGH PRIORITY/i)).toBeTruthy();
 	});
 
-	it("acknowledge and open-console call their callbacks", () => {
+	it("acknowledge and view-work call their callbacks", () => {
 		const onAck = vi.fn();
 		const onOpen = vi.fn();
 		render(
@@ -82,7 +82,7 @@ describe("CriticalAlertBanner", () => {
 		);
 		screen.getByRole("button", { name: "Acknowledge" }).click();
 		expect(onAck).toHaveBeenCalledWith("a1");
-		screen.getByRole("button", { name: /Open console/i }).click();
+		screen.getByRole("button", { name: /View work/i }).click();
 		expect(onOpen).toHaveBeenCalled();
 	});
 

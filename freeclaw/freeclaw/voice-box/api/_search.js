@@ -1,5 +1,5 @@
-// Smart Search — global search across posts, comments, and polls.
-// GET /api/search?q=keyword&type=all&status=all&category=all&priority=all&department=all
+// Smart Search — global search across posts, comments, polls, and users.
+// GET /api/search?q=keyword&type=all&status=all&category=all&priority=all
 
 import { isTestArtifact } from "./_artifact-filter.js";
 import { cors } from "./_auth.js";
@@ -23,10 +23,14 @@ function escapeLike(str) {
  * per-request on these cached rows — they are viewer-independent raw data.
  */
 async function scanSearchRows(q, type, status, category, priority) {
-	const out = { posts: null, comments: null, polls: null };
-	const firstWord = q ? q.split(/\s+/).filter((w) => w.length > 1)[0] || q : "";
+	const out = { posts: null, comments: null, polls: null, users: null };
+	// Hashtag queries (#canteen) must match the tag `canteen`: strip every
+	// `#` once so the ilike prefilters, the tag-overlap pull below, and
+	// the in-memory scorer all see the same word the tags store.
+	const qText = q.replace(/#/g, "");
+	const firstWord = qText ? qText.split(/\s+/).filter((w) => w.length > 1)[0] || qText : "";
 
-	// Search posts — fetch all non-deleted posts and filter in code for reliability
+	// Search posts — use DB-level text search for performance
 	if (type === "all" || type === "posts") {
 		// Note: reactions and comment_count are computed in _posts.js, not actual DB columns
 		// Public search never surfaces moderation-hidden or pending-review posts
@@ -40,15 +44,29 @@ async function scanSearchRows(q, type, status, category, priority) {
 		if (status !== "all") query = query.eq("status", status);
 		if (category !== "all") query = query.eq("category", category);
 		if (priority !== "all") query = query.eq("priority", priority);
-		// Fetch a generous window so the in-code artifact filter and pagination see
-		// the full matching set — a small fetch limit here would silently drop
-		// older real posts (and let artifacts hide them). Raised 500→2000 in
-		// FIX-#4 so content older than the newest 500 posts stays searchable.
-		query = query.order("created_at", { ascending: false }).limit(2000);
+		// DB-level text search: use ilike for matching instead of fetching 2000 rows
+		if (q) {
+			const searchPattern = `%${escapeLike(qText)}%`;
+			// Hashtag surfacing as a same-scan OR term: ilike cannot scan the
+			// tags text[] array, so `#canteen` (tagWord `canteen` via qText)
+			// rides along as an array-overlap term. Sanitized to the
+			// kebab-case tag contract so braces/commas can never break the
+			// PostgREST `{…}` array literal. One from("posts") per scan set —
+			// the search-perf guard counts exactly that.
+			const tagWord = (qText.split(/\s+/).filter((w) => w.length > 1)[0] || "")
+				.toLowerCase()
+				.replace(/[^a-z0-9-]/g, "");
+			const tagTerm = tagWord ? `,tags.ov.{${tagWord}}` : '';
+			query = query.or(`title.ilike.${searchPattern},description.ilike.${searchPattern},id.ilike.${searchPattern}${tagTerm}`);
+		}
+		query = query.order("created_at", { ascending: false }).limit(500);
 
 		const { data: posts, error: postErr } = await query;
 		if (postErr) {
-			console.error("search posts query error:", JSON.stringify(postErr));
+			try {
+				const { logger } = await import("./_observability.js");
+				logger.error("search", "posts_query_error", { error: postErr.message });
+			} catch { /* non-fatal */ }
 		}
 		out.posts = posts;
 	}
@@ -66,9 +84,7 @@ async function scanSearchRows(q, type, status, category, priority) {
 		query = query.order("created_at", { ascending: false }).limit(1000);
 		const { data: comments } = await query;
 		out.comments = comments;
-	}
-
-	// Search polls
+	}	// Search polls
 	if (type === "all" || type === "polls") {
 		let query = supabase
 			.from("polls")
@@ -80,6 +96,21 @@ async function scanSearchRows(q, type, status, category, priority) {
 		query = query.order("created_at", { ascending: false }).limit(1000);
 		const { data: polls } = await query;
 		out.polls = polls;
+	}
+
+	// Search users — match anon_id (exact or partial)
+	if (type === "all" || type === "users") {
+		let query = supabase
+			.from("users_meta")
+			.select("anon_id, created_at, last_seen, strikes, banned, suspended_until")
+			.order("created_at", { ascending: false });
+		if (q) {
+			// Support exact match, partial match, or ILIKE on anon_id
+			query = query.or(`anon_id.ilike.%${escapeLike(q)}%`);
+		}
+		query = query.limit(200);
+		const { data: users } = await query;
+		out.users = users;
 	}
 
 	return out;
@@ -96,11 +127,16 @@ export default async function handler(req, res) {
 	cors(res, req);
 	if (req.method === "OPTIONS") return res.status(204).end();
 
+	req._searchStart = Date.now();
+
 	try {
 		if (req.method !== "GET")
 			return res.status(405).json({ error: "GET only" });
 
 		const q = (req.query.q || "").trim();
+		// Same normalization as scanSearchRows above (which has its own copy
+		// — the scorer below runs in handler scope, not in that function).
+		const qText = q.replace(/#/g, "");
 		const type = req.query.type || "all";
 		const status = req.query.status || "all";
 		const category = req.query.category || "all";
@@ -111,14 +147,10 @@ export default async function handler(req, res) {
 		if (!q && type === "all") {
 			return res.status(200).json({ results: [], total: 0, query: "" });
 		}
-		// Allow 2-char queries for exact ID matches (comment/post IDs like 'abc123')
+		// Allow 3-char queries for exact ID matches (comment/post IDs like 'abc123')
 		// but require >= 3 chars for text search to avoid noise
-		const isExactId = /^[a-z0-9_-]{2,}$/i.test(q);
-		if (q && q.length < 2)
-			return res
-				.status(400)
-				.json({ error: "Query must be at least 2 characters" });
-		if (q && q.length < 3 && !isExactId)
+		const isExactId = /^[a-z0-9_-]{3,}$/i.test(q);
+		if (q && q.length < 3)
 			return res
 				.status(400)
 				.json({ error: "Query must be at least 3 characters" });
@@ -134,12 +166,12 @@ export default async function handler(req, res) {
 
 		// Score posts — match if ANY search word appears in title, description, or tags
 		if (rows.posts) {
-			const words = q
-				? q
-						.toLowerCase()
-						.split(/\s+/)
-						.filter((w) => w.length > 1)
-				: [];
+		const words = qText
+			? qText
+					.toLowerCase()
+					.split(/\s+/)
+					.filter((w) => w.length > 1)
+			: [];
 			rows.posts.forEach((p) => {
 				if (isTestArtifact(p.title)) return;
 				const titleLower = (p.title || "").toLowerCase();
@@ -215,6 +247,28 @@ export default async function handler(req, res) {
 			});
 		}
 
+		// Users — match by anon_id (exact or partial)
+		if (rows.users) {
+			rows.users.forEach((u) => {
+				const exactMatch = q && u.anon_id && u.anon_id.toLowerCase() === q.toLowerCase();
+				const partialMatch = q && u.anon_id && u.anon_id.toLowerCase().includes(q.toLowerCase());
+				if (!exactMatch && !partialMatch && q) return;
+				results.push({
+					type: "user",
+					id: u.anon_id,
+					title: u.anon_id,
+					description: u.banned
+						? "Banned"
+						: u.suspended_until && new Date(u.suspended_until) > new Date()
+							? "Suspended"
+							: "Active",
+					author_id: u.anon_id,
+					created_at: u.created_at,
+					relevance_score: exactMatch ? 200 : partialMatch ? 50 : 1,
+				});
+			});
+		}
+
 		// Sort by relevance score and recency
 		results.sort(
 			(a, b) =>
@@ -227,6 +281,16 @@ export default async function handler(req, res) {
 		const start = (page - 1) * limit;
 		const paged = results.slice(start, start + limit);
 
+		// Record search quality telemetry (fire-and-forget)
+		try {
+			const { recordSearchEvent } = await import("./_search-quality.js");
+			recordSearchEvent({
+				query: q,
+				results: total,
+				latency_ms: Date.now() - (req._searchStart || Date.now()),
+			});
+		} catch (err) { console.warn("[search] telemetry drop", { error: err?.message || String(err) }); }
+
 		return res.status(200).json({
 			results: paged,
 			total,
@@ -236,7 +300,15 @@ export default async function handler(req, res) {
 			filters: { type, status, category, priority },
 		});
 	} catch (err) {
-		console.error("search error:", err);
+		// Record failed search for quality tracking
+		try {
+			const { recordSearchEvent } = await import("./_search-quality.js");
+			recordSearchEvent({ query: q || "", results: 0, latency_ms: Date.now() - (req._searchStart || Date.now()) });
+		} catch (telErr) { console.warn("[search] failure telemetry drop", { error: telErr?.message || String(telErr) }); }
+		try {
+			const { logger } = await import("./_observability.js");
+			logger.error("search", "search_failed", { error: err.message });
+		} catch (logErr) { console.error("[search] search_failed log drop", { error: logErr?.message || String(logErr) }); }
 		return res.status(500).json({ error: "Internal error" });
 	}
 }

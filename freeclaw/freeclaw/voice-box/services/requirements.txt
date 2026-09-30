@@ -34,3 +34,8 @@ circuitbreaker==2.0.0
 # Utils
 python-dotenv==1.0.1
 python-multipart==0.0.12
+
+# Real-agent runtime (NeMo Fabric + DeepAgents harness, NVIDIA NIM).
+# Optional: the API answers 503 honestly without it; install for
+# POST /api/workforce/fabric/run. Python 3.11–3.14.
+nemo-fabric[deepagents]==0.3.0

@@ -547,27 +547,33 @@ async def _get_system_health(input_data: dict) -> dict:
 
     try:
         checks = {}
+        check_errors = {}
         score = 100
 
         # 1. Database connectivity
         try:
             sb.table("posts").select("id").limit(1).execute()
             checks["database"] = True
-        except Exception:
+        except Exception as e:
             checks["database"] = False
+            check_errors["database"] = str(e)[:200]
+            logger.warning(f"[health] database check failed: {e}")
             score -= 30
 
-        # 2. Check for stuck executions
+        # 2. Check for stuck executions (unknown is not healthy)
         try:
             stuck = sb.table("agent_executions").select("id").eq("status", "running").execute()
             stuck_count = len(stuck.data or [])
             checks["stuck_executions"] = stuck_count
             if stuck_count > 5:
                 score -= 15
-        except Exception:
-            pass
+        except Exception as e:
+            checks["stuck_executions"] = "unknown"
+            check_errors["stuck_executions"] = str(e)[:200]
+            logger.warning(f"[health] stuck-executions check failed: {e}")
+            score -= 5
 
-        # 3. Check failure rate
+        # 3. Check failure rate (unknown is not healthy)
         try:
             all_execs = sb.table("agent_executions").select("id, status").execute()
             execs = all_execs.data or []
@@ -579,25 +585,36 @@ async def _get_system_health(input_data: dict) -> dict:
                 score -= 20
             elif fail_rate > 0.05:
                 score -= 10
-        except Exception:
-            pass
+        except Exception as e:
+            checks["failure_rate"] = "unknown"
+            check_errors["failure_rate"] = str(e)[:200]
+            logger.warning(f"[health] failure-rate check failed: {e}")
+            score -= 5
 
-        # 4. Check pending reports backlog
+        # 4. Check pending reports backlog (unknown is not healthy)
         try:
             reports = sb.table("reports").select("id").in_("status", [None, "pending"]).execute()
             pending = len(reports.data or [])
             checks["pending_reports"] = pending
             if pending > 20:
                 score -= 10
-        except Exception:
-            pass
+        except Exception as e:
+            checks["pending_reports"] = "unknown"
+            check_errors["pending_reports"] = str(e)[:200]
+            logger.warning(f"[health] pending-reports check failed: {e}")
+            score -= 5
 
-        return {
+        degraded = bool(check_errors)
+        result = {
             "score": max(0, score),
             "checks": checks,
             "database_healthy": checks.get("database", False),
             "measured_at": datetime.now(timezone.utc).isoformat(),
         }
+        if degraded:
+            result["degraded"] = True
+            result["check_errors"] = check_errors
+        return result
     except Exception as e:
         return {"score": 0, "error": str(e)}
 

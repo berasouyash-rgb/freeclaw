@@ -15,7 +15,9 @@ import {
 import supabase from "./_db-client.js";
 import { sanitizeError } from "./_error.js";
 import { EVENT_TYPES, emitEventAndBridge } from "./_events.js";
-import { serverModerate } from "./_moderation.js";
+import { recordSafetyRepost, checkSafetyRepost } from "./_moderation.js";
+import { evaluateContentDeep } from "./_safety-pipeline.js";
+import { strikeSlangAbuse } from "./_reports.js";
 
 export default async function handler(req, res) {
 	cors(res, req);
@@ -155,31 +157,65 @@ export default async function handler(req, res) {
 					);
 				}
 			}
-			const body = maskProfanity(clean(b.body, 500));
-			if (body.length < 2)
+			// Moderate the RAW text and store the masked text: masking first
+			// would blind serverModerate (a masked slur no longer matches
+			// SLURS and would publish instead of blocking).
+			const rawBody = clean(b.body, 500);
+			if (rawBody.length < 2)
 				return res.status(400).json({ error: "Comment is too short." });
-			// Server-side PII/safety gate — comments can leak addresses, phones, emails too.
+			// Safety repost guard (see _posts.js): previously removed content
+			// can't return with trivial changes; attempts feed repeat-offender evidence.
+			const repost = await checkSafetyRepost(supabase, rawBody);
+			if (repost.blocked) {
+				await auditLog(
+					"moderation",
+					"comment_repost_blocked",
+					`${author_id}: ${rawBody.slice(0, 60)} [rule=${repost.rule} attempts=${repost.attempts}]`,
+				);
+				return res.status(403).json({
+					error: "This content was previously removed for safety reasons and cannot be reposted.",
+					code: "SAFETY_REPOST_BLOCKED",
+				});
+			}
+			// Server-side PII/safety gate — verdict from the unified safety
+			// pipeline (same blocked set the old inline check computed).
 			if (!is_admin_msg) {
-				const mod = serverModerate("", body);
-				// Weak privacy signals (room-level addresses, PIN codes) also block
-				// comments — unlike posts they have no pending_review queue to hold them.
-				if (mod.blocked || mod.flags.some((f) => f.type === "privacy_weak")) {
-					const isPII = mod.flags.some(
+				// DEEP path: deterministic gates + deterministic contextual scan
+				// PLUS a real model judging meaning (bounded ~10s, skips when
+				// already blocked). The model catches what no list can —
+				// politely-phrased threats, unnamed targets, contextual PII —
+				// and can only ADD flags, never clear the floor.
+				const decision = await evaluateContentDeep(rawBody, "direct", null, {
+					taskKey: "comments.write",
+				});
+				if (decision.blocked) {
+					const isPII = decision.flags.some(
 						(f) => f.type === "privacy" || f.type === "privacy_weak",
 					);
 					await auditLog(
 						"moderation",
 						"comment_blocked",
-						`${author_id}: ${body.slice(0, 60)} [${mod.flags.map((f) => f.type).join(", ")}]`,
+						`${author_id}: ${rawBody.slice(0, 60)} [${decision.flags.map((f) => f.type).join(", ")}]`,
 					);
+					await recordSafetyRepost(
+						supabase,
+						rawBody,
+						(decision.flags[0] || {}).type || "policy",
+					);
+					// Slang auto-strike (same rule as posts).
+					if (decision.flags.some((f) => f.type === "profanity")) {
+						await strikeSlangAbuse(author_id, "comment", rawBody);
+					}
 					return res.status(403).json({
 						error: isPII
 							? "Personal information detected (address, phone, or email). This is an anonymous platform — please remove personal details."
-							: "This comment violates our safety guidelines and cannot be posted.",
-						code: isPII ? "PII_BLOCKED" : "CONTENT_BLOCKED",
+							: decision.message,
+						code: isPII ? "PII_BLOCKED" : decision.code,
 					});
 				}
 			}
+			// Store the masked text; every gate above already ran on the raw text.
+			const body = maskProfanity(rawBody);
 			// Respect locked posts + private-post ownership in ONE lookup
 			const { data: post } = await supabase
 				.from("posts")
@@ -245,14 +281,18 @@ export default async function handler(req, res) {
 				return res.status(403).json({ error: "Not authorized" });
 			const patch = {};
 			if (b.body !== undefined) {
-				patch.body = maskProfanity(clean(b.body, 500));
+				// Moderate raw, store masked (see POST path above).
+				patch.rawBody = clean(b.body, 500);
 				patch.edited = true;
 			}
-			// Re-moderate edited comments — never let PII leak through an edit either.
-			if (patch.body !== undefined) {
-				const mod = serverModerate("", patch.body);
-				if (mod.blocked || mod.flags.some((f) => f.type === "privacy_weak")) {
-					const isPII = mod.flags.some(
+			// Re-moderate edited comments — verdict from the unified safety
+			// pipeline (same blocked set; edit-specific 403 wording kept).
+			if (patch.rawBody !== undefined) {
+				const decision = await evaluateContentDeep(patch.rawBody, "direct", null, {
+					taskKey: "comments.edit",
+				});
+				if (decision.blocked) {
+					const isPII = decision.flags.some(
 						(f) => f.type === "privacy" || f.type === "privacy_weak",
 					);
 					return res.status(403).json({
@@ -262,6 +302,12 @@ export default async function handler(req, res) {
 						code: isPII ? "PII_BLOCKED" : "CONTENT_BLOCKED",
 					});
 				}
+			}
+			// Mask for storage only after the raw text passes moderation.
+			// rawBody must never reach the database.
+			if (patch.rawBody !== undefined) {
+				patch.body = maskProfanity(patch.rawBody);
+				delete patch.rawBody;
 			}
 			if (typeof b.deleted === "boolean") patch.deleted = b.deleted;
 			if (admin && typeof b.hidden === "boolean") patch.hidden = b.hidden;

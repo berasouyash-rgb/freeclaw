@@ -81,6 +81,7 @@ function chainFor(table: string) {
 		eq: vi.fn().mockReturnThis(),
 		neq: vi.fn().mockReturnThis(),
 		ilike: vi.fn().mockReturnThis(),
+		or: vi.fn().mockReturnThis(),
 		in: vi.fn().mockReturnThis(),
 		order: vi.fn().mockReturnThis(),
 		limit: vi.fn().mockReturnThis(),

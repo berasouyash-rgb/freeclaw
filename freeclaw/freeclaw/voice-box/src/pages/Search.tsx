@@ -6,16 +6,18 @@ import {
 	MessageCircle,
 	MessageSquare,
 	Search as SearchIcon,
+	User,
 	X,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Link } from "react-router";
+import type { ReactNode } from "react";
+import { Link, useSearchParams } from "react-router";
 import { useCategories } from "../hooks/useCategories";
-import { api } from "../lib/api";
+import { api, hasAdminSession } from "../lib/api";
 import { CAT_EMOJI, STATUS_META, timeAgo } from "../lib/utils";
 
 type SearchResult = {
-	type: "post" | "comment" | "poll";
+	type: "post" | "comment" | "poll" | "user";
 	id: string;
 	title?: string;
 	body?: string;
@@ -34,11 +36,41 @@ const TYPE_OPTIONS = [
 	{ value: "posts", label: "Posts" },
 	{ value: "comments", label: "Comments" },
 	{ value: "polls", label: "Polls" },
+	{ value: "users", label: "Users" },
 ];
+
+// A result row is a link only when it has somewhere to go: user rows
+// resolve to the admin console, which is a dead-end login gate for
+// non-admins — render them as plain rows instead.
+function RowShell({
+	to,
+	className,
+	children,
+}: {
+	to: string | null;
+	className?: string;
+	children: ReactNode;
+}) {
+	if (to) {
+		return (
+			<Link to={to} className={className}>
+				{children}
+			</Link>
+		);
+	}
+	return <div className={className}>{children}</div>;
+}
 
 export default function Search() {
 	const categories = useCategories();
-	const [q, setQ] = useState("");
+	const [params] = useSearchParams();
+	const [q, setQ] = useState(params.get("q") ?? "");
+	// Hashtag chips link here as /search?q=%23tag — adopt the URL query on
+	// arrival (and on back/forward) so the link actually searches.
+	useEffect(() => {
+		const v = params.get("q") ?? "";
+		setQ((prev) => (prev === v ? prev : v));
+	}, [params]);
 	const [type, setType] = useState("all");
 	const [category, setCategory] = useState("all");
 	const [status, setStatus] = useState("all");
@@ -47,6 +79,10 @@ export default function Search() {
 	const [loading, setLoading] = useState(false);
 	const [error, setError] = useState("");
 	const [searched, setSearched] = useState(false);
+	// Monotonic run id: debounced keystrokes fire overlapping requests and
+	// a slow earlier response must never overwrite newer results (stale
+	// results for the wrong query).
+	const runSeqRef = useRef(0);
 
 	const run = useCallback(
 		async (
@@ -57,6 +93,7 @@ export default function Search() {
 				status: string;
 		}>,
 		) => {
+			const seq = ++runSeqRef.current;
 			const params = new URLSearchParams();
 			const query = (overrides?.q ?? q).trim();
 			const t = overrides?.type ?? type;
@@ -74,9 +111,11 @@ export default function Search() {
 				const data = await api.get<{ results: SearchResult[]; total: number }>(
 					`/api/search?${params.toString()}`,
 				);
+				if (seq !== runSeqRef.current) return; // superseded by a newer run
 				setResults(data.results || []);
 				setTotal(data.total || 0);
 			} catch (e: unknown) {
+				if (seq !== runSeqRef.current) return;
 				setError(e instanceof Error ? e.message : "Search failed");
 				setResults([]);
 				setTotal(0);
@@ -125,27 +164,28 @@ export default function Search() {
 	) => {
 		setter(v);
 		clearTimeout(debounceRef.current);
-		debounceRef.current = setTimeout(() => run({ [key]: v }).catch(() => {}), 200);
-	};
-
-	const typeLabel = (r: SearchResult) =>
-		r.type === "poll"
-			? r.ptype === "ranked"
+		debounceRef.current = setTimeout(() => run({ [key]: v }).catch((err: unknown) => { console.error("[search] background refresh failed", { error: err instanceof Error ? err.message : String(err) }); }), 200);
+	};const typeLabel = (r: SearchResult) =>
+	r.type === "poll"
+		? r.ptype === "ranked"
 				? "Ranked poll"
 				: "Poll"
-			: r.type === "comment"
-				? "Comment"
+		: r.type === "comment"
+			? "Comment"
+			: r.type === "user"
+				? "User"
 				: "Post";
 
-	const breakdown = useMemo(() => {
-		const counts = { posts: 0, comments: 0, polls: 0 };
-		for (const r of results) {
-			if (r.type === "post") counts.posts += 1;
-			else if (r.type === "comment") counts.comments += 1;
-			else counts.polls += 1;
-		}
-		return counts;
-	}, [results]);
+const breakdown = useMemo(() => {
+	const counts = { posts: 0, comments: 0, polls: 0, users: 0 };
+	for (const r of results) {
+		if (r.type === "post") counts.posts += 1;
+		else if (r.type === "comment") counts.comments += 1;
+		else if (r.type === "user") counts.users += 1;
+		else counts.polls += 1;
+	}
+	return counts;
+}, [results]);
 
 	// Insights-style stat tiles — only after a successful search with matches.
 	const tiles =
@@ -174,6 +214,12 @@ export default function Search() {
 						value: breakdown.polls,
 						icon: BarChart3,
 						sub: "active polls",
+					},
+					{
+						label: "Users",
+						value: breakdown.users,
+						icon: User,
+						sub: "user profiles",
 					},
 				]
 			: [];
@@ -351,29 +397,39 @@ export default function Search() {
 								? `/post/${r.id}`
 								: r.type === "comment"
 									? `/post/${r.post_id}`
-									: "/polls";
+									: r.type === "user"
+										? hasAdminSession()
+											? "/admin"
+											: null
+										: "/polls";
 						const title =
 							r.type === "post"
 								? r.title
 								: r.type === "poll"
 									? r.title
-									: r.body;
+									: r.type === "user"
+										? r.id
+										: r.body;
 						const sub =
 							r.type === "post"
 								? `${CAT_EMOJI[r.category || ""] || "📌"} ${r.category || ""} · ${STATUS_META[r.status || ""]?.label || r.status}`
 								: r.type === "comment"
 									? "Comment on a post"
-									: r.ptype === "ranked"
-										? "Ranked poll"
-										: "Poll";
+									: r.type === "user"
+										? `${r.description || "User"} · ${timeAgo(r.created_at)}`
+										: r.ptype === "ranked"
+											? "Ranked poll"
+											: "Poll";
 						const Icon =
 							r.type === "post"
 								? FileText
 								: r.type === "comment"
 									? MessageCircle
-									: BarChart3;
+									: r.type === "user"
+										? User
+										: BarChart3;
 						return (
-							<Link
+							<RowShell
 								key={`${r.type}-${r.id}`}
 								to={href}
 								className="card card-hover p-4 block vb-rise"
@@ -399,7 +455,7 @@ export default function Search() {
 										</p>
 									</div>
 								</div>
-							</Link>
+							</RowShell>
 						);
 					})}
 				</div>

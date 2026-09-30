@@ -2,6 +2,7 @@
 // Receives real JS errors from the frontend via POST /api/errors and
 // aggregates them for the admin dashboard. Every error comes from a
 // real browser — nothing is simulated.
+import { isAdmin } from "./_auth.js";
 import { securityCheck } from "./_security.js";
 
 // In-memory aggregation
@@ -11,8 +12,14 @@ const MAX_RECENT = 100;
 const MAX_SAMPLES = 3; // keep up to 3 stack samples per unique error
 
 export default async function handler(req, res) {
-	const identity = securityCheck(req);
-	if (identity === null) return res.status(429).json({ error: "rate limited" });
+	// securityCheck returns { ok, status, error, retryAfter } — enforce it
+	// properly instead of comparing the whole object to null (which never
+	// matched, so abusive traffic was never actually limited).
+	const sec = securityCheck(req);
+	if (!sec.ok) {
+		if (sec.retryAfter) res.setHeader("Retry-After", String(sec.retryAfter));
+		return res.status(sec.status || 429).json({ error: sec.error || "rate limited" });
+	}
 
 	// ── POST /api/errors — receive errors from frontend ──────────
 	if (req.method === "POST") {
@@ -68,7 +75,15 @@ export default async function handler(req, res) {
 	}
 
 	// ── GET /api/errors — admin dashboard reads aggregated errors ──
+	// AUTHORIZATION: the aggregate is internal diagnostics — raw error
+	// messages, source filenames, full stack traces + URLs, and per-device
+	// fingerprints. An unauthenticated read leaked all of it to any caller.
+	// POST above stays open on purpose: real browsers report their own
+	// errors. Only the read is gated.
 	if (req.method === "GET") {
+		if (!(await isAdmin(req)))
+			return res.status(403).json({ error: "Admin only" });
+
 		const sortByCount = [..._errors.values()]
 			.sort((a, b) => b.count - a.count)
 			.slice(0, 50);

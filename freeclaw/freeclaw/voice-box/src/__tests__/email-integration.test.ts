@@ -76,8 +76,8 @@ describe("Email Notification Integration", () => {
         report_url: "https://voicebox.app/post/xyz789",
       });
 
-      const call = mockSend.mock.calls[0][2];
-      expect(call.message).toContain("https://voicebox.app/post/xyz789");
+      const call = mockSend.mock.calls[0]?.[2] as { message: string } | undefined;
+      expect(call?.message).toContain("https://voicebox.app/post/xyz789");
     });
 
     it("includes solved status in subject", async () => {
@@ -89,8 +89,8 @@ describe("Email Notification Integration", () => {
         report_url: "https://voicebox.app/post/123",
       });
 
-      const call = mockSend.mock.calls[0][2];
-      expect(call.subject).toContain("Solved");
+      const call = mockSend.mock.calls[0]?.[2] as { subject: string } | undefined;
+      expect(call?.subject).toContain("Solved");
     });
   });
 
@@ -120,8 +120,8 @@ describe("Email Notification Integration", () => {
         notification_url: "https://voicebox.app/post/poll456",
       });
 
-      const call = mockSend.mock.calls[0][2];
-      expect(call.message).toContain("https://voicebox.app/post/poll456");
+      const call = mockSend.mock.calls[0]?.[2] as { message: string } | undefined;
+      expect(call?.message).toContain("https://voicebox.app/post/poll456");
     });
   });
 
@@ -134,9 +134,9 @@ describe("Email Notification Integration", () => {
         alert_message: "Unauthorized access attempt",
       });
 
-      const call = mockSend.mock.calls[0][2];
-      expect(call.subject).toContain("CRITICAL");
-      expect(call.message).toContain("Security breach detected");
+      const call = mockSend.mock.calls[0]?.[2] as { subject: string; message: string } | undefined;
+      expect(call?.subject).toContain("CRITICAL");
+      expect(call?.message).toContain("Security breach detected");
     });
 
     it("sends warning alert with WARNING label", async () => {
@@ -147,8 +147,8 @@ describe("Email Notification Integration", () => {
         alert_message: "Error rate exceeded threshold",
       });
 
-      const call = mockSend.mock.calls[0][2];
-      expect(call.subject).toContain("WARNING");
+      const call = mockSend.mock.calls[0]?.[2] as { subject: string } | undefined;
+      expect(call?.subject).toContain("WARNING");
     });
 
     it("sends info alert with INFO label", async () => {
@@ -159,8 +159,8 @@ describe("Email Notification Integration", () => {
         alert_message: "System update at 2am",
       });
 
-      const call = mockSend.mock.calls[0][2];
-      expect(call.subject).toContain("INFO");
+      const call = mockSend.mock.calls[0]?.[2] as { subject: string } | undefined;
+      expect(call?.subject).toContain("INFO");
     });
 
     it("includes alert URL when provided", async () => {
@@ -172,8 +172,8 @@ describe("Email Notification Integration", () => {
         alert_url: "https://voicebox.app/admin/alerts/123",
       });
 
-      const call = mockSend.mock.calls[0][2];
-      expect(call.message).toContain("https://voicebox.app/admin/alerts/123");
+      const call = mockSend.mock.calls[0]?.[2] as { message: string } | undefined;
+      expect(call?.message).toContain("https://voicebox.app/admin/alerts/123");
     });
   });
 

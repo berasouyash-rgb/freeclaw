@@ -328,7 +328,6 @@ Return ONLY valid JSON.`;
 		const result = await callLLMChain(
 			"You are a school complaint resolution AI assistant.",
 			prompt,
-			{ profile: "sentiment-analysis" },
 		);
 		if (result?.text) {
 			const cleaned = result.text
@@ -341,6 +340,83 @@ Return ONLY valid JSON.`;
 		/* fall through to heuristic */
 	}
 	return null;
+}
+
+/**
+ * Analyze one complaint and cache the resolution — the real POST path.
+ * Lifted from the handler so the Resolution Verification worker (#13) runs
+ * the exact same code, never a shadow implementation. The original handler
+ * behavior is identical (same reads, same cache, same audit row).
+ */
+export async function analyzePost(postId, { actor = "admin" } = {}) {
+	// Fetch the post
+	const { data: post, error: postErr } = await supabase
+		.from("posts")
+		.select("*")
+		.eq("id", postId)
+		.maybeSingle();
+	if (postErr || !post) return { ok: false, error: "Post not found" };
+
+	const combinedText = `${post.title} ${post.description || ""}`;
+	const department = classifyDepartment(combinedText);
+	const priority = classifyPriority(combinedText);
+	const similar = await findSimilarComplaints(
+		post.title,
+		post.description || "",
+		post.category,
+	);
+
+	// Try LLM analysis first, fall back to heuristic
+	let llmAnalysis = null;
+	try {
+		llmAnalysis = await analyzeWithLLM(post);
+	} catch {
+		/* use heuristic */
+	}
+
+	const resolution = {
+		post_id: postId,
+		problem_summary: post.title,
+		root_cause_analysis:
+			llmAnalysis?.root_cause_analysis ||
+			`This is a ${department.toLowerCase()} issue categorized as ${priority} priority. The complaint relates to: ${post.title}`,
+		similar_complaints: similar.map((s) => ({
+			id: s.id,
+			title: s.title,
+			category: s.category,
+			similarity: s.similarity,
+			status: s.status,
+		})),
+		resolution_steps:
+			llmAnalysis?.resolution_steps ||
+			generateResolutionSteps(department, priority),
+		priority_level: priority,
+		estimated_resolution_time:
+			llmAnalysis?.estimated_resolution_time ||
+			estimateResolutionTime(priority, department),
+		recommended_department: department,
+		follow_up_checklist:
+			llmAnalysis?.follow_up_checklist ||
+			generateFollowUpChecklist(department),
+		analyzed_at: new Date().toISOString(),
+		analyzer: llmAnalysis ? "llm" : "heuristic",
+	};
+
+	// Cache the result
+	await supabase
+		.from("settings")
+		.upsert(
+			{ key: `ai_resolution:${postId}`, value: resolution },
+			{ onConflict: "key" },
+		);
+
+	await auditLog(
+		actor,
+		"ai_resolution",
+		`Analyzed complaint: ${postId} → ${department}/${priority}`,
+	);
+
+	return { ok: true, resolution };
 }
 
 export default async function handler(req, res) {
@@ -372,75 +448,9 @@ export default async function handler(req, res) {
 			if (!(await isAdmin(req)))
 				return res.status(403).json({ error: "Admin only" });
 
-			// Fetch the post
-			const { data: post, error: postErr } = await supabase
-				.from("posts")
-				.select("*")
-				.eq("id", postId)
-				.maybeSingle();
-			if (postErr || !post)
-				return res.status(404).json({ error: "Post not found" });
-
-			const combinedText = `${post.title} ${post.description || ""}`;
-			const department = classifyDepartment(combinedText);
-			const priority = classifyPriority(combinedText);
-			const similar = await findSimilarComplaints(
-				post.title,
-				post.description || "",
-				post.category,
-			);
-
-			// Try LLM analysis first, fall back to heuristic
-			let llmAnalysis = null;
-			try {
-				llmAnalysis = await analyzeWithLLM(post);
-			} catch {
-				/* use heuristic */
-			}
-
-			const resolution = {
-				post_id: postId,
-				problem_summary: post.title,
-				root_cause_analysis:
-					llmAnalysis?.root_cause_analysis ||
-					`This is a ${department.toLowerCase()} issue categorized as ${priority} priority. The complaint relates to: ${post.title}`,
-				similar_complaints: similar.map((s) => ({
-					id: s.id,
-					title: s.title,
-					category: s.category,
-					similarity: s.similarity,
-					status: s.status,
-				})),
-				resolution_steps:
-					llmAnalysis?.resolution_steps ||
-					generateResolutionSteps(department, priority),
-				priority_level: priority,
-				estimated_resolution_time:
-					llmAnalysis?.estimated_resolution_time ||
-					estimateResolutionTime(priority, department),
-				recommended_department: department,
-				follow_up_checklist:
-					llmAnalysis?.follow_up_checklist ||
-					generateFollowUpChecklist(department),
-				analyzed_at: new Date().toISOString(),
-				analyzer: llmAnalysis ? "llm" : "heuristic",
-			};
-
-			// Cache the result
-			await supabase
-				.from("settings")
-				.upsert(
-					{ key: `ai_resolution:${postId}`, value: resolution },
-					{ onConflict: "key" },
-				);
-
-			await auditLog(
-				"admin",
-				"ai_resolution",
-				`Analyzed complaint: ${postId} → ${department}/${priority}`,
-			);
-
-			return res.status(200).json(resolution);
+			const r = await analyzePost(postId);
+			if (!r.ok) return res.status(404).json({ error: r.error });
+			return res.status(200).json(r.resolution);
 		}
 
 		return res.status(405).json({ error: "Method not allowed" });

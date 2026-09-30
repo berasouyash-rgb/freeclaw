@@ -3,6 +3,7 @@
 // Stores events in settings.event_log for event-triggered agents to consume.
 // Also triggers immediate agent processing for critical events.
 import supabase from "./_db-client.js";
+import { logger } from "./_observability.js";
 
 const MAX_EVENTS = 200;
 const EVENT_TYPES = {
@@ -50,8 +51,38 @@ const EVENT_AGENT_MAP = {
  * Emit an event to the event bus.
  * Stores the event and triggers relevant agents.
  */
+/**
+ * Generate a dedup key from event type and data.
+ * Prevents duplicate events within the same second.
+ */
+function dedupKey(type, data) {
+	const dataStr = JSON.stringify(data);
+	const hash = dataStr.length > 100 ? dataStr.slice(0, 100) : dataStr;
+	return `${type}:${hash}`;
+}
+
+// In-memory dedup cache (resets on cold start — acceptable for event dedup)
+const _recentEvents = new Map();
+const DEDUP_WINDOW_MS = 5000; // 5-second dedup window
+
 export async function emitEvent(type, data = {}) {
 	try {
+		// Dedup: skip if same event was emitted within the dedup window
+		const dk = dedupKey(type, data);
+		const now = Date.now();
+		const lastSeen = _recentEvents.get(dk);
+		if (lastSeen && (now - lastSeen) < DEDUP_WINDOW_MS) {
+			return null; // duplicate suppressed
+		}
+		_recentEvents.set(dk, now);
+
+		// Cleanup old dedup entries periodically
+		if (_recentEvents.size > 500) {
+			for (const [key, ts] of _recentEvents) {
+				if (now - ts > DEDUP_WINDOW_MS * 2) _recentEvents.delete(key);
+			}
+		}
+
 		const event = {
 			type,
 			data,
@@ -85,8 +116,15 @@ export async function emitEvent(type, data = {}) {
 		const agentIds = EVENT_AGENT_MAP[type] || [];
 		if (agentIds.length > 0) {
 			triggerAgents(agentIds, event).catch((err) =>
-				console.warn(`Event agent trigger failed for ${type}:`, err.message),
+				logger.warn("events", `Agent trigger failed for ${type}`, { error: err.message }),
 			);
+		}
+
+		// 3. Check for incident-worthy events (non-blocking)
+		if (["system.alert", "security.event"].includes(type)) {
+			import("./_incidents.js").then(({ correlateEvent }) =>
+				correlateEvent(type, data).catch(() => {}),
+			).catch(() => {});
 		}
 
 		return event;
@@ -136,9 +174,7 @@ async function triggerAgents(agentIds, event) {
 				.insert({ key: "pending_agent_events", value: { triggers: trimmed } });
 		}
 
-		console.log(
-			`Event ${event.type}: queued ${agentIds.length} agent triggers for consumption`,
-		);
+		logger.info("events", `Queued ${agentIds.length} agent triggers`, { event_type: event.type });
 	} catch (err) {
 		console.warn(`Failed to queue agent triggers:`, err.message);
 	}
@@ -246,14 +282,21 @@ export async function getEventStats() {
 // This is fire-and-forget: if the workforce is down, events are not lost
 // because they're already persisted in the Node.js event_log.
 
-const WORKFORCE_URL = process.env.WORKFORCE_URL || "http://localhost:8000";
+const WORKFORCE_URL = (
+	process.env.WORKFORCE_URL ||
+	process.env.WORKFORCE_BASE_URL ||
+	""
+).trim();
 let _workforceAvailable = null; // null = unknown, true/false = cached
 
 /**
  * Push an event to the Python workforce event bus.
  * Non-blocking, fails silently if workforce is down.
+ * The bridge is opt-in: when no URL is configured nothing is probed —
+ * events stay persisted in the Node.js event_log.
  */
 async function pushToWorkforce(type, data = {}) {
+	if (!WORKFORCE_URL) return;
 	try {
 		// Quick connectivity check (cached for 60s)
 		if (_workforceAvailable === false) return;
@@ -261,9 +304,16 @@ async function pushToWorkforce(type, data = {}) {
 		const controller = new AbortController();
 		const timer = setTimeout(() => controller.abort(), 3000);
 
+		// FIX #4 (AUDIT): workforce API now requires an admin token.
+		// Build headers conditionally — a fetch header with value
+		// `undefined` throws before the request is even sent.
+		const wfHeaders = { "Content-Type": "application/json" };
+		if (process.env.ADMIN_TOKEN)
+			wfHeaders["X-Admin-Token"] = process.env.ADMIN_TOKEN;
+
 		const res = await fetch(`${WORKFORCE_URL}/api/workforce/events`, {
 			method: "POST",
-			headers: { "Content-Type": "application/json" },
+			headers: wfHeaders,
 			body: JSON.stringify({
 				event_type: type,
 				data: { ...data, source: "nodejs_api" },

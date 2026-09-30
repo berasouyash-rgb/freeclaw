@@ -1,11 +1,11 @@
 // Enhanced Logs — Master Activity Timeline
 // Shows both admin audit logs AND all 110 agents' events in one chronological view
 
-import { Loader2 } from "lucide-react";
+import { Loader2, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { useInfiniteScroll } from "../../hooks/useInfiniteScroll";
 import { api } from "../../lib/api";
-import { downloadFile, fmtDate, safeStringify, toCSV } from "../../lib/utils";
+import { downloadFile, fmtDate, safeStringify } from "../../lib/utils";
 
 interface AgentActivity {
 	id: string;
@@ -50,7 +50,9 @@ function getAgentColor(agentId: string): string {
 }
 
 function timeAgo(dateStr: string): string {
+	if (!dateStr) return "—";
 	const diff = Date.now() - new Date(dateStr).getTime();
+	if (!Number.isFinite(diff)) return "—";
 	if (diff < 60000) return "just now";
 	if (diff < 3600000) return `${Math.floor(diff / 60000)}m ago`;
 	if (diff < 86400000) return `${Math.floor(diff / 3600000)}h ago`;
@@ -70,8 +72,90 @@ function getSeverityColor(severity: string): string {
 	}
 }
 
+// Verification receipt: structured proof attached to safety-enforcement audit
+// rows (post removals, comment hides). Unknown or legacy formats return null
+// and render as raw text — the timeline never drops a row it can't parse.
+export interface VerificationReceipt {
+	kind: "post_removal" | "comment_hide";
+	targetId: string;
+	verified: boolean;
+	rule: string;
+	extra: string;
+	exposureMs: number | null;
+	legs: string;
+}
+
+const POST_REMOVAL_RE = /^(.*?): (.*) \[exposure_ms=(.*?)\]$/;
+const COMMENT_HIDE_RE =
+	/^(.*?) by (.*?) \((.*?), prior hidden 7d: (.*?)\) \[rule=(.*?) exposure_ms=(.*?) row=(.*?) public=(.*?)\]$/;
+
+export function parseVerificationReceipt(
+	action: string,
+	detail: string,
+): VerificationReceipt | null {
+	if (
+		action === "post_removal_verified" ||
+		action === "post_removal_unverified"
+	) {
+		const m = POST_REMOVAL_RE.exec(detail || "");
+		if (!m) return null;
+		return {
+			kind: "post_removal",
+			targetId: m[1] ?? "",
+			verified: action === "post_removal_verified",
+			rule: "",
+			extra: m[2] ?? "",
+			exposureMs: m[3] === "null" ? null : Number(m[3]),
+			legs: "",
+		};
+	}
+	if (action === "comment_hidden") {
+		const m = COMMENT_HIDE_RE.exec(detail || "");
+		if (!m) return null;
+		return {
+			kind: "comment_hide",
+			targetId: m[1] ?? "",
+			verified: true,
+			rule: m[5] ?? "",
+			extra: m[3] ?? "",
+			exposureMs: m[6] === "null" ? null : Number(m[6]),
+			legs: `row=${m[7] ?? ""} public=${m[8] ?? ""}`,
+		};
+	}
+	return null;
+}
+
+function fmtExposure(ms: number | null): string {
+	if (ms == null || !Number.isFinite(ms)) return "n/a";
+	if (ms < 1000) return `${ms}ms`;
+	if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`;
+	return `${Math.round(ms / 60000)}m`;
+}
+
+function ReceiptRow({ receipt }: { receipt: VerificationReceipt }) {
+	const color = receipt.verified ? "#4CAF50" : "#F44336";
+	return (
+		<span className="flex items-center gap-2 flex-1 min-w-0 text-xs">
+			<span
+				className="chip !text-[10px] shrink-0"
+				style={{ borderColor: color, color }}
+			>
+				{receipt.verified ? "VERIFIED" : "FAILED"}
+			</span>
+			<span className="text-ink2 truncate">
+				{receipt.kind === "post_removal"
+					? `Post ${receipt.targetId}`
+					: `Comment ${receipt.targetId}`}
+				{receipt.rule ? ` · ${receipt.rule}` : ""}
+				{receipt.extra ? ` · ${receipt.extra}` : ""}
+				{receipt.legs ? ` · ${receipt.legs}` : ""}
+				{` · exposed ${fmtExposure(receipt.exposureMs)}`}
+			</span>
+		</span>
+	);
+}
+
 export default function Logs() {
-	const [allLogs, setAllLogs] = useState<AuditLog[]>([]);
 	const [agentActivities, setAgentActivities] = useState<AgentActivity[]>([]);
 	const [activeTab, setActiveTab] = useState<"audit" | "agents" | "combined">(
 		"combined",
@@ -95,10 +179,6 @@ export default function Logs() {
 				total: number;
 			}>(`/api/admin?${params}`);
 			const rows = result.data || [];
-			setAllLogs((prev) => {
-				const ids = new Set(prev.map((l) => l.id));
-				return [...prev, ...rows.filter((r: AuditLog) => !ids.has(r.id))];
-			});
 			return {
 				data: rows,
 				nextCursor: result.nextCursor,
@@ -115,6 +195,7 @@ export default function Logs() {
 		hasMore,
 		total,
 		sentinelRef,
+		softReset,
 	} = useInfiniteScroll<AuditLog>(fetchLogs, { limit: 30 });
 
 	// Fetch agent activities
@@ -138,21 +219,7 @@ export default function Logs() {
 		}
 	}, [activeTab, fetchAgentActivities]);
 
-	// Auto-refresh agent activities
-	useEffect(() => {
-		if (activeTab !== "agents" && activeTab !== "combined") return;
-		const onVis = () => {
-			if (!document.hidden) fetchAgentActivities();
-		};
-		document.addEventListener("visibilitychange", onVis);
-		const interval = setInterval(() => {
-			if (!document.hidden) fetchAgentActivities();
-		}, 30000);
-		return () => {
-			clearInterval(interval);
-			document.removeEventListener("visibilitychange", onVis);
-		};
-	}, [activeTab, fetchAgentActivities]);
+	// Agent activity is refreshed explicitly from the page action below.
 
 	// Combined timeline
 	const combinedTimeline =
@@ -202,10 +269,10 @@ export default function Logs() {
 	return (
 		<div>
 			{/* Header */}
-			<div className="flex items-center justify-between mb-4">
+			<div className="flex items-center justify-between mb-4 vb-tab-enter">
 				<div>
-					<h1 className="font-display font-bold text-xl">
-						Activity & Audit Log
+					<h1 className="font-display font-bold text-xl tracking-tight">
+						<span className="vb-gradient-text">Activity & Audit Log</span>
 					</h1>
 					<p className="text-xs text-ink3 mt-1">
 						Master timeline of all platform events — admin actions and 110 agent
@@ -213,14 +280,38 @@ export default function Logs() {
 					</p>
 				</div>
 				<div className="flex items-center gap-3">
+					<button
+						className="btn btn-ghost !text-xs"
+						onClick={() => {
+							softReset();
+							if (activeTab === "agents" || activeTab === "combined") {
+								void fetchAgentActivities();
+							}
+						}}
+						aria-label="Refresh activity log"
+					>
+						<RefreshCw size={12} className="mr-1" /> Refresh
+					</button>
 					<span className="text-xs text-ink3">
 						{total + agentActivities.length} total events
 					</span>
 					<button
 						className="btn btn-ghost !text-xs"
-						onClick={() =>
-							downloadFile("voicebox-audit.csv", toCSV(allLogs), "text/csv")
-						}
+						onClick={() => {
+							const esc = (v: unknown) => {
+								let s = String(v ?? "").replace(/"/g, '""');
+								if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`;
+								return `"${s}"`;
+							};
+							const fmtLog = (d: string) => { const dt = new Date(d); if (Number.isNaN(dt.getTime())) return ""; return `${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,"0")}-${String(dt.getDate()).padStart(2,"0")} ${String(dt.getHours()).padStart(2,"0")}:${String(dt.getMinutes()).padStart(2,"0")}`; };
+							const lines: string[] = [];
+							lines.push(["Voice Box — Activity & Audit Log Export", `Generated: ${new Date().toLocaleString()}`, `Total: ${logs.length + agentActivities.length} events`].map(esc).join(","));
+							lines.push("");
+							lines.push(["Type","Actor","Action","Detail","Severity","Timestamp"].map(esc).join(","));
+							for (const l of logs) { lines.push(["audit", l.actor, l.action, l.detail, "", fmtLog(l.created_at)].map(esc).join(",")); }
+							for (const a of agentActivities) { lines.push(["agent", a.agent_id, a.event_type, JSON.stringify(a.details), a.severity, fmtLog(a.created_at)].map(esc).join(",")); }
+							downloadFile(`voicebox-logs-${new Date().toISOString().slice(0,10)}.csv`, lines.join("\n"), "text/csv;charset=utf-8");
+						}}
 					>
 						Export CSV
 					</button>
@@ -286,9 +377,16 @@ export default function Logs() {
 				<div className="card divide-y divide-border">
 					{/* Combined Timeline */}
 					{activeTab === "combined" &&
+						(combinedTimeline.length === 0 ? (
+							<p className="p-8 text-center text-sm text-ink3">
+								No events recorded yet.
+							</p>
+						) : (
 						combinedTimeline.map((item) => (
 							<div
-								key={item.id}
+								// Audit and agent rows come from different tables:
+								// prefix the key so id collisions can't merge rows.
+								key={`${item.type}-${item.id}`}
 								className="px-4 py-2.5 flex items-center gap-3 text-sm"
 							>
 								{item.type === "agent" ? (
@@ -325,7 +423,17 @@ export default function Logs() {
 											{item.action}
 										</span>
 										<span className="text-xs text-ink2 truncate flex-1">
-											{item.detail}
+											{(() => {
+												const receipt = parseVerificationReceipt(
+													(item as { action: string; detail: string }).action,
+													(item as { action: string; detail: string }).detail,
+												);
+												return receipt ? (
+													<ReceiptRow receipt={receipt} />
+												) : (
+													<>{item.detail}</>
+												);
+											})()}
 										</span>
 									</>
 								)}
@@ -333,7 +441,8 @@ export default function Logs() {
 									{timeAgo(item.timestamp)}
 								</span>
 							</div>
-						))}
+						))))
+					}
 
 					{/* Agent Events Only */}
 					{activeTab === "agents" && (
@@ -398,7 +507,14 @@ export default function Logs() {
 										{l.action}
 									</span>
 									<span className="text-xs text-ink2 truncate flex-1">
-										{l.detail}
+										{(() => {
+											const receipt = parseVerificationReceipt(l.action, l.detail);
+											return receipt ? (
+												<ReceiptRow receipt={receipt} />
+											) : (
+												<>{l.detail}</>
+											);
+										})()}
 									</span>
 									<span className="text-[10px] text-ink3 shrink-0">
 										{fmtDate(l.created_at)}

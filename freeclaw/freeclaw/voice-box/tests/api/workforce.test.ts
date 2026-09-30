@@ -28,6 +28,8 @@ vi.mock("../../api/_error.js", () => ({
 }));
 vi.mock("../../api/_events.js", () => ({
 	emitEvent: vi.fn(async () => {}),
+	emitEventAndBridge: vi.fn(async () => {}),
+	EVENT_TYPES: {},
 }));
 vi.mock("../../api/_agent-team.js", () => ({
 	ALL_AGENTS: [],

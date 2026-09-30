@@ -146,3 +146,195 @@ export default async function handler(req, res) {
 		return res.status(500).json({ error: "Internal error" });
 	}
 }
+
+// ─── Performance Intelligence Worker (roster #31) ────────────────
+// REAL JOB: measure the platform's real performance signals — hot-path
+// table query latencies, the error rate from activity_logs, the stored
+// system_metrics p95 (written by the incident cron), and the durable
+// web-vitals store (vitals:durable) — then flag regressions past
+// tolerance against the previous snapshot. The snapshot persists to the
+// canonical settings KV (performance_intel:latest) and is verified by
+// re-read. Zero-arg (the cron loop calls the registry run with no
+// arguments). A failed read is recorded as an honest null, never as a
+// fabricated zero.
+const PERF_KEY = "performance_intel:latest";
+const LATENCY_TOLERANCE_MS = 200; // table/db latency climb past tolerance
+const ERROR_TOLERANCE = 5; // error rows/hour climb past tolerance
+const P95_TOLERANCE_MS = 500; // stored p95 climb (incident-cron warn level)
+const POOR_TOLERANCE = 5; // durable-vitals poor-rate climb (points)
+
+/** Error rows in the last hour, or `null` when the read fails — never a
+ *  fabricated zero (the read's own error is checked, not ignored). */
+async function countErrorsLastHour(nowMs) {
+	const oneHourAgo = new Date(nowMs - 3600000).toISOString();
+	try {
+		const { count, error } = await supabase
+			.from("activity_logs")
+			.select("*", { count: "exact", head: true })
+			.gte("created_at", oneHourAgo)
+			.like("action", "%error%");
+		if (error) return null;
+		return count || 0;
+	} catch {
+		return null;
+	}
+}
+
+export async function runPerformanceIntel({ nowMs = Date.now() } = {}) {
+	// 1. Real reads: hot-path table latencies + the db-latency probe.
+	const [postsQ, commentsQ, reportsQ, logsQ, dbQ] = await Promise.all([
+		measureQuery("posts"),
+		measureQuery("comments"),
+		measureQuery("reports"),
+		measureQuery("activity_logs"),
+		measureQuery("settings", "select"),
+	]);
+	const table_latencies = {
+		posts_ms: postsQ.latency_ms,
+		comments_ms: commentsQ.latency_ms,
+		reports_ms: reportsQ.latency_ms,
+		logs_ms: logsQ.latency_ms,
+	};
+
+	// 2. More real reads: error rate, stored p95, durable vitals.
+	const [error_rate_per_hour, api_p95_ms, vitals] = await Promise.all([
+		countErrorsLastHour(nowMs),
+		(async () => {
+			try {
+				const { data } = await supabase
+					.from("settings")
+					.select("value")
+					.eq("key", "system_metrics")
+					.maybeSingle();
+				return data?.value ? Number(data.value.api_p95_ms) || 0 : null;
+			} catch {
+				return null;
+			}
+		})(),
+		(async () => {
+			try {
+				const { data } = await supabase
+					.from("settings")
+					.select("value")
+					.eq("key", "vitals:durable")
+					.maybeSingle();
+				const out = {};
+				for (const [name, m] of Object.entries(data?.value?.metrics || {})) {
+					const total = Number(m?.total) || 0;
+					if (total <= 0) continue;
+					out[name] = Math.round(((Number(m?.poor) || 0) / total) * 100);
+				}
+				return out;
+			} catch {
+				return {};
+			}
+		})(),
+	]);
+
+	// 3. Previous snapshot — the regression baseline.
+	let previous = null;
+	try {
+		const { data } = await supabase
+			.from("settings")
+			.select("value")
+			.eq("key", PERF_KEY)
+			.maybeSingle();
+		previous = data?.value || null;
+	} catch {
+		previous = null;
+	}
+
+	// 4. Flag regressions past tolerance — a null prior/current read
+	//    never flags (an unknown is not a regression).
+	const regressions = [];
+	if (previous) {
+		for (const [name, now] of Object.entries(table_latencies)) {
+			const before = previous.table_latencies?.[name];
+			if (typeof before === "number" && now - before > LATENCY_TOLERANCE_MS)
+				regressions.push({ kind: "table_latency", name, before, now });
+		}
+		const dbBefore = previous.db_latency_ms;
+		if (
+			typeof dbBefore === "number" &&
+			dbQ.latency_ms - dbBefore > LATENCY_TOLERANCE_MS
+		)
+			regressions.push({
+				kind: "db_latency",
+				name: "database_latency_ms",
+				before: dbBefore,
+				now: dbQ.latency_ms,
+			});
+		if (
+			typeof previous.error_rate_per_hour === "number" &&
+			typeof error_rate_per_hour === "number" &&
+			error_rate_per_hour - previous.error_rate_per_hour > ERROR_TOLERANCE
+		)
+			regressions.push({
+				kind: "error_rate",
+				name: "error_rate_per_hour",
+				before: previous.error_rate_per_hour,
+				now: error_rate_per_hour,
+			});
+		if (
+			typeof previous.api_p95_ms === "number" &&
+			typeof api_p95_ms === "number" &&
+			api_p95_ms - previous.api_p95_ms > P95_TOLERANCE_MS
+		)
+			regressions.push({
+				kind: "p95",
+				name: "api_p95_ms",
+				before: previous.api_p95_ms,
+				now: api_p95_ms,
+			});
+		for (const [name, now] of Object.entries(vitals)) {
+			const before = previous.vitals?.[name];
+			if (typeof before === "number" && now - before > POOR_TOLERANCE)
+				regressions.push({ kind: "vitals_poor_rate", name, before, now });
+		}
+	}
+
+	const snapshot = {
+		generated_at: new Date(nowMs).toISOString(),
+		tables_measured: Object.keys(table_latencies).length + 1,
+		table_latencies,
+		db_latency_ms: dbQ.latency_ms,
+		error_rate_per_hour,
+		api_p95_ms,
+		vitals,
+		regressions,
+		regressed: regressions.length > 0,
+	};
+
+	// 5. Advisory row when a regression is flagged (best-effort, evidenced).
+	if (regressions.length > 0) {
+		try {
+			await supabase.from("activity_logs").insert({
+				actor: "worker:performance-intel",
+				action: "performance_regression_report",
+				detail: JSON.stringify({
+					regressions: regressions.slice(0, 10),
+					error_rate_per_hour,
+					api_p95_ms,
+				}).slice(0, 500),
+			});
+		} catch {
+			/* advisory; a failed log must not fabricate a report */
+		}
+	}
+
+	// 6. Persist + VERIFY by independent re-read.
+	try {
+		await supabase
+			.from("settings")
+			.upsert({ key: PERF_KEY, value: snapshot }, { onConflict: "key" });
+		const { data } = await supabase
+			.from("settings")
+			.select("value")
+			.eq("key", PERF_KEY)
+			.maybeSingle();
+		const persisted = data?.value?.generated_at === snapshot.generated_at;
+		return { ok: true, verified: persisted, snapshot };
+	} catch (err) {
+		return { ok: false, error: String(err?.message || err).slice(0, 200) };
+	}
+}

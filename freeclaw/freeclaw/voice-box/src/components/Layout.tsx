@@ -4,6 +4,7 @@
 	Bell,
 	Bookmark,
 	CheckCheck,
+	Ellipsis,
 	HelpCircle,
 	Home,
 	KanbanSquare,
@@ -26,20 +27,34 @@ import { useEffect, useRef, useState } from "react";
 import { Link, NavLink, Outlet, useLocation, useNavigate } from "react-router";
 import { useApp } from "../contexts/AppContext";
 import { useFocusTrap } from "../hooks/useFocusTrap";
+import { prefetchRouteForPath } from "../lib/routeChunks";
 import { api } from "../lib/api";
 import { lsGet, lsSet } from "../lib/identity";
 import { flushQueue, queuedCount } from "../lib/offline";
 import { timeAgo } from "../lib/utils";
 import CommandPalette from "./CommandPalette";
 import Tutorial from "./Tutorial";
+import VoiceLogo from "./VoiceLogo";
 
-const NAV = [
+const NAV_CORE = [
 	{ to: "/", label: "Feed", icon: Home, tour: "" },
-	{ to: "/search", label: "Search", icon: Search, tour: "" },
-	{ to: "/insights", label: "Insights", icon: Activity, tour: "" },
 	{ to: "/submit", label: "Submit", icon: PlusCircle, tour: "" },
-	{ to: "/suggestions", label: "Suggestions", icon: Lightbulb, tour: "" },
 	{ to: "/polls", label: "Polls", icon: BarChart3, tour: "nav-polls" },
+	{ to: "/communities", label: "Communities", icon: Users, tour: "" },
+	{ to: "/search", label: "Search", icon: Search, tour: "" },
+	{ to: "/chat", label: "Inbox", icon: MessageSquare, tour: "" },
+	{
+		to: "/activity",
+		label: "My Activity",
+		icon: UserCircle2,
+		tour: "nav-activity",
+	},
+];
+/** Low-traffic pages stay reachable but leave the primary nav: every extra
+ *  item costs scan time on every page view for zero school-day value. */
+const NAV_MORE = [
+	{ to: "/insights", label: "Insights", icon: Activity, tour: "" },
+	{ to: "/suggestions", label: "Suggestions", icon: Lightbulb, tour: "" },
 	{
 		to: "/leaderboard",
 		label: "Leaderboard",
@@ -52,18 +67,47 @@ const NAV = [
 		icon: KanbanSquare,
 		tour: "nav-board",
 	},
-	{ to: "/chat", label: "Inbox", icon: MessageSquare, tour: "" },
-	{
-		to: "/activity",
-		label: "My Activity",
-		icon: UserCircle2,
-		tour: "nav-activity",
-	},
 	{ to: "/saved", label: "Saved", icon: Bookmark, tour: "" },
-	{ to: "/communities", label: "Communities", icon: Users, tour: "" },
 	{ to: "/privacy", label: "Privacy", icon: ShieldCheck, tour: "nav-privacy" },
 	{ to: "/faq", label: "FAQ", icon: HelpCircle, tour: "" },
 ];
+/** Full nav (core + more) for anything that needs the complete list. */
+export const NAV_ALL = [...NAV_CORE, ...NAV_MORE];
+/** Bottom-bar tabs. Everything else lives in the More sheet — add a page
+ *  to NAV_CORE/NAV_MORE and it appears on mobile automatically. */
+const MOBILE_PRIMARY = new Set(["/", "/search", "/submit", "/chat", "/activity"]);
+
+/** Announcement dismissal is a per-banner 24h snooze (not a global mute).
+ *  Dismissing banner A stores {at: A.at}; banner B (different `at`) still
+ *  shows, and A returns after 24h. Legacy plain-`at` values (pre-snooze)
+ *  keep working as permanent dismissals of that banner. */
+const SNOOZE_KEY = "vb:dismissedAnnouncement";
+const SNOOZE_MS = 24 * 3600 * 1000;
+function isBannerDismissed(at: string): boolean {
+	// lsGet JSON-parses: it returns quoted-legacy ("at") and the snooze
+	// object, but yields "" for RAW legacy values (no quotes) — those are
+	// compared against the raw slot below instead of being forgotten.
+	const parsed = lsGet<string | { at?: string; until?: number }>(
+		SNOOZE_KEY,
+		"",
+	);
+	if (typeof parsed === "string" && parsed === at) return true;
+	if (
+		parsed &&
+		typeof parsed === "object" &&
+		parsed.at === at &&
+		typeof parsed.until === "number" &&
+		Date.now() < parsed.until
+	)
+		return true;
+	try {
+		const raw = window.localStorage.getItem(SNOOZE_KEY) ?? "";
+		if (raw === at) return true; // raw pre-snooze dismissal
+	} catch {
+		/* locked-down storage — parsed check above already ran */
+	}
+	return false;
+}
 
 export default function Layout() {
 	const {
@@ -72,7 +116,6 @@ export default function Layout() {
 		notifications,
 		markNotifsRead,
 		clearNotifs,
-		toasts,
 		anonId,
 		displayName,
 		profile,
@@ -81,6 +124,7 @@ export default function Layout() {
 	} = useApp();
 	const [notifOpen, setNotifOpen] = useState(false);
 	const [mobileOpen, setMobileOpen] = useState(false);
+	const [moreOpen, setMoreOpen] = useState(false);
 	const [announcement, setAnnouncement] = useState<{
 		kind?: string;
 		text: string;
@@ -91,6 +135,8 @@ export default function Layout() {
 	const [showTop, setShowTop] = useState(false);
 	const mobileDrawerRef = useRef<HTMLDivElement>(null);
 	useFocusTrap(mobileDrawerRef, { active: mobileOpen, onEscape: () => setMobileOpen(false) });
+	const moreSheetRef = useRef<HTMLDivElement>(null);
+	useFocusTrap(moreSheetRef, { active: moreOpen, onEscape: () => setMoreOpen(false) });
 
 	// Back-to-top visibility — show after scrolling 400px
 	useEffect(() => {
@@ -127,8 +173,7 @@ export default function Layout() {
 		api
 			.get<{ kind?: string; text: string; at: string }>("/api/announcement")
 			.then((a) => {
-				if (a && lsGet("vb:dismissedAnnouncement", "") !== a.at)
-					setAnnouncement(a);
+				if (a && !isBannerDismissed(a.at)) setAnnouncement(a);
 			})
 			.catch((e: unknown) => {
 				console.warn(
@@ -144,6 +189,7 @@ export default function Layout() {
 	useEffect(() => {
 		setMobileOpen(false);
 		setNotifOpen(false);
+		setMoreOpen(false);
 		// Smooth scroll to top on route change — prevents stale scroll position
 		window.scrollTo({ top: 0, behavior: "instant" });
 	}, [loc.pathname]);
@@ -170,11 +216,13 @@ export default function Layout() {
 
 	const sidebar = (
 		<nav className="flex flex-col gap-1" aria-label="Main navigation">
-			{NAV.map(({ to, label, icon: Icon, tour }) => (
+			{NAV_CORE.map(({ to, label, icon: Icon, tour }) => (
 				<NavLink
 					key={to}
 					to={to}
 					end={to === "/"}
+					onMouseEnter={() => prefetchRouteForPath(to)}
+					onFocus={() => prefetchRouteForPath(to)}
 					{...(tour ? { "data-tour": tour } : {})}
 					className={({ isActive }) =>
 						`flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-medium transition-all ${isActive ? "bg-accent-soft text-accent" : "text-ink2 hover:bg-surface2 hover:text-ink"}`
@@ -189,8 +237,59 @@ export default function Layout() {
 					)}
 				</NavLink>
 			))}
+			<details className="mt-1 rounded-xl">
+				<summary className="flex cursor-pointer items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-medium text-ink2 hover:bg-surface2 hover:text-ink">
+					<Menu size={18} strokeWidth={2.2} aria-hidden />
+					More
+				</summary>
+				<div className="flex flex-col gap-1 pt-1">
+					{NAV_MORE.map(({ to, label, icon: Icon, tour }) => (
+						<NavLink
+							key={to}
+							to={to}
+							end={to === "/"}
+							onMouseEnter={() => prefetchRouteForPath(to)}
+							onFocus={() => prefetchRouteForPath(to)}
+							{...(tour ? { "data-tour": tour } : {})}
+							className={({ isActive }) =>
+								`flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-medium transition-all ${isActive ? "bg-accent-soft text-accent" : "text-ink2 hover:bg-surface2 hover:text-ink"}`
+							}
+						>
+							<Icon size={18} strokeWidth={2.2} aria-hidden />
+							{label}
+						</NavLink>
+					))}
+				</div>
+			</details>
 		</nav>
 	);
+
+	// Banned IDs are blocked from browsing as well as writing (the
+	// server already rejects their writes). Suspended IDs keep browsing.
+	if (accountStatus?.banned) {
+		return (
+			<div className="min-h-dvh grid place-items-center px-4 bg-bg">
+				<div className="card w-full max-w-sm p-8 text-center vb-rise" role="alert">
+					<div className="text-4xl mb-3" aria-hidden>
+						🚫
+					</div>
+					<h1 className="font-display font-bold text-xl">Banned from Voice Box</h1>
+					<p className="text-sm text-ink2 mt-2 leading-relaxed">
+						This anonymous ID was permanently banned for breaking community
+						rules. Browsing, posting, commenting, and voting are all
+						disabled for it.
+					</p>
+					<p className="text-xs text-ink3 mt-3 leading-relaxed">
+						If you believe this is a mistake, contact us — an admin can
+						lift the ban from the Users panel.
+					</p>
+					<Link to="/contact" className="btn btn-primary w-full mt-5 !text-sm">
+						Contact support
+					</Link>
+				</div>
+			</div>
+		);
+	}
 
 	return (
 		<div className="min-h-screen flex">
@@ -206,14 +305,14 @@ export default function Layout() {
 					className="flex items-center gap-2.5 px-2 mb-8"
 					aria-label="Voice Box home"
 				>
-					<span className="w-9 h-9 rounded-xl bg-accent grid place-items-center text-white shadow-lg shadow-accent/30">
-						<Megaphone size={18} />
-					</span>
+					<VoiceLogo size={36} className="shadow-lg shadow-accent/30 rounded-xl" />
 					<span className="font-display font-bold text-lg tracking-tight">
 						Voice Box
 					</span>
 				</Link>
-				{sidebar}
+				<div className="flex-1 min-h-0 overflow-y-auto" data-testid="sidebar-scroll">
+					{sidebar}
+				</div>
 				<div className="mt-auto pt-6 border-t border-border">
 					<div className="text-[11px] text-ink3 px-2 leading-relaxed">
 						<div className="flex items-center gap-2 mb-2">
@@ -275,7 +374,7 @@ export default function Layout() {
 						onClick={() => setMobileOpen(false)}
 						aria-hidden
 					/>
-					<div className="absolute left-0 top-0 bottom-0 w-72 bg-surface p-5 pt-[max(1.25rem,env(safe-area-inset-top))] pb-[max(1.25rem,env(safe-area-inset-bottom))] mobile-drawer-enter">
+					<div className="absolute left-0 top-0 bottom-0 w-72 bg-surface p-5 pt-[max(1.25rem,env(safe-area-inset-top))] pb-[max(1.25rem,env(safe-area-inset-bottom))] mobile-drawer-enter flex flex-col">
 						<div className="flex items-center justify-between mb-6">
 							<span className="font-display font-bold text-lg">Voice Box</span>
 							<button
@@ -286,8 +385,10 @@ export default function Layout() {
 								<X size={18} />
 							</button>
 						</div>
-						{sidebar}
-						<Link to="/admin" className="mt-6 inline-block text-xs text-ink3">
+						<div className="flex-1 min-h-0 overflow-y-auto" data-testid="sidebar-scroll">
+							{sidebar}
+						</div>
+						<Link to="/admin" className="mt-auto pt-6 inline-block text-xs text-ink3 shrink-0">
 							Admin →
 						</Link>
 					</div>
@@ -311,12 +412,10 @@ export default function Layout() {
 							to="/"
 							className="lg:hidden flex items-center gap-2 font-display font-bold"
 						>
-							<span className="w-7 h-7 rounded-lg bg-accent grid place-items-center text-white">
-								<Megaphone size={14} />
-							</span>
+							<VoiceLogo size={28} className="rounded-lg" />
 							Voice Box
 						</Link>
-						{/* School logo + badge — visible on desktop next to the megaphone icon, on mobile next to the brand */}
+						{/* School logo + badge — visible on desktop next to the brand icon, on mobile next to the brand */}
 						<span className="hidden lg:inline-flex items-center gap-2 text-[10px] font-semibold px-2.5 py-1 rounded-lg bg-accent/10 text-accent border border-accent/15 ml-1">
 							<svg
 								viewBox="0 0 24 24"
@@ -487,21 +586,6 @@ export default function Layout() {
 					)}
 				</header>
 
-				{/* Ban / suspension banner — writes are blocked server-side; this makes it visible */}
-				{accountStatus?.banned && (
-					<div
-						className="flex items-center gap-2.5 px-4 sm:px-6 py-2.5 text-sm font-semibold"
-						style={{
-							background: "rgba(220,75,75,0.12)",
-							color: "#dc4b4b",
-							borderBottom: "1px solid rgba(220,75,75,0.25)",
-						}}
-						role="alert"
-					>
-						🚫 This anonymous ID has been permanently banned. You can browse,
-						but posting, commenting and voting are disabled.
-					</div>
-				)}
 				{!accountStatus?.banned && accountStatus?.suspended && (
 					<div
 						className="flex items-center gap-2.5 px-4 sm:px-6 py-2.5 text-sm font-semibold"
@@ -544,7 +628,11 @@ export default function Layout() {
 						<button
 							className="shrink-0 opacity-70 hover:opacity-100"
 							onClick={() => {
-								lsSet("vb:dismissedAnnouncement", announcement.at);
+								// lsSet stringifies — pass the object, not a string.
+								lsSet(SNOOZE_KEY, {
+									at: announcement.at,
+									until: Date.now() + SNOOZE_MS,
+								});
 								setAnnouncement(null);
 							}}
 							aria-label="Dismiss announcement"
@@ -562,7 +650,7 @@ export default function Layout() {
 					<Outlet />
 				</main>					{/* Mobile bottom nav — 6 tabs: Feed, Search, Submit, Inbox (with badge), Activity, Notifications */}
 					<						nav
-						className="lg:hidden fixed bottom-0 inset-x-0 z-40 border-t border-border flex pb-[env(safe-area-inset-bottom)]"
+						className="vb-bottomnav lg:hidden fixed bottom-0 inset-x-0 z-40 border-t border-border flex pb-[env(safe-area-inset-bottom)]"
 						style={{ background: "var(--vb-surface)" }}
 						aria-label="Mobile navigation"
 					>
@@ -577,6 +665,8 @@ export default function Layout() {
 								key={item.to}
 								to={item.to}
 								end={item.to === "/"}
+								onMouseEnter={() => prefetchRouteForPath(item.to)}
+								onFocus={() => prefetchRouteForPath(item.to)}
 								className={({ isActive }) =>
 									`relative flex-1 flex flex-col items-center gap-0.5 pt-2 pb-1.5 text-[9.5px] font-semibold transition-all duration-200 min-w-0 ${isActive ? "text-accent" : "text-ink3 active:text-ink2"}`
 								}
@@ -600,7 +690,63 @@ export default function Layout() {
 								)}
 							</NavLink>
 						))}
+						<button
+						type="button"
+						onClick={() => setMoreOpen(true)}
+						aria-label={unread > 0 ? `More pages, ${unread} unread alerts` : "More pages"}
+						aria-expanded={moreOpen}
+						className={`relative flex-1 flex flex-col items-center gap-0.5 pt-2 pb-1.5 text-[9.5px] font-semibold transition-all duration-200 min-w-0 ${moreOpen ? "text-accent" : "text-ink3 active:text-ink2"}`}
+						>
+							<span className="relative">
+								<Ellipsis size={20} strokeWidth={2.2} />
+								{unread > 0 && (
+									<span className="absolute -top-1 -right-1.5 w-2 h-2 rounded-full bg-bad vb-pop" aria-hidden />
+								)}
+							</span>
+							<span className="truncate leading-none">More</span>
+						</button>
 					</nav>
+					{moreOpen && (
+						<div className="fixed inset-0 z-50 lg:hidden" role="dialog" aria-modal="true" aria-label="More pages">
+							<button
+							className="absolute inset-0 mobile-overlay-enter"
+							style={{ background: "rgba(0,0,0,0.5)" }}
+							onClick={() => setMoreOpen(false)}
+							aria-label="Close more pages"
+							/>
+							<div
+							ref={moreSheetRef}
+							className="absolute left-0 right-0 bottom-0 bg-surface rounded-t-3xl border-t border-border p-4 pt-3 pb-[max(1rem,env(safe-area-inset-bottom))] mobile-drawer-enter max-h-[70dvh] overflow-y-auto"
+							>
+								<p className="text-center text-[11px] font-bold text-ink3 mb-1">More</p>
+								{[
+									{ to: "/notifications", label: "Alerts", icon: Bell, badge: unread },
+									...NAV_CORE.filter((n) => !MOBILE_PRIMARY.has(n.to)),
+									...NAV_MORE,
+									{ to: "/admin", label: "Admin", icon: ShieldCheck },
+								].map(({ to, label, icon: Icon, badge }: { to: string; label: string; icon: typeof Bell; badge?: number }) => (
+									<NavLink
+									key={to}
+									to={to}
+									end={to === "/"}
+									onClick={() => setMoreOpen(false)}
+									onMouseEnter={() => prefetchRouteForPath(to)}
+									onFocus={() => prefetchRouteForPath(to)}
+									className="flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-ink2 hover:bg-surface2 hover:text-ink"
+									aria-label={typeof badge === "number" && badge > 0 ? `${label}, ${badge} unread` : label}
+									>
+										<Icon size={18} strokeWidth={2.2} aria-hidden />
+										{label}
+										{typeof badge === "number" && badge > 0 && (
+											<span className="ml-auto text-[10px] font-bold bg-bad text-white rounded-full px-1.5 py-0.5">
+												{badge > 99 ? "99+" : badge}
+											</span>
+										)}
+									</NavLink>
+								))}
+							</div>
+						</div>
+					)}
 			</div>
 
 			{/* First-visit interactive tutorial (users only — never on /admin) */}
@@ -620,30 +766,9 @@ export default function Layout() {
 				</button>
 			)}
 
-			{/* Toasts — container must never intercept clicks (pointer-events-none),
-          only the toast cards themselves are clickable */}						<div
-							className="fixed bottom-[calc(5rem_+_env(safe-area-inset-bottom))] lg:bottom-6 right-4 z-[60] flex flex-col gap-2 items-end pointer-events-none"
-							aria-live="polite"
-							role="status"
-							aria-label="Notifications and toasts"
-						>
-				{toasts.map((t) => (
-					<div
-						key={t.id}
-						className={`pointer-events-auto vb-rise card !rounded-xl shadow-xl px-4 py-3 text-sm font-medium flex items-center gap-3 max-w-sm ${t.kind === "err" ? "!border-bad/40 text-bad" : t.kind === "ok" ? "!border-good/40" : ""}`}
-					>
-						<span>{t.text}</span>
-						{t.action && (
-							<button
-								className="btn btn-soft !py-1 !px-2.5 !text-xs shrink-0"
-								onClick={t.action.fn}
-							>
-								{t.action.label}
-							</button>
-						)}
-					</div>
-				))}
-			</div>
+			{/* Toasts render app-wide via <ToastHost /> (mounted in App.tsx) —
+			 * the old inline host left /admin/* with NO feedback because it never
+			 * mounts Layout. */}
 		</div>
 	);
 }

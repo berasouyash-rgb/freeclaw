@@ -15,6 +15,15 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const authMocks = {
 	cors: vi.fn(),
+	clientIp: (req: {
+		headers?: Record<string, string | undefined>;
+		socket?: { remoteAddress?: string };
+	}) =>
+		String(
+			req?.headers?.["x-forwarded-for"] ||
+				req?.socket?.remoteAddress ||
+				"unknown",
+		),
 	isAdmin: vi.fn().mockResolvedValue(false),
 };
 vi.mock("../../api/_auth.js", () => authMocks);
@@ -31,7 +40,7 @@ const registry = {
 	validateParams: vi.fn(),
 	getTool: vi.fn(),
 };
-vi.mock("../../api/_tool-registry.js", () => registry);
+vi.mock("../../api/_agent-tool-registry.js", () => registry);
 
 function response() {
 	const res = { statusCode: 200, body: undefined as unknown };

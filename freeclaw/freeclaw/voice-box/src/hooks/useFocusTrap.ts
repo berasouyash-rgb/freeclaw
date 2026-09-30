@@ -29,6 +29,10 @@ export function useFocusTrap(
 ) {
 	const { active = false, onEscape } = options;
 	const previousFocusRef = useRef<HTMLElement | null>(null);
+	// Store callback in a ref so an inline arrow prop doesn't re-register
+	// the keydown listener on every render (same pattern as useRealtime).
+	const onEscapeRef = useRef(onEscape);
+	onEscapeRef.current = onEscape;
 
 	useEffect(() => {
 		if (!active || !containerRef.current) return;
@@ -48,7 +52,7 @@ export function useFocusTrap(
 		const handleKeyDown = (e: KeyboardEvent) => {
 			if (e.key === "Escape") {
 				e.preventDefault();
-				onEscape?.();
+				onEscapeRef.current?.();
 				return;
 			}
 
@@ -57,8 +61,8 @@ export function useFocusTrap(
 			const focusables = container.querySelectorAll<HTMLElement>(FOCUSABLE);
 			if (focusables.length === 0) return;
 
-			const first = focusables[0];
-			const last = focusables[focusables.length - 1];
+			const first = focusables[0]!;
+			const last = focusables[focusables.length - 1]!;
 
 			if (e.shiftKey) {
 				// Shift+Tab: if on first element, wrap to last
@@ -84,5 +88,5 @@ export function useFocusTrap(
 				previousFocusRef.current.focus();
 			}
 		};
-	}, [active, containerRef, onEscape]);
+	}, [active, containerRef]);
 }

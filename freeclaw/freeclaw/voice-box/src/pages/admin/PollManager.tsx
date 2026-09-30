@@ -1,9 +1,11 @@
-import { Archive, Plus, RotateCcw, Trash2 } from "lucide-react";
+import { Archive, Eye, EyeOff, Plus, RefreshCw, RotateCcw, ScanSearch, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { ConfirmDialog } from "../../components/ui";
+import UpdateNotice from "../../components/admin/UpdateNotice";
 import { useApp } from "../../contexts/AppContext";
 import { api } from "../../lib/api";
 import { useRealtime } from "../../lib/useRealtime";
+import { useUpdateSignal } from "../../hooks/useUpdateSignal";
 import { timeAgo } from "../../lib/utils";
 import type { PollData } from "../../types";
 
@@ -16,6 +18,8 @@ export default function PollManager() {
 	const [ptype, setPtype] = useState<"yesno" | "single" | "multi">("yesno");
 	const [opts, setOpts] = useState("");
 	const [deleteId, setDeleteId] = useState<string | null>(null);
+	const [scan, setScan] = useState<{ id: string; flags: string[]; message: string } | null>(null);
+	const [scanBusy, setScanBusy] = useState<string | null>(null);
 
 	const load = useCallback(async () => {
 		try {
@@ -29,8 +33,30 @@ export default function PollManager() {
 		load();
 	}, [load]);
 
-	// 🔴 Live updates: new polls and votes appear in the manager without a manual refresh
-	useRealtime(["polls", "poll_votes"], () => load(), 800);
+	// ─── Freshness signal, not a refetch ──────────────────────────
+	// A single busy poll fires one `poll_votes` row per voter. The old
+	// handler refetched the WHOLE poll list on every one of them (debounced
+	// 2.5s), so a popular poll made the manager visibly thrash. `api.ts`
+	// clears the entire GET cache on every non-GET, so concurrent agent
+	// writes guaranteed a refetch per event too.
+	//
+	// Realtime now only RAISES A BADGE. Votes land visibly after one click
+	// on Refresh (or the UpdateNotice button) instead of on a timer.
+	const { updatesAvailable, markUpdatesAvailable, clearUpdates } =
+		useUpdateSignal();
+	const [refreshing, setRefreshing] = useState(false);
+
+	const handleRefresh = useCallback(async () => {
+		setRefreshing(true);
+		try {
+			await load();
+			clearUpdates();
+		} finally {
+			setRefreshing(false);
+		}
+	}, [load, clearUpdates]);
+
+	useRealtime(["polls", "poll_votes"], markUpdatesAvailable, 1_000);
 
 	const create = async () => {
 		try {
@@ -63,24 +89,59 @@ export default function PollManager() {
 	};
 	const del = async (id: string) => {
 		try {
-			await api.del("/api/polls", { id });
+			await api.del(`/api/polls?id=${encodeURIComponent(id)}`, { id });
 			load();
 			toast("Deleted", "ok");
 		} catch (e: unknown) {
 			toast(e instanceof Error ? e.message : "Failed to delete poll", "err");
 		}
 	};
+	const setHidden = async (id: string, hidden: boolean) => {
+		try {
+			await api.put("/api/polls", { id, hidden });
+			load();
+			toast(hidden ? "Poll blocked — hidden from public" : "Poll unblocked", "ok");
+		} catch (e: unknown) {
+			toast(e instanceof Error ? e.message : "Failed to update poll", "err");
+		}
+	};
+	const scanPoll = async (id: string) => {
+		setScanBusy(id);
+		try {
+			const r = await api.post<{ flags: string[]; message: string }>("/api/polls", {
+				action: "scan",
+				poll_id: id,
+			});
+			setScan({ id, flags: r.flags, message: r.message });
+		} catch (e: unknown) {
+			toast(e instanceof Error ? e.message : "Failed to scan poll", "err");
+		}
+		setScanBusy(null);
+	};
 
 	return (
 		<div>
 			<div className="flex items-center justify-between mb-4">
-				<h1 className="font-display font-bold text-xl">Poll manager</h1>
-				<button
-					className="btn btn-primary !text-xs"
-					onClick={() => setShowNew((s) => !s)}
-				>
-					<Plus size={14} /> New poll
-				</button>
+				<h1 className="font-display font-bold text-xl tracking-tight">
+					<span className="vb-gradient-text">Poll Manager</span>
+				</h1>
+				<div className="flex items-center gap-2">
+					<button
+						className="btn btn-soft !text-xs flex items-center gap-1.5"
+						onClick={() => void handleRefresh()}
+						disabled={refreshing}
+						aria-label="Refresh polls"
+					>
+						<RefreshCw size={14} className={refreshing ? "animate-spin" : ""} />
+						{refreshing ? "Refreshing…" : "Refresh"}
+					</button>
+					<button
+						className="btn btn-primary !text-xs"
+						onClick={() => setShowNew((s) => !s)}
+					>
+						<Plus size={14} /> New poll
+					</button>
+				</div>
 			</div>
 
 			{showNew && (
@@ -127,6 +188,12 @@ export default function PollManager() {
 				</div>
 			)}
 
+			<UpdateNotice
+				count={updatesAvailable}
+				onViewUpdates={() => void handleRefresh()}
+				refreshing={refreshing}
+			/>
+
 			{loading ? (
 				<div className="space-y-2">
 					{[1, 2, 3].map((i) => (
@@ -144,6 +211,9 @@ export default function PollManager() {
 										{p.archived && (
 											<span className="chip !text-[10px] ml-1">archived</span>
 										)}
+										{p.hidden && (
+											<span className="chip !text-[10px] ml-1 !text-bad">blocked</span>
+										)}
 									</p>
 									<p className="text-xs text-ink3 mt-0.5">
 										{p.ptype} · {p.total_votes ?? 0} votes · created{" "}
@@ -152,6 +222,23 @@ export default function PollManager() {
 									</p>
 								</div>
 								<div className="flex gap-1 shrink-0">
+									<button
+										className="btn btn-ghost !p-2"
+										onClick={() => void scanPoll(p.id)}
+										disabled={scanBusy === p.id}
+										title="Scan for violations"
+										aria-label={`Scan poll ${p.title} for violations`}
+									>
+										<ScanSearch size={14} />
+									</button>
+									<button
+										className="btn btn-ghost !p-2"
+										onClick={() => void setHidden(p.id, !p.hidden)}
+										title={p.hidden ? "Unblock" : "Block"}
+										aria-label={p.hidden ? `Unblock poll ${p.title}` : `Block poll ${p.title}`}
+									>
+										{p.hidden ? <Eye size={14} /> : <EyeOff size={14} />}
+									</button>
 									<button
 										className="btn btn-ghost !p-2"
 										onClick={() => setArchived(p.id, !p.archived)}
@@ -172,6 +259,11 @@ export default function PollManager() {
 									</button>
 								</div>
 							</div>
+							{scan?.id === p.id && (
+								<p className="text-[11px] mt-2 px-2 py-1.5 rounded-lg bg-surface2 text-ink2" role="status">
+									Scan: {scan.flags.length ? scan.flags.join(", ") : "clean"} — {scan.message}
+								</p>
+							)}
 							{/* results history */}
 							<div className="mt-3 space-y-1.5">
 								{(p.options || []).map((o: string, i: number) => {
@@ -207,7 +299,7 @@ export default function PollManager() {
 			<ConfirmDialog
 				open={!!deleteId}
 				onClose={() => setDeleteId(null)}
-				onConfirm={() => deleteId && del(deleteId)}
+				onConfirm={() => (deleteId ? del(deleteId) : undefined)}
 				title="Delete poll?"
 				message="The poll and all of its votes will be permanently removed. This cannot be undone."
 				confirmLabel="Delete poll"

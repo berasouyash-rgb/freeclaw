@@ -39,12 +39,15 @@ vi.mock("../../api/_error.js", () => ({
 }));
 vi.mock("../../api/_events.js", () => ({
 	emitEvent: vi.fn(() => Promise.resolve()),
+	emitEventAndBridge: vi.fn(() => Promise.resolve()),
 	EVENT_TYPES: {},
 }));
 vi.mock("../../api/_moderation.js", () => ({
 	serverModerate: () => ({ blocked: false, requiresReview: false, flags: [] }),
 	getLearnedWeakStats: () => Promise.resolve({ approved: 0, blocked: 0 }),
 	recordModerationDecision: () => Promise.resolve(),
+	recordSafetyRepost: () => Promise.resolve(false),
+	checkSafetyRepost: () => Promise.resolve({ blocked: false }),
 }));
 vi.mock("../../api/_follows.js", () => ({
 	notifyFollowers: vi.fn(() => Promise.resolve()),
@@ -154,6 +157,70 @@ describe("PERF GUARD — feed cache", () => {
 		}
 	});
 
+	it("invalidate() clears every key so a write is visible immediately", async () => {
+		const { staleWhileRevalidate } = await import("../../api/_cache.js");
+		let fetches = 0;
+		let version = 1;
+		const swr = staleWhileRevalidate(
+			async () => {
+				fetches++;
+				return [`v${version}`];
+			},
+			{ ttl: 60_000, staleTtl: 300_000, keyPrefix: "guard-invalidate" },
+		);
+
+		expect(await swr("feed")).toEqual(["v1"]);
+		expect(await swr("feed")).toEqual(["v1"]);
+		expect(fetches).toBe(1); // fresh hit — no second scan
+
+		// A post is created. The OLD write path called cacheClear("^postsfeed"),
+		// which only touched the cacheMem store — this closure kept serving the
+		// pre-write value for the whole staleTtl, hiding new posts. The fix is
+		// swrFn.invalidate(), which clears THIS closure's private map.
+		version = 2;
+		swr.invalidate();
+
+		expect(await swr("feed")).toEqual(["v2"]);
+		expect(fetches).toBe(2); // invalidated → real read
+	});
+
+	it("regression: without invalidate() the stale value hides a write for staleTtl", async () => {
+		vi.useFakeTimers();
+		try {
+			const { staleWhileRevalidate } = await import("../../api/_cache.js");
+			let fetches = 0;
+			const swr = staleWhileRevalidate(
+				async () => {
+					fetches++;
+					return fetches;
+				},
+				{ ttl: 100, staleTtl: 10_000, keyPrefix: "guard-stale-visibility" },
+			);
+
+			expect(await swr("k")).toBe(1);
+			vi.advanceTimersByTime(200); // past ttl, deep inside the stale window
+			// A write at t=200 is NOT visible: the stale v1 is served. Calling
+			// invalidate() is what closes this window; the assertion documents it.
+			expect(await swr("k")).toBe(1);
+			await vi.advanceTimersByTimeAsync(0);
+			expect(fetches).toBe(2); // one background refresh fired
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("write paths in _posts.js call feedSWR.invalidate() (POST + PUT + DELETE)", async () => {
+		const { readFileSync } = await import("node:fs");
+		const src = readFileSync(
+			new URL("../../api/_posts.js", import.meta.url),
+			"utf8",
+		);
+		const calls = src.match(/feedSWR\.invalidate\(\)/g) || [];
+		// Three write paths: POST (create), PUT (update/moderation), DELETE (remove).
+		// A missing call means new/changed rows stay stale up to staleTtl again.
+		expect(calls.length).toBeGreaterThanOrEqual(3);
+	});
+
 	// ── Layer 2: route wiring ───────────────────────────────────────
 	it("anonymous feed returns the cached shape and status 200", async () => {
 		from.mockImplementation((table: string) => chainFor(table));
@@ -171,23 +238,27 @@ describe("PERF GUARD — feed cache", () => {
 		}
 	});
 
-	it("cacheClear forces the next feed back to a real read", async () => {
+	it("anonymous feed serves a warm read without repeating the full-table scan", async () => {
 		from.mockImplementation((table: string) => chainFor(table));
 		delete (process.env as { VITEST?: string }).VITEST;
 		try {
 			const { default: handler } = await import("../../api/_posts.js");
-			const { cacheClear } = await import("../../api/_cache.js");
 			const req = { method: "GET", query: {}, headers: {} };
+			const postsScans = () =>
+				from.mock.calls.filter(([t]) => t === "posts").length;
 
-			await handler(req, response()); // populate whatever cache instance exists
-			cacheClear("^postsfeed");
+			await handler(req, response());
+			const coldScans = postsScans();
+			expect(coldScans).toBeGreaterThanOrEqual(1); // cold read hit the DB
 
 			from.mockClear();
-			const res = response();
-			await handler(req, res);
-			expect(res.statusCode).toBe(200);
-			const postsScans = from.mock.calls.filter(([t]) => t === "posts").length;
-			expect(postsScans).toBeGreaterThanOrEqual(1); // invalidated → real read
+			await handler(req, response());
+			// Warm read is served from staleWhileRevalidate's fresh entry, so the
+			// expensive feed scan is skipped. Derived queries (counts) may still
+			// run, hence "fewer", not "zero". This is the precondition that makes
+			// write-time invalidation necessary — and the Layer-1 tests above prove
+			// feedSWR.invalidate() is what closes the stale window.
+			expect(postsScans()).toBeLessThan(coldScans);
 		} finally {
 			process.env.VITEST = "1";
 			vi.resetModules();

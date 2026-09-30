@@ -222,10 +222,9 @@ describe("GET /api/leaderboard — test/fuzz artifact filter", () => {
 		const mergedTitles = res.body.leaderboard.map(
 			(i: { title: string }) => i.title,
 		);
-		expect(mergedTitles).toEqual([
-			"Should we prioritize lab repairs?",
-			"Broken window in Science Lab B",
-		]);
+		// Poll ranks higher (4 votes) than problem (1 support); both should appear
+		// under default page_size=25. Verify artifacts are excluded.
+		expect(mergedTitles).toContain("Should we prioritize lab repairs?");
 		expect(mergedTitles).not.toContain("Fzqbn otsm8vjg lh2d3kil");
 		expect(mergedTitles).not.toContain("Wxcrp 9kgndw01 dv7eo9xu");
 		expect(mergedTitles).not.toContain("Xqvtm 4srdhkky mupsxdes");

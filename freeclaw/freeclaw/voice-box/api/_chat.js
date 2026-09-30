@@ -2,15 +2,19 @@
 
 import { isTestArtifact, TEST_THREAD_ID_RE } from "./_artifact-filter.js";
 import {
+	auditLog,
 	checkUser,
 	clean,
+	clientIp,
 	cors,
 	isAdmin,
 	maskProfanity,
 	rateLimitResponse,
+	verifyCallerIdentity,
 } from "./_auth.js";
 import supabase from "./_db-client.js";
 import { sanitizeError } from "./_error.js";
+import { logger } from "./_observability.js";
 import { serverModerate } from "./_moderation.js";
 
 // FIX-M9: IP-based rate limiting for anonymous chat (20 messages per 5 min)
@@ -58,8 +62,14 @@ export default async function handler(req, res) {
 				]);
 				const enriched = (t || []).map((th) => {
 					const mine = (msgs || []).filter((m) => m.thread_id === th.thread_id);
+					// Derived title: the reporter's first words (chronological).
+					// Computed, never AI-invented — no hallucinated names.
+					const firstWords =
+						[...mine].reverse().find((m) => m.sender === "user" && m.body) ||
+						[...mine].reverse().find((m) => m.body);
 					return {
 						...th,
+						title: (firstWords?.body || "").slice(0, 60) || "Conversation",
 						last_message: mine[0]?.body || "",
 						last_at: mine[0]?.created_at || th.updated_at,
 						unread: mine.filter((m) => m.sender === "user" && !m.read).length,
@@ -102,7 +112,11 @@ export default async function handler(req, res) {
 			if (error) throw error;
 			return res
 				.status(200)
-				.json({ messages: msgs || [], thread: thread || null });
+				.json({
+					messages: msgs || [],
+					thread: thread || null,
+					title: deriveTitle(msgs || []),
+				});
 		}
 
 		if (req.method === "POST") {
@@ -115,11 +129,7 @@ export default async function handler(req, res) {
 				const gate = await checkUser(thread_id);
 				if (!gate.ok) return res.status(403).json({ error: gate.error });
 				// FIX-M9: IP-based rate limiting for anonymous chat
-				const clientIp =
-					req.headers["x-forwarded-for"]?.split(",")[0]?.trim() ||
-					req.socket?.remoteAddress ||
-					"unknown";
-				if (chatRateLimited(clientIp))
+				if (chatRateLimited(clientIp(req)))
 					return rateLimitResponse(
 						res,
 						300,
@@ -158,9 +168,7 @@ export default async function handler(req, res) {
 				.maybeSingle();
 
 			if (recentDup) {
-				console.log(
-					`[chat] Dedup: blocked duplicate message in ${thread_id} (id=${recentDup.id})`,
-				);
+				logger.info("chat", `Dedup blocked duplicate`, { thread: thread_id, msg_id: recentDup.id });
 				return res.status(201).json(recentDup);
 			}
 
@@ -209,39 +217,61 @@ export default async function handler(req, res) {
 				}
 				// admin marks user messages read; user marks admin messages read
 				const senderToMark = admin && b.as === "admin" ? "user" : "admin";
-				await supabase
+				// Unchecked, a failed mark-read answered ok:true while the
+				// messages stayed unread — the inbox looked handled and wasn't.
+				const { error: markErr } = await supabase
 					.from("chat_messages")
 					.update({ read: true })
 					.eq("thread_id", b.thread_id)
 					.eq("sender", senderToMark);
+				if (markErr) throw markErr;
 				return res.status(200).json({ ok: true });
 			}
 			if (b.action === "set_status") {
 				if (!admin) return res.status(403).json({ error: "Admin only" });
-				await supabase
+				// Unchecked, closing a thread answered ok:true while it stayed
+				// open in the queue.
+				const { error: statusErr } = await supabase
 					.from("chat_threads")
 					.update({
 						status: b.status === "closed" ? "closed" : "open",
 						updated_at: new Date().toISOString(),
 					})
 					.eq("thread_id", b.thread_id);
+				if (statusErr) throw statusErr;
 				return res.status(200).json({ ok: true });
 			}
 			return res.status(400).json({ error: "Unknown action" });
 		}
 
+		// Derived chat title: reporter's first words, never AI-invented.
+		function deriveTitle(msgs) {
+			const first =
+				(msgs || []).find((m) => m.sender === "user" && m.body) ||
+				(msgs || []).find((m) => m.body);
+			return ((first?.body || "").slice(0, 60)) || "Conversation";
+		}
+
 		if (req.method === "DELETE") {
-			// Hard-delete a conversation (messages + thread) — admin only
-			if (!(await isAdmin(req)))
-				return res.status(403).json({ error: "Admin only" });
-			const tid = clean(req.body?.thread_id, 40);
+			// Hard-delete a conversation (messages + thread) — admin, or the
+			// owner (user threads are keyed by the caller's own anon id).
+			const adminDel = await isAdmin(req);
+			const tid = clean(req.body?.thread_id || req.query?.thread_id, 40);
 			if (!tid) return res.status(400).json({ error: "Missing thread_id" });
+			if (!adminDel) {
+				const headerId = clean(req.headers["x-anon-id"] || "", 40);
+				if (!headerId || headerId !== tid)
+					return res.status(403).json({ error: "You can only delete your own conversation" });
+				const gate = await verifyCallerIdentity(req, res, tid);
+				if (!gate.ok) return res.status(gate.status || 403).json({ error: gate.error });
+			}
 			const [{ error: e1 }, { error: e2 }] = await Promise.all([
 				supabase.from("chat_messages").delete().eq("thread_id", tid),
 				supabase.from("chat_threads").delete().eq("thread_id", tid),
 			]);
 			if (e1) throw e1;
 			if (e2) throw e2;
+		await auditLog("chat", "thread_deleted", `${tid} by ${adminDel ? "admin" : "owner"}`);
 			return res.status(200).json({ ok: true });
 		}
 

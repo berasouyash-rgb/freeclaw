@@ -10,7 +10,7 @@
 // inbox AI auto-reply in _inbox.js. Reading prefs is public; writes require
 // a valid, non-banned, non-suspended user (same gate as _posts.js).
 
-import { checkUser, clean, cors, rateLimitResponse, verifyCallerIdentity } from "./_auth.js";
+import { checkUser, clean, clientIp, cors, rateLimitResponse, verifyCallerIdentity } from "./_auth.js";
 import supabase from "./_db-client.js";
 import { sanitizeError } from "./_error.js";
 import { normalizePhone, validEmail } from "./_dispatch.js";
@@ -70,6 +70,20 @@ function writeRateLimited(userId, windowMs = 60000, limit = 15) {
 	return entry.count > limit;
 }
 
+// Per-IP limiter for reads: GET returns phone/email, so flood the endpoint
+// with guessed user_ids from one source and we throttle before touching auth.
+const readHits = new Map();
+function readRateLimited(ip, windowMs = 60000, limit = 30) {
+	const now = Date.now();
+	const entry = readHits.get(ip);
+	if (!entry || now - entry.start > windowMs) {
+		readHits.set(ip, { start: now, count: 1 });
+		return false;
+	}
+	entry.count++;
+	return entry.count > limit;
+}
+
 export default async function handler(req, res) {
 	cors(res, req);
 	if (req.method === "OPTIONS") return res.status(204).end();
@@ -82,7 +96,25 @@ export default async function handler(req, res) {
 		if (!validAnonId(userId))
 			return res.status(400).json({ error: "Invalid user_id" });
 
-		// GET: read prefs (public, like _me.js)
+		// FIX #2 (AUDIT): reads expose phone/email — rate-limit the source IP
+		// first, then verify identity for both read and write.
+		if (req.method === "GET" && readRateLimited(clientIp(req)))
+			return rateLimitResponse(
+				res,
+				60,
+				"Too many requests. Please try again later.",
+			);
+
+		if (req.method === "GET" || req.method === "POST") {
+			const caller = await verifyCallerIdentity(req, res, userId);
+			if (!caller.ok) {
+				return res
+					.status(caller.status || 403)
+					.json({ error: caller.error || "Forbidden" });
+			}
+		}
+
+		// GET: read own prefs
 		if (req.method === "GET") {
 			const prefs = await getNotifyPrefs(userId);
 			return res.status(200).json(prefs || {});
@@ -90,11 +122,6 @@ export default async function handler(req, res) {
 
 		// POST: save prefs
 		if (req.method === "POST") {
-			// P0 SECURITY FIX: Verify caller identity
-			const caller = await verifyCallerIdentity(req, userId);
-			if (!caller.ok)
-				return res.status(caller.status).json({ error: caller.error });
-
 			if (writeRateLimited(userId))
 				return rateLimitResponse(
 					res,

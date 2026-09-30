@@ -1,8 +1,9 @@
 /**
- * ShimmerButton — Premium CTA with an animated shimmer light sweep.
+ * ShimmerButton — Premium CTA with a static soft sheen.
  *
- * Based on Magic UI's ShimmerButton pattern. The shimmer is a pseudo-element
- * with a gradient that slides across the button continuously.
+ * Based on Magic UI's ShimmerButton pattern. The sweep animation was
+ * removed platform-wide (no left-to-right motion); the sheen layer stays
+ * parked off-screen so the button keeps its gradient styling.
  */
 
 import { type ReactNode } from "react";
@@ -65,7 +66,7 @@ export default function ShimmerButton({
         style={{ borderRadius }}
       >
         <span
-          className="absolute inset-0 animate-shimmer-slide"
+          className="absolute inset-0"
           style={{
             background: `linear-gradient(90deg, transparent 0%, var(--shimmer-color) 50%, transparent 100%)`,
             transform: "translateX(-100%)",

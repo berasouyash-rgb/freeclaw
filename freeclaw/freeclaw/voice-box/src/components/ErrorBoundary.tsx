@@ -18,6 +18,7 @@ import {
 	useId,
 	useState,
 } from "react";
+import { isChunkLoadError, reloadOnceForStaleChunk } from "../lib/retryLazy";
 
 interface Props {
 	children: ReactNode;
@@ -67,23 +68,6 @@ function describeError(error: unknown): string {
 	}
 }
 
-// Detect chunk-load / dynamic-import failures
-function isChunkLoadError(error: unknown): boolean {
-	if (!error) return false;
-	const msg =
-		typeof error === "string"
-			? error
-			: error instanceof Error
-				? error.message
-				: "";
-	return (
-		msg.includes("Failed to fetch dynamically imported module") ||
-		msg.includes("Loading chunk") ||
-		msg.includes("ChunkLoadError") ||
-		msg.includes("NetworkError when attempting to fetch resource")
-	);
-}
-
 // Detect offline / network errors
 function isNetworkError(error: unknown): boolean {
 	if (!error) return false;
@@ -129,12 +113,19 @@ export class ErrorBoundary extends Component<Props, State> {
 		window.location.href = "/";
 	};
 
-	handleHardRefresh = () => {
-		// Clear all caches and hard refresh
-		window.location.reload();
+	/**
+	 * Chunk-load recovery. Ask retryLazy's guarded self-heal to reload once
+	 * (a fresh index.html fetches the new hashed chunks after a redeploy).
+	 * If the once-per-session guard is already spent, force a plain reload
+	 * anyway so the button always does something.
+	 */
+	handleRecoverChunk = () => {
+		if (!reloadOnceForStaleChunk()) {
+			window.location.reload();
+		}
 	};
 
-	render() {
+	override render() {
 		if (this.state.hasError) {
 			if (this.props.fallback) {
 				return this.props.fallback;
@@ -181,7 +172,7 @@ export class ErrorBoundary extends Component<Props, State> {
 								: "Please try again."}
 						</p>
 						{detail && (
-							<details className="mb-6 text-left" open>
+							<details className="mb-6 text-left">
 								<summary className="text-xs text-ink3 cursor-pointer hover:text-ink2">
 									Error details — {(detail.split("\n")[0] ?? "").slice(0, 140)}
 								</summary>
@@ -191,19 +182,19 @@ export class ErrorBoundary extends Component<Props, State> {
 							</details>
 						)}
 						<div className="flex gap-3 justify-center flex-wrap">
-							<button
-								onClick={this.handleRetry}
-								className="btn btn-primary flex items-center gap-2 text-sm"
-							>
-								<RefreshCw size={14} /> Try Again
-							</button>
-							{isChunk && (
+							{isChunk ? (
 								<button
-									onClick={this.handleHardRefresh}
-									className="btn btn-soft flex items-center gap-2 text-sm"
-									style={{ borderColor: "var(--vb-warn/30)" }}
+									onClick={this.handleRecoverChunk}
+									className="btn btn-primary flex items-center gap-2 text-sm"
 								>
-									<RefreshCw size={14} /> Refresh Page
+									<RefreshCw size={14} /> Reload page
+								</button>
+							) : (
+								<button
+									onClick={this.handleRetry}
+									className="btn btn-primary flex items-center gap-2 text-sm"
+								>
+									<RefreshCw size={14} /> Try Again
 								</button>
 							)}
 							<button

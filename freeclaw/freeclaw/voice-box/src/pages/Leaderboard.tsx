@@ -24,6 +24,7 @@ interface RankedItem {
 	score?: number;
 	breakdown?: {
 		support: number;
+		downvotes?: number;
 		comments: number;
 		freshness: number;
 		resolution: string;
@@ -58,7 +59,9 @@ const TYPE_META: Record<
 };
 
 function RankRow({ item, rank }: { item: RankedItem; rank: number }) {
-	const meta = TYPE_META[item.type || "problem"]!;
+	// Unknown future types must degrade to the problem style, never crash
+	// the whole board on meta.icon.
+	const meta = TYPE_META[item.type || "problem"] ?? TYPE_META.problem!;
 	const Icon = meta.icon;
 	// AI-enhanced score: weighted composite of support, comments, and recency
 	const support = item.support ?? 0;
@@ -143,11 +146,14 @@ export default function Leaderboard() {
 
 	const shown: RankedItem[] = (() => {
 		if (!data) return [];
+		// Server arrays are optional in practice — a missing/null list must
+		// render empty, never throw on .map.
 		if (tab === "problems")
-			return data.problems.map((p) => ({ ...p, type: "problem" }));
+			return (data.problems || []).map((p) => ({ ...p, type: "problem" }));
 		if (tab === "suggestions")
-			return data.suggestions.map((s) => ({ ...s, type: "suggestion" }));
-		if (tab === "polls") return data.polls.map((p) => ({ ...p, type: "poll" }));
+			return (data.suggestions || []).map((s) => ({ ...s, type: "suggestion" }));
+		if (tab === "polls")
+			return (data.polls || []).map((p) => ({ ...p, type: "poll" }));
 		return data.leaderboard || [];
 	})();
 
@@ -164,8 +170,9 @@ export default function Leaderboard() {
 				</h1>
 				<button
 					className="btn btn-ghost !text-xs"
+					// Silent refresh: keep the board on screen instead of
+					// flashing skeletons on every manual reload.
 					onClick={() => {
-						setLoading(true);
 						load();
 					}}
 					disabled={loading}
@@ -217,8 +224,9 @@ export default function Leaderboard() {
 					<p className="text-bad text-sm">{error}</p>
 					<button
 						className="btn btn-soft mt-3"
+						// Silent retry: the error card stays honest without
+						// blanking to skeletons first.
 						onClick={() => {
-							setLoading(true);
 							load();
 						}}
 					>
@@ -259,7 +267,10 @@ export default function Leaderboard() {
 						</div>
 					)}
 					{(data?.ai_activity || []).map((a, i) => (
-						<div key={i} className="card p-3 flex items-center gap-3 vb-rise">
+						<div
+							key={`${a.kind}-${a.label}-${a.at ?? i}`}
+							className="card p-3 flex items-center gap-3 vb-rise"
+						>
 							<span
 								className={`shrink-0 w-8 h-8 rounded-lg grid place-items-center ${a.kind === "learning" ? "text-purple-400 bg-purple-400/10" : "text-accent bg-accent/10"}`}
 							>

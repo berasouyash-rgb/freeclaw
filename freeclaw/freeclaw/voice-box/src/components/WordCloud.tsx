@@ -121,11 +121,14 @@ const WordCloud = memo(function WordCloud({
 			</p>
 		);
 	const max = first[1];
+	// Theme tokens, not literal hexes: these paint TEXT, so they must hold
+	// contrast in both the light and dark palettes (the old literals failed
+	// WCAG AA on both).
 	const COLORS = [
 		"var(--vb-accent)",
-		"#d98a0b",
-		"#16a06a",
-		"#dc4b4b",
+		"var(--vb-warn)",
+		"var(--vb-good)",
+		"var(--vb-bad)",
 		"var(--vb-accent2)",
 	];
 
@@ -151,7 +154,8 @@ const WordCloud = memo(function WordCloud({
 						style={{
 							fontSize: `${scale}rem`,
 							color: active ? "var(--vb-accent)" : COLORS[i % COLORS.length],
-							opacity: active || !activeWord ? 0.55 + (n / max) * 0.45 : 0.25,
+							// Frequency is already encoded by font size (redundant, so no
+							// information is lost) — an opacity fade broke AA contrast.
 							animationDelay: `${i * 40}ms`,
 						}}
 						title={`“${word}” appears in ${n} posts — click to filter`}

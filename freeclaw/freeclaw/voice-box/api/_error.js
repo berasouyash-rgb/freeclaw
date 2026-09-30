@@ -3,9 +3,8 @@
 // file paths, and internal service URLs to unauthenticated users.
 import { logger, trackError } from "./_observability.js";
 
-// Lazy-init Sentry for backend — uses SENTRY_DSN env var, falls back to hardcoded DSN
-const BACKEND_DSN =
-	"https://2edb1451dd3eaf08c56dc4c2c8839cf4@o4511824665968640.ingest.us.sentry.io/4511824685760512";
+// Lazy-init Sentry for backend — env-only, no hardcoded fallback.
+const BACKEND_DSN = process.env.SENTRY_DSN || "";
 
 let sentryInit = false;
 let sentryModule = null;

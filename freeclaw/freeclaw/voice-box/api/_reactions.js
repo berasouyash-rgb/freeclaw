@@ -4,6 +4,7 @@
 import { checkUser, clean, cors, isAdmin } from "./_auth.js";
 import supabase from "./_db-client.js";
 import { sanitizeError } from "./_error.js";
+import { EVENT_TYPES, emitEventAndBridge } from "./_events.js";
 
 // Normalize legacy/synonym kinds from older cached clients so nobody
 // ever gets an "invalid reaction" error.
@@ -14,6 +15,8 @@ const NORMALIZE = {
 	urgent: "support",
 	disagree: "disagree",
 	dislike: "disagree",
+	downvote: "disagree",
+	down: "disagree",
 	unsupport: "disagree",
 	unsupported: "disagree",
 	upvote: "upvote",
@@ -129,15 +132,26 @@ export default async function handler(req, res) {
 							.from("posts")
 							.update({ priority: newPriority })
 							.eq("id", target_id)
-							.then(() => {}) // fire-and-forget
-							.catch(() => {});
-					} catch {
-						// Best effort — don't fail the reaction
+							.then(
+								({ error }) => { if (error) console.error("[reactions] priority recalc failed", { target_id, error: error.message }); },
+								(err) => console.error("[reactions] priority recalc failed", { target_id, error: err?.message || String(err) }),
+							);
+					} catch (err) {
+						console.error("[reactions] priority recalc threw", { target_id, error: err?.message || String(err) });
 					}
 				}
 			} catch (countErr) {
 				console.error("reactions count query error:", countErr);
 				// Still return success — the toggle itself worked
+			}
+			// Emit event for workforce consumption (fire-and-forget)
+			if (toggled) {
+				emitEventAndBridge(EVENT_TYPES.REACTION_ADDED, {
+					target_id,
+					target_type,
+					kind,
+					author_id,
+				}).catch(() => {});
 			}
 			return res.status(200).json({ toggled, counts, mine });
 		}

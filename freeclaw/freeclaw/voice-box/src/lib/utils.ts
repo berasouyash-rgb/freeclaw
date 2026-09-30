@@ -68,6 +68,33 @@ export function sanitize(str: string, max = 500): string {
 		.slice(0, max);
 }
 
+/**
+ * Mask contact details for on-screen previews (appeal confirmations, etc).
+ * Emails keep 1-3 leading chars + domain; long digit runs (phones) become
+ * bullets. The full text still goes to moderators — this only protects the
+ * user's own screen from displaying their number back at them.
+ */
+export function maskContactPreview(s: string): string {
+	return String(s ?? "")
+		.replace(
+			/([A-Za-z0-9._%+-]{1,3})[A-Za-z0-9._%+-]*@([A-Za-z0-9.-]+\.[A-Za-z]{2,})/g,
+			"$1•••@$2",
+		)
+		.replace(/\d[\d\s-]{6,}\d/g, (m) =>
+			"•".repeat(Math.min(m.length, 12)),
+		);
+}
+
+/** Deduplicate a list by id, keeping first occurrence order. */
+export function dedupeById<T extends { id: string }>(list: T[]): T[] {
+	const seen = new Set<string>();
+	return list.filter((item) => {
+		if (seen.has(item.id)) return false;
+		seen.add(item.id);
+		return true;
+	});
+}
+
 /** SHA-256 hash (hex) using Web Crypto — used for admin password */
 export async function sha256(text: string): Promise<string> {
 	const buf = await crypto.subtle.digest(
@@ -83,6 +110,7 @@ export function timeAgo(dateStr: string): string {
 	const parsed = new Date(dateStr).getTime();
 	if (Number.isNaN(parsed)) return "unknown";
 	const s = Math.floor((Date.now() - parsed) / 1000);
+	if (s < 0) return "just now"; // clock skew must never render "in -3m"
 	if (s < 60) return "just now";
 	if (s < 3600) return `${Math.floor(s / 60)}m ago`;
 	if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
@@ -117,32 +145,44 @@ import type { PostData } from "../types";
  *
  * Formula:
  *   Trending = log(1 + weighted_engage) × quality × freshness − spam_penalty
+ * where weighted_engage = up×3 + comments×2.5 + concerns×1.5 − down×3
+ * (floored at 0). up = support/upvote + legacy appreciate; down =
+ * disagree/downvote. Legacy concerned/frustrated still count as before.
  *
  * Minimum thresholds prevent single-reaction posts from trending.
  * The quality factor rewards posts with diverse, genuine engagement.
  */
 export function trendingScore(p: PostData): number {
 	const r = p.reactions || {};
-	const support = r.support || 0;
+	// Binary voting (2026-09): up = support/upvote + legacy appreciate;
+	// down = disagree/downvote and subtracts at full up-vote weight, floored
+	// at zero — a brigaded post can never trend on outrage alone, and
+	// suggestion up-votes count (they previously scored 0 and could never
+	// trend). Legacy concerned/frustrated rows keep their old weights.
+	const up = (r.support || 0) + (r.upvote || 0) + (r.appreciate || 0);
+	const down = (r.disagree || 0) + (r.downvote || 0);
 	const comments = p.comment_count || 0;
 	const concerns = r.concerned || 0;
 
 	// 1. Engagement velocity — weighted by signal strength
-	// Support is strongest (active endorsement), comments show discussion,
+	// Up-votes are strongest (active endorsement), comments show discussion,
 	// concerns indicate urgency but weighted lower to prevent gaming
-	const weightedEngage = support * 3 + comments * 2.5 + concerns * 1.5;
+	const weightedEngage = Math.max(
+		0,
+		up * 3 + comments * 2.5 + concerns * 1.5 - down * 3,
+	);
 
 	// 2. Minimum engagement threshold — prevents single-reaction trending
-	// Must have at least 2 supports OR 1 support + 1 comment
+	// Must have net 2 up-votes OR 1 up-vote + 1 comment (after down-votes)
 	if (weightedEngage < 4) return 0;
 
 	// 3. Discussion depth factor — posts with comments are more valuable
 	// than posts with only reactions (indicates genuine community interest)
-	const commentRatio = comments > 0 ? Math.min(1.5, 1 + (comments / Math.max(1, support)) * 0.3) : 1;
+	const commentRatio = comments > 0 ? Math.min(1.5, 1 + (comments / Math.max(1, up)) * 0.3) : 1;
 
 	// 4. Participation diversity — penalize posts where engagement
 	// comes from very few users (self-interaction or small ring)
-	const totalContributors = support + comments;
+	const totalContributors = up + comments;
 	const diversityFactor = totalContributors >= 5 ? 1.2 : totalContributors >= 3 ? 1.0 : 0.7;
 
 	// 5. Urgency signal — concerns raise priority but capped
@@ -150,7 +190,7 @@ export function trendingScore(p: PostData): number {
 
 	// 6. Spam penalty — detect suspicious rapid-fire engagement
 	// If a post has many reactions but very few comments, it might be gaming
-	const spamPenalty = (support > 10 && comments === 0) ? 0.5 : 1;
+	const spamPenalty = (up > 10 && comments === 0) ? 0.5 : 1;
 
 	// 7. Freshness decay — gravity-based (Hacker News style)
 	// Hours^1.8 decays faster than linear — posts must KEEP growing
@@ -167,6 +207,40 @@ export function trendingScore(p: PostData): number {
 	return finalScore;
 }
 
+export type PresenceTier = "now" | "hour" | "today" | "idle";
+
+export const PRESENCE_META: Record<PresenceTier, { label: string; color: string }> = {
+	now: { label: "Now", color: "var(--vb-good)" },
+	hour: { label: "This hour", color: "var(--vb-warn)" },
+	today: { label: "Today", color: "var(--vb-accent)" },
+	idle: { label: "Idle", color: "var(--vb-ink3)" },
+};
+
+const PRESENCE_NOW_MS = 2 * 60 * 1000;
+const PRESENCE_HOUR_MS = 60 * 60 * 1000;
+const PRESENCE_DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Presence tier from a last_seen timestamp. Pure function of already-loaded
+ * data — no fetch. Missing/unparseable stamps are "idle" (never invent a
+ * presence); future stamps (clock skew) floor to "now".
+ */
+export function presenceTier(lastSeen?: string | null, nowMs = Date.now()): PresenceTier {
+	if (!lastSeen) return "idle";
+	const t = +new Date(lastSeen);
+	if (!Number.isFinite(t)) return "idle";
+	const age = nowMs - t;
+	if (age < 0) return "now";
+	if (age < PRESENCE_NOW_MS) return "now";
+	if (age < PRESENCE_HOUR_MS) return "hour";
+	if (age < PRESENCE_DAY_MS) return "today";
+	return "idle";
+}
+
+export function isTestAccount(anonId?: string | null): boolean {
+	return typeof anonId === "string" && anonId.startsWith("anon_loadtest_");
+}
+
 export function downloadFile(
 	name: string,
 	content: string,
@@ -174,11 +248,14 @@ export function downloadFile(
 ) {
 	const blob = new Blob([content], { type });
 	const url = URL.createObjectURL(blob);
-	const a = document.createElement("a");
-	a.href = url;
-	a.download = name;
-	a.click();
-	URL.revokeObjectURL(url);
+	try {
+		const a = document.createElement("a");
+		a.href = url;
+		a.download = name;
+		a.click();
+	} finally {
+		URL.revokeObjectURL(url);
+	}
 }
 
 export function toCSV<T extends object>(rows: T[]): string {
@@ -244,23 +321,34 @@ export const CAT_EMOJI: Record<string, string> = {
 	Other: "📌",
 };
 
+/**
+ * Status / priority colours reference the design tokens instead of literal hex.
+ *
+ * These values paint live text (status chips, priority badges) on both the
+ * light and dark palettes, so they MUST be theme-aware — a hardcoded hex is
+ * correct in at most one theme. The literals they replace (`#8e8ea5`,
+ * `#d98a0b`, `#16a06a`, `#dc4b4b`) failed WCAG AA on both.
+ *
+ * Note for callers: do NOT append an alpha suffix to these values
+ * (`${color}44`) — a CSS variable cannot be concatenated. Use color-mix().
+ */
 export const STATUS_META: Record<
 	string,
 	{ label: string; color: string; pct: number }
 > = {
-	reported: { label: "Reported", color: "#8e8ea5", pct: 5 },
-	verified: { label: "Verified", color: "#3b82f6", pct: 20 },
-	in_progress: { label: "In Progress", color: "#d98a0b", pct: 50 },
-	waiting: { label: "Waiting", color: "#a855f7", pct: 70 },
-	solved: { label: "Solved", color: "#16a06a", pct: 100 },
-	archived: { label: "Archived", color: "#6e6e88", pct: 100 },
+	reported: { label: "Reported", color: "var(--vb-ink3)", pct: 5 },
+	verified: { label: "Verified", color: "var(--vb-accent2)", pct: 20 },
+	in_progress: { label: "In Progress", color: "var(--vb-warn)", pct: 50 },
+	waiting: { label: "Waiting", color: "var(--vb-accent)", pct: 70 },
+	solved: { label: "Solved", color: "var(--vb-good)", pct: 100 },
+	archived: { label: "Archived", color: "var(--vb-ink2)", pct: 100 },
 };
 
 export const PRIORITY_META: Record<string, { label: string; color: string }> = {
-	low: { label: "Low", color: "#8e8ea5" },
-	medium: { label: "Medium", color: "#3b82f6" },
-	high: { label: "High", color: "#d98a0b" },
-	critical: { label: "Critical", color: "#dc4b4b" },
+	low: { label: "Low", color: "var(--vb-ink3)" },
+	medium: { label: "Medium", color: "var(--vb-accent2)" },
+	high: { label: "High", color: "var(--vb-warn)" },
+	critical: { label: "Critical", color: "var(--vb-bad)" },
 };
 
 export interface SuggestionLike {

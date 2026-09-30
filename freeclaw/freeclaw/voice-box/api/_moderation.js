@@ -4,6 +4,7 @@
 // Mirrors the pre-publish emergencyRegex whitelists (see _pre-publish.js).
 
 import supabase from "./_db-client.js";
+import { hasBlockedTerm } from "./_lexicon.js";
 
 // ─── Self-learning feedback loop (weak signals ONLY) ─────────────
 // Admin decisions feed back into confidence: every time an admin APPROVES a
@@ -55,17 +56,60 @@ export async function getLearnedWeakStats() {
 
 const DANGEROUS_WORDS =
 	/\b(?:kill|murder|shoot|stab|bomb|weapon|gun|knife|suicide|suicidal|die|dead|death)\b/i;
+	// Lethal verbs are threat wording in ANY inflection — no intent tiebreak
+	// and no fixed object list. ("kill you", "killed Rahul",
+	// "are killing him"). This is what let a threat through before: the old
+	// `\bkill\b` token simply never matched a conjugated verb.
+const LETHAL_VERB =
+	/\b(?:kill|murder|shoot|stab|strangle|drown|poison)(?:s|ed|ing)?\b/i;
+
 const VIOLENCE_PATTERNS = [
-	/kill\s+(?:you|him|her|them|my|our|someone|anyone|people|person|friend|classmate|teacher|student)/i,
-	/murder\s+(?:you|him|her|them|my|our|someone|anyone|people|person|friend)/i,
-	/shoot\s+(?:you|him|her|them|my|our|someone|anyone|people|person|friend)/i,
-	/stab\s+(?:you|him|her|them|my|our|someone|anyone|people|person|friend)/i,
-	/beat\s+(?:you|him|her|them|my|our|someone|anyone|people|person|friend)\s+up/i,
-	/hurt\s+(?:you|him|her|them|my|our|someone|anyone|people|person|friend)/i,
-	/burn\s+(?:the|this|a|my)\s*(?:school|building|house|classroom)/i,
-	/bomb\s+(?:the|this|a|my)\s*(?:school|building|house|classroom)/i,
-	/bring(?:ing)?\s+(?:a\s+)?(?:gun|knife|weapon|bomb)/i,
+	// Generic targets auto-block as `violence`. A NAMED target is matched too
+	// (via the classifier below) so it can be HELD FOR REVIEW rather than
+	// silently published.
+	/\b(?:kill|murder|shoot|stab|hurt)(?:s|ed|ing)?\s+(?:you|him|her|them|me|us|our|your|my)\b/i,
+	/\bbeat\s+(?:you|him|her|them|me|us)\s+up\b/i,
+	/\bburn(?:s|ed|ing)?\s+(?:the|this|a|my)\s*(?:school|building|house|classroom)\b/i,
+	/\bbomb(?:s|ed|ing)?\s+(?:the|this|a|my)\s*(?:school|building|house|classroom)\b/i,
+	/\bbring(?:ing|s)?\s+(?:a\s+)?(?:gun|knife|weapon|bomb)\b/i,
+	/\bkill(?:ing|s)?\s+(?:your|him|herself|himself|themselves|my)self\b/i,
+	/\bhang(?:ing|s)?\s+(?:your|him|her|my|their)self\b/i,
+	/\bkill\s+yourself\b/i,
+	/\bkys\b/i,
+	/\b(?:want(?:s|ed)?\s+to|going\s+to|will)\s+(?:die|commit\s+suicide)\b/i,
 ];
+// Threat-vs-report context (Rajiv/Rahul rule): identical violent wording
+// from the author is a direct threat; quoted/reported wording (a name +
+// reporting verb, no first-person intent) is a victim/witness report.
+// Reports are preserved for human review but never go public unreviewed.
+const THREAT_REPORT_FRAME =
+	/\b(?:said|says|saying|told|tells?|telling|threatened?|threatening|threatens?|claimed?|reported?|witnessed?|heard|saw|seen|according to)\b/i;
+const FIRST_PERSON_INTENT =
+	// First-person AUTHORSHIP, tolerant of typos and of tense: what separates a
+	// threat from a report is WHO is speaking, not which modal verb they
+	// picked ("i willl kill X" is still first-person). "me"/"my" are
+	// excluded on purpose — in "he will kill me" they mark the VICTIM.
+	/\b(?:i|i'm|i'll|gonna|going\s+to|want(?:ed|s)?\s+to|wish(?:ed|es)?\s+to|plan(?:ning|s)?\s+to|shall|must)\b/i;
+/**
+ * Classify violent-wording context. Pure (no I/O).
+ * "clean" — no violent wording at all.
+ * "direct_threat" — the author voices the threat (first-person intent).
+ * "reported_threat" — quoted/reported wording, no first-person intent.
+ * "unclear" — violent wording but neither signal; callers fail closed.
+ */
+export function evaluateContext(text) {
+	const t = String(text || "");
+	const violent =
+		LETHAL_VERB.test(t) ||
+		VIOLENCE_PATTERNS.some((p) => p.test(t)) ||
+		(DANGEROUS_WORDS.test(t) && FIRST_PERSON_INTENT.test(t));
+	if (!violent) return "clean";
+	const reported = THREAT_REPORT_FRAME.test(t);
+	const firstPerson = FIRST_PERSON_INTENT.test(t);
+	if (reported && !firstPerson) return "reported_threat";
+	if (firstPerson) return "direct_threat";
+	return "unclear";
+}
 const SLURS =
 	/\b(?:nigger|nigga|faggot|fag|kike|spic|chink|wop|cunt|retard|retarded|tranny|dyke|paki)\b/i;
 
@@ -82,7 +126,7 @@ const PII_PHONE_RE =
 	/\b(?:(?:\+?\d{1,3})[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b/;
 const PII_PHONE_RE_LOOSE = /\+?\d[\d\s\-()]{7,}/;
 const PII_ADDR_NUM_BEFORE = new RegExp(
-	"\\b\\d{1,5}\\s+[a-zA-Z\\s]+\\b(?:" + PII_STREET_TYPES_AFTER + ")\\b",
+	"\\b\\d{1,5}[\\s,/\\-]*[a-zA-Z\\s]+\\b(?:" + PII_STREET_TYPES_AFTER + ")\\b",
 	"i",
 );
 const PII_ADDR_NUM_AFTER = new RegExp(
@@ -109,6 +153,62 @@ const PII_ADDR_NO_NUM = new RegExp(
 	"i",
 );
 
+// Explicit sexual sharing/solicitation — always BLOCKING. Word-boundary
+// anchored so victim reports in clinical language ("harassed", "touched
+// inappropriately", "eve-teasing") never match; only unambiguous sharing
+// terms and propositions do.
+const EXPLICIT_BLOCK = new RegExp(
+	"\\b(?:nudes?|porn|pornographic|xxx|onlyfans|only\\s*fans|sex\\s*tapes?|sugar\\s*dadd(?:y|ies)|sugar\\s*bab(?:y|ies))\\b",
+	"i",
+);
+const EXPLICIT_NAKED_PIC =
+	/\bnaked\s+(?:pics?|photos?|videos?|selfies?|pictures?)\b/i;
+// "hot pics/photos" solicitation or sharing, either order, including
+// the common "phots" typo. "hot" alone never matches (weather, food,
+// "hot lunch"); hot-first requires adjacency ("hot lunch photos" stays
+// clean); noun-first allows a 4-char window ("pic hot") so ordinary
+// prose like "photos in the hot sun" stays publishable.
+const EXPLICIT_HOT_PIC =
+	/\bhot\s+(?:pics?|photos?|phots?|pictures?|videos?|selfies?)\b|\b(?:pics?|photos?|phots?|pictures?)\b[^.!?]{0,4}\bhot\b/i;
+// Coercion — perpetrator demands paired with exposure threats.
+// "Pay me or I'll leak your photos", "send nudes or I post your address".
+// Kept narrow (demand verb + or-else connector + exposure verb) so fee
+// reminders ("pay the mess fee or lose your seat") never match.
+// Victim reports ("someone is blackmailing me") are held for human review,
+// never blocked — blocking them would silence the victim.
+const BLACKMAIL_DEMAND =
+	/\b(?:pay(?: me)?|send(?: me)?|give(?: me)?|transfer)\b[^.!?]{0,60}\b(?:or\s+(?:else|i(?:'ll| will))|otherwise|then\s+i(?:'ll| will)|,\s*i(?:'ll| will))\b[^.!?]{0,80}\b(?:leak|leaks|leaked|leaking|post|posts|posted|posting|share|shared|sharing|expose|exposed|exposing|tell\s+(?:everyone|everybody|all|them|the\s+(?:class|school|group|world))|upload|publish|send\s+(?:it|them|those|your))\b/i;
+const DOX_THREAT =
+	/\b(?:i(?:'ll| will)|gonna|going\s+to)\b[^.!?]{0,40}\b(?:post|publish|share|leak|drop|expose|upload)\b[^.!?]{0,40}\b(?:your|ur)\b[^.!?]{0,40}\b(?:address|number|phone|location|where you live|secret|secrets)\b/i;
+// Photo/video sharing threats are ambiguous (event photos are legit), so
+// they are HELD for human review rather than blocked.
+const DOX_THREAT_PHOTO =
+	/\b(?:i(?:'ll| will)|gonna|going\s+to)\b[^.!?]{0,40}\b(?:post|publish|share|leak|drop|expose|upload)\b[^.!?]{0,40}\b(?:your|ur)\b[^.!?]{0,40}\b(?:photo|pic|picture|video|videos|selfie)\b/i;
+const DO_AS_I_SAY =
+	/\bdo\s+(?:as\s+i\s+say|what\s+i\s+say)\b[^.!?]{0,60}\b(?:or\s+(?:else|i(?:'ll| will))|otherwise)\b/i;
+const COERCION_VICTIM_REPORT =
+	/\b(?:someone|somebody|some\s+one|he|she|they|this\s+(?:guy|person|boy|girl|man))\b[^.!?]{0,40}\b(?:blackmail(?:ing|ed|s)?|threaten(?:ed|ing|s)?|extort(?:ing|ed|s)?|forcing\s+me)\b|\b(?:blackmail(?:ing|ed)?|threaten(?:ed|ing)?|extort(?:ing|ed)?)\s+(?:me|him|her|them|us)\b/i;
+// Ambiguous sexualization � HELD for human review on posts (never public
+// auto), blocked on comments/polls which have no review queue.
+const EXPLICIT_HOLD = /\b(?:sexy|hookups?)\b/i;
+
+
+// Leaked secrets — passwords, API keys, tokens (spec §14). All require an
+// assignment or a vendor prefix, so plain words ("I forgot my password",
+// "secret santa") never match. BLOCKING like PII: a leaked credential must
+// never go public on an anonymous platform.
+const CRED_PATTERNS = [
+	{ re: /(?:password|passwd|pwd)\s*[:=]\s*\S+/gi, label: "password" },
+	{ re: /\bapi[_-]?key\s*[:=]\s*['"]?[A-Za-z0-9_\-]{8,}['"]?/gi, label: "api key" },
+	{ re: /\b(?:auth[_-]?token|access[_-]?token|secret[_-]?key|client[_-]?secret)\s*[:=]\s*['"]?\S+['"]?/gi, label: "token" },
+	{ re: /\btoken\s*[:=]\s*['"]?[A-Za-z0-9_\-.~+/=]{8,}['"]?/gi, label: "token" },
+	{ re: /\bsk-[A-Za-z0-9]{20,}\b/g, label: "api key" },
+	{ re: /\bgh[pousr]_[A-Za-z0-9]{36}\b/g, label: "token" },
+	{ re: /\bAKIA[0-9A-Z]{16}\b/g, label: "api key" },
+	{ re: /\bxox[bpras]-[A-Za-z0-9-]+\b/g, label: "token" },
+	{ re: /\bBearer\s+[A-Za-z0-9\-._~+/]{10,}={0,2}\b/g, label: "token" },
+];
+
 // 6-digit Indian PIN codes, optionally prefixed with pin/pincode/zip labels
 const PII_PINCODE =
 	/\b(?:pin|pincode|pin code|zip|zipcode|zip code)?\s*\d{6}\b/i;
@@ -122,37 +222,56 @@ const PII_ROOM_ADDR =
  * Returns { blocked, flags, requiresReview }.
  * - PII (address/phone/email) is always BLOCKING: on an anonymous platform a
  *   leaked address must never go public.
- * - Violence threats and slurs are blocking (critical).
+ * - Violence threats and slurs are blocking (critical). Quoted/reported
+ *   threats are held for review instead (threat_report) — never public,
+ *   never silently dropped.
  * - Lower-severity flags set requiresReview so the caller can queue for review.
  */
 export function serverModerate(title, description, learned = null) {
-	const text = `${title} ${description}`;
+	// Strip invisible format characters first: zero-width joiners/spaces and
+	// soft hyphens have no visible presence in prose — their only function
+	// here is splitting banned words (sh​it). Fingerprints already drop them.
+	const text = `${title} ${description}`.replace(/[\u200b-\u200d\ufeff\u00ad]/g, "");
 	const flags = [];
 	// Learning verdict for weak-only content (set below)
 	let autoApproveWeak = false;
 
-	// Check for violence threats
-	for (const pattern of VIOLENCE_PATTERNS) {
-		if (pattern.test(text)) {
-			flags.push({
-				type: "violence",
-				severity: "critical",
-				message: "Violence threat detected",
-			});
-			break;
-		}
-	}
+	// Threat-vs-report context (Rajiv/Rahul rule): a victim quoting a threat
+	// ("Rajiv said he will kill me") is held for human review — never
+	// auto-blocked (reports must survive) and never public unreviewed.
+	// Direct threats from the author block exactly as before.
+	// evaluateContext is the ONLY classifier; the routing reads its verdict
+	// instead of re-testing brittle regexes. That duplication is exactly what
+	// let a single-character typo disable the whole gate.
+	const threatCtx = evaluateContext(text);
+	// Generic-target violence auto-blocks. A NAMED target ("kill Rahul") is
+	// held for a human instead, because naming someone is precisely the case
+	// where a false positive would silence a real victim.
+	// Unambiguous directed-harm patterns block outright — they need no
+	// first-person intent ("go kill yourself", "kys" have none).
+	const violenceHit = VIOLENCE_PATTERNS.some((p) => p.test(text));
+	// Anything violent that is neither a confident direct hit nor a confirmed
+	// report stays `threat`, which is HELD FOR REVIEW and never published.
+	const threatHit = !violenceHit && threatCtx !== "clean";
 
-	// Check for dangerous words
-	if (DANGEROUS_WORDS.test(text) && flags.length === 0) {
-		// Only flag if it's combined with threatening context
-		if (/\b(?:i(?:'ll| will)|gonna|going\s+to|want\s+to|wish)\b/i.test(text)) {
-			flags.push({
-				type: "threat",
-				severity: "high",
-				message: "Potential threat detected",
-			});
-		}
+	if (threatCtx === "reported_threat" && (violenceHit || threatHit)) {
+		flags.push({
+			type: "threat_report",
+			severity: "high",
+			message: "Reported threat — needs human review",
+		});
+	} else if (violenceHit) {
+		flags.push({
+			type: "violence",
+			severity: "critical",
+			message: "Violence threat detected",
+		});
+	} else if (threatHit) {
+		flags.push({
+			type: "threat",
+			severity: "high",
+			message: "Potential threat detected",
+		});
 	}
 
 	// Check for slurs
@@ -164,6 +283,48 @@ export function serverModerate(title, description, learned = null) {
 		});
 	}
 
+	// ── Profanity & slang — SCHOOL ZERO-TOLERANCE ─────────────────
+	// A school platform publishes no stars: any profanity or slang hit is a
+	// blocking `profanity` flag on every public write surface (posts,
+	// comments, polls all 403 on `blocked` below — immediate, in-request).
+	// Private support surfaces (inbox/chat) keep masking instead of blocking
+	// so students can still ask for help. Victim reports that quote an insult
+	// are still held to this bar: rephrase without the word to publish.
+	// Detection lives in api/_lexicon.js so the blocking gate, the slang
+	// finder, and the client mirror all run the SAME spelling-proof match:
+	// de-leet, repeat collapse, interior separators, single-letter joining,
+	// zero-width/NFKC, plus the Hinglish variants — instead of one flat list
+	// that only matched spelling for spelling.
+	if (hasBlockedTerm(text)) {
+		flags.push({
+			type: "profanity",
+			severity: "high",
+			message: "Profanity or slang detected — remove the language and resubmit",
+		});
+	}
+
+	// Direct bullying — the author abusing someone ("you are an idiot",
+	// "you suck", "shut up"). Victim reports describing others carry
+	// reporting verbs/nouns and pass through to human review layers
+	// instead of auto-blocking.
+	const BULLY_WORDS =
+		/\b(idiot|loser|ugly|fat|disgusting|pathetic|worthless|trash|moron|dumb|no one likes you|everyone hates you|you suck|shut up)\b/i;
+	const DIRECT_ABUSE =
+		/\b(you\s+are|you're|you\s+will|you\s+should|you\s+deserve)\s+(a\s+)?(idiot|stupid|loser|ugly|fat|disgusting|pathetic|worthless|trash|moron|dumb|terrible|horrible|worst)/i;
+	const REPORTING_CTX =
+		/\b(reported?|complains?|complained|describes?|described|mentions?|mentioned|tells?|told|says?|said|claims?|claimed|witnessed?|saw|heard|student|teacher|staff|someone|they|he|she|bully|bullying|threats?|harassment)\b/i;
+	if (
+		BULLY_WORDS.test(text) &&
+		(DIRECT_ABUSE.test(text) ||
+			(/\byou\b/i.test(text) && !REPORTING_CTX.test(text)))
+	) {
+		flags.push({
+			type: "bullying",
+			severity: "critical",
+			message: "Bullying language detected",
+		});
+	}
+
 	// ── PII — email / phone / street address / name+address ─────
 	if (PII_EMAIL_RE.test(text))
 		flags.push({
@@ -171,6 +332,19 @@ export function serverModerate(title, description, learned = null) {
 			severity: "high",
 			message: "Email address detected",
 		});
+	// Leaked secrets — passwords, API keys, tokens. Same blocking class as
+	// PII: a leaked credential must never go public.
+	for (const { re, label } of CRED_PATTERNS) {
+		re.lastIndex = 0;
+		if (re.test(text)) {
+			flags.push({
+				type: "privacy",
+				severity: "high",
+				message: `Exposed ${label} detected`,
+			});
+			break;
+		}
+	}
 	// Strip date-like strings (2026-07-30, 07/30/2026) AND academic-year ranges
 	// (2026-2027, 2026-27) BEFORE the loose phone scan so legitimate posts mentioning
 	// exam/deadline dates or school years are never blocked as PII.
@@ -196,6 +370,36 @@ export function serverModerate(title, description, learned = null) {
 			severity: "high",
 			message: "Personal name with address detected",
 		});
+	// ── Named accusation — a named person accused of wrongdoing ────
+	// "Student Rahul accused of blackmailing a peer" names a real-seeming
+	// person in an allegation. Published blind, that is defamation by the
+	// platform; a human verifies first. WEAK (never blocking): posts go to
+	// pending_review, comments/polls are blocked (no queue there).
+	// Sentence-initial capitalized words are skipped — ordinary
+	// capitalization ("Rahul stole my pen" at a sentence start still counts
+	// only if a LATER capitalized name appears; leading words are never
+	// names by themselves).
+	const ACCUSE_VERBS =
+		/\b(accuse[sd]?|accusing|blackmail(?:s|ed|ing)?|extort(?:s|ed|ing|ion)?|threaten(?:s|ed|ing)?|harass(?:es|ed|ing|ment)?|bull(?:y|ies|ied|ying)|assault(?:s|ed|ing)?|molest(?:s|ed|ing)?|steal(?:s|ing)?|stole|stolen|cheat(?:s|ed|ing)?|framed?|framing|blam(?:e[sd]?|ing))\b/i;
+	const GENERIC_CAPITALIZED =
+		/^(?:The|This|That|These|Those|Students?|Teachers?|Staff|School|Class|Classes|Someone|Nobody|Everybody|Anyone|My|Our|His|Her|Their|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday|January|February|March|April|May|June|July|August|September|October|November|December|English|Hindi|Library|Canteen|Hostel|Block)$/i;
+	if (ACCUSE_VERBS.test(text)) {
+		const names = text
+			.split(/(?<=[.!?])\s+/)
+			.flatMap((sentence) => sentence.split(/\s+/).slice(1))
+			.map((w) => w.replace(/^[^A-Za-z]+|[^A-Za-z]+$/g, ""))
+			.filter(
+				(w) => /^[A-Z][a-z]{2,}$/.test(w) && !GENERIC_CAPITALIZED.test(w),
+			);
+		const seen = [...new Set(names)];
+		if (seen.length > 0) {
+			flags.push({
+				type: "accusation_weak",
+				severity: "high",
+				message: `Named person in an accusation ("${seen.slice(0, 3).join('", "')}") — needs review`,
+			});
+		}
+	}
 	// Weaker signals: pin codes, room-level addresses, street names without numbers.
 	// Posts route these to pending_review (never published); comments/polls hard-block.
 	if (PII_PINCODE.test(text))
@@ -216,6 +420,85 @@ export function serverModerate(title, description, learned = null) {
 			severity: "high",
 			message: "Partial address detected",
 		});
+	// Street type + comma + Capitalized place mid-text ("Park Street,
+	// Kolkata, come visit"). The place must start uppercase (checked against
+	// the ORIGINAL case) so "cross the road, be careful" never flags; bare
+	// street mentions without a place stay the LLM layer's job — they are
+	// genuinely ambiguous civic speech ("MG Road has potholes").
+	const midAddr = new RegExp(
+		"\\b(?:" + PII_STREET_TYPES_AFTER + ")\\b\\s*,\\s*([A-Za-z]{3,})",
+		"i",
+	).exec(text);
+	if (midAddr && /^[A-Z]/.test(midAddr[1]))
+		flags.push({
+			type: "privacy_weak",
+			severity: "high",
+			message: "Partial address detected",
+		});
+	// Self-located street mention: "I live on Park Street", "we stay near
+	// MG Road". No name/number needed — verb + street is itself a location
+	// disclosure. WEAK (never blocking): area-level civic speech shares the
+	// shape ("living on Park Street face waterlogging") and a human
+	// disambiguates in review; nothing publishes blind either way.
+	if (
+		new RegExp(
+			"\\b(?:lives?|living|stays?|staying|resides?|residing)\\s+(?:at|in|on|near)\\s+[A-Za-z0-9\\s]+\\b(?:" +
+				PII_STREET_TYPES_AFTER +
+				")\\b",
+			"i",
+		).test(text)
+	)
+		flags.push({
+			type: "privacy_weak",
+			severity: "high",
+			message: "Possible self-located address — needs review",
+		});
+
+	// Explicit sexual sharing/solicitation — always BLOCKING (severity
+	// critical feeds `blocked` below). No reporting-context exemption: even
+	// framed as a report, sexual imagery must go through a human, never
+	// straight to public. Ambiguous sexualization ("sexy", "hookup") only
+	// HELDS: posts → pending_review, comments/polls → blocked (no queue).
+	if (EXPLICIT_BLOCK.test(text) || EXPLICIT_NAKED_PIC.test(text) || EXPLICIT_HOT_PIC.test(text)) {
+		flags.push({
+			type: "explicit",
+			severity: "critical",
+			message: "Explicit sexual content detected",
+		});
+	} else if (EXPLICIT_HOLD.test(text)) {
+		flags.push({
+			type: "explicit_weak",
+			severity: "high",
+			message: "Possible sexual content — needs review",
+		});
+	}
+
+	// Coercion — blackmail, extortion, doxxing threats (spec §14/§15).
+	// Perpetrator demands BLOCK (critical); victim reports are HELD for
+	// human review and never blocked — the check order matters.
+	if (COERCION_VICTIM_REPORT.test(text)) {
+		flags.push({
+			type: "coercion_report",
+			severity: "high",
+			message: "Possible blackmail/extortion report — needs review",
+		});
+	} else if (
+		BLACKMAIL_DEMAND.test(text) ||
+		DOX_THREAT.test(text) ||
+		DO_AS_I_SAY.test(text)
+	) {
+		flags.push({
+			type: "coercion",
+			severity: "critical",
+			message: "Blackmail/extortion demand detected",
+		});
+	} else if (DOX_THREAT_PHOTO.test(text)) {
+		flags.push({
+			type: "coercion_weak",
+			severity: "high",
+			message: "Possible photo-sharing threat — needs review",
+		});
+	}
 
 	// Check for spam patterns (same words repeated 10+ times)
 	const words = text.toLowerCase().split(/\s+/);
@@ -250,9 +533,14 @@ export function serverModerate(title, description, learned = null) {
 
 	return {
 		// PII is treated as blocking: on an anonymous platform a leaked
-		// address/phone/email must never go public.
+		// address/phone/email must never go public. Profanity/slang is
+		// likewise blocking (school zero-tolerance: no stars, immediate
+		// 403 on every public write surface).
 		blocked: flags.some(
-			(f) => f.severity === "critical" || f.type === "privacy",
+			(f) =>
+				f.severity === "critical" ||
+				f.type === "privacy" ||
+				f.type === "profanity",
 		),
 		flags,
 		requiresReview: flags.length > 0 && !autoApproveWeak,
@@ -294,6 +582,11 @@ export function maskPII(text) {
 		.replace(PII_EMAIL_RE, "[EMAIL]")
 		.replace(PII_PHONE_RE, "[PHONE]")
 		.replace(PII_PHONE_RE_LOOSE, "[PHONE]")
+		.replace(/(?:password|passwd|pwd)\s*[:=]\s*\S+/gi, "[CREDENTIAL]")
+		.replace(/\bsk-[A-Za-z0-9]{20,}\b/g, "[CREDENTIAL]")
+		.replace(/\bgh[pousr]_[A-Za-z0-9]{36}\b/g, "[CREDENTIAL]")
+		.replace(/\bAKIA[0-9A-Z]{16}\b/g, "[CREDENTIAL]")
+		.replace(/\bxox[bpras]-[A-Za-z0-9-]+\b/g, "[CREDENTIAL]")
 		// Name+location FIRST: if the address-number rules run first they consume
 		// the trailing street word ("...STREE 123 AND BALLY HOWRAG" → "...STREE
 		// [ADDRESS]") and the name+verb phrase can no longer be matched. Matching
@@ -456,11 +749,12 @@ function qualityScore(text) {
  * @param {string} title - Post title
  * @param {string} description - Post description
  * @param {string} authorId - Author anonymous ID
- * @param {string} ip - Client IP (from x-forwarded-for)
+ * @param {string} ip - Client IP (via clientIp: x-real-ip / rightmost XFF / socket)
  * @param {Array} recentPosts - Recent posts for cross-session similarity (optional)
  * @returns {{ spam_score, signals, action, details }}
  */
-export function spamAnalyze(title, description, authorId, ip, recentPosts = []) {
+export function spamAnalyze(title, description, authorId, ip, recentPosts = [], cfg = SPAM_THRESHOLDS) {
+	const thresholds = normalizeSpamConfig(cfg);
 	const text = `${title} ${description}`;
 	const signals = {};
 	let totalScore = 0;
@@ -555,11 +849,12 @@ export function spamAnalyze(title, description, authorId, ip, recentPosts = []) 
 	// Final weighted score
 	const spam_score = weightSum > 0 ? Math.round(totalScore / weightSum) : 0;
 
-	// Determine action
-	let action = "allow"; // score < 40
-	if (spam_score >= 80) action = "quarantine";
-	else if (spam_score >= 60) action = "review";
-	else if (spam_score >= 40) action = "flag";
+	// Determine action — thresholds come from admin settings (spam_config),
+	// so the deployment can tune sensitivity without a code change.
+	let action = "allow"; // score < flag
+	if (spam_score >= thresholds.quarantine) action = "quarantine";
+	else if (spam_score >= thresholds.review) action = "review";
+	else if (spam_score >= thresholds.flag) action = "flag";
 
 	// Store fingerprint for future similarity checks
 	const fpKey = `${authorId}_${now}`;
@@ -603,5 +898,144 @@ export function cleanupSpamData() {
 	}
 	for (const [k, v] of _fingerprints) {
 		if (now - v.firstSeen > FINGERPRINT_EXPIRY_MS) _fingerprints.delete(k);
+	}
+}
+
+// ═══════════════════════════════════════════════════════════════
+// ADMIN-TUNABLE SPAM SENSITIVITY (settings key `spam_config`)
+// ═══════════════════════════════════════════════════════════════
+// The flag/review/quarantine thresholds were hardcoded; admins had no way to
+// tune false positives (too aggressive) or false negatives (too lax).
+// Defaults preserve the previous behaviour exactly.
+
+export const SPAM_THRESHOLDS = Object.freeze({ flag: 40, review: 60, quarantine: 80 });
+
+/** Clamp any partial config to a valid threshold set. Invalid / out-of-range
+ *  values fall back to defaults; ordering is enforced (flag < review < quarantine). */
+export function normalizeSpamConfig(raw) {
+	const num = (v, dflt) => {
+		const n = Number(v);
+		return Number.isFinite(n) && n >= 0 && n <= 100 ? Math.round(n) : dflt;
+	};
+	let flag = num(raw?.flag, SPAM_THRESHOLDS.flag);
+	let review = num(raw?.review, SPAM_THRESHOLDS.review);
+	let quarantine = num(raw?.quarantine, SPAM_THRESHOLDS.quarantine);
+	// Enforce ordering — a config with review <= flag would make "review" dead.
+	if (review <= flag) review = Math.min(100, flag + 5);
+	if (quarantine <= review) quarantine = Math.min(100, review + 5);
+	return { flag, review, quarantine };
+}
+
+/** Read the deployment's spam config from the settings store. Any failure
+ *  returns the defaults — moderation must never go down because config did. */
+export async function getSpamConfig(supabase) {
+	try {
+		const { data } = await supabase
+			.from("settings")
+			.select("value")
+			.eq("key", "spam_config")
+			.maybeSingle();
+		const raw = data?.value;
+		const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+		return normalizeSpamConfig(parsed);
+	} catch {
+		return normalizeSpamConfig(null);
+	}
+}
+
+// ═══════════════════════════════════════════════════════════════
+// SAFETY REPOST GUARD (settings key `safety_repost_blocklist`)
+// Fingerprints of safety-blocked/hidden text; matching reposts are rejected
+// with SAFETY_REPOST_BLOCKED plus an attempt counter. Fingerprint-only
+// storage (never raw text). serverModerate stays the primary gate.
+// ═══════════════════════════════════════════════════════════════
+
+export const SAFETY_REPOST_KEY = "safety_repost_blocklist";
+const SAFETY_REPOST_MAX = 200;
+// Below this normalized length a fingerprint is too generic to enforce
+// (a bare phone number is 10 digits; anything shorter risks collisions).
+const SAFETY_FP_MIN_LEN = 8;
+
+/** Pure: normalize text to a comparable fingerprint. "" = too short to enforce. */
+export function fingerprintSafetyText(text) {
+	if (typeof text !== "string" || !text) return "";
+	const fp = text
+		.toLowerCase()
+		.normalize("NFKC")
+		.replace(/[^a-z0-9]/g, "");
+	return fp.length >= SAFETY_FP_MIN_LEN ? fp : "";
+}
+
+async function readSafetyBlocklist(client) {
+	try {
+		const { data } = await client
+			.from("settings")
+			.select("value")
+			.eq("key", SAFETY_REPOST_KEY)
+			.maybeSingle();
+		const items = data?.value?.items;
+		return Array.isArray(items) ? items : [];
+	} catch {
+		return [];
+	}
+}
+
+/** Record a safety-blocked/hidden text. Best-effort; never throws. Returns true when stored. */
+export async function recordSafetyRepost(client, text, rule) {
+	try {
+		const fp = fingerprintSafetyText(text);
+		if (!fp) return false;
+		const items = await readSafetyBlocklist(client);
+		const now = new Date().toISOString();
+		const hit = items.find((e) => e?.fp === fp);
+		if (hit) {
+			hit.attempts = (hit.attempts || 1) + 1;
+			hit.last_at = now;
+		} else {
+			items.unshift({ fp, rule: String(rule || "policy"), attempts: 1, first_at: now, last_at: now });
+		}
+		await client.from("settings").upsert(
+			{ key: SAFETY_REPOST_KEY, value: { items: items.slice(0, SAFETY_REPOST_MAX), updated_at: now } },
+			{ onConflict: "key" },
+		);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+/** Check a submission against the blocklist. Never throws; fail-open (fail-closed is serverModerate's job). */
+export async function checkSafetyRepost(client, text) {
+	try {
+		const fp = fingerprintSafetyText(text);
+		if (!fp) return { blocked: false };
+		const items = await readSafetyBlocklist(client);
+		const hit = items.find((e) => e?.fp === fp);
+		if (!hit) return { blocked: false };
+		return { blocked: true, rule: hit.rule || "policy", attempts: hit.attempts || 1 };
+	} catch {
+		return { blocked: false };
+	}
+}
+
+/**
+ * Remove a fingerprint from the safety blocklist (appeal overturn path).
+ * A vindicated text must not keep tripping SAFETY_REPOST_BLOCKED on
+ * resubmission. Best-effort; returns true when an entry was removed.
+ */
+export async function clearSafetyRepost(client, text) {
+	try {
+		const fp = fingerprintSafetyText(text);
+		if (!fp) return false;
+		const items = await readSafetyBlocklist(client);
+		const kept = items.filter((e) => e?.fp !== fp);
+		if (kept.length === items.length) return false;
+		await client.from("settings").upsert(
+			{ key: SAFETY_REPOST_KEY, value: { items: kept, updated_at: new Date().toISOString() } },
+			{ onConflict: "key" },
+		);
+		return true;
+	} catch {
+		return false;
 	}
 }

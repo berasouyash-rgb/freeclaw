@@ -1,5 +1,5 @@
 /** Offline queue: failed writes are stored locally and retried when back online. */
-import { lsGet, lsSet } from "./identity";
+import { lsGet, lsSet, getAnonId } from "./identity";
 
 interface QueuedAction {
 	id: string;
@@ -7,6 +7,8 @@ interface QueuedAction {
 	path: string;
 	body: unknown;
 	queuedAt: string;
+	/** Anonymous identity that created the write. */
+	ownerId: string;
 }
 
 const KEY = "vb:offlineQueue";
@@ -17,12 +19,19 @@ const FLUSH_TIMEOUT_MS = 15_000;
 
 export function queueAction(method: string, path: string, body: unknown) {
 	const q = lsGet<QueuedAction[]>(KEY, []);
+	let ownerId = "";
+	try {
+		ownerId = getAnonId();
+	} catch {
+		/* identity unavailable; flush will refuse to replay without an owner */
+	}
 	q.push({
 		id: `q_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
 		method,
 		path,
 		body,
 		queuedAt: new Date().toISOString(),
+		ownerId,
 	});
 	lsSet(KEY, q.slice(-20)); // cap queue size
 }
@@ -45,8 +54,32 @@ function isAdminEndpoint(path: string): boolean {
 	);
 }
 
+/** Max age for queued items — discard after 24h to avoid replaying against
+ *  a potentially changed API schema after a redeploy. */
+const QUEUE_TTL_MS = 24 * 60 * 60 * 1000;
+
 export async function flushQueue(): Promise<number> {
-	const q = lsGet<QueuedAction[]>(KEY, []);
+	let q = lsGet<QueuedAction[]>(KEY, []);
+	if (!q.length) return 0;
+	// Discard items older than 24h — stale writes may hit a changed API.
+	// Also discard actions created by a different anonymous identity. A
+	// browser can be handed to another person or log out before the queue
+	// drains; replaying the old person's write under the new identity is a
+	// data-integrity and privacy bug. Legacy entries without an owner are
+	// intentionally dropped rather than guessed.
+	const cutoff = Date.now() - QUEUE_TTL_MS;
+	let currentOwnerId = "";
+	try {
+		currentOwnerId = getAnonId();
+	} catch {
+		/* identity unavailable; no queued write is safe to replay */
+	}
+	const before = q.length;
+	q = q.filter(
+		(a) =>
+			a.ownerId === currentOwnerId && new Date(a.queuedAt).getTime() > cutoff,
+	);
+	if (q.length < before) lsSet(KEY, q);
 	if (!q.length) return 0;
 	let flushed = 0;
 	const remaining: QueuedAction[] = [];
@@ -55,6 +88,12 @@ export async function flushQueue(): Promise<number> {
 			const headers: Record<string, string> = {
 				"Content-Type": "application/json",
 			};
+			try {
+				const aid = getAnonId();
+				if (aid) headers["x-anon-id"] = aid;
+			} catch {
+				/* identity not ready */
+			}
 			// Attach admin token for admin-only endpoints — read from canonical sessionStorage key
 			if (isAdminEndpoint(a.path)) {
 				try {
@@ -85,8 +124,8 @@ export async function flushQueue(): Promise<number> {
 				clearTimeout(kill);
 			}
 			if (res.ok) flushed++;
-			else if (res.status >= 500) remaining.push(a); // retry server errors later
-			// 4xx / abort: drop or retry below — aborted requests land in catch
+			else if (res.status >= 500 || res.status === 429) remaining.push(a); // retry server errors and throttle later
+			// other 4xx / abort: drop or retry below — aborted requests land in catch
 		} catch {
 			remaining.push(a);
 		}

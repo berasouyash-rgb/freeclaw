@@ -15,6 +15,21 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const tableData: Record<string, unknown[]> = {};
 const from = vi.fn();
+const feedCacheMock = vi.hoisted(() => {
+	const state: { wrapped: { mockClear: () => void } | null } = { wrapped: null };
+	return {
+		state,
+		staleWhileRevalidate: vi.fn((fn: (...args: unknown[]) => unknown) => {
+			const wrapped = vi.fn(fn);
+			state.wrapped = wrapped;
+			return wrapped;
+		}),
+	};
+});
+
+vi.mock("../../api/_cache.js", () => ({
+	staleWhileRevalidate: feedCacheMock.staleWhileRevalidate,
+}));
 
 vi.mock("../../api/_db-client.js", () => ({
 	default: { from },
@@ -39,10 +54,13 @@ vi.mock("../../api/_error.js", () => ({
 }));
 vi.mock("../../api/_events.js", () => ({
 	emitEvent: vi.fn(() => Promise.resolve()),
+	emitEventAndBridge: vi.fn(() => Promise.resolve()),
 	EVENT_TYPES: {},
 }));
 vi.mock("../../api/_moderation.js", () => ({
 	serverModerate: () => ({ blocked: false, requiresReview: false, flags: [] }),
+	recordSafetyRepost: () => Promise.resolve(false),
+	checkSafetyRepost: () => Promise.resolve({ blocked: false }),
 }));
 vi.mock("../../api/_follows.js", () => ({
 	notifyFollowers: vi.fn(() => Promise.resolve()),
@@ -64,9 +82,14 @@ function response() {
 	});
 }
 
+// Every chain `from()` hands out, so tests can assert which tables were
+// touched and which write ops (update/insert/delete) were called on them.
+const builtChains: Array<Record<string, unknown>> = [];
+
 function chainFor(table: string, selectArgs: unknown) {
 	const opts = (selectArgs || {}) as { count?: string; head?: boolean };
-	return {
+	const chain = {
+		table,
 		select(_col: unknown) {
 			return this;
 		},
@@ -97,11 +120,16 @@ function chainFor(table: string, selectArgs: unknown) {
 			onResolve({ data: [], error: null });
 		},
 	};
+	// Every chain handed out is recorded so a test can assert which tables
+	// were touched and — critically — which write ops were called on them.
+	builtChains.push(chain);
+	return chain;
 }
 
 beforeEach(() => {
 	vi.resetModules();
 	vi.clearAllMocks();
+	builtChains.length = 0;
 	from.mockImplementation((table: string, args?: unknown) =>
 		chainFor(table, args),
 	);
@@ -258,6 +286,74 @@ describe("GET /api/posts — feed artifact filter", () => {
 		expect(titles).not.toContain("Content Type Test");
 		expect(titles).not.toContain("Full CRUD Test 210145");
 		expect(titles).not.toContain("Final Workflow Test");
+	});
+
+	it("bypasses the server feed cache for an explicit fresh snapshot", async () => {
+		const previousVitest = process.env.VITEST;
+		delete process.env.VITEST;
+		tableData["posts"] = [
+			{
+				id: "fresh-1",
+				title: "A real fresh facilities report",
+				type: "problem",
+				category: "Facilities",
+				status: "reported",
+				author_id: "anon-1",
+				hidden: false,
+				deleted: false,
+				created_at: "2026-07-26T00:00:00Z",
+			},
+		];
+
+		try {
+			feedCacheMock.state.wrapped?.mockClear();
+			const { default: handler } = await import("../../api/_posts.js");
+			const res = response();
+			await handler(
+				{ method: "GET", query: { fresh: "1" }, body: {}, headers: {} },
+				res,
+			);
+
+			expect(res.statusCode).toBe(200);
+			expect(feedCacheMock.state.wrapped).not.toHaveBeenCalled();
+		} finally {
+			if (previousVitest === undefined) delete process.env.VITEST;
+			else process.env.VITEST = previousVitest;
+		}
+	});
+
+	it("does not start purge or maintenance writes from a public GET", async () => {
+		tableData["posts"] = [
+			{
+				id: "real-1",
+				title: "A real facilities report",
+				type: "problem",
+				category: "Facilities",
+				status: "reported",
+				author_id: "anon-1",
+				hidden: false,
+				deleted: false,
+				created_at: "2026-07-26T00:00:00Z",
+				updated_at: "2026-07-26T00:00:00Z",
+				admin_reply: null,
+			},
+		];
+
+		const { default: handler } = await import("../../api/_posts.js");
+		const res = response();
+		await handler({ method: "GET", query: {}, body: {}, headers: {} }, res);
+
+		expect(res.statusCode).toBe(200);
+		// The contract is no purge/maintenance WRITES. Reading the admin-set
+		// feed page size from `settings` is a legitimate READ on this path
+		// (getFeedPageSize), so assert on write ops rather than table access.
+		expect(builtChains.length).toBeGreaterThan(0);
+		for (const chain of builtChains) {
+			const spy = (op: string) => chain[op] as ReturnType<typeof vi.fn>;
+			expect(spy("update")).not.toHaveBeenCalled();
+			expect(spy("insert")).not.toHaveBeenCalled();
+			expect(spy("delete")).not.toHaveBeenCalled();
+		}
 	});
 
 	it("hides an artifact on a direct by-id fetch too (full-site filter)", async () => {

@@ -1,5 +1,5 @@
 {
-	"buildCommand": "npx vite build",
+	"buildCommand": "npm run build",
 	"rewrites": [
 		{
 			"source": "/api/(.*)",
@@ -27,7 +27,7 @@
 				},
 				{
 					"key": "Content-Security-Policy",
-					"value": "default-src 'self'; script-src 'self' 'unsafe-inline' https://js.puter.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: blob: https:; font-src 'self' https://fonts.gstatic.com; connect-src 'self' https://*.supabase.co wss://*.supabase.co https://api.puter.com wss://api.puter.com https://*.sentry.io; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+					"value": "default-src 'self'; script-src 'self' https://js.puter.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: blob: https:; font-src 'self' https://fonts.gstatic.com; connect-src 'self' https://*.supabase.co wss://*.supabase.co https://api.puter.com wss://api.puter.com https://*.sentry.io; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
 				},
 				{ "key": "Cache-Control", "value": "no-cache" },
 				{ "key": "Strict-Transport-Security", "value": "max-age=31536000; includeSubDomains" },
@@ -55,8 +55,12 @@
 	},
 	"crons": [
 		{
-			"path": "/api/agent-cron",
-			"schedule": "*/5 * * * *"
+			"path": "/api/keep-alive",
+			"schedule": "0 6 * * *"
+		},
+		{
+			"path": "/api/incident-cron?action=value-audit",
+			"schedule": "0 3 * * *"
 		}
 	]
 }

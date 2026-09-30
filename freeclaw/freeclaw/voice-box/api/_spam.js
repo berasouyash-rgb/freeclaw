@@ -16,8 +16,14 @@ export function recordSpamDetection(detection) {
 }
 
 export default async function handler(req, res) {
-	const identity = securityCheck(req);
-	if (identity === null) return res.status(429).json({ error: "rate limited" });
+	// securityCheck returns { ok, status, error, retryAfter } — enforce it
+	// properly instead of comparing the whole object to null (which never
+	// matched, so abusive traffic was never actually limited).
+	const sec = securityCheck(req);
+	if (!sec.ok) {
+		if (sec.retryAfter) res.setHeader("Retry-After", String(sec.retryAfter));
+		return res.status(sec.status || 429).json({ error: sec.error || "rate limited" });
+	}
 
 	// ── GET /api/spam — admin reads spam data ────────────────────
 	if (req.method === "GET") {
@@ -33,9 +39,9 @@ export default async function handler(req, res) {
 
 		// Fetch recent audit trail spam entries
 		const { data: auditEntries } = await supabase
-			.from("audit_log")
+			.from("activity_logs")
 			.select("id, action, detail, created_at")
-			.eq("category", "spam")
+			.eq("actor", "spam")
 			.order("created_at", { ascending: false })
 			.limit(30);
 

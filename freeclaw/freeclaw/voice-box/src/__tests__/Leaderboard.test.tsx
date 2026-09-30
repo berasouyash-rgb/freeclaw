@@ -1,0 +1,126 @@
+// ═══════════════════════════════════════════════════════════════════
+// Leaderboard page — /leaderboard
+// ═══════════════════════════════════════════════════════════════════
+// Locks:
+//   1. Empty lists render the empty state (never crash on null arrays).
+//   2. Unknown row types fall back to problem styling (never white-screen).
+//   3. Server error → error card with a working silent retry.
+// ═══════════════════════════════════════════════════════════════════
+
+import { fireEvent, render, screen } from "@testing-library/react";
+import { MemoryRouter } from "react-router";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import Leaderboard from "../pages/Leaderboard";
+
+const mocks = vi.hoisted(() => ({
+	getSlow: vi.fn(),
+}));
+
+vi.mock("../lib/api", () => ({
+	api: { getSlow: mocks.getSlow },
+}));
+
+vi.mock("../lib/utils", () => ({
+	STATUS_META: {
+		reported: { label: "Reported", color: "#888" },
+		solved: { label: "Solved", color: "#16a06a" },
+	},
+	timeAgo: () => "2d ago",
+}));
+
+const EMPTY = {
+	problems: [],
+	suggestions: [],
+	polls: [],
+	leaderboard: [],
+	ai_activity: [],
+};
+
+function renderPage() {
+	return render(
+		<MemoryRouter>
+			<Leaderboard />
+		</MemoryRouter>,
+	);
+}
+
+beforeEach(() => {
+	vi.clearAllMocks();
+	mocks.getSlow.mockResolvedValue({ ...EMPTY });
+});
+
+describe("Leaderboard — lists", () => {
+	it("renders the empty state when every list is empty", async () => {
+		renderPage();
+		expect(await screen.findByText("Nothing ranked yet")).toBeInTheDocument();
+	});
+
+	it("renders ranked rows with medals and scores", async () => {
+		mocks.getSlow.mockResolvedValue({
+			...EMPTY,
+			leaderboard: [
+				{ id: "p1", title: "Top post", type: "problem", score: 42 },
+				{ id: "p2", title: "Second post", type: "problem", score: 7 },
+			],
+		});
+		renderPage();
+		expect(await screen.findByText("Top post")).toBeInTheDocument();
+		expect(screen.getByText("Second post")).toBeInTheDocument();
+		expect(screen.getByText("🥇")).toBeInTheDocument();
+	});
+
+	it("never shows down-votes in the breakdown (support-only by design)", async () => {
+		mocks.getSlow.mockResolvedValue({
+			...EMPTY,
+			leaderboard: [
+				{
+					id: "p1", title: "Hot post", type: "problem", score: 9,
+					breakdown: { support: 12, comments: 0, downvotes: 3, freshness: 0, resolution: "—", depth: "—" },
+				},
+				{ id: "p2", title: "Calm post", type: "problem", score: 3 },
+			],
+		});
+		renderPage();
+		expect(await screen.findByText("Hot post")).toBeInTheDocument();
+		// Historical down-votes still flow in the data (ranking stability)
+		// but no negative-feedback UI is offered anymore.
+		expect(screen.queryByText(/Down: 3/)).not.toBeInTheDocument();
+		expect(screen.getByText("Support: 12")).toBeInTheDocument();
+	});
+
+	it("falls back instead of crashing on an unknown row type", async () => {
+		mocks.getSlow.mockResolvedValue({
+			...EMPTY,
+			leaderboard: [{ id: "x1", title: "Weird row", type: "quantum", score: 3 }],
+		});
+		renderPage();
+		expect(await screen.findByText("Weird row")).toBeInTheDocument();
+	});
+
+	it("survives null lists from the server", async () => {
+		mocks.getSlow.mockResolvedValue({
+			problems: null,
+			suggestions: null,
+			polls: null,
+			leaderboard: null,
+			ai_activity: null,
+		});
+		renderPage();
+		expect(await screen.findByText("Nothing ranked yet")).toBeInTheDocument();
+	});
+});
+
+describe("Leaderboard — error state", () => {
+	it("shows an error with a working silent retry", async () => {
+		mocks.getSlow.mockRejectedValueOnce(new Error("board down"));
+		renderPage();
+		await screen.findByText("board down");
+
+		mocks.getSlow.mockResolvedValueOnce({
+			...EMPTY,
+			leaderboard: [{ id: "p1", title: "Top post", type: "problem", score: 1 }],
+		});
+		fireEvent.click(screen.getByRole("button", { name: /retry/i }));
+		expect(await screen.findByText("Top post")).toBeInTheDocument();
+	});
+});

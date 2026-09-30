@@ -14,44 +14,54 @@ import {
 	Lock,
 	MessageSquare,
 	RefreshCcw,
+	Scale,
 	Search,
 	Shield,
 	ShieldCheck,
 	ShieldX,
 	Tag,
 	Trash2,
+	Unlock,
 	User,
+	Users,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import UpdateNotice from "../../components/admin/UpdateNotice";
+import { useUpdateSignal } from "../../hooks/useUpdateSignal";
 import PostPreviewCard from "../../components/PostPreviewCard";
+import WorkItem from "../../components/admin/WorkItem";
+import type { WorkItemData } from "../../components/admin/WorkItem";
 import { useApp } from "../../contexts/AppContext";
 import { api } from "../../lib/api";
+import { groupReports } from "../../lib/report-groups";
 import { useRealtime } from "../../lib/useRealtime";
 import { CAT_EMOJI, CATEGORIES, timeAgo } from "../../lib/utils";
-import type { PostData } from "../../types";
 
 /* ═══════════════════════════════════════════════════════════════
    REPORTS & CONTENT REVIEW — the classic Report queue desk with
    Content Review + Approval Center merged into ONE page.
 
    Tabs (all REAL backend data — nothing simulated):
-     • Open        — /api/reports          (report rows, moderate author,
+     • Reports     — /api/reports          (ALL reports in one queue — open
+                                             rows first with a Pending chip,
+                                             resolved rows after with a
+                                             Resolved chip; moderate author,
                                              resolve, escalate → approval)
      • AI Review   — /api/posts?all=1      (AI-flagged / pending_review posts,
                                              search + status filter + expandable
-                                             detail with comments & screenshots)
-     • Pre-publish — /api/pre-review       (blocked submissions: publish /
+                                             detail with comments & screenshots;
+                                             also pre-publish /api/pre-review
+                                             blocked submissions: publish /
                                              reject / keep private / ban)
      • Approvals   — /api/workforce        (pending-approvals: approve-task /
                                              reject-task — the REAL workforce
                                              approval pipeline)
-     • Resolved    — /api/reports          (resolved history)
    ═══════════════════════════════════════════════════════════════ */
 
 interface ReportRow {
 	id: number;
 	target_id: string;
-	target_type: "post" | "comment" | "poll";
+	target_type: "post" | "comment" | "poll" | "inbox" | string;
 	reason: string;
 	details?: string;
 	status?: string;
@@ -63,6 +73,18 @@ interface ReportRow {
 		suspended: boolean;
 		banned: boolean;
 		already_struck: boolean;
+	};
+	/** The autonomous worker's own audit evidence for this report, joined on
+	 *  by /api/reports from activity_logs — present only where a worker acted.
+	 *  This is how the queue proves AI work instead of a status flip. */
+	worker_action?: {
+		worker: string;
+		action: string;
+		disposition: string | null;
+		enforced: boolean;
+		evidence: string | null;
+		target: string | null;
+		at: string;
 	};
 	created_at: string;
 	[k: string]: unknown;
@@ -133,7 +155,20 @@ interface ApprovalItem {
 	created_at: string;
 }
 
-type Tab = "open" | "review" | "approvals" | "resolved";
+interface AppealItem {
+	id: string;
+	surface: string;
+	author_id: string;
+	title: string;
+	body: string;
+	reason: string;
+	flags: string[];
+	status: string;
+	created_at: string;
+	review_note?: string;
+}
+
+type Tab = "reports" | "review" | "approvals";
 
 const STATUS_COLORS: Record<
 	string,
@@ -159,131 +194,85 @@ const STATUS_COLORS: Record<
 	archived: { bg: "rgba(120,120,120,0.12)", text: "#888", label: "Archived" },
 };
 
-/* ── Post preview card (for existing reports) ────────────────── */
-function PostPreview({ targetId }: { targetId: string }) {
-	const [post, setPost] = useState<PostData | null>(null);
-	const [loading, setLoading] = useState(true);
-
-	useEffect(() => {
-		let cancelled = false;
-		(async () => {
-			try {
-				// Single-post fetches return { post, counts, mine } — unwrap so the
-				// preview card renders the actual post (not the wrapper).
-				const data = await api.get<{ post?: PostData }>(
-					`/api/posts?id=${targetId}`,
-				);
-				if (!cancelled) setPost(data?.post || (data as PostData) || null);
-			} catch {
-				/* target may not exist */
-			}
-			if (!cancelled) setLoading(false);
-		})();
-		return () => {
-			cancelled = true;
-		};
-	}, [targetId]);
-
-	if (loading) return <div className="skeleton h-24 mt-2" />;
-	if (!post)
-		return (
-			<p className="text-[11px] text-ink3 mt-2 italic">
-				Target post not found or deleted.
-			</p>
-		);
-
-	const statusColors: Record<string, string> = {
-		open: "var(--vb-warn)",
-		in_progress: "var(--vb-accent)",
-		resolved: "var(--vb-good)",
-		closed: "var(--vb-ink3)",
-	};
-
+/* ── Appeal review item (blocked-author recourse queue) ─────────── */
+function AppealReview({
+	item,
+	onAction,
+	busy,
+}: {
+	item: AppealItem;
+	onAction: (id: string, decision: "uphold" | "overturn", note: string) => void;
+	busy: boolean;
+}) {
+	const [note, setNote] = useState("");
 	return (
-		<div className="mt-2.5 rounded-xl border border-border bg-surface2/50 overflow-hidden">
-			{post.image_url && (
-				<div className="relative h-32 bg-surface2 overflow-hidden">
-					<img
-						src={post.image_url}
-						alt={post.title || "Post image"}
-						className="w-full h-full object-cover"
-						loading="lazy"
-						onError={(e) => {
-							(e.target as HTMLImageElement).style.display = "none";
-						}}
-					/>
-					<span className="absolute top-2 left-2 chip !text-[9px] !py-0.5 !px-1.5 bg-black/60 text-white backdrop-blur-sm">
-						<ImageIcon size={9} /> screenshot
-					</span>
-				</div>
-			)}
-
-			<div className="p-3">
-				<div className="flex items-center gap-1.5 flex-wrap mb-1.5">
-					<span
-						className="chip !text-[9px]"
-						style={{
-							color: statusColors[post.status] || "var(--vb-ink3)",
-							borderColor:
-								(statusColors[post.status] || "var(--vb-ink3)") + "44",
-						}}
-					>
-						{post.status || "unknown"}
-					</span>
-					{post.category && (
-						<span className="chip !text-[9px]">{post.category}</span>
-					)}
-					{post.priority && post.priority !== "medium" && (
+		<div
+			className="glass-card rounded-xl overflow-hidden"
+			style={{ borderColor: "rgba(86,82,214,0.25)" }}
+		>
+			<div className="p-4 flex items-start gap-3 border-b border-border bg-accent/5">
+				<div className="min-w-0 flex-1">
+					<div className="flex items-center gap-2 mb-1">
 						<span
-							className="chip !text-[9px]"
+							className="chip !text-[9px] !py-0.5"
 							style={{
-								color:
-									post.priority === "critical"
-										? "var(--vb-bad)"
-										: post.priority === "high"
-											? "var(--vb-warn)"
-											: "var(--vb-ink3)",
+								color: "var(--vb-accent)",
+								borderColor: "rgba(86,82,214,0.3)",
 							}}
 						>
-							{post.priority}
+							<Scale size={9} /> appeal · {item.surface}
 						</span>
-					)}
-				</div>
-
-				<p className="text-sm font-semibold leading-snug mb-1">
-					{post.title || "(no title)"}
-				</p>
-
-				{post.description && (
-					<p className="text-xs text-ink2 leading-relaxed line-clamp-3 mb-1.5">
-						{post.description}
-					</p>
-				)}
-
-				<div className="flex items-center gap-3 text-[10px] text-ink3">
-					{typeof post.reactions === "object" && post.reactions && (
-						<span>
-							👍{" "}
-							{Object.values(post.reactions as Record<string, number>).reduce(
-								(a, b) => a + (typeof b === "number" ? b : 0),
-								0,
-							)}{" "}
-							reactions
-						</span>
-					)}
-					{post.comment_count != null && (
-						<span>💬 {post.comment_count} comments</span>
-					)}
-					{post.author_id && <span>by {post.author_id.slice(0, 10)}…</span>}
-					{post.created_at && <span>{timeAgo(post.created_at)}</span>}
-				</div>
-
-				{post.admin_reply && (
-					<div className="mt-2 p-2 rounded-lg bg-accent/5 border border-accent/10 text-[11px] text-ink2">
-						<span className="font-semibold text-accent">Admin reply:</span>{" "}
-						{post.admin_reply}
+						<span className="chip !text-[9px] !py-0.5">{item.status}</span>
+						{(item.flags || []).length > 0 && (
+							<span className="chip !text-[9px] !py-0.5">
+								{item.flags.join(", ")}
+							</span>
+						)}
 					</div>
-				)}
+					{item.title && (
+						<p className="text-sm font-semibold leading-snug mt-0.5">
+							{item.title}
+						</p>
+					)}
+					{item.body && (
+						<p className="text-xs text-ink2 mt-0.5 line-clamp-3">{item.body}</p>
+					)}
+					{item.reason && (
+						<p className="text-[11px] text-ink2 mt-1">
+							<span className="font-semibold">Author&apos;s case:</span> {item.reason}
+						</p>
+					)}
+					<p className="text-[11px] text-ink3 mt-1 font-mono">
+						{item.author_id.slice(0, 10)}… ·{" "}
+						{item.created_at ? timeAgo(item.created_at) : "unknown"}
+					</p>
+				</div>
+			</div>
+			<div className="p-4 flex flex-col gap-2">
+				<input
+					className="input !py-2 !text-xs"
+					placeholder="Decision note (optional, sent to the author)"
+					value={note}
+					onChange={(e) => setNote(e.target.value)}
+					maxLength={500}
+					aria-label="Appeal decision note"
+				/>
+				<div className="flex gap-2">
+					<button
+						className="btn btn-ghost !text-xs"
+						disabled={busy}
+						onClick={() => onAction(item.id, "uphold", note)}
+					>
+						Uphold block
+					</button>
+					<button
+						className="btn btn-primary !text-xs"
+						disabled={busy}
+						onClick={() => onAction(item.id, "overturn", note)}
+					>
+						{busy ? "Publishing…" : "Overturn & publish"}
+					</button>
+				</div>
 			</div>
 		</div>
 	);
@@ -301,7 +290,7 @@ function PrePublishReview({
 }) {
 	return (
 		<div
-			className="card overflow-hidden"
+			className="glass-card rounded-xl overflow-hidden"
 			style={{ borderColor: "rgba(220,75,75,0.2)" }}
 		>
 			{/* Header */}
@@ -438,22 +427,277 @@ function PrePublishReview({
 /* ═══════════════════════════════════════════════════════════════
    MAIN COMBINED COMPONENT
    ═══════════════════════════════════════════════════════════════ */
+/* ══════════════════════════════════════════════════════════════════
+   AI WORK EVIDENCE
+   ──────────────────────────────────────────────────────────────────
+   The reports queue used to be a list of rows with a `status`. A row
+   reading "resolved" proved only that something set a column — not that
+   anyone removed the content, and not that anyone checked (spec §0).
+
+   These surfaces render the WORKFORCE's own audit trail instead: which
+   worker acted, what disposition it chose, whether it actually enforced
+   removal, and the observation it decided on. The data comes from
+   activity_logs (the worker writes it at action time) joined by
+   /api/reports — never from a worker narrative generated at render time.
+   ══════════════════════════════════════════════════════════════════ */
+
+const DISPOSITION_META: Record<
+	string,
+	{ label: string; color: string; icon: string }
+> = {
+	enforced: {
+		label: "Violation removed",
+		color: "#dc4b4b",
+		icon: "🚫",
+	},
+	already_handled: {
+		label: "Already handled",
+		color: "#16a06a",
+		icon: "✅",
+	},
+	no_violation: {
+		label: "No live violation",
+		color: "#8b93a7",
+		icon: "🔍",
+	},
+};
+
+function WorkerEvidence({ r }: { r: ReportRow }) {
+	const ev = r.worker_action;
+	if (!ev) return null;
+	const meta = DISPOSITION_META[ev.disposition || ""] || {
+		label: ev.disposition || ev.action,
+		color: "var(--vb-accent)",
+		icon: "•",
+	};
+	return (
+		<div
+			className="px-4 pb-3 pt-2 border-t border-border"
+			style={{ background: "rgba(86,82,214,0.04)" }}
+		>
+			<div className="flex items-center gap-2 flex-wrap mb-1">
+				<span
+					className="chip !text-[9px] !py-0.5"
+					style={{
+						color: "var(--vb-accent)",
+						borderColor: "rgba(86,82,214,0.35)",
+					}}
+					title="Which automated worker recorded this action"
+				>
+					Worker: {ev.worker}
+				</span>
+				<span
+					className="chip !text-[9px] !py-0.5"
+					style={{ color: meta.color, borderColor: `${meta.color}55` }}
+				>
+					{meta.icon} {meta.label}
+				</span>
+				{ev.enforced && (
+					<span className="chip !text-[9px] !py-0.5 !bg-bad/10 !text-bad">
+						✓ removal re-read verified
+					</span>
+				)}
+				<span className="text-[10px] text-ink3 ml-auto">
+					{ev.at ? timeAgo(ev.at) : ""}
+				</span>
+				</div>
+			<div className="text-[11px] text-ink3 leading-relaxed">
+				{ev.evidence ? (
+					<>
+						<span className="font-semibold text-ink2">Evidence: </span>
+						<span className="font-mono">{ev.evidence}</span>
+					</>
+				) : (
+					<span className="italic opacity-70">
+						No observation recorded on this action.
+					</span>
+				)}
+				{ev.target && (
+					<span className="block mt-0.5">
+						<span className="font-semibold text-ink2">Target: </span>
+						<span className="font-mono">{ev.target}</span>
+					</span>
+				)}
+			</div>
+		</div>
+	);
+}
+
+/**
+ * Headline strip for the Open tab: how much of this queue the workforce has
+ * already resolved, and how many it could not — the numbers come from the
+ * rows' joined worker evidence, not from a separate counter that could drift.
+ */
+function WorkerLedger({
+	rows,
+	handled,
+}: {
+	rows: ReportRow[];
+	handled: ReportRow[];
+}) {
+	const enforced = handled.filter((r) => r.worker_action?.enforced).length;
+	const reopened = handled.filter(
+		(r) => r.worker_action?.action === "false_resolution_reopened",
+	).length;
+	const open = rows.length;
+
+	if (!handled.length && !open) return null;
+
+	return (
+		<div className="card p-3.5 mb-3" style={{ background: "rgba(86,82,214,0.05)" }}>
+			<div className="flex items-center gap-2 flex-wrap">
+				<span className="text-xs font-semibold text-ink2">
+					Worker ledger
+				</span>
+				<span className="text-[11px] text-ink3">
+					{open} awaiting you
+				</span>
+				<span className="text-[11px] text-ink3">·</span>
+				<span className="text-[11px] text-ink3">
+					{handled.length} dispositioned by AI
+				</span>
+				{enforced > 0 && (
+					<>
+						<span className="text-[11px] text-ink3">·</span>
+						<span className="text-[11px]" style={{ color: "#dc4b4b" }}>
+							{enforced} removed
+						</span>
+					</>
+				)}
+				{reopened > 0 && (
+					<>
+						<span className="text-[11px] text-ink3">·</span>
+						<span className="text-[11px]" style={{ color: "#d98a0b" }}>
+							{reopened} false resolution(s) corrected
+						</span>
+					</>
+				)}
+			</div>
+			<p className="text-[10px] text-ink3 mt-1">
+				Evidence is the worker's own audit trail, re-read from the target —
+				not a self-report.
+			</p>
+		</div>
+	);
+}
+
+// ── Report target chip: comments read as comments, posts as posts ──
+// Each target type gets its own color, and the chip links to the valid
+// page for that object (post → detail, comment → parent post, poll →
+// polls, inbox → inbox tab). A comment whose parent post is unknown
+// renders plain text — never a dead link.
+const TARGET_TYPE_STYLE: Record<string, { color: string; border: string; label: string }> = {
+	post: { color: "var(--vb-accent)", border: "color-mix(in srgb, var(--vb-accent) 35%, transparent)", label: "Post" },
+	comment: { color: "var(--vb-warn)", border: "rgba(220,170,50,0.35)", label: "Comment" },
+	poll: { color: "#8b5cf6", border: "rgba(139,92,246,0.35)", label: "Poll" },
+	inbox: { color: "#38bdf8", border: "rgba(56,189,248,0.35)", label: "Inbox" },
+	community_post: { color: "#2dd4bf", border: "rgba(45,212,191,0.35)", label: "Community" },
+};
+function TargetTypeIcon({ type }: { type: string }) {
+	switch (type) {
+		case "post":
+			return <Flag size={12} aria-hidden />;
+		case "comment":
+			return <MessageSquare size={12} aria-hidden />;
+		case "poll":
+			return <BarChart3 size={12} aria-hidden />;
+		case "inbox":
+			return <span aria-hidden>📥</span>;
+		case "community_post":
+			return <Users size={12} aria-hidden />;
+		default:
+			return <Flag size={12} aria-hidden />;
+	}
+}
+function TargetTypeChip({ type, targetId, postId }: { type: string; targetId: string; postId?: string | null }) {	const style = TARGET_TYPE_STYLE[type] ?? { color: "var(--vb-ink3)", border: "var(--vb-border)", label: type };
+	const cls = "chip !text-[9px] !py-0.5 inline-flex items-center gap-1";
+	const inner = (<><TargetTypeIcon type={type} /> {style.label}</>);
+	if (type === "post") {
+		return <a className={cls} style={{ color: style.color, borderColor: style.border }} href={`/post/${targetId}`} title="Open reported post" aria-label={`Open reported post ${targetId}`}>{inner}</a>;
+	}
+	if (type === "comment" && postId) {
+		return <a className={cls} style={{ color: style.color, borderColor: style.border }} href={`/post/${postId}`} title="Open parent post" aria-label={`Open parent post of comment ${targetId}`}>{inner}</a>;
+	}
+	if (type === "poll") {
+		return <a className={cls} style={{ color: style.color, borderColor: style.border }} href="/polls" title="Open polls" aria-label="Open polls">{inner}</a>;
+	}
+	if (type === "inbox") {
+		return <button type="button" className={cls} style={{ color: style.color, borderColor: style.border }} title="Open inbox" aria-label="Open inbox" onClick={() => window.dispatchEvent(new CustomEvent("vb:admin-tab", { detail: "inbox" }))}>{inner}</button>;
+	}
+	// Communities file reports as `slug` (whole community) or
+	// `slug::postId` (one post). Both land on the community page, which is
+	// the only valid page for that content — never a dead link.
+	if (type === "community_post") {
+		const slug = String(targetId || "").split("::")[0];
+		if (!slug) return <span className={cls} style={{ color: style.color, borderColor: style.border }}>{inner}</span>;
+		return <a className={cls} style={{ color: style.color, borderColor: style.border }} href={`/communities/${slug}`} title="Open reported community" aria-label={`Open reported community ${slug}`}>{inner}</a>;
+	}
+	return <span className={cls} style={{ color: style.color, borderColor: style.border }}>{inner}</span>;
+}
+
+// ── Report context helpers: reporter reliability + related-content link ──
+// Both derive from already-loaded rows — no new fetch. Reporter stats count
+// this reporter's filings and upheld outcomes (resolved/verified/solved);
+// related resolves each target type to its one valid page, mirroring the
+// chip rules above (unknown comment parents → null, never a dead link).
+const UPHELD_STATUSES = new Set(["resolved", "verified", "solved", "auto_resolved"]);
+function reporterStatsFor(all: ReportRow[], authorId: string): { filed: number; upheld: number } | null {
+	if (!authorId) return null;
+	const mine = all.filter((r) => r.author_id === authorId);
+	if (mine.length === 0) return null;
+	return {
+		filed: mine.length,
+		upheld: mine.filter((r) => UPHELD_STATUSES.has(String(r.status || ""))).length,
+	};
+}
+function relatedFor(
+	r: ReportRow,
+	commentPostId?: string | null,
+): WorkItemData["related"] {
+	switch (r.target_type) {
+		case "post":
+			return { kind: "post", url: `/post/${r.target_id}`, label: "Open reported post", postId: r.target_id };
+		case "comment":
+			return commentPostId
+				? { kind: "post", url: `/post/${commentPostId}`, label: "Open parent post", postId: commentPostId }
+				: null;
+		case "poll":
+			return { kind: "poll", url: "/polls", label: "Open polls" };
+		case "inbox":
+			return { kind: "inbox", label: "Open in inbox" };
+		case "community_post": {
+			const slug = String(r.target_id || "").split("::")[0];
+			return slug
+				? { kind: "community", url: `/communities/${slug}`, label: "Open community" }
+				: null;
+		}
+		default:
+			return null;
+	}
+}
 export default function Reports() {
 	const { toast } = useApp();
-	const [tab, setTab] = useState<Tab>("open");
+	const [tab, setTab] = useState<Tab>("reports");
 
 	// ── Data ──────────────────────────────────────────────────────
 	const [reports, setReports] = useState<ReportRow[]>([]);
 	const [preReviews, setPreReviews] = useState<PreReviewItem[]>([]);
+	const [appeals, setAppeals] = useState<AppealItem[]>([]);
 	const [posts, setPosts] = useState<ReviewPost[]>([]);
 	const [approvals, setApprovals] = useState<ApprovalItem[]>([]);
 	const [queueError, setQueueError] = useState<string | null>(null);
 	const [loading, setLoading] = useState(true);
+	const [refreshing, setRefreshing] = useState(false);
 	const [busy, setBusy] = useState<string | null>(null);
+	const {
+		updatesAvailable,
+		markUpdatesAvailable,
+		clearUpdates,
+	} = useUpdateSignal();
 
 	// ── Report view state ─────────────────────────────────────────
-	const [expandedId, setExpandedId] = useState<number | null>(null);
 	const [actingId, setActingId] = useState<number | null>(null);
+	const [selectedReport, setSelectedReport] = useState<WorkItemData | null>(null);
 
 	// ── Content Review view state ─────────────────────────────────
 	const [search, setSearch] = useState("");
@@ -468,15 +712,25 @@ export default function Reports() {
 	>({});
 	const [showImage, setShowImage] = useState<Record<string, boolean>>({});
 
+	useRealtime(
+		["reports", "posts", "polls", "poll_votes"],
+		markUpdatesAvailable,
+		1_000,
+	);
+
 	// ── Fast queues (reports / pre-review / approvals) ────────────────
-	// These three endpoints are lightweight and safe to refresh on every
-	// realtime tick + 15s poll + visibility change.
+	// These endpoints load once on entry and refresh only through the explicit
+	// update controls or an authoritative user action.
 	const loadFast = useCallback(async (silent = false) => {
 		if (!silent) setLoading(true);
 		setQueueError(null);
 		try {
-			const [reportsData, reviewData, approvalsRes] = await Promise.all([
-				api.get<ReportRow[]>("/api/reports").catch(() => []),
+			const [reportsData, reviewData, approvalsRes, appealsRes] = await Promise.all([
+				api.get<ReportRow[]>("/api/reports").catch((e: unknown) => {
+					console.error("[Reports] reports fetch failed", { error: e instanceof Error ? e.message : String(e) });
+					setQueueError("Reports failed to load — showing last-known queue. Retry shortly.");
+					throw e;
+				}),
 				// Surfacing admin-session expiry for the review queue (real user pain)
 				api
 					.get<{ items: PreReviewItem[] }>("/api/pre-review")
@@ -497,11 +751,19 @@ export default function Reports() {
 					.post<{ approvals: ApprovalItem[] }>("/api/workforce", {
 						action: "pending-approvals",
 					})
-					.catch(() => ({ approvals: [] })),
+					.catch((e: unknown) => {
+						console.error("[Reports] approvals fetch failed", { error: e instanceof Error ? e.message : String(e) });
+						return { approvals: [] as ApprovalItem[] };
+					}),
+				// Author appeals against safety blocks — same reviewer owns them.
+				api
+					.get<{ items: AppealItem[] }>("/api/appeals?status=open")
+					.catch(() => ({ items: [] as AppealItem[] })),
 			]);
 
 			setReports(Array.isArray(reportsData) ? reportsData : []);
 			setPreReviews(reviewData?.items || []);
+			setAppeals(appealsRes?.items || []);
 			setApprovals(approvalsRes?.approvals || []);
 		} catch (e: unknown) {
 			console.warn(
@@ -513,10 +775,9 @@ export default function Reports() {
 	}, []);
 
 	// ── Heavy content-review scan (throttled) ────────────────────────
-	// /api/posts?all=1 scans the whole feed (up to 2000 rows) — firing it on
-	// every 1.2s realtime tick is what made this page crawl. It now only runs
-	// on mount / manual refresh, and re-runs at most every 60s, and only while
-	// the AI Review desk is the active tab.
+	// /api/posts?all=1 scans the whole feed (up to 2000 rows). It runs on
+	// mount/manual refresh and at most once per minute when the AI Review desk
+	// is active; realtime changes only mark the update badge.
 	const postsLoadRef = useRef(0);
 	const POSTS_RELOAD_MS = 60000;
 	const loadPosts = useCallback(async (force = false) => {
@@ -527,7 +788,10 @@ export default function Reports() {
 		try {
 			const allPosts = await api
 				.getSlow<ReviewPost[]>("/api/posts?all=1")
-				.catch(() => []);
+				.catch((e: unknown) => {
+					console.error("[Reports] posts scan failed", { error: e instanceof Error ? e.message : String(e) });
+					throw e;
+				});
 			// Only posts that went through AI review / await a moderation decision
 			setPosts(
 				(Array.isArray(allPosts) ? allPosts : []).filter(
@@ -559,55 +823,70 @@ export default function Reports() {
 	);
 
 	// Explicit user Refresh — always fresh, bypasses the posts throttle.
-	const refreshAll = useCallback(() => {
-		void loadFast(true);
-		void loadPosts(true);
-	}, [loadFast, loadPosts]);
+	const refreshAll = useCallback(async () => {
+		setRefreshing(true);
+		try {
+			await Promise.all([loadFast(true), loadPosts(true)]);
+			clearUpdates();
+		} finally {
+			setRefreshing(false);
+		}
+	}, [clearUpdates, loadFast, loadPosts]);
 
 	useEffect(() => {
 		load();
 	}, [load]);
 
-	// 🔴 Live: new reports / flagged posts / comments appear without refresh.
-	// Realtime ticks only reload the FAST queues — the heavy posts scan is
-	// throttled and tied to the review tab (below).
-	useRealtime(
-		["reports", "posts", "comments"],
-		() => {
-			void loadFast(true);
-			if (tab === "review") void loadPosts();
-		},
-		1200,
-	);
-	useEffect(() => {
-		const iv = setInterval(() => {
-			if (!document.hidden) void loadFast(true);
-		}, 15000);
-		const onVis = () => {
-			if (!document.hidden) void loadFast(true);
-		};
-		document.addEventListener("visibilitychange", onVis);
-		return () => {
-			clearInterval(iv);
-			document.removeEventListener("visibilitychange", onVis);
-		};
-	}, [loadFast]);
-
+	// Reports are refreshed explicitly through the page's refresh control and
+	// user actions; a quiet moderation queue does not continuously refetch.
 	// Entering the AI Review desk triggers a (throttled) fresh posts scan.
 	useEffect(() => {
 		if (tab === "review") void loadPosts();
 	}, [tab, loadPosts]);
 
 	// ── Report actions ────────────────────────────────────────────
+	// Resolve returns the backend's verification (spec §23): the toast
+	// says WHAT was verified, not just "Resolved".
 	const resolve = async (id: number) => {
 		setBusy(`resolve:${id}`);
 		try {
-			await api.put("/api/reports", { id, status: "resolved" });
-			toast("Resolved", "ok");
+			const r = await api.put<{
+				verification?: { verified?: boolean; detail?: string };
+			}>("/api/reports", { id, status: "resolved" });
+			const v = r.verification;
+			toast(
+				v?.detail ? `Resolved — ${v.detail}` : "Resolved",
+				v && v.verified === false ? "err" : "ok",
+			);
 			load();
 		} catch (e: unknown) {
 			toast(e instanceof Error ? e.message : "Action failed", "err");
 		}
+		setBusy(null);
+	};
+
+	// Resolve a whole root issue (spec §24): every member report goes through
+	// the same verified PUT as a single resolve, so each keeps its own
+	// verification; the toast reports the honest total, never a fake bulk OK.
+	const resolveGroup = async (key: string, ids: Array<number | string>) => {
+		setBusy(`resolve-group:${key}`);
+		let ok = 0;
+		let failed = 0;
+		for (const id of ids) {
+			try {
+				await api.put("/api/reports", { id, status: "resolved" });
+				ok++;
+			} catch {
+				failed++;
+			}
+		}
+		toast(
+			failed === 0
+				? `Resolved root issue — ${ok} report(s) verified`
+				: `Resolved ${ok}, ${failed} failed — re-check the remainder`,
+			failed === 0 ? "ok" : "err",
+		);
+		load();
 		setBusy(null);
 	};
 
@@ -647,6 +926,120 @@ export default function Reports() {
 			toast(e instanceof Error ? e.message : String(e), "err");
 		}
 		setBusy(null);
+	};
+
+	// -- Comment lock/unlock honesty --
+	// Unlock renders only when the comment index proves hidden. Deleted
+	// rows show Removed, missing rows show Target not found, visible rows
+	// show nothing. One lazy index fetch covers every comment-target row.
+	const [commentStates, setCommentStates] = useState<
+		Record<string, { hidden?: boolean; deleted?: boolean; postId?: string }>
+	>({});
+	const [commentIndexReady, setCommentIndexReady] = useState(false);
+	const commentIndexFlight = useRef<Promise<void> | null>(null);
+
+	useEffect(() => {
+		const seen: Record<string, boolean> = {};
+		const ids: string[] = [];
+		for (const r of reports) {
+			if (r.target_type !== "comment") continue;
+			const id = String(r.target_id);
+			if (!seen[id]) { seen[id] = true; ids.push(id); }
+		}
+		const missing = ids.filter((id) => commentStates[id] === undefined);
+		if (missing.length === 0 || commentIndexFlight.current) return;
+		commentIndexFlight.current = (async () => {
+			try {
+				const list = await api.get<
+					Array<{ id?: string; hidden?: boolean; deleted?: boolean; post_id?: string }>
+				>("/api/comments?all=1");
+				if (!Array.isArray(list)) return;
+				const next: Record<string, { hidden?: boolean; deleted?: boolean; postId?: string }> = { ...commentStates };
+				for (const c of list) {
+					if (!c || typeof c.id !== "string") continue;
+					next[c.id] = { hidden: c.hidden, deleted: c.deleted, postId: c.post_id };
+				}
+				setCommentStates(next);
+				setCommentIndexReady(true);
+			} catch {
+				// Unknown states: render no unlock affordance rather than guessing.
+			} finally {
+				commentIndexFlight.current = null;
+			}
+		})();
+		void commentIndexFlight.current;
+	}, [reports, commentStates]);
+
+	// Unlock a blocked comment. PUT /api/comments { id, hidden: false }
+	// already unhides for admins (api/_comments.js). Re-read after the
+	// write and verify before claiming ok.
+	const unlockComment = async (targetId: string) => {
+		setBusy(`unlock-comment:${targetId}`);
+		try {
+			await api.put("/api/comments", { id: targetId, hidden: false });
+			const list = await api
+				.get<Array<{ id: string; hidden?: boolean; deleted?: boolean; post_id?: string }>>(
+					"/api/comments?all=1",
+				)
+				.catch(() => []);
+			const found = (Array.isArray(list) ? list : []).find(
+				(c) => c.id === targetId,
+			);
+			const verified: { hidden?: boolean; deleted?: boolean; postId?: string } = {
+				hidden: found !== undefined && found.hidden === true,
+				deleted: found !== undefined && found.deleted === true,
+				postId: found?.post_id,
+			};
+			setCommentStates((prev) => ({ ...prev, [targetId]: verified }));
+			setCommentIndexReady(true);
+			if (!found) {
+				toast("Target not found — it may already be removed", "err");
+				load();
+				return;
+			}
+			if (verified.deleted) {
+				toast("Comment is removed, not hidden — nothing to unlock", "err");
+				load();
+				return;
+			}
+			if (verified.hidden) {
+				toast("Unlock failed — the comment is still hidden", "err");
+				return;
+			}
+			toast("Comment unlocked — visible to everyone again", "ok");
+			load();
+		} catch (e: unknown) {
+			toast(e instanceof Error ? e.message : String(e), "err");
+		} finally {
+			setBusy(null);
+		}
+	};
+
+	const commentRowAction = (r: ReportRow) => {
+		if (r.target_type !== "comment") return null;
+		const targetId = String(r.target_id);
+		if (!commentIndexReady) return null;
+		const st = commentStates[targetId];
+		if (st === undefined)
+			return <span className="text-[11px] text-ink3">Target not found</span>;
+		if (st.deleted)
+			return <span className="text-[11px] text-ink3">Removed</span>;
+		if (!st.hidden) return null;
+		return (
+			<button
+			type="button"
+			className="btn btn-soft !text-xs"
+			onClick={(e) => {
+				e.stopPropagation();
+				unlockComment(targetId);
+			}}
+			disabled={busy === `unlock-comment:${targetId}`}
+			aria-label={`Unlock comment ${targetId}`}
+			title="Unhide this blocked comment — it becomes visible to everyone again"
+			>
+			<Unlock size={13} /> Unlock comment
+			</button>
+		);
 	};
 
 	// ── Direct moderation on the REPORTED author (warn/suspend/ban) ──
@@ -757,9 +1150,36 @@ export default function Reports() {
 	const handleReviewAction = async (key: string, action: string) => {
 		setBusy(`review:${key}`);
 		try {
-			await api.post("/api/pre-review", { key, action });
+			// Ban requires explicit confirmation on the server side
+			await api.post("/api/pre-review", {
+				key,
+				action,
+				...(action === "ban" ? { confirm: true } : {}),
+			});
 			toast(
-				`Review ${action === "approve" ? "approved & published" : action}d`,
+				`Review ${action === "approve" ? "approved & published" : action === "reject" ? "rejected" : `${action}d`}`,
+				"ok",
+			);
+			load();
+		} catch (e: unknown) {
+			toast(e instanceof Error ? e.message : String(e), "err");
+		}
+		setBusy(null);
+	};
+
+	// ── Appeal review (uphold the block | overturn and publish) ──────────
+	const handleAppealAction = async (id: string, decision: "uphold" | "overturn", note: string) => {
+		setBusy(`appeal:${id}`);
+		try {
+			const r = await api.put<{ status: string; published?: { kind: string; id: string } }>("/api/appeals", {
+				id,
+				decision,
+				note,
+			});
+			toast(
+				decision === "overturn"
+					? `Appeal approved — ${r.published?.kind ?? "content"} published`
+					: "Appeal reviewed — block stands",
 				"ok",
 			);
 			load();
@@ -808,7 +1228,7 @@ export default function Reports() {
 		if (!confirm("Delete this post permanently?")) return;
 		setBusy(`delete:${postId}`);
 		try {
-			await api.del("/api/posts", { id: postId });
+			await api.del(`/api/posts?id=${encodeURIComponent(postId)}`, { id: postId });
 			setPosts((prev) => prev.filter((p) => p.id !== postId));
 			toast("Post deleted", "ok");
 		} catch (e: unknown) {
@@ -820,7 +1240,7 @@ export default function Reports() {
 	const deleteComment = async (commentId: string, postId: string) => {
 		if (!confirm("Delete this comment?")) return;
 		try {
-			await api.del("/api/comments", { id: commentId });
+			await api.del(`/api/comments?id=${encodeURIComponent(commentId)}`, { id: commentId });
 			setPostComments((prev) => ({
 				...prev,
 				[postId]: (prev[postId] || []).filter((c) => c.id !== commentId),
@@ -834,6 +1254,20 @@ export default function Reports() {
 	// ── Derived ───────────────────────────────────────────────────
 	const openReports = reports.filter((r) => r.status !== "resolved");
 	const resolvedReports = reports.filter((r) => r.status === "resolved");
+	// Reports the autonomous workforce dispositioned on its own — each carries
+	// the audit evidence that justified the decision. Shown ABOVE the hand-
+	// moderated queue so AI work is visible instead of vanishing into history.
+	const aiHandled = reports
+		.filter((r) => r.worker_action)
+		.sort((a, b) =>
+			String(b.worker_action?.at || "").localeCompare(
+				String(a.worker_action?.at || ""),
+			),
+		);
+	// Root issues (spec §24): repeated reports about the SAME target collapse
+	// into one decision item with impact — "20 reports" reads as one broken
+	// water cooler, not 20 disconnected rows. Singletons stay in the queue.
+	const rootIssues = groupReports(openReports);
 
 	const filteredPosts = posts.filter((p) => {
 		if (statusFilter !== "all" && p.status !== statusFilter) return false;
@@ -850,18 +1284,11 @@ export default function Reports() {
 		return true;
 	});
 
-	const targetTypeIcon = (type: string) => {
-		switch (type) {
-			case "post":
-				return <Flag size={12} />;
-			case "comment":
-				return <MessageSquare size={12} />;
-			case "poll":
-				return <BarChart3 size={12} />;
-			default:
-				return <Flag size={12} />;
-		}
-	};
+	
+	const isInboxUrgent = (r: ReportRow) =>
+		r.target_type === "inbox" && r.reason.startsWith("[INBOX-URGENT]");
+	const isInboxRow = (r: ReportRow) =>
+		r.target_type === "inbox" || r.reason.startsWith("[BACKSTOP-");
 
 	const priorityColor = (p: string) =>
 		p === "critical"
@@ -880,17 +1307,17 @@ export default function Reports() {
 		color: string;
 	}[] = [
 		{
-			key: "open",
-			label: "Open",
+			key: "reports",
+			label: "Reports",
 			icon: <Flag size={12} />,
-			count: openReports.length,
-			color: "var(--vb-bad)",
+			count: reports.length,
+			color: "var(--vb-warn)",
 		},
 		{
 			key: "review",
-			label: "AI Review",
+			label: "Review",
 			icon: <Shield size={12} />,
-			count: posts.length + preReviews.length,
+			count: posts.length + preReviews.length + appeals.length,
 			color: "var(--vb-accent)",
 		},
 		{
@@ -900,59 +1327,63 @@ export default function Reports() {
 			count: approvals.length,
 			color: "#8b5cf6",
 		},
-		{
-			key: "resolved",
-			label: "Resolved",
-			icon: <CheckCircle2 size={12} />,
-			count: resolvedReports.length,
-			color: "var(--vb-good)",
-		},
 	];
+
+	// If a report is selected, show the full WorkItem detail view
+	if (selectedReport) {
+		return (
+			<WorkItem
+				item={selectedReport}
+				onBack={() => setSelectedReport(null)}
+				onUpdate={(patch) => {
+					setSelectedReport((prev) => prev ? { ...prev, ...patch } : null);
+					setReports((prev) => prev.map((r) =>
+						String(r.id) === selectedReport.id ? { ...r, ...patch } as ReportRow : r,
+					));
+				}}
+			/>
+			);
+	}
 
 	return (
 		<div>
 			{/* ── Header ─────────────────────────────────────────────── */}
-			<div className="flex items-center justify-between gap-3 mb-4 flex-wrap">
+			<div className="flex items-center justify-between gap-3 mb-5 flex-wrap">
 				<div>
-					<h1 className="font-display font-bold text-xl">Report queue</h1>
-					<p className="text-xs text-ink3 mt-0.5">
-						Reports → AI content review (incl. pre-publish gate) → approvals —
+					<h1 className="flex items-center gap-2 font-display font-bold text-2xl tracking-tight">
+						<span className="vb-gradient-text">Report Queue</span>
+					</h1>
+					<p className="text-xs text-ink3 mt-1">
+						Reports → content review (incl. pre-publish gate) → approvals —
 						one desk, all real data
 					</p>
 				</div>
 				<button
-					className="btn btn-ghost !text-xs"
-					onClick={refreshAll}
-					disabled={loading}
+					className="btn btn-ghost !text-[11px] !py-1.5 !px-2.5 rounded-lg"
+					onClick={() => void refreshAll()}
+					disabled={refreshing}
 				>
 					<RefreshCcw
 						size={12}
-						className={`mr-1 ${loading ? "animate-spin" : ""}`}
+						className={`mr-1 ${refreshing ? "animate-spin" : ""}`}
 					/>{" "}
 					Refresh
 				</button>
 			</div>
 
-			{/* ── Live stats (display only — the tab row below navigates) ── */}
-			<div className="grid grid-cols-3 sm:grid-cols-5 gap-2 sm:gap-3 mb-4">
-				{TAB_META.map((t) => (
-					<div key={t.key} className="card p-2 sm:p-3 text-center">
-						<p className="text-[9px] sm:text-[10px] font-bold uppercase tracking-wider text-ink3 truncate">
-							{t.label}
-						</p>
-						<p
-							className="text-lg sm:text-xl font-bold mt-0.5 sm:mt-1"
-							style={{ color: t.color }}
-						>
-							{t.count}
-						</p>
-					</div>
-				))}
-			</div>
+			<UpdateNotice
+				count={updatesAvailable}
+				onViewUpdates={() => void refreshAll()}
+				refreshing={refreshing}
+			/>
+
+			{/* No metric-card wall here on purpose: the tab row directly below
+			    already renders each queue's live count, and a second copy of the
+			    same number is decoration, not information. */}
 
 			{/* ── Error banner (admin session expiry for review queue) ── */}
 			{queueError && (
-				<div className="card p-3 border-l-4 border-l-yellow-500 bg-yellow-500/10 mb-4">
+				<div className="rounded-xl p-3 border-l-4 border-l-warn bg-warn/[0.06] mb-4">
 					<p className="text-xs text-yellow-300 font-semibold">
 						⚠️ {queueError}
 					</p>
@@ -960,14 +1391,14 @@ export default function Reports() {
 			)}
 
 			{/* ── Tabs ───────────────────────────────────────────────── */}
-			<div className="flex gap-2 mb-4 flex-wrap">
+			<div className="flex gap-1.5 mb-5 flex-wrap">
 				{TAB_META.map((t) => (
 					<button
 						key={t.key}
-						className={`btn !text-xs ${tab === t.key ? "btn-primary" : "btn-ghost"}`}
+						className={`flex items-center gap-1.5 !text-[11px] !font-semibold !px-3 !py-1.5 rounded-lg transition-all ${tab === t.key ? "btn-primary shadow-sm" : "btn-ghost hover:bg-surface2"}`}
 						onClick={() => setTab(t.key)}
 					>
-						{t.icon} {t.label} ({t.count})
+						{t.icon} {t.label} <span className={`ml-0.5 text-[9px] font-bold ${tab === t.key ? 'opacity-80' : 'opacity-60'}`}>({t.count})</span>
 					</button>
 				))}
 			</div>
@@ -981,36 +1412,203 @@ export default function Reports() {
 			) : (
 				<div className="space-y-3">
 					{/* ══════════ OPEN REPORTS (classic queue) ══════════ */}
-					{tab === "open" && (
+					{tab === "reports" && (
 						<>
-							{openReports.map((r) => {
-								const isExpanded = expandedId === r.id;
-								return (
-									<div key={r.id} className="card overflow-hidden">
-										<div
-											className="p-4 flex items-start gap-3 cursor-pointer hover:bg-surface2/30 transition-colors"
-											onClick={() => setExpandedId(isExpanded ? null : r.id)}
-										>
-											<div className="min-w-0 flex-1">
-												<div className="flex items-center gap-2 mb-1 flex-wrap">
+							<WorkerLedger rows={openReports} handled={aiHandled} />
+
+							{/* ── Root issues: repeated reports about the SAME target read
+							    as ONE decision with impact (spec §24), not N loose rows. */}
+							{rootIssues.length > 0 && (
+								<details className="glass-card rounded-xl overflow-hidden" open>
+									<summary className="p-3.5 cursor-pointer text-xs font-semibold text-ink2 flex items-center gap-2">
+										🔗 Root issues
+										<span className="text-[10px] text-ink3 font-normal">
+											{rootIssues.length} target(s) reported multiple times —
+											resolve the cause, not each row
+										</span>
+									</summary>
+									<div className="divide-y divide-border">
+										{rootIssues.slice(0, 15).map((g) => (
+											<div key={g.key} className="p-3.5">
+												<div className="flex items-center gap-2 flex-wrap">
+													<TargetTypeChip type={g.target_type} targetId={g.target_id} postId={g.target_type === "comment" ? commentStates[g.target_id]?.postId : null} />
 													<span
 														className="chip !text-[9px] !py-0.5"
 														style={{
 															color: "var(--vb-bad)",
-															borderColor: "rgba(220,75,75,0.3)",
+															borderColor: "rgba(220,75,75,0.35)",
 														}}
 													>
-														{targetTypeIcon(r.target_type)} {r.target_type}
+														{g.count} reports · {g.reporters} reporter(s)
 													</span>
+													{g.urgent && (
+														<span
+															className="chip !text-[9px] !py-0.5"
+															style={{
+																color: "#fff",
+																background: "rgba(220,75,75,0.85)",
+																borderColor: "rgba(220,75,75,1)",
+															}}
+															role="alert"
+														>
+															🚨 URGENT
+														</span>
+													)}
+													{g.enforced && (
+														<span className="chip !text-[9px] !py-0.5 !bg-bad/10 !text-bad">
+															✓ removal re-read verified
+														</span>
+													)}
+													<span className="text-[10px] text-ink3 ml-auto shrink-0">
+														{timeAgo(g.latest_at)}
+													</span>
+												</div>
+												<p className="text-sm font-medium mt-1 truncate">
+													🚩 {g.reasons[0] || g.target_id}
+												</p>
+												<p className="text-[11px] text-ink3 mt-0.5 font-mono truncate">
+													target: {g.target_id} · first {timeAgo(g.first_at)} · latest{" "}
+													{timeAgo(g.latest_at)}
+												</p>
+												<button
+													className="btn btn-soft !text-xs mt-2"
+													onClick={() => void resolveGroup(g.key, g.report_ids)}
+													disabled={busy === `resolve-group:${g.key}`}
+													aria-label={`Resolve root issue ${g.target_id} (${g.count} reports)`}
+												>
+													<CheckCircle2 size={13} /> Resolve root issue ({g.count})
+												</button>
+											</div>
+										))}
+									</div>
+								</details>
+							)}
+
+							{/* ── Auto-dispositioned: real consequences, with evidence ── */}
+							{aiHandled.length > 0 && (
+								<details className="glass-card rounded-xl overflow-hidden" open>
+									<summary className="p-3.5 cursor-pointer text-xs font-semibold text-ink2 flex items-center gap-2">
+										Auto-dispositioned
+										<span className="text-[10px] text-ink3 font-normal">
+											{aiHandled.length} report(s) closed by an automated worker —
+											each row shows the recorded action and its evidence
+										</span>
+									</summary>
+									<div className="divide-y divide-border">
+										{aiHandled.slice(0, 25).map((r) => {
+											const ev = r.worker_action;
+											const meta =
+												DISPOSITION_META[ev?.disposition || ""] || {
+													label: ev?.disposition || ev?.action || "action",
+													color: "var(--vb-accent)",
+													icon: "•",
+												};
+											return (
+												<div key={`ai-${r.id}`} className="p-3.5">
+													<div className="flex items-center gap-2 flex-wrap">
+														<span
+															className="chip !text-[9px] !py-0.5"
+															style={{
+																color: meta.color,
+																borderColor: `${meta.color}55`,
+															}}
+														>
+															{meta.icon} {meta.label}
+														</span>
+														<TargetTypeChip type={r.target_type} targetId={r.target_id} postId={r.target_type === "comment" ? commentStates[r.target_id]?.postId : null} />
+														<span className="text-[11px] text-ink3 truncate flex-1 min-w-0">
+															🚩 {r.reason}
+														</span>
+														<span className="text-[10px] text-ink3 shrink-0">
+															{ev?.at ? timeAgo(ev.at) : ""}
+														</span>
+													</div>
+													<div className="text-[11px] text-ink3 mt-1">
+														<span className="font-semibold text-ink2">
+															Evidence:{" "}
+														</span>
+														<span className="font-mono">
+															{ev?.evidence ||
+																"no observation recorded"}
+														</span>
+														{ev?.enforced && (
+															<span className="ml-2 text-[10px] text-bad">
+																✓ removal re-read verified
+															</span>
+														)}
+													</div>
+												</div>
+											);
+										})}
+									</div>
+								</details>
+							)}
+
+							{reports.length > 0 && (
+								<p className="text-[11px] font-semibold text-ink3 uppercase tracking-wider px-1 pt-1">
+									All reports — {reports.length}
+								</p>
+							)}
+							{openReports.map((r) => {
+									return (
+									<div key={r.id} className="glass-card rounded-xl overflow-hidden">
+										<div
+											className="p-4 flex items-start gap-3 cursor-pointer hover:bg-surface2/30 transition-colors"
+											onClick={() => setSelectedReport({
+												id: r.id,
+												type: "report",
+												title: r.reason || "Report",
+												content: r.details || r.reason || "No details provided",
+												status: r.status || "pending",
+												category: String((r as Record<string, unknown>).category || ""),
+												priority: String((r as Record<string, unknown>).priority || "medium"),
+												author_id: String(r.author_id || ""),
+												target_author_id: String(r.target_author_id || ""),
+											target_type: r.target_type,
+											target_id: r.target_id,
+											reporterStats: reporterStatsFor(reports, String(r.author_id || "")),
+											related: relatedFor(r, r.target_type === "comment" ? commentStates[r.target_id]?.postId : null),
+												created_at: r.created_at,
+												assigned_to: String((r as Record<string, unknown>).assigned_to || ""),
+												enforcement: (r as Record<string, unknown>).enforcement as WorkItemData["enforcement"],
+											})}
+										>
+											<div className="min-w-0 flex-1">
+												<div className="flex items-center gap-2 mb-1 flex-wrap">
+													<TargetTypeChip type={r.target_type} targetId={r.target_id} postId={r.target_type === "comment" ? commentStates[r.target_id]?.postId : null} />
+												<span
+													className="chip !text-[9px] !py-0.5"
+													style={{
+														color: "var(--vb-warn)",
+														borderColor: "rgba(220,170,50,0.3)",
+													}}
+												>
+													Pending
+												</span>
+												{isInboxUrgent(r) && (
 													<span
 														className="chip !text-[9px] !py-0.5"
 														style={{
-															color: "var(--vb-warn)",
-															borderColor: "rgba(220,170,50,0.3)",
+															color: "#fff",
+															background: "rgba(220,75,75,0.85)",
+															borderColor: "rgba(220,75,75,1)",
+														}}
+														role="alert"
+													>
+														🚨 URGENT — inbox
+													</span>
+												)}
+												{isInboxRow(r) && !isInboxUrgent(r) && (
+													<span
+														className="chip !text-[9px] !py-0.5"
+														style={{
+															color: "var(--vb-accent)",
+															borderColor: "rgba(86,82,214,0.3)",
 														}}
 													>
-														open
+														{r.target_type === "inbox" ? "📥 inbox" : "🛡 backstop"}
 													</span>
+												)}
 													{r.target_author_id && (
 														<span
 															className="chip !text-[9px] !py-0.5"
@@ -1038,12 +1636,25 @@ export default function Reports() {
 															🚫 auto-banned
 														</span>
 													)}
-													{r.enforcement?.suspended && (
-														<span className="chip !text-[9px] !py-0.5 !bg-warn/10 !text-warn">
-															⏸ auto-suspended
-														</span>
-													)}
-												</div>
+											{r.enforcement?.suspended && (
+												<span className="chip !text-[9px] !py-0.5 !bg-warn/10 !text-warn">
+													⏸ auto-suspended
+												</span>
+											)}
+											{r.worker_action && (
+												<span
+													className="chip !text-[9px] !py-0.5"
+													style={{
+														color: "var(--vb-accent)",
+														borderColor: "rgba(86,82,214,0.4)",
+													}}
+														title="Recorded by an automated worker — expand the row to see its evidence"
+													>
+														Auto: {r.worker_action.disposition || r.worker_action.action}
+														{r.worker_action.enforced ? " · removed" : ""}
+													</span>
+											)}
+										</div>
 												<p className="text-sm font-medium">🚩 {r.reason}</p>
 												<p className="text-[11px] text-ink3 mt-1 font-mono">
 													target: {r.target_id} · by{" "}
@@ -1075,6 +1686,7 @@ export default function Reports() {
 												>
 													<CheckCircle2 size={13} /> Resolve
 												</button>
+											{commentRowAction(r)}
 											</div>
 										</div>
 
@@ -1127,17 +1739,57 @@ export default function Reports() {
 											</div>
 										)}
 
-										{isExpanded && r.target_type === "post" && (
-											<div className="px-4 pb-4 border-t border-border">
-												<PostPreview targetId={r.target_id} />
-											</div>
-										)}
+										{/* What the workforce actually did on this report, from its audit
+										    trail — not a status flip. */}
+										<WorkerEvidence r={r} />
+
 									</div>
 								);
 							})}
-							{openReports.length === 0 && (
+							{resolvedReports.map((r) => (
+								<div key={r.id} className="card p-4 opacity-60 cursor-pointer hover:opacity-100 transition-opacity" onClick={() => setSelectedReport({
+									id: r.id,
+									type: "report",
+									title: r.reason || "Report",
+									content: r.details || r.reason || "No details provided",
+									status: r.status || "resolved",
+									category: String((r as Record<string, unknown>).category || ""),
+									priority: String((r as Record<string, unknown>).priority || "medium"),
+									author_id: String(r.author_id || ""),
+									target_author_id: String(r.target_author_id || ""),
+									target_type: r.target_type,
+									target_id: r.target_id,
+									reporterStats: reporterStatsFor(reports, String(r.author_id || "")),
+									related: relatedFor(r, r.target_type === "comment" ? commentStates[r.target_id]?.postId : null),
+									created_at: r.created_at,
+									enforcement: (r as Record<string, unknown>).enforcement as WorkItemData["enforcement"],
+								})}>
+									<div className="flex items-start gap-3">
+										<CheckCircle2
+											size={16}
+											className="text-good shrink-0 mt-0.5"
+										/>
+										<div className="min-w-0 flex-1">
+											<span
+												className="chip !text-[9px] !py-0.5"
+												style={{
+													color: "var(--vb-good)",
+													borderColor: "rgba(22,160,106,0.35)",
+												}}
+											>
+												Resolved
+											</span>
+											<p className="text-sm font-medium mt-1">{r.reason}</p>
+											<p className="text-[11px] text-ink3 mt-1 font-mono">
+												target: {r.target_id} · resolved {timeAgo(r.created_at)}
+											</p>
+										</div>
+									</div>
+								</div>
+							))}
+							{reports.length === 0 && (
 								<p className="card p-8 text-center text-sm text-ink3">
-									Queue is clear — no open reports.
+									No reports yet.
 								</p>
 							)}
 						</>
@@ -1146,7 +1798,28 @@ export default function Reports() {
 					{/* ══════════ AI REVIEW (Content Review + pre-publish merged) ══════════ */}
 					{tab === "review" && (
 						<>
-							{/* ── Pre-publish queue (merged INTO content review) ── */}
+							{/* ── Appeals queue (blocked-author recourse) ── */}
+{appeals.length > 0 && (
+	<div className="mb-3 space-y-3">
+		<div className="flex items-center gap-2">
+			<Scale size={13} className="text-accent" />
+			<p className="text-xs font-semibold text-ink2">
+				Author appeals — {appeals.length} blocked 
+				{appeals.length === 1 ? "submission" : "submissions"}{" "}
+				asking for human review
+			</p>
+		</div>
+		{appeals.map((item) => (
+			<AppealReview
+				key={item.id}
+				item={item}
+				busy={busy === `appeal:${item.id}`}
+				onAction={handleAppealAction}
+			/>
+		))}
+	</div>
+)}
+{/* ── Pre-publish queue (merged INTO content review) ── */}
 							{preReviews.length > 0 && (
 								<div className="mb-3 space-y-3">
 									<div className="flex items-center gap-2">
@@ -1241,7 +1914,7 @@ export default function Reports() {
 									const isImageShown = showImage[post.id];
 
 									return (
-										<div key={post.id} className="card overflow-hidden">
+										<div key={post.id} className="glass-card rounded-xl overflow-hidden">
 											{/* Post header */}
 											<div
 												className="p-4 cursor-pointer hover:bg-surface2/50 transition-colors"
@@ -1343,6 +2016,8 @@ export default function Reports() {
 																		className="max-h-64 rounded-lg border border-border object-contain"
 																	/>
 																	<button
+																		type="button"
+																		aria-label="Hide image"
 																		className="absolute top-2 right-2 btn btn-ghost !p-1.5 bg-bg/80 backdrop-blur"
 																		onClick={(e) => {
 																			e.stopPropagation();
@@ -1590,7 +2265,7 @@ export default function Reports() {
 											? `Target: ${(a.input as { target_id: string }).target_id}`
 											: `Source: ${a.source}`;
 									return (
-										<div key={a.id} className="card overflow-hidden">
+										<div key={a.id} className="glass-card rounded-xl overflow-hidden">
 											<div className="p-4 flex items-start gap-3">
 												<div
 													className="mt-0.5 p-2 rounded-lg shrink-0"
@@ -1672,32 +2347,6 @@ export default function Reports() {
 						</>
 					)}
 
-					{/* ══════════ RESOLVED HISTORY ══════════ */}
-					{tab === "resolved" && (
-						<>
-							{resolvedReports.map((r) => (
-								<div key={r.id} className="card p-4 opacity-60">
-									<div className="flex items-start gap-3">
-										<CheckCircle2
-											size={16}
-											className="text-good shrink-0 mt-0.5"
-										/>
-										<div className="min-w-0 flex-1">
-											<p className="text-sm font-medium">{r.reason}</p>
-											<p className="text-[11px] text-ink3 mt-1 font-mono">
-												target: {r.target_id} · resolved {timeAgo(r.created_at)}
-											</p>
-										</div>
-									</div>
-								</div>
-							))}
-							{resolvedReports.length === 0 && (
-								<p className="card p-8 text-center text-sm text-ink3">
-									No resolved reports yet.
-								</p>
-							)}
-						</>
-					)}
 				</div>
 			)}
 		</div>

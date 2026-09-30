@@ -16,6 +16,7 @@ let ABUSE_LIMITS: {
 	maxRequestsPerMinute: number;
 	maxRequestsPerHour: number;
 	blockDurationMs: number;
+	maxRequestSize: number;
 };
 let peekBodyIdentity: (req: any) => Promise<string | null>;
 
@@ -81,6 +82,23 @@ describe("Rate limiter — per-identity keying", () => {
 	it("block duration is 30 seconds, not 5 minutes", () => {
 		expect(ABUSE_LIMITS.blockDurationMs).toBe(30_000);
 	});
+
+	// POLICY PIN: 3600/h ≈ 60 requests/min sustained — an admin dashboard open
+	// all day (realtime refreshes count) stays under it. The per-minute limit
+	// still caps bursts, so raising this does not weaken abuse protection.
+	// Rationale: the app costs ~10 API calls per page view; 2000/h locked out
+	// genuinely engaged users after ~16 sustained page loads/min.
+	it("hourly ceiling allows an all-day dashboard (3600/h ≈ 60/min sustained)", () => {
+		expect(ABUSE_LIMITS.maxRequestsPerHour).toBe(3600);
+	});
+
+	it("per-minute burst limit stays at 120 (≈12 fast page loads/min)", () => {
+		expect(ABUSE_LIMITS.maxRequestsPerMinute).toBe(120);
+	});
+
+	it("keeps the request body cap at 500 KB", () => {
+		expect(ABUSE_LIMITS.maxRequestSize).toBe(500_000);
+	});
 });
 
 describe("peekBodyIdentity", () => {
@@ -112,5 +130,20 @@ describe("peekBodyIdentity", () => {
 	it("returns null when body is null", async () => {
 		const req = { method: "POST", body: null };
 		expect(await peekBodyIdentity(req)).toBeNull();
+	});
+
+	it("does not consume a raw stream before the bounded parser", async () => {
+		let consumed = false;
+		const body = {
+			[Symbol.asyncIterator]() {
+				consumed = true;
+				return {
+					next: async () => ({ done: true, value: undefined }),
+				};
+			},
+		};
+		const req = { method: "POST", body };
+		expect(await peekBodyIdentity(req)).toBeNull();
+		expect(consumed).toBe(false);
 	});
 });

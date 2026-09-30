@@ -24,19 +24,16 @@ jobs:
         with:
           node-version: '22'
           cache: 'npm'
-          cache-dependency-path: voice-box/package-lock.json
+          cache-dependency-path: package-lock.json
 
       - name: Install dependencies
-        working-directory: voice-box
         run: npm ci
 
       - name: Build
-        working-directory: voice-box
         run: npx vite build
 
       - name: Deploy preview (PR)
         if: github.event_name == 'pull_request'
-        working-directory: voice-box
         run: npx vercel --token=${{ secrets.VERCEL_TOKEN }} --yes
         env:
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
@@ -44,7 +41,6 @@ jobs:
 
       - name: Deploy production (main)
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        working-directory: voice-box
         run: npx vercel --prod --token=${{ secrets.VERCEL_TOKEN }} --yes
         env:
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}

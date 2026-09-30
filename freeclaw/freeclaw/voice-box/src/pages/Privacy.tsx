@@ -5,42 +5,58 @@ import {
 	Lock,
 	Server,
 	ShieldCheck,
+	Smartphone,
 	Trash2,
 } from "lucide-react";
 import { useApp } from "../contexts/AppContext";
+import { storageWhere } from "../lib/platform";
+import {
+	CACHE_CLEAR_COPY,
+	CONTACT_PRIVACY_COPY,
+	INFRASTRUCTURE_COPY,
+	LOCAL_PROFILE_COPY,
+	NOTIFY_PRIVACY_COPY,
+	RETENTION_COPY,
+	SERVER_PII_COPY,
+} from "../lib/privacyCopy";
 
 export default function Privacy() {
 	const { anonId } = useApp();
 	const ITEMS = [
 		{
-			icon: EyeOff,
-			title: "No personal data — ever",
-			body: "Voice Box never asks for or stores names, emails, phone numbers, student IDs, or any other personal information. There is no registration and no login for students.",
-		},
-		{
-			icon: Fingerprint,
-			title: "No IP logging or fingerprinting",
-			body: "We do not log IP addresses, track devices, use analytics cookies, or fingerprint your browser. Your activity cannot be traced back to you.",
-		},
-		{
-			icon: KeyRound,
-			title: "One random anonymous ID",
-			body: "The only identifier is a random ID generated in your browser (yours is shown below). It links your posts together so you can edit or delete them — nobody can connect it to your identity.",
-		},
-		{
 			icon: Server,
-			title: "Shared content vs. your data",
-			body: "Posts, comments, and poll results are shared so everyone can see them. Ownership data — your ID, bookmarks, drafts, and notifications — stays only in your browser’s local storage.",
-		},
-		{
-			icon: Trash2,
-			title: "You control everything",
-			body: "Delete your posts and comments any time (with a 30-second undo). Reset your anonymous ID or wipe all local data from the My Activity page in one click.",
+			title: "Public content and server-side data",
+			body: SERVER_PII_COPY,
 		},
 		{
 			icon: Lock,
-			title: "Security built in",
-			body: "All input is sanitized and HTML-escaped to prevent XSS. Admin access uses a hashed password with automatic session timeout. Rate limits and cooldowns prevent spam and flooding.",
+			title: "Optional alert contacts",
+			body: NOTIFY_PRIVACY_COPY,
+		},
+		{
+			icon: EyeOff,
+			title: "Contact-form submissions",
+			body: CONTACT_PRIVACY_COPY,
+		},
+		{
+			icon: KeyRound,
+			title: "On-device profile data",
+			body: LOCAL_PROFILE_COPY,
+		},
+		{
+			icon: Trash2,
+			title: "Retention and deletion",
+			body: RETENTION_COPY,
+		},
+		{
+			icon: Fingerprint,
+			title: "Infrastructure and request metadata",
+			body: INFRASTRUCTURE_COPY,
+		},
+		{
+			icon: Smartphone,
+			title: "Clearing your browser cache",
+			body: CACHE_CLEAR_COPY,
 		},
 	];
 
@@ -77,7 +93,7 @@ export default function Privacy() {
 			</div>
 			<div className="card p-5 mt-5 text-center bg-surface2/50">
 				<p className="text-xs text-ink3">
-					Your current anonymous ID (stored only in this browser)
+					Your current anonymous ID (stored only {storageWhere()})
 				</p>
 				<code className="font-mono text-accent font-semibold">{anonId}</code>
 			</div>

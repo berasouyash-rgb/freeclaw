@@ -52,9 +52,6 @@ export default function GridPattern({
     return result;
   }, [squares, cols, rows]);
 
-  const _svgWidth = cols * (cellWidth + gap);
-  const _svgHeight = rows * (cellHeight + gap);
-
   return (
     <svg
       aria-hidden

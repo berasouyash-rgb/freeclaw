@@ -22,9 +22,16 @@ import {
 	setAgentState,
 } from "./_agent-team.js";
 import { auditLog, clean, cors, isAdmin } from "./_auth.js";
+import { isTestArtifact } from "./_artifact-filter.js";
 import supabase from "./_db-client.js";
+import { getLearningStatus, runContinuousEvaluation } from "./_continuous-learning.js";
 import { sanitizeError } from "./_error.js";
+import { getEvaluationHistory } from "./_evaluation-engine.js";
 import { emitEvent } from "./_events.js";
+import { getRedteamStatus, runRedTeam } from "./_redteam-cases.js";
+import { workforceHealth } from "./_workforce-core.js";
+import { getSupervisorSummary, unpauseWorker } from "./_worker-supervisor.js";
+import { TRAINING_SCENARIOS } from "./_training-lab.js";
 import { logActivity, recordMetric, runAgent } from "./agents/_runner.js";
 
 const TASK_KEY = "agent_tasks_store";
@@ -602,31 +609,104 @@ async function discoverWork() {
 }
 
 // ─── Stale running executions (heartbeat recovery source) ─────────
+// LIVENESS IS NOT AGE. An execution that has been running for an hour is not
+// stuck if it is still heartbeating; the old query filtered on `started_at`
+// alone, so every long-running-but-alive execution was reported stale (and
+// marked failed while still running). Liveness is the freshest heartbeat,
+// falling back to started_at ONLY when a row has no heartbeat at all (old
+// schema / pre-heartbeat row). A row with no usable timestamp is never
+// declared stale — we cannot prove it is dead.
+function effectiveLivenessMs(row) {
+	const ts = row?.heartbeat_at || row?.started_at;
+	const ms = ts ? new Date(ts).getTime() : 0;
+	return Number.isFinite(ms) ? ms : 0;
+}
+
 async function findStaleRunningExecutions() {
 	// agent_executions is its OWN table — independent of the agent_tasks
-	// probe. Always attempt the query; any error (missing table/column) is
-	// a truthful 'nothing to recover'.
-	const cutoff = new Date(Date.now() - STALE_WORKING_MS).toISOString();
+	// probe. Any error (missing table/column) is a truthful 'nothing to
+	// recover'.
+	const cutoff = Date.now() - STALE_WORKING_MS;
+	let rows = null;
 	try {
-		const { data } = await supabase
+		const { data, error } = await supabase
 			.from("agent_executions")
-			.select("id, agent_id, agent_name, started_at")
+			.select("id, agent_id, agent_name, started_at, heartbeat_at")
 			.eq("status", "running")
-			.lt("started_at", cutoff)
-			.limit(20);
-		return data || [];
+			.order("started_at", { ascending: true })
+			.limit(50);
+		if (error) throw new Error(error.message);
+		rows = data || [];
 	} catch {
-		return [];
+		// Schema without heartbeat_at → retry without it so recovery still
+		// works on un-migrated DBs (started_at is then the only signal).
+		try {
+			const { data } = await supabase
+				.from("agent_executions")
+				.select("id, agent_id, agent_name, started_at")
+				.eq("status", "running")
+				.order("started_at", { ascending: true })
+				.limit(50);
+			rows = data || [];
+		} catch {
+			return [];
+		}
+	}
+	return rows
+		.filter((e) => {
+			const live = effectiveLivenessMs(e);
+			return live > 0 && live < cutoff;
+		})
+		.slice(0, 20);
+}
+
+// Independent verification of an execution transition: the UPDATE's own
+// success report is not proof — only a re-read that shows the persisted
+// status is. A read error returns false (never claim a recovery we can't see).
+async function verifyExecutionFailed(executionId) {
+	try {
+		const { data, error } = await supabase
+			.from("agent_executions")
+			.select("status")
+			.eq("id", executionId)
+			.maybeSingle();
+		if (error) return false;
+		return data?.status === "failed";
+	} catch {
+		return false;
 	}
 }
 
+// Independent read-back of a task from the live store (table-first, settings
+// fallback — same path the workers use). Used to VERIFY a recovery actually
+// persisted instead of trusting updateTask()'s return value, which in the
+// settings store returns the patched object even when saveTasks() swallowed a
+// write failure.
+async function readTaskById(id) {
+	const all = await listTasks({ limit: 1000 });
+	return all.find((t) => t.id === id) || null;
+}
+
 // ─── Heartbeat recovery — never leave WORKING forever ─────────────
+// Requeues/fails genuinely stuck work AND independently verifies each
+// transition persisted, returning how many were verified vs unverified (an
+// unverified recovery is never counted as a success).
 async function recoverStale() {
-	const recovered = { executions: 0, tasks: 0 };
+	const recovered = {
+		executions: 0,
+		tasks: 0,
+		executions_unverified: 0,
+		tasks_unverified: 0,
+		evidence: [],
+	};
+	const note = (entry) => {
+		if (recovered.evidence.length < 10) recovered.evidence.push(entry);
+	};
+
 	try {
 		const staleExecs = await findStaleRunningExecutions();
 		for (const e of staleExecs) {
-			await supabase
+			const { error } = await supabase
 				.from("agent_executions")
 				.update({
 					status: "failed",
@@ -634,13 +714,26 @@ async function recoverStale() {
 					completed_at: new Date().toISOString(),
 				})
 				.eq("id", e.id);
+			// INDEPENDENT VERIFICATION — read the row back. Only a persisted
+			// 'failed' counts; a write error or a still-'running' row does not.
+			if (error || !(await verifyExecutionFailed(e.id))) {
+				recovered.executions_unverified++;
+				continue;
+			}
 			await logActivity(
 				e.agent_id,
 				"execution_recovered",
-				{ execution_id: e.id, reason: "heartbeat expired" },
+				{ execution_id: e.id, reason: "heartbeat expired", verified: true },
 				"warning",
 			);
 			recovered.executions++;
+			note({
+				kind: "execution",
+				id: e.id,
+				agent_id: e.agent_id,
+				last_liveness_at: e.heartbeat_at || e.started_at,
+				verified_status: "failed",
+			});
 		}
 	} catch (err) {
 		console.warn("[workforce] execution recovery failed:", err.message);
@@ -651,29 +744,46 @@ async function recoverStale() {
 		["working", "claimed"].includes(t.status),
 	);
 	for (const t of open) {
-		const hb = t.heartbeat_at
-			? new Date(t.heartbeat_at).getTime()
-			: t.started_at
-				? new Date(t.started_at).getTime()
-				: 0;
-		if (Date.now() - hb > STALE_WORKING_MS) {
-			if ((t.attempts || 0) >= (t.max_attempts || 3)) {
-				await updateTask(t.id, {
-					status: "failed",
-					error: "Stale — max attempts reached",
-					completed_at: new Date().toISOString(),
-					verification_status: "failed",
-				});
-			} else {
-				await updateTask(t.id, {
-					status: "queued",
-					assigned_agent: null,
-					attempts: (t.attempts || 0) + 1,
-					heartbeat_at: null,
-				});
-			}
-			recovered.tasks++;
+		const hb = effectiveLivenessMs(t);
+		if (!hb || Date.now() - hb <= STALE_WORKING_MS) continue;
+		const maxed = (t.attempts || 0) >= (t.max_attempts || 3);
+		await updateTask(
+			t.id,
+			maxed
+				? {
+						status: "failed",
+						error: "Stale — max attempts reached",
+						completed_at: new Date().toISOString(),
+						verification_status: "failed",
+					}
+				: {
+						status: "queued",
+						assigned_agent: null,
+						attempts: (t.attempts || 0) + 1,
+						heartbeat_at: null,
+					},
+		);
+		// INDEPENDENT VERIFICATION — re-read from the live store. This is the
+		// answer to "did the requeue actually persist?", not updateTask()'s
+		// self-report.
+		const after = await readTaskById(t.id);
+		const ok =
+			after &&
+			(maxed
+				? after.status === "failed"
+				: after.status === "queued" && !after.assigned_agent);
+		if (!ok) {
+			recovered.tasks_unverified++;
+			continue;
 		}
+		recovered.tasks++;
+		note({
+			kind: "task",
+			id: t.id,
+			action: maxed ? "failed_max_attempts" : "requeued",
+			attempts: after.attempts,
+			verified_status: after.status,
+		});
 	}
 	return recovered;
 }
@@ -2409,19 +2519,67 @@ async function opsSummary() {
 		(b.completed_at || "").localeCompare(a.completed_at || ""),
 	);
 
-	// ── Platform pulse (Recent / Trending / Emergency / Reports / Suggestion /
-	//    Polls) — real data, bounded queries so the 20s poll stays cheap. ──
-	const [postsRes, pendingReportsRes, usersRes, commentsRes, reactionsRes] =
-		await Promise.all([
-			supabase
+// Cached clean-post count for the platform pulse. The feed hides test/fuzz
+// artifacts in JS; the same filter runs here over a bounded title scan so the
+// dashboard's post count matches what users actually see (a raw count said
+// 1068 while only 32 real posts existed). Refreshed at most every 60s.
+let _cleanPostCountCache = { at: 0, value: 0 };
+const CLEAN_POST_COUNT_TTL_MS = 60_000;
+async function getCleanPostCount() {
+	if (
+		_cleanPostCountCache.value > 0 &&
+		Date.now() - _cleanPostCountCache.at < CLEAN_POST_COUNT_TTL_MS
+	)
+		return _cleanPostCountCache.value;
+	try {
+		const { data } = await supabase
+			.from("posts")
+			.select("title", { count: "exact" })
+			.eq("deleted", false)
+			.order("created_at", { ascending: false })
+			.limit(2000);
+		// `count` describes the whole table (unfiltered); the honest number is
+		// the artifact-filtered scan. If rows were truncated at the limit, fall
+		// back to the raw exact count rather than undercounting a big table.
+		const rows = data || [];
+		if (rows.length >= 2000) {
+			const { count } = await supabase
 				.from("posts")
 				.select("id", { count: "exact", head: true })
-				.eq("deleted", false),
+				.eq("deleted", false);
+			_cleanPostCountCache = { at: Date.now(), value: count || rows.length };
+		} else {
+			_cleanPostCountCache = {
+				at: Date.now(),
+				value: rows.filter((p) => !isTestArtifact(p.title)).length,
+			};
+		}
+		return _cleanPostCountCache.value;
+	} catch {
+		// On failure keep serving the last known value — a dashboard number
+		// going stale briefly beats it disappearing.
+		return _cleanPostCountCache.value;
+	}
+}
+
+	// ── Platform pulse (Recent / Trending / Emergency / Reports / Suggestion /
+	//    Polls) — real data, bounded queries so the 20s poll stays cheap. ──
+	// Post count must match what every other surface shows: the feed hides
+	// test/fuzz artifacts in JS, so a plain count here once said 1068 while
+	// the dashboard said 32. A head-count can't express the artifact filter,
+	// so scan titles (bounded) and count the clean set — cached to keep the
+	// 20s poll cheap.
+	const cleanPostCount = await getCleanPostCount();
+	const [pendingReportsRes, usersRes, commentsRes, reactionsRes] =
+		await Promise.all([
 			supabase
 				.from("reports")
 				.select("id", { count: "exact", head: true })
 				.eq("status", "pending"),
-			supabase.from("users_meta").select("id", { count: "exact", head: true }),
+			// Head-only counts return count=null on this database (verified
+			// live), which the widget rendered as 0 while 1446 accounts exist.
+			// Selecting a real row makes the count exact again.
+			supabase.from("users_meta").select("anon_id", { count: "exact" }).limit(1),
 			supabase.from("comments").select("id", { count: "exact", head: true }),
 			supabase.from("reactions").select("id", { count: "exact", head: true }),
 		]);
@@ -2444,7 +2602,13 @@ async function opsSummary() {
 			.eq("type", "suggestion")
 			.eq("deleted", false),
 	]);
-	const recentPosts = (recentPostsRes.data || []).map((p) => ({
+	// Full-site zero-fuzz: hide test/fuzz artifacts from the ops pulse, same
+	// as every other content surface ("Load test test-issue …" was surfacing
+	// here in Recent/Trending).
+	const recentClean = (recentPostsRes.data || []).filter(
+		(p) => !isTestArtifact(p.title),
+	);
+	const recentPosts = recentClean.map((p) => ({
 		id: p.id,
 		title: p.title,
 		category: p.category,
@@ -2565,6 +2729,45 @@ async function opsSummary() {
 			.map(([label, count]) => ({ label, count })),
 	};
 
+	// ── System health + recent agent activity (Overview dashboard) ──
+	// Measured during this build, never assumed. db = one cheap timed
+	// read; api = this very response; cache = ops-summary cache freshness;
+	// realtime = unknown — only the browser observes its own socket, and a
+	// server guess would be fabrication.
+	const healthProbeStart = Date.now();
+	let dbHealth = "down";
+	try {
+		await supabase.from("settings").select("key").limit(1);
+		dbHealth = Date.now() - healthProbeStart < 500 ? "ok" : "slow";
+	} catch {
+		dbHealth = "down";
+	}
+	const cacheAgeMs = Date.now() - (_opsSummaryCache.at || 0);
+	const health = {
+		db: dbHealth,
+		api: "ok",
+		cache:
+			_opsSummaryCache.at && cacheAgeMs < OPS_SUMMARY_TTL_MS ? "ok" : "stale",
+		realtime: "unknown",
+	};
+	let recent = [];
+	try {
+		const { data: execs } = await supabase
+			.from("agent_executions")
+			.select("agent_name,agent_id,task,status,started_at,duration_ms")
+			.order("started_at", { ascending: false })
+			.limit(6);
+		recent = (execs || []).map((e) => ({
+			worker: e.agent_name || e.agent_id || "agent",
+			action: `${e.task || "run"} — ${e.status || "unknown"}`,
+			at: e.started_at,
+			impact:
+				typeof e.duration_ms === "number" ? `${e.duration_ms}ms` : undefined,
+		}));
+	} catch {
+		recent = [];
+	}
+
 	const { employees, ...rest } = ov; // Ops Center never renders the roster — don't ship it on every poll
 	// Kill-switch state (spec §24) so the Ops Center can show PAUSED / STOPPED /
 	// MAINTENANCE banners from the same source of truth the console uses.
@@ -2612,12 +2815,14 @@ async function opsSummary() {
 		alerts: alertsView,
 		report,
 		live_work: liveWork,
+		health,
+		recent,
 		platform: {
-			posts: postsRes.count || 0,
+			posts: cleanPostCount,
 			pending_reports: pendingReportsRes.count || 0,
-			users: usersRes.count || 0,
-			comments: commentsRes.count || 0,
-			reactions: reactionsRes.count || 0,
+			users: usersRes.count ?? 0,
+			comments: commentsRes.count ?? 0,
+			reactions: reactionsRes.count ?? 0,
 			pulse: platformPulse,
 		},
 		last_patrol_at: ov.config?.last_patrol_at || null,
@@ -2759,6 +2964,27 @@ async function command(action, body = {}) {
 			await auditLog("admin", "workforce_resume", "Workforce resumed by admin");
 			invalidateOpsSummary();
 			return { ok: true, paused: false, stop_until: null };
+		case "resume-worker": {
+			// Manual unpause of a SUPERVISOR-paused worker (auto-paused after
+			// repeated failures). Distinct from resume-agent, which only
+			// clears the admin's manual paused_agents config list. Without
+			// this action a supervisor-paused worker could never be resumed
+			// from the UI — the AI Failures page pointed at a kill switch
+			// that did not exist.
+			const workerId = clean(
+				String(body.agent_id || body.worker_id || ""),
+				64,
+			);
+			if (!workerId) return { ok: false, error: "agent_id required" };
+			const done = unpauseWorker(workerId);
+			await auditLog(
+				"admin",
+				"workforce_resume_worker",
+				`Resumed worker ${workerId}`,
+			);
+			invalidateOpsSummary();
+			return { ok: true, ...done };
+		}
 		case "controls":
 			return await workforceControls();
 		case "pause-agent": {
@@ -3295,8 +3521,487 @@ async function command(action, body = {}) {
 
 		case "impact":
 			return await impactCenter();
+		case "fabric-status":
+		case "fabric-run":
+			return await fabricProxy(action, body || {});
+		case "ask-agent": {
+			// One endpoint that always answers when it possibly can: the
+			// external agent backend when configured, otherwise the built-in
+			// engine (provider LLM + live ops context). Only fails honestly
+			// when neither path can answer.
+			const input = String(body?.input || "").slice(0, 2000);
+			if (!input.trim())
+				return { ok: false, error: "Ask something first — input is empty." };
+			if (fabricBaseUrl()) return await fabricProxy("fabric-run", body || {});
+			return await builtinAgentRun(input);
+		}
+		case "automation-status": {
+			// Every deterministic worker + its last cron run. Powers the
+			// OpsCenter Automations section — visible proof of automation.
+			const { WORKERS, readLastRuns } = await import(
+				"./_automation-registry.js"
+			);
+			const lastRuns = await readLastRuns(supabase);
+			return {
+				ok: true,
+				workers: WORKERS.map((w) => ({ ...w, last: lastRuns[w.id] || null })),
+			};
+		}
+		case "automation-run": {
+			// Manual trigger: run one worker NOW and return its real result.
+			// Same code path the cron uses — no shadow implementation.
+			// Every failure carries worker + step + a non-empty message: the
+			// UI used to show "unknown error" when a worker threw a non-Error
+			// or returned {ok:false} with no error string. That ends here.
+			const id = String(body?.worker || "");
+			const { WORKERS, recordLastRun, formatRunError } = await import(
+				"./_automation-registry.js"
+			);
+			const def = WORKERS.find((w) => w.id === id);
+			if (!def)
+				return {
+					ok: false,
+					error: `Unknown worker "${id}". Known: ${WORKERS.map((w) => w.id).join(", ")}`,
+				};
+			let mod = null;
+			try {
+				mod = await import(def.module);
+			} catch (e) {
+				const fail = formatRunError(id, "load", null, e);
+				const last = await recordLastRun(supabase, id, {
+					ok: false,
+					error: fail.error,
+				});
+				return {
+					ok: false,
+					worker: id,
+					step: fail.step,
+					error: `${fail.error} (${def.module})`,
+					last,
+					duration_ms: 0,
+				};
+			}
+			if (!mod || typeof mod[def.run] !== "function") {
+				const fail = formatRunError(id, "load", null, `missing export ${def.run}`);
+				const last = await recordLastRun(supabase, id, {
+					ok: false,
+					error: fail.error,
+				});
+				return {
+					ok: false,
+					worker: id,
+					step: fail.step,
+					error: `${fail.error} in ${def.module}`,
+					last,
+					duration_ms: 0,
+				};
+			}
+			const started = Date.now();
+			try {
+				const result = await mod[def.run]();
+				const last = await recordLastRun(supabase, id, result);
+				const duration_ms = Date.now() - started;
+				if (result?.ok === true)
+					return { ok: true, worker: id, result, last, duration_ms };
+				const fail = formatRunError(id, "run", result);
+				return {
+					ok: false,
+					worker: id,
+					step: fail.step,
+					error: fail.error,
+					result,
+					last,
+					duration_ms,
+				};
+			} catch (e) {
+				const fail = formatRunError(id, "threw", null, e);
+				const last = await recordLastRun(supabase, id, {
+					ok: false,
+					error: fail.error,
+				});
+				return {
+					ok: false,
+					worker: id,
+					step: fail.step,
+					error: fail.error,
+					last,
+					duration_ms: Date.now() - started,
+				};
+			}
+		}
+		case "quality":
+			return await qualitySummary();
+		case "quality-evaluate": {
+			// Real trigger: re-derive every worker's scorecard from its
+			// production ledger and persist it, then return the fresh view.
+			const run = await runContinuousEvaluation();
+			return { ok: true, run, ...(await qualitySummary()) };
+		}
+		case "quality-redteam": {
+			// Real trigger: execute every adversarial case against the live
+			// moderation engine, persist the run, return fresh results.
+			// (Named redteam_run: qualitySummary() also carries a `redteam`
+			// status block, which would overwrite a same-named run payload.)
+			const redteamRun = await runRedTeam();
+			return { ok: true, redteam_run: redteamRun, ...(await qualitySummary()) };
+		}
+		case "overnight-briefing": {
+			return { ok: true, ...(await overnightBriefing()) };
+		}
 		default:
 			return { ok: false, error: "Unknown workforce action: " + action };
+	}
+}
+
+// ─── AI Quality — real evaluation / scorecard aggregate ─────────
+// The real source is the continuous-learning engine: it derives each
+// worker's scorecard from its production ledger (verified outcomes) and
+// persists it. Nothing here is fabricated — workers with no evidence are
+// reported as unmeasured, and an unknown aggregate is `null`, never a
+// reassuring 0 (spec §anti-fantasy).
+async function qualitySummary() {
+	const [learning, evals, redteam] = await Promise.all([
+		getLearningStatus(),
+		getEvaluationHistory(20),
+		getRedteamStatus().catch(() => null),
+	]);
+	const evaluation = learning?.evaluation || {};
+	const results = Array.isArray(evaluation.results) ? evaluation.results : [];
+	const cards = results.map((r) => r.scorecard).filter(Boolean);
+	// `overall_health` is null when a worker has no measured dimension, so
+	// the average is taken only over measured cards — never coerced to 0.
+	const measured = cards.filter((c) => c.overall_health != null);
+	const averageHealth = measured.length
+		? Math.round(
+				measured.reduce((sum, c) => sum + c.overall_health, 0) /
+					measured.length,
+			)
+		: null;
+	const totalCases = evals.reduce(
+		(sum, e) => sum + (e?.summary?.total_cases || 0),
+		0,
+	);
+	const totalPassed = evals.reduce(
+		(sum, e) => sum + (e?.summary?.passed || 0),
+		0,
+	);
+	const safetyViolations = evals.reduce(
+		(sum, e) => sum + (e?.summary?.safety_violations || 0),
+		0,
+	);
+	return {
+		ok: true,
+		scorecards: cards,
+		workers: results,
+		recent_evaluations: evals,
+		evidence: learning?.evidence || null,
+		memory: learning?.memory || null,
+		versions: learning?.versions || {},
+		summary: {
+			workers_tracked: results.length,
+			workers_measured: measured.length,
+			workers_without_evidence: evaluation.workers_without_evidence ?? null,
+			average_health: averageHealth,
+			evaluations_run: evals.length,
+			total_cases: totalCases,
+			pass_rate:
+				totalCases > 0 ? Math.round((totalPassed / totalCases) * 100) : null,
+			safety_violations: safetyViolations,
+			drift: evalDrift(evals),
+		},
+		training: {
+			available_scenarios: TRAINING_SCENARIOS.length,
+			scenario_categories: [
+				...new Set(TRAINING_SCENARIOS.map((s) => s.category)),
+			],
+		},
+		redteam: redteam || null,
+		scorecard_source: evaluation.scorecard_source || "production_ledger",
+		updated_at: new Date().toISOString(),
+	};
+}
+
+// ─── Overnight briefing (spec §50: every number from real system data) ─
+// Deterministic aggregation — no LLM, works with zero keys. Each item cites
+// its source so the admin can verify it, never just trust it.
+async function overnightBriefing() {
+	const [health, supervisor, evals, redteam] = await Promise.all([
+		workforceHealth().catch(() => null),
+		Promise.resolve().then(() => getSupervisorSummary()),
+		getEvaluationHistory(20).catch(() => []),
+		getRedteamStatus().catch(() => null),
+	]);
+	// The ledger read fails soft inside workforceHealth, so a dead database
+	// would otherwise report a reassuring 0 executions. Probe readability
+	// once: UNKNOWN stays null, never 0 (spec §56).
+	let ledgerReadable = true;
+	try {
+		await supabase.from("settings").select("key").limit(1);
+	} catch {
+		ledgerReadable = false;
+	}
+	let openReports = null;
+	let approvals = null;
+	try {
+		const { count } = await supabase
+			.from("reports")
+			.select("*", { count: "exact", head: true })
+			.eq("status", "open");
+		openReports = count ?? 0;
+	} catch {
+		/* unknown stays null, never 0 */
+	}
+	try {
+		const pa = await pendingApprovals();
+		approvals = Array.isArray(pa?.approvals) ? pa.approvals.length : 0;
+	} catch {
+		/* unknown stays null */
+	}
+	const safetyViolations = (evals || []).reduce(
+		(sum, e) => sum + (e?.summary?.safety_violations || 0),
+		0,
+	);
+	const paused = supervisor?.paused_workers || [];
+	const items = [
+		{
+			label: "Workforce executions (24h)",
+			value: ledgerReadable ? (health?.total_executions_24h ?? null) : null,
+			detail:
+				!ledgerReadable || health == null
+					? "ledger unreadable"
+					: `${health.verified_success_24h ?? 0} verified ok · ${health.verified_failure_24h ?? 0} verified failed · ${health.budget_blocked_24h ?? 0} budget-blocked`,
+			source: "workforce ledger",
+		},
+		{
+			label: "Workers paused by supervisor",
+			value: paused.length,
+			detail:
+				paused.length > 0
+					? paused.join(", ")
+					: "none quarantined",
+			source: "supervisor",
+		},
+		{
+			label: "Open reports",
+			value: openReports,
+			detail: "awaiting triage in Reports",
+			source: "reports table",
+		},
+		{
+			label: "Pending approvals",
+			value: approvals,
+			detail: "blocked tasks awaiting admin decision",
+			source: "workforce tasks",
+		},
+		{
+			label: "Evaluation safety violations",
+			value: safetyViolations,
+			detail: `across ${(evals || []).length} eval runs`,
+			source: "evaluation ledger",
+		},
+		{
+			label: "Red-team pass rate",
+			value: redteam?.last_run?.pass_rate ?? null,
+			detail: redteam?.last_run
+				? `${redteam.last_run.passed}/${redteam.last_run.total} at ${redteam.last_run.run_at}`
+				: "no run yet",
+			source: "red-team ledger",
+		},
+	];
+	return {
+		window: "24h",
+		generated_at: new Date().toISOString(),
+		items,
+		needs_attention: items.filter(
+			(i) =>
+				(i.label.includes("paused") && (i.value ?? 0) > 0) ||
+				(i.label.includes("violations") && (i.value ?? 0) > 0) ||
+				(i.label.includes("Red-team") && i.value != null && i.value < 100),
+		).length,
+	};
+}
+
+// Compare the newer half of the eval ledger against the older half.
+// `evals` is newest-first. Returns null until there are enough runs to
+// compare — an unknown drift is never reported as "stable".
+function evalDrift(evals) {
+	const rates = evals
+		.map((e) => e?.summary?.success_rate)
+		.filter((r) => typeof r === "number");
+	if (rates.length < 4) return null;
+	const half = Math.floor(rates.length / 2);
+	const mean = (xs) => xs.reduce((sum, x) => sum + x, 0) / xs.length;
+	const recentAvg = mean(rates.slice(0, half));
+	const olderAvg = mean(rates.slice(half));
+	const delta = Math.round(recentAvg - olderAvg);
+	return {
+		recent_success_rate: Math.round(recentAvg),
+		previous_success_rate: Math.round(olderAvg),
+		delta_pct: delta,
+		direction: delta < 0 ? "degrading" : delta > 0 ? "improving" : "stable",
+	};
+}
+
+// ─── NeMo Fabric backend proxy ──────────────────────────────────
+// The real agent runtime lives in services/ (FastAPI). The browser never
+// talks to it directly — this proxy keeps one authenticated, bounded,
+// admin-gated path. The backend is OPTIONAL: it is only contacted when
+// WORKFORCE_BASE_URL (or WORKFORCE_URL) is explicitly set. When unset the
+// proxy returns {ok:false, configured:false} immediately — no localhost
+// probe, no 45s wait, no localhost URL leaked into the UI. Unreachable
+// configured backend → honest {ok:false}, never fake.
+// Vercel kills this function at 60s, so the backend fetch is capped at 45s
+// and callers must wait with a ≥55s client timeout.
+const FABRIC_TIMEOUT_MS = 45000;
+
+function fabricBaseUrl() {
+	const raw = (
+		process.env.WORKFORCE_BASE_URL ||
+		process.env.WORKFORCE_URL ||
+		""
+	).trim();
+	if (!raw) return null;
+	return raw.replace(/\/+$/, "");
+}
+
+// ─── Built-in agent answer (no external backend needed) ────────
+// Answers "Ask the agent" from the provider LLM with a live ops snapshot.
+// Works with zero infrastructure beyond one provider key.
+async function builtinAgentRun(input) {
+	const { callLLMChain, hasUsableLLM } = await import("./_providers.js");
+	if (!(await hasUsableLLM())) {
+		return {
+			ok: false,
+			configured: false,
+			backend: null,
+			error:
+				"No AI provider key is configured — add NVIDIA_API_KEY (or OpenAI/Anthropic/Groq) to enable answers. Tasks, patrols and evaluations below already run without one.",
+		};
+	}
+	const [health, supervisor] = await Promise.all([
+		workforceHealth().catch(() => null),
+		Promise.resolve().then(() => getSupervisorSummary()),
+	]);
+	let openReports = null;
+	let approvals = null;
+	try {
+		const { count } = await supabase
+			.from("reports")
+			.select("*", { count: "exact", head: true })
+			.eq("status", "open");
+		openReports = count ?? 0;
+	} catch {
+		/* unknown stays null */
+	}
+	try {
+		const pa = await pendingApprovals();
+		approvals = Array.isArray(pa?.approvals) ? pa.approvals.length : 0;
+	} catch {
+		/* unknown stays null */
+	}
+	const paused = supervisor?.paused_workers || [];
+	const system =
+		`You are the Voice Box operations assistant. Answer the admin's question concisely, using these LIVE numbers; say "unknown" where the value is null rather than inventing.\n` +
+		`Workforce executions (24h): ${health?.total_executions_24h ?? "unknown"} ` +
+		`(verified ok ${health?.verified_success_24h ?? "?"}, failed ${health?.verified_failure_24h ?? "?"}). ` +
+		`Paused workers: ${paused.length ? paused.join(", ") : "none"}. ` +
+		`Open reports: ${openReports ?? "unknown"}. Pending approvals: ${approvals ?? "unknown"}. ` +
+		`Current time: ${new Date().toISOString()}`;
+	try {
+		const r = await callLLMChain(system, input, [], "high");
+		// Null means the whole chain failed over (congestion, cooldowns,
+		// outages) — NOT a bad question. Say so; the old copy blamed the
+		// question length ("try a shorter question") for a server-side outage.
+		if (!r)
+			return {
+				ok: false,
+				error:
+					"All AI providers are busy or recovering from failures — wait about a minute and retry. Your question is fine; nothing was lost.",
+			};
+		const text = (r?.text || (typeof r === "string" ? r : "") || "").trim();
+		if (!text)
+			return { ok: false, error: "The model returned an empty answer — try a shorter question." };
+		return {
+			ok: true,
+			status: "succeeded",
+			response: text.slice(0, 4000),
+			backend: "builtin",
+			provider: r?.provider || null,
+			model: r?.model || null,
+		};
+	} catch (err) {
+		return { ok: false, error: `Built-in agent failed: ${err?.message || err}` };
+	}
+}
+
+async function fabricProxy(action, args) {
+	const base = fabricBaseUrl();
+	if (!base) {
+		return {
+			ok: false,
+			configured: false,
+			disabled: true,
+			backend: null,
+			error:
+				"Agent backend not configured — set WORKFORCE_BASE_URL to enable live agent runs. Built-in workforce (tasks, patrols, evaluations) works without it.",
+		};
+	}
+	const path =
+		action === "fabric-status"
+			? "/api/workforce/fabric/status"
+			: "/api/workforce/fabric/run";
+	let body;
+	if (action === "fabric-status") {
+		body = undefined;
+	} else {
+		const input = String(args.input || "").slice(0, 2000);
+		if (!input.trim())
+			return { ok: false, error: "Ask something first — input is empty." };
+		body = JSON.stringify({
+			input,
+			task_title: String(args.task_title || "ops-console-run").slice(0, 80),
+			system_instruction:
+				typeof args.system_instruction === "string"
+					? args.system_instruction.slice(0, 2000)
+					: null,
+			timeout_seconds: Math.max(
+				10,
+				Math.min(Number(args.timeout_seconds) || 45, 45),
+			),
+			max_turns: Math.max(1, Math.min(Number(args.max_turns) || 3, 10)),
+		});
+	}
+	const controller = new AbortController();
+	const kill = setTimeout(() => controller.abort(), FABRIC_TIMEOUT_MS);
+	try {
+		// FIX #4 (AUDIT): workforce API now requires an admin token.
+		// Build headers conditionally — a fetch header with value
+		// `undefined` throws before the request is even sent.
+		const wfHeaders = { "Content-Type": "application/json" };
+		if (process.env.ADMIN_TOKEN)
+			wfHeaders["X-Admin-Token"] = process.env.ADMIN_TOKEN;
+
+		const res = await fetch(`${base}${path}`, {
+			method: action === "fabric-status" ? "GET" : "POST",
+			headers: wfHeaders,
+			body,
+			signal: controller.signal,
+		});
+		const data = await res.json().catch(() => ({}));
+		return { ok: res.ok, backend: base, ...(data || {}) };
+	} catch (err) {
+		return {
+			ok: false,
+			unavailable: true,
+			configured: true,
+			backend: base,
+			error:
+				err?.name === "AbortError"
+					? "Agent backend timed out — it may still be working; try a shorter question."
+					: `Agent backend unreachable at ${base} — check the service or update WORKFORCE_BASE_URL.`,
+		};
+	} finally {
+		clearTimeout(kill);
 	}
 }
 
@@ -3316,7 +4021,7 @@ export default async function handler(req, res) {
 		return res.status(200).json(result);
 	} catch (err) {
 		console.error("[workforce] Error:", err.message);
-		return res.status(500).json({ error: sanitizeError(err) });
+		return sanitizeError(res, err, "workforce");
 	}
 }
 

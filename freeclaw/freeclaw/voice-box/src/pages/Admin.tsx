@@ -1,35 +1,25 @@
 import {
-	BarChart3,
-	Bot,
-	Bug,
 	Command,
 	ExternalLink,
-	Flag,
-	Inbox,
-	LayoutDashboard,
-	Lightbulb,
 	Loader2,
 	LogOut,
-	Mail,
 	Megaphone,
 	Menu,
-	MessageCircle,
 	Moon,
-	Radar,
-	ScrollText,
 	Search,
-	Settings as SettingsIcon,
-	Shield,
 	ShieldCheck,
 	Sun,
-	Table2,
-	Tags,
-	Trophy,
-	Users,
 	X,
 } from "lucide-react";
-import { Suspense, useEffect, useMemo, useRef, useState } from "react";
-import { Link } from "react-router";
+import {
+	Suspense,
+	useCallback,
+	useEffect,
+	useMemo,
+	useRef,
+	useState,
+} from "react";
+import { Link, useSearchParams } from "react-router";
 import ErrorBoundary from "../components/ErrorBoundary";
 import { useApp } from "../contexts/AppContext";
 import {
@@ -39,35 +29,33 @@ import {
 	setAdminSession,
 } from "../lib/api";
 import { retryLazy } from "../lib/retryLazy";
+import {
+	ADMIN_TAB_GROUPS,
+	ADMIN_TABS,
+	normalizeAdminTab,
+	parseAdminTab,
+} from "../lib/adminTabs";
 import { sha256 } from "../lib/utils";
 
 // Lazy loaded (all tabs) — wrapped with retryLazy for auto-recovery from chunk failures
+// Dashboard
 const Overview = retryLazy(() => import("./admin/Overview"));
-const PostsTable = retryLazy(() => import("./admin/PostsTable"));
-const PollManager = retryLazy(() => import("./admin/PollManager"));
-const SuggestionsTable = retryLazy(() => import("./admin/SuggestionsTable"));
-const CommentMod = retryLazy(() => import("./admin/CommentMod"));
-const UserManager = retryLazy(() => import("./admin/UserManager"));
-const Logs = retryLazy(() => import("./admin/Logs"));
-const Categories = retryLazy(() => import("./admin/Categories"));
-const AdminSettings = retryLazy(() => import("./admin/AdminSettings"));
-const AiPanel = retryLazy(() => import("./admin/AiPanel"));
-const CommandCenter = retryLazy(() => import("./admin/CommandCenter"));
-const WorkforceCenter = retryLazy(() => import("./admin/WorkforceCenter"));
-const UnifiedInbox = retryLazy(() => import("./admin/UnifiedInbox"));
-// One unified AI Operations tab — combines the old Agent Team / Workforce /
-// Agent Dashboard / AI Output / Reports / Content Review workspaces.
-const AIOperations = retryLazy(() => import("./admin/AIOperations"));
-const AdminAI = retryLazy(() => import("./admin/AdminAI"));
-const EmailTemplates = retryLazy(() => import("./admin/EmailTemplates"));
-// Ops Center — the outcome-focused hidden-workforce command view (default tab).
-const OpsCenter = retryLazy(() => import("./admin/OpsCenter"));
-const AgentDashboard = retryLazy(() => import("./admin/AgentDashboard"));
-// Reports — classic Report queue merged with Content Review + Approvals.
+// Content
 const Reports = retryLazy(() => import("./admin/Reports"));
-const SpamDetection = retryLazy(() => import("./admin/SpamDetection"));
-const AdminLeaderboard = retryLazy(() => import("./admin/AdminLeaderboard"));
+const PostsTable = retryLazy(() => import("./admin/PostsTable"));
+const UserManager = retryLazy(() => import("./admin/UserManager"));
+const Categories = retryLazy(() => import("./admin/Categories"));
+const PollManager = retryLazy(() => import("./admin/PollManager"));
+const SlangLeaders = retryLazy(() => import("./admin/SlangLeaders"));
+// Communication
+const UnifiedInbox = retryLazy(() => import("./admin/UnifiedInbox"));
+const EmailTemplates = retryLazy(() => import("./admin/EmailTemplates"));
+// Operations
 const ErrorTracking = retryLazy(() => import("./admin/ErrorTracking"));
+const Logs = retryLazy(() => import("./admin/Logs"));
+// Config
+const AdminSettings = retryLazy(() => import("./admin/AdminSettings"));
+const AiSystems = retryLazy(() => import("./admin/AiSystems"));
 
 function TabFallback() {
 	return (
@@ -78,72 +66,83 @@ function TabFallback() {
 	);
 }
 
-// ─── Tab registry, grouped like a Google/Microsoft admin console ───
-// Each group maps to a sidebar section; the flat list drives the content
-// switch and the top-bar search.
-type AdminTab = { key: string; label: string; icon: typeof Radar };
-
-const TAB_GROUPS: { title: string; tabs: AdminTab[] }[] = [
-	{
-		title: "Operations",
-		tabs: [
-			{ key: "ops-center", label: "Ops Center", icon: Radar },
-			{ key: "overview", label: "Dashboard", icon: LayoutDashboard },
-			{ key: "agent-dashboard", label: "Agent Dashboard", icon: Bot },
-			{ key: "workforce", label: "AI Workforce", icon: Bot },
-			{ key: "command-center", label: "Command Center", icon: MessageCircle },
-		],
-	},
-	{
-		title: "Moderation",
-		tabs: [
-			{ key: "reports", label: "Reports", icon: Flag },
-			{ key: "spam", label: "Spam Detection", icon: Shield },
-			{ key: "inbox", label: "Inbox", icon: Inbox },
-			{ key: "posts", label: "Feed", icon: Table2 },
-			{ key: "suggestions", label: "Suggestions", icon: Lightbulb },
-			{ key: "comments", label: "Comments", icon: MessageCircle },
-			{ key: "users", label: "Users", icon: Users },
-		],
-	},
-	{
-		title: "Analytics",
-		tabs: [
-			{ key: "polls", label: "Polls", icon: BarChart3 },
-			{ key: "leaderboard", label: "Leaderboard", icon: Trophy },
-		],
-	},
-	{
-		title: "System",
-		tabs: [
-			{ key: "error-tracking", label: "Error Tracking", icon: Bug },
-			{ key: "categories", label: "Categories", icon: Tags },
-			{ key: "email-templates", label: "Email Templates", icon: Mail },
-			{ key: "logs", label: "Activity Log", icon: ScrollText },
-			{ key: "settings", label: "Settings", icon: SettingsIcon },
-		],
-	},
-];
-
-const ALL_TABS: AdminTab[] = TAB_GROUPS.flatMap((g) => g.tabs);
+// The canonical registry is shared by navigation, search, PageContext, and
+// tests so the active human-action workspaces have one source of truth.
+const TAB_GROUPS = ADMIN_TAB_GROUPS;
+const ALL_TABS = ADMIN_TABS;
 
 export default function Admin() {
 	const { theme, toggleTheme, toast } = useApp();
 	const [authed, setAuthed] = useState(hasAdminSession());
 	const [password, setPassword] = useState("");
 	const [busy, setBusy] = useState(false);
-	const [tab, setTab] = useState("overview");
 	const [mobileNav, setMobileNav] = useState(false);
 	const [search, setSearch] = useState("");
 	const [searchOpen, setSearchOpen] = useState(false);
 	const searchRef = useRef<HTMLInputElement>(null);
 
-	// Cross-panel navigation (e.g. "Message author" → chat tab)
+	// Which credential does this deployment expect? The server answers from
+	// env config only (no sensitive data): env-secret deployments collect the
+	// ADMIN_SESSION_SECRET at login; others collect the shared password.
+	const [envMode, setEnvMode] = useState(false);
 	useEffect(() => {
-		const h = (e: Event) => setTab((e as CustomEvent).detail);
+		if (authed) return;
+		api
+			.get<{ env_secret: boolean }>("/api/admin?action=auth_mode")
+			.then((r) => setEnvMode(!!r.env_secret))
+			.catch(() => setEnvMode(false)); // fail open to password login
+	}, [authed]);
+
+	// ── The active tab lives in the URL (?tab=reports) ────────────────
+	// It used to be component state, so /admin always reopened on Dashboard:
+	// refreshing lost your place, the Back button left the console entirely,
+	// and a tab could not be linked or bookmarked (a support hand-off could
+	// only ever say "go to Reports", never "open this exact view").
+	const [searchParams, setSearchParams] = useSearchParams();
+	const normalizedTab = normalizeAdminTab(searchParams.get("tab"));
+	const tab = normalizedTab.tab;
+
+	const setTab = useCallback(
+		(next: string) => {
+			const key = parseAdminTab(next);
+			// Push rather than replace so Back returns to the previous view
+			// instead of dropping the admin out of the console.
+			setSearchParams((prev) => {
+				const p = new URLSearchParams(prev);
+				p.set("tab", key);
+				return p;
+			});
+		},
+		[setSearchParams],
+	);
+
+	// All 17 documented operator controls remain canonical and navigable.
+	// Action Center is a secondary Command Center panel, not a replacement for
+	// the dedicated AI/operations surfaces.
+
+	// Cross-panel navigation (e.g. "Message author" → chat tab).
+	// Detail may be a tab key string or { tab, thread } for deep-links
+	// that land straight on one inbox conversation.
+	useEffect(() => {
+		const h = (e: Event) => {
+			const detail = (e as CustomEvent).detail as
+				| string
+				| { tab?: string; thread?: string };
+			if (typeof detail === "string") {
+				setTab(detail);
+				return;
+			}
+			const key = parseAdminTab(detail?.tab);
+			setSearchParams((prev) => {
+				const p = new URLSearchParams(prev);
+				p.set("tab", key);
+				if (detail?.thread) p.set("thread", detail.thread);
+				return p;
+			});
+		};
 		window.addEventListener("vb:admin-tab", h);
 		return () => window.removeEventListener("vb:admin-tab", h);
-	}, []);
+	}, [setTab, setSearchParams]);
 
 	// verify session on mount + auto-logout on expiry
 	useEffect(() => {
@@ -250,24 +249,25 @@ export default function Admin() {
 
 	if (!authed) {
 		return (
-			<div className="admin-shell min-h-screen grid place-items-center px-4 bg-bg">
-				<div className="card w-full max-w-sm p-7 vb-rise">
-					<div className="text-center mb-6">
-						<span className="inline-grid place-items-center w-13 h-13 p-3 rounded-xl bg-accent text-white mb-3 shadow-lg shadow-accent/30">
-							<ShieldCheck size={26} />
+			<div className="admin-shell min-h-screen grid place-items-center px-4 bg-bg vb-tab-enter">
+				<div className="card w-full max-w-sm p-8 vb-rise">
+					<div className="text-center mb-7">
+						<span className="inline-grid place-items-center w-14 h-14 p-3 rounded-2xl bg-accent text-white mb-4 shadow-lg shadow-accent/30">
+							<ShieldCheck size={28} />
 						</span>
-						<h1 className="font-display font-bold text-xl">
-							Admin access
-						</h1>
-						<p className="text-xs text-ink3 mt-1">
-							Password-only login · hashed · 60-minute session
-						</p>
+						<h1 className="font-display font-bold text-2xl tracking-tight">
+							Admin Access
+						</h1>							<p className="text-xs text-ink3 mt-1.5">
+								{envMode
+									? "Secret-key login · 60-minute revocable session"
+									: "Password login · hashed · 60-minute session"}
+							</p>
 					</div>
 					<label
 						className="text-xs font-semibold text-ink2 block mb-1.5"
 						htmlFor="admin-pw"
 					>
-						Password
+						{envMode ? "Admin secret" : "Password"}
 					</label>
 					<input
 						id="admin-pw"
@@ -281,10 +281,12 @@ export default function Admin() {
 						aria-describedby="admin-pw-help"
 					/>
 					<p id="admin-pw-help" className="text-[10px] text-ink3 mt-1.5">
-						Enter the admin password to access the dashboard.
+						{envMode
+							? "Enter the ADMIN_SESSION_SECRET configured for this deployment."
+							: "Enter the admin password to access the dashboard."}
 					</p>
 					<button
-						className="btn btn-primary w-full mt-4"
+						className="btn btn-primary w-full mt-5 !py-2.5 !text-sm !font-semibold"
 						onClick={login}
 						disabled={busy || !password}
 						aria-label={
@@ -295,7 +297,7 @@ export default function Admin() {
 					</button>
 					<Link
 						to="/"
-						className="block text-center text-xs text-ink3 hover:text-accent mt-3"
+						className="block text-center text-xs text-ink3 hover:text-accent mt-4 transition-colors"
 					>
 						← Back to Voice Box
 					</Link>
@@ -318,9 +320,9 @@ export default function Admin() {
 									setMobileNav(false);
 								}}
 								aria-current={tab === key ? "page" : undefined}
-								className={`vb-admin-nav flex items-center gap-2.5 text-left ${tab === key ? "vb-admin-nav-active" : "text-ink2"}`}
+								className={`vb-admin-nav relative flex items-center gap-2.5 text-left transition-all ${tab === key ? "vb-admin-nav-active font-semibold text-ink" : "text-ink2 hover:text-ink hover:bg-surface2/60 rounded-lg"}`}
 							>
-								<Icon size={16} aria-hidden /> {label}
+								<Icon size={16} className={tab === key ? "text-accent" : ""} aria-hidden /> {label}
 							</button>
 						))}
 					</div>
@@ -330,7 +332,7 @@ export default function Admin() {
 	);
 
 	return (
-		<div className="admin-shell min-h-screen flex bg-bg">
+		<div className="admin-shell min-h-screen flex bg-bg" data-admin-console="true">
 			{/* ── Sidebar (desktop) — grouped, Google Admin style ───────── */}
 			<aside
 				className="hidden md:flex flex-col w-60 shrink-0 border-r border-border bg-surface px-2.5 py-4 sticky top-0 h-screen overflow-y-auto"
@@ -338,28 +340,26 @@ export default function Admin() {
 			>
 				<Link
 					to="/"
-					className="flex items-center gap-2.5 px-2.5 mb-1"
+					className="flex items-center gap-2.5 px-2.5 mb-2"
 					aria-label="Voice Box home"
 				>
-					<span className="w-8 h-8 rounded-lg bg-accent grid place-items-center text-white shadow-sm">
-						<Megaphone size={15} />
+					<span className="w-9 h-9 rounded-xl bg-accent grid place-items-center text-white shadow-md shadow-accent/25">
+						<Megaphone size={16} />
 					</span>
 					<div>
-						<span className="font-display font-bold text-[15px] block leading-none">
+						<span className="font-display font-bold text-[15px] block leading-none text-ink">
 							Voice Box
 						</span>
-						<span className="text-[10px] text-ink3 mt-0.5 block">
-							Admin console
+						<span className="text-[10px] text-ink3 mt-0.5 block font-medium">
+							Admin Console
 						</span>
 					</div>
 				</Link>
 				{nav}
-				<div className="mt-auto pt-4 flex gap-1.5">
-					{/* Jump straight into the user space without signing out — the admin
-					    session stays active, so moderation actions appear right in the feed. */}
+				<div className="mt-auto pt-4 border-t border-border/60 flex gap-1.5">
 					<Link
 						to="/"
-						className="btn btn-ghost !p-2 flex-[1.4] !rounded-lg !text-[11px] font-semibold !border-accent/25 hover:!bg-accent/10 !text-accent"
+						className="btn btn-ghost !p-2 flex-[1.4] !rounded-xl !text-[11px] font-semibold !border-accent/25 hover:!bg-accent/10 !text-accent"
 						aria-label="View site as a user"
 						title="Open the public site — moderation tools stay active"
 					>
@@ -367,7 +367,7 @@ export default function Admin() {
 						<span className="hidden md:inline">View site</span>
 					</Link>
 					<button
-						className="btn btn-ghost !p-2 flex-1 !rounded-lg"
+						className="btn btn-ghost !p-2 flex-1 !rounded-xl"
 						onClick={toggleTheme}
 						aria-label="Toggle theme"
 						title={theme === "dark" ? "Light mode" : "Dark mode"}
@@ -375,7 +375,7 @@ export default function Admin() {
 						{theme === "dark" ? <Sun size={15} /> : <Moon size={15} />}
 					</button>
 					<button
-						className="btn btn-ghost !p-2 flex-1 !rounded-lg !text-bad !border-bad/25 hover:!bg-bad/10"
+						className="btn btn-ghost !p-2 flex-1 !rounded-xl !text-bad !border-bad/25 hover:!bg-bad/10"
 						onClick={logout}
 						aria-label="Sign out"
 						title="Sign out"
@@ -397,9 +397,9 @@ export default function Admin() {
 						className="absolute inset-0 bg-black/50"
 						onClick={() => setMobileNav(false)}
 					/>
-					<div className="absolute left-0 top-0 bottom-0 w-72 max-w-[85vw] bg-surface p-4 pt-[max(1rem,env(safe-area-inset-top))] pb-[max(1.5rem,env(safe-area-inset-bottom))] overflow-y-auto vb-rise">
+					<div className="absolute left-0 top-0 bottom-0 w-72 max-w-[85vw] bg-surface p-4 pt-[max(1rem,env(safe-area-inset-top))] pb-[max(1.5rem,env(safe-area-inset-bottom))] overflow-y-auto vb-rise border-r border-border">
 						<div className="flex justify-between items-center mb-5">
-							<span className="font-display font-bold text-sm">
+							<span className="font-display font-bold text-sm text-ink">
 								Voice Box Admin
 							</span>
 							<button
@@ -461,9 +461,10 @@ export default function Admin() {
 								aria-label="Breadcrumb"
 								className="flex items-center gap-1.5 text-[13px] min-w-0"
 							>
-								<span className="text-ink3">Admin</span>
-								<span className="text-ink3/60">/</span>
-								<span className="font-semibold text-ink truncate">
+								<span className="text-ink3 font-medium">Admin</span>
+								<span className="text-ink3/40">/</span>
+								<span className="font-bold text-ink truncate">
+									<activeTab.icon size={14} className="inline text-accent mr-1.5" />
 									{activeTab.label}
 								</span>
 							</nav>
@@ -548,62 +549,16 @@ export default function Admin() {
 					</div>
 				</header>
 
-				<main className="p-4 sm:p-6 max-w-[1400px] mx-auto w-full flex-1">
+				<main className="p-4 sm:p-6 max-w-[1400px] mx-auto w-full flex-1" key={tab}>
 					{/* Each tab has its own ErrorBoundary so one crash doesn't take down the whole admin panel */}
 					<Suspense fallback={<TabFallback />}>
-						{tab === "ops-center" && (
-							<ErrorBoundary key="ops-center">
-								<OpsCenter />
-							</ErrorBoundary>
-						)}
-						{tab === "overview" && (
-							<ErrorBoundary key="overview">
+						{tab === "dashboard" && (
+							<ErrorBoundary key="dashboard">
 								<Overview />
 							</ErrorBoundary>
-						)}
-						{tab === "agent-dashboard" && (
-							<ErrorBoundary key="agent-dashboard">
-								<AgentDashboard />
-							</ErrorBoundary>
-						)}
-						{tab === "workforce" && (
-							<ErrorBoundary key="workforce">
-								<WorkforceCenter />
-							</ErrorBoundary>
-						)}
-						{tab === "admin-ai" && (
-							<ErrorBoundary key="admin-ai">
-								<AdminAI />
-							</ErrorBoundary>
-						)}
-						{tab === "ai-operations" && (
-							<ErrorBoundary key="ai-operations">
-								<AIOperations />
-							</ErrorBoundary>
-						)}
-						{tab === "reports" && (
+						)}						{tab === "reports" && (
 							<ErrorBoundary key="reports">
 								<Reports />
-							</ErrorBoundary>
-						)}
-						{tab === "spam" && (
-							<ErrorBoundary key="spam">
-								<SpamDetection />
-							</ErrorBoundary>
-						)}
-						{tab === "command-center" && (
-							<ErrorBoundary key="command-center">
-								<CommandCenter />
-							</ErrorBoundary>
-						)}
-						{tab === "inbox" && (
-							<ErrorBoundary key="inbox">
-								<UnifiedInbox />
-							</ErrorBoundary>
-						)}
-						{tab === "ai" && (
-							<ErrorBoundary key="ai">
-								<AiPanel />
 							</ErrorBoundary>
 						)}
 						{tab === "posts" && (
@@ -611,34 +566,9 @@ export default function Admin() {
 								<PostsTable type="problem" />
 							</ErrorBoundary>
 						)}
-						{tab === "suggestions" && (
-							<ErrorBoundary key="suggestions">
-								<SuggestionsTable />
-							</ErrorBoundary>
-						)}
-						{tab === "polls" && (
-							<ErrorBoundary key="polls">
-								<PollManager />
-							</ErrorBoundary>
-						)}
-						{tab === "comments" && (
-							<ErrorBoundary key="comments">
-								<CommentMod />
-							</ErrorBoundary>
-						)}
 						{tab === "users" && (
 							<ErrorBoundary key="users">
 								<UserManager />
-							</ErrorBoundary>
-						)}
-						{tab === "leaderboard" && (
-							<ErrorBoundary key="leaderboard">
-								<AdminLeaderboard />
-							</ErrorBoundary>
-						)}
-						{tab === "error-tracking" && (
-							<ErrorBoundary key="error-tracking">
-								<ErrorTracking />
 							</ErrorBoundary>
 						)}
 						{tab === "categories" && (
@@ -646,9 +576,24 @@ export default function Admin() {
 								<Categories />
 							</ErrorBoundary>
 						)}
-						{tab === "email-templates" && (
-							<ErrorBoundary key="email-templates">
-								<EmailTemplates />
+						{tab === "polls" && (
+							<ErrorBoundary key="polls">
+								<PollManager />
+							</ErrorBoundary>
+						)}
+						{tab === "slang" && (
+							<ErrorBoundary key="slang">
+								<SlangLeaders />
+							</ErrorBoundary>
+						)}
+						{tab === "inbox" && (
+							<ErrorBoundary key="inbox">
+								<UnifiedInbox />
+							</ErrorBoundary>
+						)}
+						{tab === "errors" && (
+							<ErrorBoundary key="errors">
+								<ErrorTracking />
 							</ErrorBoundary>
 						)}
 						{tab === "logs" && (
@@ -656,9 +601,19 @@ export default function Admin() {
 								<Logs />
 							</ErrorBoundary>
 						)}
+						{tab === "email-templates" && (
+							<ErrorBoundary key="email-templates">
+								<EmailTemplates />
+							</ErrorBoundary>
+						)}
 						{tab === "settings" && (
 							<ErrorBoundary key="settings">
 								<AdminSettings />
+							</ErrorBoundary>
+						)}
+						{tab === "ai-systems" && (
+							<ErrorBoundary key="ai-systems">
+								<AiSystems />
 							</ErrorBoundary>
 						)}
 					</Suspense>

@@ -1,5 +1,5 @@
 // Auto-Cleanup Middleware
-// Soft-deleted posts after 14d, comments after 30d, activity logs after 30d.
+// User-deleted posts auto-purge 5h after deletion (updated_at marks delete time), comments after 30d, activity logs after 30d.
 // Runs on API cold start (once per function instance) and via POST /api/cleanup (admin only).
 // NEVER auto-unbans — bans are admin-only decisions.
 // Designed for limited-memory Supabase instances — deletes in small batches to avoid timeouts.
@@ -8,10 +8,50 @@ import { auditLog, cors, isAdmin } from "./_auth.js";
 import supabase from "./_db-client.js";
 import { sanitizeError } from "./_error.js";
 
-const SOFT_DELETE_RETENTION_DAYS = 14; // soft-deleted posts
+const USER_DELETE_RETENTION_HOURS = 5; // user-deleted posts (updated_at = deletion time)
 const COMMENT_RETENTION_DAYS = 30; // comments
 const LOG_RETENTION_DAYS = 30; // activity logs, chat messages
 const BATCH_SIZE = 50;
+// Per-class janitor toggles (Step 4). Each age-based pass checks its flag;
+// orphans/duplicates/sessions/notifications stay always-on (integrity, not
+// age). The admin UI mirrors these keys + labels — rename in both places.
+export const JANITOR_CLASSES = [
+	{ key: "comments", label: "Old comments", desc: "Comments older than 30 days" },
+	{ key: "reactions", label: "Old reactions", desc: "Reactions older than 30 days" },
+	{ key: "chat_messages", label: "Old chat messages", desc: "Chat messages older than 30 days" },
+	{ key: "activity_logs", label: "Old activity logs", desc: "Activity logs older than 30 days" },
+	{ key: "agent_conversations", label: "Old agent conversations", desc: "Agent conversations older than 30 days" },
+	{ key: "archived_polls", label: "Archived polls", desc: "Archived polls older than 30 days" },
+	{ key: "agent_history", label: "Agent runtime history", desc: "Executions + insights older than 90 days" },
+];
+const JANITOR_CLASS_KEYS = new Set(JANITOR_CLASSES.map((c) => c.key));
+
+/** Shared janitor config: retention hours + master toggle + per-class flags.
+ *  Unknown keys are dropped, non-booleans fall back to true (fail-open for
+ *  cleanup would silently keep garbage; fail-closed would silently break the
+ *  5h contract — enabled-by-default preserves existing behavior). */
+export async function getJanitorConfig() {
+	let retentionHours = USER_DELETE_RETENTION_HOURS;
+	let autoDelete = true;
+	const classes = {};
+	for (const c of JANITOR_CLASSES) classes[c.key] = true;
+	try {
+		const { data: rs } = await supabase.from("settings").select("value").eq("key", "retention_config").maybeSingle();
+		const n = Number(rs?.value?.user_delete_hours);
+		if (Number.isInteger(n) && n >= 1 && n <= 168) retentionHours = n;
+		if (rs?.value?.auto_delete_enabled === false) autoDelete = false;
+		const raw = rs?.value?.classes;
+		if (raw && typeof raw === "object") {
+			for (const c of JANITOR_CLASSES) {
+				if (raw[c.key] === false) classes[c.key] = false;
+			}
+		}
+	} catch {
+		/* defaults stand */
+	}
+	return { retentionHours, autoDelete, classes };
+}
+const AGENT_HISTORY_DAYS = 90; // agent runtime rows (insert-only tables)
 
 let lastRunAtMem = 0;
 const COOLDOWN_MS = 15 * 60 * 1000; // 15 minutes between auto-runs (was 1 hour)
@@ -27,14 +67,15 @@ async function deleteBatch(
 	table,
 	filter,
 	filterCol = "created_at",
-	retentionDays = SOFT_DELETE_RETENTION_DAYS,
+	retentionDays = 30,
 ) {
 	const cutoff = daysAgo(retentionDays);
-	const { count } = await supabase
+	const { count, error: countError } = await supabase
 		.from(table)
 		.select("*", { count: "exact", head: true })
 		.lte(filterCol, cutoff)
 		.match(filter);
+	if (countError) throw countError;
 
 	if (!count || count === 0) return 0;
 
@@ -74,28 +115,41 @@ async function deleteBatch(
 	return deleted;
 }
 
-async function runCleanup() {
+async function deleteRows(table, column, ids) {
+	if (!ids.length) return 0;
+	const { error } = await supabase.from(table).delete().in(column, ids);
+	if (error) throw error;
+	return ids.length;
+}
+
+export async function runCleanup() {
 	const now = Date.now();
 	if (now - lastRunAtMem < COOLDOWN_MS) return null;
+	const results = {};
 	// FIX #38: Check persisted timestamp so cooldown survives cold starts
 	try {
 		const { data: state } = await supabase.from("settings").select("value").eq("key", "cleanup_state").maybeSingle();
 		const lastAt = state?.value?.last_run_at ? new Date(state.value.last_run_at).getTime() : 0;
 		if (now - lastAt < COOLDOWN_MS) { lastRunAtMem = lastAt; return null; }
-	} catch { /* fall through */ }
+	} catch (err) { console.error("[cleanup] cooldown read failed, continuing", { error: err?.message || String(err) }); results.cooldownReadFailed = true; }
 	lastRunAtMem = now;
-	try { await supabase.from("settings").upsert({ key: "cleanup_state", value: { last_run_at: new Date().toISOString() } }, { onConflict: "key" }); } catch {}
+	try { await supabase.from("settings").upsert({ key: "cleanup_state", value: { last_run_at: new Date().toISOString() } }, { onConflict: "key" }); } catch (err) { console.error("[cleanup] cooldown persist failed", { error: err?.message || String(err) }); results.cooldownPersistFailed = true; }
 
-	const results = {};
-
-	// 1. Soft-deleted posts older than 14 days (hard delete)
+	// 1. User-deleted posts older than 5 hours (hard delete)
+	// janitorClasses is function-scoped: every age-based pass below reads it.
+	let janitorClasses = {};
+	for (const c of JANITOR_CLASSES) janitorClasses[c.key] = true;
 	try {
-		const cutoff = daysAgo(SOFT_DELETE_RETENTION_DAYS);
+		const { retentionHours, autoDelete, classes } = await getJanitorConfig();
+		janitorClasses = classes;
+		if (!autoDelete) { results.auto_delete_skipped = true; }
+		else {
+		const cutoff = new Date(Date.now() - retentionHours * 60 * 60 * 1000).toISOString();
 		const { count } = await supabase
 			.from("posts")
 			.select("*", { count: "exact", head: true })
 			.eq("deleted", true)
-			.lte("created_at", cutoff);
+			.lte("updated_at", cutoff);
 
 		if (count && count > 0) {
 			let deleted = 0;
@@ -104,20 +158,22 @@ async function runCleanup() {
 					.from("posts")
 					.select("id")
 					.eq("deleted", true)
-					.lte("created_at", cutoff)
+					.lte("updated_at", cutoff)
 					.limit(BATCH_SIZE);
 				if (!batch || batch.length === 0) break;
-				await supabase
+				const { error: deleteError } = await supabase
 					.from("posts")
 					.delete()
 					.in(
 						"id",
 						batch.map((r) => r.id),
 					);
+				if (deleteError) throw deleteError;
 				deleted += batch.length;
 				if (batch.length < BATCH_SIZE) break;
 			}
 			results.deleted_posts = deleted;
+		}
 		}
 	} catch (e) {
 		console.error("[cleanup] posts sweep failed:", e.message);
@@ -125,6 +181,7 @@ async function runCleanup() {
 
 	// 2. Comments older than 30 days
 	try {
+		if (janitorClasses.comments === false) { results.comments_skipped = true; } else {
 		const cutoff = daysAgo(COMMENT_RETENTION_DAYS);
 		const { data: oldComments } = await supabase
 			.from("comments")
@@ -133,14 +190,16 @@ async function runCleanup() {
 			.limit(BATCH_SIZE * 3);
 
 		if (oldComments && oldComments.length > 0) {
-			await supabase
+			const { error: deleteError } = await supabase
 				.from("comments")
 				.delete()
 				.in(
 					"id",
 					oldComments.map((c) => c.id),
 				);
+			if (deleteError) throw deleteError;
 			results.deleted_comments = oldComments.length;
+		}
 		}
 	} catch (e) {
 		console.error("[cleanup] comments sweep failed:", e.message);
@@ -148,6 +207,7 @@ async function runCleanup() {
 
 	// 3. Reactions older than 30 days
 	try {
+		if (janitorClasses.reactions === false) { results.reactions_skipped = true; } else {
 		const cutoff = daysAgo(LOG_RETENTION_DAYS);
 		const { data: oldReactions } = await supabase
 			.from("reactions")
@@ -156,14 +216,12 @@ async function runCleanup() {
 			.limit(BATCH_SIZE * 3);
 
 		if (oldReactions && oldReactions.length > 0) {
-			await supabase
-				.from("reactions")
-				.delete()
-				.in(
-					"id",
-					oldReactions.map((r) => r.id),
-				);
-			results.deleted_reactions = oldReactions.length;
+			results.deleted_reactions = await deleteRows(
+				"reactions",
+				"id",
+				oldReactions.map((r) => r.id),
+			);
+		}
 		}
 	} catch (e) {
 		console.error("[cleanup] reactions sweep failed:", e.message);
@@ -171,6 +229,7 @@ async function runCleanup() {
 
 	// 4. Chat messages older than 30 days
 	try {
+		if (janitorClasses.chat_messages === false) { results.chat_messages_skipped = true; } else {
 		const cutoff = daysAgo(LOG_RETENTION_DAYS);
 		const { data: oldMessages } = await supabase
 			.from("chat_messages")
@@ -179,14 +238,12 @@ async function runCleanup() {
 			.limit(BATCH_SIZE * 3);
 
 		if (oldMessages && oldMessages.length > 0) {
-			await supabase
-				.from("chat_messages")
-				.delete()
-				.in(
-					"id",
-					oldMessages.map((m) => m.id),
-				);
-			results.deleted_messages = oldMessages.length;
+			results.deleted_messages = await deleteRows(
+				"chat_messages",
+				"id",
+				oldMessages.map((m) => m.id),
+			);
+		}
 		}
 	} catch (e) {
 		console.error("[cleanup] chat_messages sweep failed:", e.message);
@@ -194,6 +251,7 @@ async function runCleanup() {
 
 	// 5. Activity logs older than 30 days
 	try {
+		if (janitorClasses.activity_logs === false) { results.activity_logs_skipped = true; } else {
 		const cutoff = daysAgo(LOG_RETENTION_DAYS);
 		const { data: oldLogs } = await supabase
 			.from("activity_logs")
@@ -202,14 +260,12 @@ async function runCleanup() {
 			.limit(BATCH_SIZE * 3);
 
 		if (oldLogs && oldLogs.length > 0) {
-			await supabase
-				.from("activity_logs")
-				.delete()
-				.in(
-					"id",
-					oldLogs.map((l) => l.id),
-				);
-			results.deleted_logs = oldLogs.length;
+			results.deleted_logs = await deleteRows(
+				"activity_logs",
+				"id",
+				oldLogs.map((l) => l.id),
+			);
+		}
 		}
 	} catch (e) {
 		console.error("[cleanup] activity_logs sweep failed:", e.message);
@@ -217,6 +273,7 @@ async function runCleanup() {
 
 	// 6. Agent conversation history older than 30 days (safe: table may not exist)
 	try {
+		if (janitorClasses.agent_conversations === false) { results.agent_conversations_skipped = true; } else {
 		const cutoff = daysAgo(LOG_RETENTION_DAYS);
 		const { data: oldConvos, error: convoErr } = await supabase
 			.from("agent_conversations")
@@ -227,14 +284,12 @@ async function runCleanup() {
 		if (convoErr) {
 			// Table may not exist yet — skip silently
 		} else if (oldConvos && oldConvos.length > 0) {
-			await supabase
-				.from("agent_conversations")
-				.delete()
-				.in(
-					"id",
-					oldConvos.map((c) => c.id),
-				);
-			results.deleted_conversations = oldConvos.length;
+			results.deleted_conversations = await deleteRows(
+				"agent_conversations",
+				"id",
+				oldConvos.map((c) => c.id),
+			);
+		}
 		}
 	} catch (e) {
 		console.error("[cleanup] agent_conversations sweep:", e.message);
@@ -242,6 +297,7 @@ async function runCleanup() {
 
 	// 7. Archived polls older than 30 days
 	try {
+		if (janitorClasses.archived_polls === false) { results.archived_polls_skipped = true; } else {
 		const cutoff = daysAgo(LOG_RETENTION_DAYS);
 		const { data: oldPolls } = await supabase
 			.from("polls")
@@ -251,14 +307,16 @@ async function runCleanup() {
 			.limit(BATCH_SIZE);
 
 		if (oldPolls && oldPolls.length > 0) {
-			await supabase
+			const { error: deleteError } = await supabase
 				.from("polls")
 				.delete()
 				.in(
 					"id",
 					oldPolls.map((p) => p.id),
 				);
+			if (deleteError) throw deleteError;
 			results.deleted_polls = oldPolls.length;
+		}
 		}
 	} catch (e) {
 		console.error("[cleanup] polls archive sweep failed:", e.message);
@@ -281,11 +339,13 @@ async function runCleanup() {
 				.filter((v) => !existingSet.has(v.poll_id))
 				.map((v) => v.id);
 			if (orphanIds.length > 0) {
-				await supabase
+				const batch = orphanIds.slice(0, BATCH_SIZE);
+				const { error: deleteError } = await supabase
 					.from("poll_votes")
 					.delete()
-					.in("id", orphanIds.slice(0, BATCH_SIZE));
-				results.deleted_orphan_votes = orphanIds.length;
+					.in("id", batch);
+				if (deleteError) throw deleteError;
+				results.deleted_orphan_votes = batch.length;
 			}
 		}
 	} catch (e) {
@@ -375,11 +435,13 @@ async function runCleanup() {
 					)
 					.map((r) => r.id);
 				if (orphanIds.length > 0) {
-					await supabase
+					const batch = orphanIds.slice(0, BATCH_SIZE);
+					const { error: deleteError } = await supabase
 						.from("reactions")
 						.delete()
-						.in("id", orphanIds.slice(0, BATCH_SIZE));
-					results.deleted_orphan_reactions = orphanIds.length;
+						.in("id", batch);
+					if (deleteError) throw deleteError;
+					results.deleted_orphan_reactions = batch.length;
 				}
 			}
 		}
@@ -387,40 +449,93 @@ async function runCleanup() {
 		console.error("[cleanup] orphan reactions sweep failed:", e.message);
 	}
 
-	// 12. Duplicate reports (same target_id + author_id)
+	// 12. Duplicate reports (same target_id + author_id + status)
+	//
+	// DESTRUCTIVE, so it must never destroy moderation evidence. Two rules
+	// this block previously broke:
+	//   1. It deduped on target+author only, ignoring `status` — so a user
+	//      who reported a post, saw it resolved, then reported it AGAIN had
+	//      their live PENDING report deleted (an active moderation item
+	//      vanished) or had the resolved row deleted (audit trail gone).
+	//   2. It reported `toDelete.length` while deleting only one batch, so
+	//      the report over-stated what was removed (fake success).
+	// Now: keep the OLDEST row per (target, author, status) — one row per
+	// distinct moderation state — and report what was actually deleted.
 	try {
 		const { data: dupes } = await supabase
 			.from("reports")
-			.select("id,target_id,author_id")
+			.select("id,target_id,author_id,status,created_at")
+			.order("created_at", { ascending: true })
 			.limit(500);
 		if (dupes && dupes.length > 1) {
-			const seen = new Map();
+			const seen = new Set();
 			const toDelete = [];
 			for (const r of dupes) {
-				const key = `${r.target_id}:${r.author_id}`;
+				// Status is part of the key: a new report of the same target
+				// after resolution is a DIFFERENT record, not a duplicate.
+				const key = `${r.target_id}:${r.author_id}:${r.status || "pending"}`;
 				if (seen.has(key)) toDelete.push(r.id);
-				else seen.set(key, r.id);
+				else seen.add(key);
 			}
 			if (toDelete.length > 0) {
-				await supabase
+				const batch = toDelete.slice(0, BATCH_SIZE);
+				const { error: delErr } = await supabase
 					.from("reports")
 					.delete()
-					.in("id", toDelete.slice(0, BATCH_SIZE));
-				results.deleted_duplicate_reports = toDelete.length;
+					.in("id", batch);
+				if (delErr) throw delErr;
+				// Honest count: rows actually removed, not rows considered.
+				results.deleted_duplicate_reports = batch.length;
 			}
 		}
 	} catch (e) {
 		console.error("[cleanup] duplicate reports sweep failed:", e.message);
 	}
 
+	// 13. Agent runtime history older than 90 days. agent_executions /
+	// agent_insights are insert-only — nothing else prunes them, so they
+	// grow unbounded. The AI activity surfaces read the last 30 days; 90
+	// keeps 3x headroom. Batched like every other pass; a failed delete
+	// leaves rows for the next run and records no key (proven-counts).
+	try {
+		if (janitorClasses.agent_history === false) { results.agent_history_skipped = true; } else {
+		const cutoff = daysAgo(AGENT_HISTORY_DAYS);
+		for (const [table, col, key] of [
+			["agent_executions", "started_at", "pruned_executions"],
+			["agent_insights", "created_at", "pruned_insights"],
+		]) {
+			const { data: old } = await supabase
+				.from(table)
+				.select("id")
+				.lte(col, cutoff)
+				.limit(BATCH_SIZE * 3);
+			if (old && old.length > 0) {
+				const n = await deleteRows(
+					table,
+					"id",
+					old.map((r) => r.id),
+				);
+				if (n > 0) results[key] = (results[key] || 0) + n;
+			}
+		}
+		}
+	} catch (e) {
+		console.error("[cleanup] agent history sweep failed:", e.message);
+	}
+
 	// NOTE: Bans are NEVER auto-removed. Only admins can unban users.
 
-	const total = Object.values(results).reduce((a, b) => a + b, 0);
+	const total = Object.values(results).reduce((a, b) => a + (typeof b === "number" ? b : 0), 0);
+	// Persist measured run stats so the admin settings UI renders the last
+	// real optimization run (time, duration, rows) instead of an estimate.
+	try {
+		await supabase.from("settings").upsert({ key: "cleanup_state", value: { last_run_at: new Date().toISOString(), duration_ms: Date.now() - now, results } }, { onConflict: "key" });
+	} catch (err) { console.error("[cleanup] stats persist failed", { error: err?.message || String(err) }); }
 	return {
 		cleaned: total,
 		details: results,
 		retention: {
-			soft_deleted_posts: SOFT_DELETE_RETENTION_DAYS,
+			user_deleted_posts_hours: USER_DELETE_RETENTION_HOURS,
 			comments: COMMENT_RETENTION_DAYS,
 			logs: LOG_RETENTION_DAYS,
 		},

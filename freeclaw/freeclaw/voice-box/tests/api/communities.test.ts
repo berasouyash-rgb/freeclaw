@@ -301,6 +301,34 @@ describe("communities — discussion feed", () => {
 		expect(reports[0].target_id).toBe(`book-club::${postId}`);
 		expect(reports[0].status).toBe("pending");
 	});
+
+	it("blocks school-prohibited content in posts and comments via the safety pipeline", async () => {
+		const bad = response();
+		await handler(
+			req("post", { slug: "book-club", anon_id: "anon_a", text: "fuck this homework" }),
+			bad,
+		);
+		expect(bad.statusCode).toBe(403);
+		expect((bad.body as { code?: string }).code).toBe("CONTENT_BLOCKED");
+
+		const good = response();
+		await handler(
+			req("post", { slug: "book-club", anon_id: "anon_b", text: "Reading Dune this weekend?" }),
+			good,
+		);
+		expect(good.statusCode).toBe(201);
+
+		const detail = response();
+		await handler(getReq("get", { slug: "book-club", anon_id: "anon_b" }), detail);
+		const postId = (detail.body as { posts: { id: string }[] }).posts[0].id;
+
+		const badComment = response();
+		await handler(
+			req("comment", { slug: "book-club", post_id: postId, anon_id: "anon_b", text: "you are a bitch" }),
+			badComment,
+		);
+		expect(badComment.statusCode).toBe(403);
+	});
 });	describe("communities — admin moderation", () => {
 	let admin = false;
 	beforeEach(async () => {

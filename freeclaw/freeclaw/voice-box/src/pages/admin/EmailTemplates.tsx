@@ -131,20 +131,25 @@ export default function EmailTemplates() {
     if (!selected) return;
     setSaving(true);
     try {
-      await api.put("/api/email-templates", {
+      await api.put<{ ok: boolean; templates: EmailTemplate[] }>("/api/email-templates", {
         id: selected.id,
         subject: editSubject,
         body: editBody,
+      }).then((d) => {
+        // Trust the server echo (it clamps lengths) instead of refetching
+        // and patching from local state, which could show unclamped text.
+        const list = d?.templates || [];
+        setTemplates(list);
+        setSelected(
+          list.find((t) => t.id === selected.id) ?? {
+            ...selected,
+            subject: editSubject,
+            body: editBody,
+          },
+        );
       });
       toast("Template saved", "ok");
       setEditing(false);
-      // Refresh templates
-      const res = await api.get<{ templates: EmailTemplate[] }>("/api/email-templates");
-      setTemplates(res.templates || []);
-      // Update selected with new values
-      setSelected((prev) =>
-        prev ? { ...prev, subject: editSubject, body: editBody } : null,
-      );
     } catch (e: unknown) {
       toast(e instanceof Error ? e.message : "Failed to save", "err");
     }
@@ -183,16 +188,24 @@ export default function EmailTemplates() {
   return (
     <div className="max-w-6xl">
       <div className="flex items-center gap-3 mb-6">
-        <Mail size={20} className="text-accent" />
-        <h1 className="font-display font-bold text-xl">Email Templates</h1>
+        <Mail size={20} className="text-accent" />         <h1 className="font-display font-bold text-xl tracking-tight">
+           <span className="vb-gradient-text">Email Templates</span>
+         </h1>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Template List */}
         <div className="lg:col-span-1 space-y-2">
           <h2 className="text-sm font-semibold text-ink2 mb-3">Templates</h2>
+          {templates.length === 0 && (
+            <p className="text-xs text-ink3 py-6 text-center">
+              No templates available.
+            </p>
+          )}
           {templates.map((t) => {
-            const config = CATEGORY_CONFIG[t.category];
+            // Unknown categories (e.g. added server-side later) must not
+            // crash the whole page — fall back to neutral styling.
+            const config = CATEGORY_CONFIG[t.category] ?? CATEGORY_CONFIG.notification;
             const Icon = config.icon;
             return (
               <button
@@ -216,7 +229,7 @@ export default function EmailTemplates() {
                     {t.category}
                   </span>
                   <span className="text-[10px] text-ink3">
-                    {t.variables.length} vars
+                    {(t.variables || []).length} vars
                   </span>
                 </div>
               </button>
@@ -277,7 +290,7 @@ export default function EmailTemplates() {
                   Variables
                 </h3>
                 <div className="flex flex-wrap gap-1.5">
-                  {selected.variables.map((v) => (
+                  {(selected.variables || []).map((v) => (
                     <span
                       key={v}
                       className="text-[11px] px-2 py-1 rounded-lg bg-surface2 text-ink2 font-mono"

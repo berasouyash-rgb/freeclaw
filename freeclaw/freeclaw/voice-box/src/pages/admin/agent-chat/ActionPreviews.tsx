@@ -28,7 +28,7 @@ import {
 	X,
 	Zap,
 } from "lucide-react";
-import { safeStringify } from "../../../lib/utils";
+import { flattenArgs, summarizeArgs } from "./evidence";
 
 /* ═══════════════════════════════════════════════════════════════
    VISUAL PREVIEW COMPONENTS
@@ -1045,16 +1045,33 @@ export function UserSearchPreview({ args }: P) {
 	);
 }
 
-/** Generic parameter preview */
+/** Generic parameter preview — label/value rows, never a JSON dump. */
 export function GenericPreview({ args }: P) {
+	const rows = flattenArgs(args);
 	return (
 		<div className="rounded-lg bg-surface2/60 border border-border p-2.5">
 			<p className="text-[10px] font-mono text-ink3 uppercase tracking-wider mb-1">
 				Parameters
 			</p>
-			<pre className="text-[10px] font-mono text-ink2 whitespace-pre-wrap break-all">
-				{safeStringify(args, 2)}
-			</pre>
+			{rows.length === 0 ? (
+				<p className="text-[10px] text-ink3">No parameters</p>
+			) : (
+				<dl className="space-y-0.5">
+					{rows.map((r) => (
+						<div
+							key={r.label}
+							className="flex items-baseline justify-between gap-3 text-[10px]"
+						>
+							<dt className="text-ink3 uppercase tracking-wide shrink-0">
+								{r.label}
+							</dt>
+							<dd className="text-ink2 font-mono text-right truncate">
+								{r.value}
+							</dd>
+						</div>
+					))}
+				</dl>
+			)}
 		</div>
 	);
 }
@@ -1122,9 +1139,7 @@ export function getToolPreview(
 			);
 		case "bulk_update":
 			return (
-				<MetaAgentPreview
-					args={{ query: `Bulk update: ${safeStringify(args)}` }}
-				/>
+				<MetaAgentPreview args={{ query: `Bulk update: ${summarizeArgs(args)}` }} />
 			);
 		case "generate_summary":
 			return <TrendAnalysisPreview args={args} />;

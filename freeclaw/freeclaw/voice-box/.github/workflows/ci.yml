@@ -25,14 +25,12 @@ jobs:
         with:
           node-version: '22'
           cache: 'npm'
-          cache-dependency-path: voice-box/package-lock.json
+          cache-dependency-path: package-lock.json
 
       - name: Install dependencies
-        working-directory: voice-box
         run: npm ci
 
       - name: Run ESLint
-        working-directory: voice-box
         run: npx eslint src/ --max-warnings=0
 
   # ── Type Check ────────────────────────────────────────────────
@@ -46,14 +44,12 @@ jobs:
         with:
           node-version: '22'
           cache: 'npm'
-          cache-dependency-path: voice-box/package-lock.json
+          cache-dependency-path: package-lock.json
 
       - name: Install dependencies
-        working-directory: voice-box
         run: npm ci
 
       - name: TypeScript type check
-        working-directory: voice-box
         run: npx tsc --noEmit
 
   # ── Unit Tests ────────────────────────────────────────────────
@@ -67,14 +63,12 @@ jobs:
         with:
           node-version: '22'
           cache: 'npm'
-          cache-dependency-path: voice-box/package-lock.json
+          cache-dependency-path: package-lock.json
 
       - name: Install dependencies
-        working-directory: voice-box
         run: npm ci
 
       - name: Run Vitest
-        working-directory: voice-box
         run: npx vitest run --reporter=verbose
         env:
           NODE_OPTIONS: '--max-old-space-size=4096'
@@ -84,7 +78,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: test-results
-          path: voice-box/test-results/
+          path: test-results/
 
   # ── Build ─────────────────────────────────────────────────────
   build:
@@ -98,18 +92,15 @@ jobs:
         with:
           node-version: '22'
           cache: 'npm'
-          cache-dependency-path: voice-box/package-lock.json
+          cache-dependency-path: package-lock.json
 
       - name: Install dependencies
-        working-directory: voice-box
         run: npm ci
 
       - name: Build production bundle
-        working-directory: voice-box
         run: npx vite build
 
       - name: Check bundle size
-        working-directory: voice-box
         run: |
           echo "=== Bundle Size ==="
           du -sh dist/
@@ -127,14 +118,12 @@ jobs:
         with:
           node-version: '22'
           cache: 'npm'
-          cache-dependency-path: voice-box/package-lock.json
+          cache-dependency-path: package-lock.json
 
       - name: Install dependencies
-        working-directory: voice-box
         run: npm ci
 
       - name: Run npm audit
-        working-directory: voice-box
         run: npm audit --audit-level=high
         continue-on-error: true
 
@@ -150,9 +139,9 @@ jobs:
           python-version: '3.12'
 
       - name: Install dependencies
-        working-directory: voice-box/services
+        working-directory: services
         run: pip install -e ".[test]" 2>/dev/null || pip install -r requirements.txt 2>/dev/null || true
 
       - name: Run pytest
-        working-directory: voice-box/services
+        working-directory: services
         run: python -m pytest tests/ -q --tb=short

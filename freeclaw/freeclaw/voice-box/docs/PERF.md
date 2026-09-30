@@ -14,7 +14,7 @@ ideas stay dead and wins carry their evidence. Measure → fix → re-measure.
 | Change | Evidence | Effect |
 |---|---|---|
 | Anonymous-feed `staleWhileRevalidate` (10s fresh / 60s stale, module-scope wrapper) | Guard test: **50 identical reads ⇒ 1 underlying fetch**; distinct keys fetch independently; stale served instantly + exactly one background refresh (`tests/api/posts-feed-perf.test.ts`) | ~100 visitors/min ⇒ ~6 posts scans/min instead of ≥100 scans (~60+ count queries) |
-| Write-path invalidation `cacheClear("^postsfeed")` on POST/PUT/DELETE of posts | Guard test: after clear, next feed performs a real read | Solved/hidden/new content appears immediately despite cache |
+| Write-path invalidation `feedSWR.invalidate()` on POST/PUT/DELETE of posts | Guard tests: `invalidate()` clears every key so the next read refetches (Layer 1); `_posts.js` static wiring asserts ≥3 calls; warm read skips the full-table scan (Layer 2) | Solved/hidden/new content appears immediately despite the 10s fresh / 60s stale window |
 | Search SWR cache (module-scope, 5s fresh / 30s stale, entry-cap eviction) | Guard test: **50 identical searches ⇒ 1 DB scan**; distinct queries fetch independently; stale served instantly (`tests/api/search-perf.test.ts`) | Search p50=5ms under load — zero re-scans for cached queries |
 | Per-user rate limiting (identity + IP composite key) | 300 concurrent unique identities: **300/300 pass**; IP-only: only 120/300 pass | Eliminates school-NAT lockdown — each user gets own rate bucket |
 | Rate limit: 30s block (down from 5 min) + O(1) timestamp pruning | Load test: blocked users recover in 30s vs 5 min | Faster recovery from legitimate burst traffic |
@@ -29,6 +29,7 @@ ideas stay dead and wins carry their evidence. Measure → fix → re-measure.
 | Positional call `staleWhileRevalidate("postsfeed", key, ttl…)` | **Route would have 500'd on every anonymous feed in production** while suites stayed green (Vitest bypass masked it) | Wrong signature for `_cache.js` API `(fn, {ttl,staleTtl,keyPrefix})`. Caught by the perf guard harness before deploy. Fixed to options-object form. |
 | Per-request SWR wrapper instance | Guard showed per-call scans `1,2,…10` (wrapper Map reset each request) | Wrapper must live at module scope; args are the cache key. Fixed. |
 | Route-level query-count assertions inside Vitest | Flaky in harness: dynamic-import graph can instantiate a fresh `_cache` per import, so counts lied about production | Counting moved to Layer-1 mechanism tests (deterministic); route layer asserts shape/status/invalidation instead. |
+| Write-path invalidation via `cacheClear("^postsfeed")` | **No-op**: `cacheClear` only touched the `cacheMem` store, not `staleWhileRevalidate`'s private `_swrCache` closure — new posts stayed hidden for the full 60s stale window. The old guard test passed for the wrong reason (it counted derived `posts` queries, not the feed scan). | Exposed `.invalidate()` on the SWR wrapper and call `feedSWR.invalidate()` at POST/PUT/DELETE. New Layer-1 tests pin the mechanism; the misleading route test was rewritten to assert the warm-read contract honestly. |
 
 ## Load Test Results (2026-08-26)
 

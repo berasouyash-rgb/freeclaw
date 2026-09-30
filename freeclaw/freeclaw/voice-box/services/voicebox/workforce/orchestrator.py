@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections import deque
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -70,12 +71,38 @@ class Orchestrator:
         self._task_queue: asyncio.Queue = asyncio.Queue(maxsize=100)
         self._running_tasks: dict[str, asyncio.Task] = {}
         self._completed_tasks: list[AgentTask] = []
+        # Ring buffer of task outcomes — backs GET /api/workforce/tasks.
+        self._recent: deque[dict[str, Any]] = deque(maxlen=100)
         self._stats = {
             "tasks_received": 0,
             "tasks_completed": 0,
             "tasks_failed": 0,
             "tasks_blocked": 0,
         }
+
+    def _record(self, task: AgentTask, result: dict[str, Any]) -> None:
+        """Append a task outcome to the recent-history ring buffer."""
+        self._recent.appendleft(
+            {
+                "task_id": task.id,
+                "title": task.title,
+                "source": task.source,
+                "priority": task.priority.value if hasattr(task.priority, "value") else str(task.priority),
+                "status": result.get("status", "unknown"),
+                "executor": result.get("executor"),
+                "reason": result.get("reason"),
+                "error": result.get("error"),
+                "duration_ms": result.get("duration_ms"),
+                "at": datetime.now(timezone.utc).isoformat(),
+            }
+        )
+
+    def get_recent_tasks(self, limit: int = 50, status: Optional[str] = None) -> list[dict[str, Any]]:
+        """Recent task outcomes, newest first, optionally filtered by status."""
+        items = list(self._recent)
+        if status:
+            items = [t for t in items if t.get("status") == status]
+        return items[: max(1, min(limit, 100))]
 
     async def submit_task(self, task: AgentTask) -> dict[str, Any]:
         """
@@ -99,24 +126,29 @@ class Orchestrator:
             logger.warning(
                 f"[Orchestrator] Task {task.id} BLOCKED: {decision.reason}"
             )
-            return {
+            result = {
                 "status": "blocked",
                 "task_id": task.id,
                 "reason": decision.reason,
                 "requires_approval": decision.requires_approval,
             }
+            self._record(task, result)
+            return result
 
         # 2. Find capable worker/agent
         executor_id = self._route_task(task)
         if not executor_id:
-            return {
+            result = {
                 "status": "no_executor",
                 "task_id": task.id,
                 "reason": f"No worker found for capability: {task.required_capability}",
             }
+            self._record(task, result)
+            return result
 
         # 3. Execute
         result = await self._execute_task(task, executor_id)
+        self._record(task, result)
 
         return result
 

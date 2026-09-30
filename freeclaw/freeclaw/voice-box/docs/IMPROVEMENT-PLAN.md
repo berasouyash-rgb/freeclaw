@@ -27,7 +27,7 @@ Goal: know how users feel before touching code. Anonymous school-feedback platfo
 ### 1.1 Gather feedback channels
 - [ ] **In-app sentiment probes:** add a lightweight, dismissible feedback CTA (thumbs/emoji + optional text)
       on feed, post detail, and submit success states → POST `/api/feedback` (new endpoint, rate-limited).
-- [ ] **Onboarding friction:** instrument the preloader ("Skip" usage rate) + first-submit drop-off funnel
+- [ ] **Onboarding friction:** first-submit drop-off funnel
       via existing `/api/users` heartbeat timestamps (last_seen deltas ≈ session length).
 - [ ] **Support signal:** mine `/api/chat` + `/api/reports` messages for repeated pain phrases
       (regex classifier: "can't submit", "error", "slow", "confusing", "blocked", "banned").
@@ -128,9 +128,7 @@ a11y touches components + styles; line reviewer works oldest→newest component 
 ### 5.1 Pass order (coverage-score informed, worst first)
 1. `src/components/ErrorBoundary.tsx` (40.8% cov) — crash-safety, retry semantics
 2. `src/pages/Submit.tsx` (~45%) — validation, upload, error states, disabled states
-3. `src/components/preloader/audio.ts` (26.7%) — audio lifecycle, cleanup, reduced-motion
-4. `src/components/preloader/scenes.tsx` (42.1%) — animation cleanup, a11y
-5. Remaining components by oldest-modified → newest.
+3. Remaining components by oldest-modified → newest.
 
 ### 5.2 Checklist per file
 - **Correctness:** state init vs sync (useEffect), stale closures, race guards, idempotency

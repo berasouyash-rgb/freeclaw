@@ -32,27 +32,17 @@ export default function AnimatedList({
   children,
   staggerDelay = 0.06,
   initialDelay = 0,
-  direction = "up",
-  distance = 20,
+  direction: _direction = "up",
+  distance: _distance = 20,
   className = "",
 }: AnimatedListProps) {
-  const getInitial = () => {
-    switch (direction) {
-      case "up": return { opacity: 0, y: distance };
-      case "down": return { opacity: 0, y: -distance };
-      case "left": return { opacity: 0, x: distance };
-      case "right": return { opacity: 0, x: -distance };
-    }
-  };
+  // Items fade in place. The `direction`/`distance` props are still accepted
+  // for API compatibility, but list items no longer travel across the
+  // viewport: a staggered slide makes a list feel slow and shifts layout
+  // while the user is already reading it.
+  const getInitial = () => ({ opacity: 0 });
 
-  const getAnimate = () => {
-    switch (direction) {
-      case "up":
-      case "down": return { opacity: 1, y: 0 };
-      case "left":
-      case "right": return { opacity: 1, x: 0 };
-    }
-  };
+  const getAnimate = () => ({ opacity: 1 });
 
   const items = Array.isArray(children) ? children : [children];
 
@@ -65,9 +55,8 @@ export default function AnimatedList({
           animate={getAnimate()}
           transition={{
             delay: initialDelay + i * staggerDelay,
-            type: "spring",
-            stiffness: 300,
-            damping: 24,
+            duration: 0.12,
+            ease: "linear",
           }}
         >
           {child}

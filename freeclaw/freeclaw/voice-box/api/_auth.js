@@ -1,5 +1,8 @@
 // Shared helpers for Voice Box API routes (underscore prefix = not exposed as a route)
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import supabase from "./_db-client.js";
+import { recordPendingDelivery } from "./_notification-delivery.js";
+import { PROFANITY, SLANG } from "./_wordlists.js";
 
 // ─── isAdmin() cache: avoid DB query on every request ─────────────
 const _adminTokenCache = new Map(); // token → { valid: boolean, expiresAt: number }
@@ -10,11 +13,17 @@ const ADMIN_CACHE_MAX_ENTRIES = 1000;
 
 function cacheAdminToken(token, valid, now) {
 	if (_adminTokenCache.size >= ADMIN_CACHE_MAX_ENTRIES) {
+		// Drop expired entries first to reclaim space.
 		for (const [k, v] of _adminTokenCache) {
-			// Drop expired first; if none expired, evict oldest insertion.
 			if (v.expiresAt <= now) _adminTokenCache.delete(k);
-			else if (_adminTokenCache.size >= ADMIN_CACHE_MAX_ENTRIES)
-				break;
+		}
+		// If still full (no expired entries), evict oldest insertions
+		// until there is room. Map preserves insertion order, so the
+		// first key is always the oldest.
+		while (_adminTokenCache.size >= ADMIN_CACHE_MAX_ENTRIES) {
+			const oldest = _adminTokenCache.keys().next();
+			if (oldest.done) break;
+			_adminTokenCache.delete(oldest.value);
 		}
 	}
 	_adminTokenCache.set(token, { valid, expiresAt: now + ADMIN_CACHE_TTL_MS });
@@ -40,10 +49,9 @@ const ALLOWED_ORIGINS = [
 
 export function cors(res, req) {
 	const origin = req?.headers?.origin || "";
-	const allowed = ALLOWED_ORIGINS.includes(origin)
-		? origin
-		: ALLOWED_ORIGINS[0];
-	res.setHeader("Access-Control-Allow-Origin", allowed);
+	if (origin && ALLOWED_ORIGINS.includes(origin)) {
+		res.setHeader("Access-Control-Allow-Origin", origin);
+	}
 	res.setHeader(
 		"Access-Control-Allow-Methods",
 		"GET, POST, PUT, DELETE, OPTIONS",
@@ -84,6 +92,45 @@ export async function isAdmin(req) {
 	cacheAdminToken(token, valid, now);
 	return valid;
 }
+
+/**
+ * Authorize a SCHEDULED/CRON invocation.
+ *
+ * Shared so every cron route enforces the SAME rule instead of some
+ * copying it and some (incident-cron) forgetting entirely. Accepts, in
+ * order: a constant-time-verified `CRON_SECRET` (Vercel sends it as
+ * `Authorization: Bearer <CRON_SECRET>`; x-vercel-cron-secret and
+ * x-cron-secret are also accepted for other schedulers), then a real
+ * admin session.
+ *
+ * Header PRESENCE is never authentication — the value is compared
+ * constant-time against the server-side secret.
+ */
+export async function isCronAuthorized(req) {
+	let authorized = false;
+	const authHeader = String(req?.headers?.["authorization"] || "");
+	const bearerToken = authHeader.startsWith("Bearer ")
+		? authHeader.slice(7)
+		: null;
+	const presented =
+		req?.headers?.["x-vercel-cron-secret"] ||
+		req?.headers?.["x-cron-secret"] ||
+		bearerToken;
+	const expected = process.env.CRON_SECRET;
+	if (presented && expected) {
+		const a = Buffer.from(String(presented));
+		const b = Buffer.from(String(expected));
+		authorized = a.length === b.length && timingSafeEqual(a, b);
+	}
+	if (!authorized) authorized = await isAdmin(req);
+	return authorized;
+}
+
+/** Standard 401 body for a cron route that failed {@link isCronAuthorized}. */
+export const CRON_UNAUTHORIZED_BODY = {
+	error:
+		"Unauthorized - requires valid Authorization: Bearer CRON_SECRET, x-vercel-cron-secret, or x-admin-token",
+};
 
 /** Check whether an anonymous user is allowed to write (not banned / suspended) */
 export async function checkUser(authorId) {
@@ -136,25 +183,28 @@ export async function ensureUser(authorId) {
 /** Push an in-app notification to a user (same store the _notifications.js API reads).
  *  Used by the report auto-strike path, admin user actions, and pre-publish review
  *  so warnings/ban/strike popups reach the user immediately, not on the next
- *  heartbeat. Single canonical copy — do not re-implement per-file. */
+ *  heartbeat. Single canonical copy — do not re-implement per-file.
+ *  Returns true on success, false when the notification could not be stored. */
+export let notifyFailedCount = 0;
 export async function notifyUser(anonId, type, title, body) {
-	if (!anonId || anonId === "anonymous" || anonId === "ADMIN") return;
-	try {
-		const key = `notifications:${anonId}`;
+	if (!anonId || anonId === "anonymous" || anonId === "ADMIN") return true;
+	const key = `notifications:${anonId}`;
+	const entry = {
+		id: `notif_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
+		type,
+		title,
+		body,
+		read: false,
+		created_at: new Date().toISOString(),
+	};
+	async function storeOnce() {
 		const { data } = await supabase
 			.from("settings")
 			.select("value")
 			.eq("key", key)
 			.maybeSingle();
 		const notifications = data?.value?.notifications || [];
-		notifications.unshift({
-			id: `notif_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
-			type,
-			title,
-			body,
-			read: false,
-			created_at: new Date().toISOString(),
-		});
+		notifications.unshift(entry);
 		await supabase
 			.from("settings")
 			.upsert(
@@ -167,19 +217,44 @@ export async function notifyUser(anonId, type, title, body) {
 				},
 				{ onConflict: "key" },
 			);
+	}
+	try {
+		await storeOnce();
+		return true;
 	} catch (e) {
-		console.error("notifyUser error:", e.message);
+		notifyFailedCount += 1;
+		console.error("[auth] notifyUser failed", { anonId, type, error: e?.message || String(e) });
+		// One immediate retry of the FULL read+append flow for transient blips.
+		// Never blind-overwrite with a single-item array — that would drop history.
+		try {
+			await storeOnce();
+			return true;
+		} catch (e2) {
+			console.error("[auth] notifyUser retry failed", { anonId, type, error: e2?.message || String(e2) });
+			// Both immediate attempts failed. Hand the delivery to the bounded,
+			// independently-verified retry ledger instead of dropping it. Best
+			// effort: if the DB is fully down this write fails too, which is
+			// honest — nothing is recorded that did not actually happen.
+			await recordPendingDelivery(anonId, entry, "notifyUser_write_failed").catch(
+				() => {},
+			);
+			return false;
+		}
 	}
 }
 
-/** Append to the audit / activity log */
+/** Append to the audit / activity log. Returns true on success. */
+export let auditFailedCount = 0;
 export async function auditLog(actor, action, detail) {
 	try {
 		await supabase
 			.from("activity_logs")
 			.insert({ actor, action, detail: String(detail || "").slice(0, 500) });
-	} catch {
-		/* non-fatal */
+		return true;
+	} catch (err) {
+		auditFailedCount += 1;
+		console.error("[auth] auditLog failed", { actor, action, error: err?.message || String(err) });
+		return false;
 	}
 }
 
@@ -192,51 +267,8 @@ export function clean(str, max = 2000) {
 		.slice(0, max);
 }
 
-const PROFANITY = [
-	"fuck",
-	"fucking",
-	"fucked",
-	"fucker",
-	"fucks",
-	"motherfucker",
-	"shit",
-	"shitting",
-	"shitty",
-	"bullshit",
-	"dipshit",
-	"bitch",
-	"bitches",
-	"bitchy",
-	"asshole",
-	"assholes",
-	"arsehole",
-	"bastard",
-	"bastards",
-	"cunt",
-	"cunts",
-	"twat",
-	"dick",
-	"dicks",
-	"dickhead",
-	"dickheads",
-	"slut",
-	"sluts",
-	"whore",
-	"whores",
-	"cock",
-	"cocks",
-	"prick",
-	"pussy",
-	"pussies",
-	"wanker",
-	"wankers",
-	"tosser",
-	"tossers",
-	"retard",
-	"retarded",
-	"retards",
-	"bollocks",
-];
+// Re-exported so existing importers keep working; canonical home is _wordlists.js.
+export { PROFANITY, SLANG };
 
 const SLURS = [
 	"nigger",
@@ -355,6 +387,54 @@ export function moderateContent(text) {
 		}
 	}
 
+	// Slang/insult abuse — still masked by maskProfanity wherever masking
+	// applies (private surfaces, legacy rows, LLM redaction). Public
+	// write surfaces block it outright via serverModerate instead.
+	for (const w of SLANG) {
+		const regex = new RegExp(`\\b${w}\\b`, "gi");
+		if (regex.test(masked)) {
+			flags.push({ category: "slang", word: w, severity: "medium" });
+			masked = masked.replace(regex, (m) => m[0] + "*".repeat(m.length - 1));
+		}
+	}
+
+	// Leet/obfuscation evasion (sh1t, b!tch, a$$, 5lut…) — normalize each token's
+	// common substitutions, then re-test the profanity + slur lists token by
+	// token. A hit means deliberate evasion, so it masks at the same severity
+	// as the base word — and only the offending token is masked.
+	const leetNorm = (tok) =>
+		tok
+			.toLowerCase()
+			.replace(/1/g, "i")
+			.replace(/3/g, "e")
+			.replace(/4/g, "a")
+			.replace(/5/g, "s")
+			.replace(/0/g, "o")
+			.replace(/\$/g, "s")
+			.replace(/@/g, "a")
+			.replace(/!/g, "i")
+			.replace(/\+/g, "t")
+			.replace(/7/g, "t");
+	const profSet = new Set(PROFANITY.map((w) => w.toLowerCase()));
+	const slurSet = new Set(SLURS.map((w) => w.toLowerCase()));
+	masked = masked
+		.split(/(\s+)/)
+		.map((tok) => {
+			if (/^\s+$/.test(tok)) return tok;
+			const norm = leetNorm(tok.replace(/^[^a-z0-9$@!+]+|[^a-z0-9$@!+]+$/gi, ""));
+			if (!norm || norm === tok.toLowerCase()) return tok;
+			if (slurSet.has(norm)) {
+				flags.push({ category: "hate_speech", word: `${norm} (obfuscated)`, severity: "critical" });
+				return tok[0] + "*".repeat(Math.max(tok.length - 1, 1));
+			}
+			if (profSet.has(norm)) {
+				flags.push({ category: "profanity", word: `${norm} (obfuscated)`, severity: "high" });
+				return tok[0] + "*".repeat(Math.max(tok.length - 1, 1));
+			}
+			return tok;
+		})
+		.join("");
+
 	// Dangerous content (self-harm, violence, threats, weapons, drugs, blackmail, doxxing)
 	for (const { pattern, severity } of DANGEROUS) {
 		if (pattern.test(masked)) {
@@ -436,30 +516,215 @@ export async function rateLimited(table, authorId, seconds, limit) {
 }
 
 // ─── Session-based caller verification ──────────────────────────
-// P0 SECURITY FIX: Never trust client-supplied user_id/author_id alone.
-// Verify that the x-anon-id header matches the claimed identity.
-// Admin callers are always allowed (they act on behalf of the system).
+// AUDIT FIX #1: DB-backed HttpOnly cookie session.
+//
+// The x-anon-id header is the claimed-id SOURCE, never proof of
+// possession — anyone can read someone's id off a shared screen. Proof
+// is the vb_session cookie: a 32-byte random token whose sha256 hash is
+// stored server-side (settings KV `session:<id>`), so the token itself
+// never touches the database.
+//
 // Returns { ok: true, callerId } or { ok: false, status, error }.
-export async function verifyCallerIdentity(req, claimedUserId, opts = {}) {
+const SESSION_COOKIE = "vb_session";
+const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
+// First-visit self-heal window: two concurrent requests can both take the
+// "no record" mint path; the loser's cookie mismatches the stored hash.
+// Rotating inside this window keeps that client usable instead of locking
+// it out permanently. created_at is NOT extended by rotation, so the
+// window cannot be stretched.
+const SESSION_MINT_GRACE_MS = 60_000;
+
+function sha256Hex(value) {
+	return createHash("sha256").update(value).digest("hex");
+}
+
+/** Timing-safe comparison of two hex/ascii digests of equal length. */
+function safeStringEqual(a, b) {
+	const bufA = Buffer.from(String(a));
+	const bufB = Buffer.from(String(b));
+	if (bufA.length !== bufB.length || bufA.length === 0) return false;
+	return timingSafeEqual(bufA, bufB);
+}
+
+function readSessionCookie(cookieHeader) {
+	if (!cookieHeader || typeof cookieHeader !== "string") return null;
+	for (const part of cookieHeader.split(";")) {
+		const eq = part.indexOf("=");
+		if (eq === -1) continue;
+		if (part.slice(0, eq).trim() !== SESSION_COOKIE) continue;
+		const raw = part.slice(eq + 1).trim();
+		try {
+			return decodeURIComponent(raw);
+		} catch {
+			return raw;
+		}
+	}
+	return null;
+}
+
+/** Set the session cookie. Secure only when the request arrived over HTTPS. */
+function setSessionCookie(res, token, req) {
+	const maxAge = Math.floor(SESSION_TTL_MS / 1000);
+	const proto = String(req?.headers?.["x-forwarded-proto"] || "").toLowerCase();
+	const attrs = [
+		`${SESSION_COOKIE}=${token}`,
+		"HttpOnly",
+		"Path=/",
+		"SameSite=Lax",
+		`Max-Age=${maxAge}`,
+	];
+	if (proto === "https") attrs.push("Secure");
+	res.setHeader("Set-Cookie", attrs.join("; "));
+}
+
+function sessionKey(id) {
+	return `session:${id}`;
+}
+
+async function loadSessionRecord(id) {
+	const { data, error } = await supabase
+		.from("settings")
+		.select("value")
+		.eq("key", sessionKey(id))
+		.maybeSingle();
+	if (error) throw new Error(error.message || "session lookup failed");
+	return data?.value || null;
+}
+
+async function saveSessionRecord(id, record) {
+	const { error } = await supabase
+		.from("settings")
+		.upsert({ key: sessionKey(id), value: record }, { onConflict: "key" });
+	if (error) throw new Error(error.message || "session write failed");
+}
+
+/** Mint a fresh token, persist its hash, hand the cookie to the client. */
+async function mintSession(res, req, id, now, createdAt) {
+	const token = randomBytes(32).toString("hex");
+	await saveSessionRecord(id, {
+		th: sha256Hex(token),
+		exp: now + SESSION_TTL_MS,
+		created_at: createdAt || new Date(now).toISOString(),
+	});
+	setSessionCookie(res, token, req);
+	return token;
+}
+
+export async function verifyCallerIdentity(req, res, claimedUserId, opts = {}) {
 	// Admins bypass caller verification — they act on behalf of the system
 	if (await isAdmin(req)) return { ok: true, callerId: claimedUserId };
 
 	const headerId = (req.headers["x-anon-id"] || "").toString().trim().toLowerCase();
 	const id = String(claimedUserId || "").trim().toLowerCase();
 
-	// No header sent → cannot verify → deny
-	if (!headerId)
-		return { ok: false, status: 403, error: "Missing session identity (x-anon-id header)" };
+	// Header missing or malformed → cannot even identify the caller → deny
+	if (!headerId || !validAnonId(headerId))
+		return { ok: false, status: 403, error: "Invalid session identity", code: "invalid_identity" };
 
-	// Header must match claimed user_id
+	// Header must match the claimed user_id (cheap pre-check; the cookie
+	// below is what actually proves possession of this identity)
 	if (headerId !== id)
-		return { ok: false, status: 403, error: "Cannot operate on another user's data" };
+		return { ok: false, status: 403, error: "Cannot operate on another user's data", code: "invalid_identity" };
 
-	// Validate the anon_id format
-	if (!validAnonId(headerId))
-		return { ok: false, status: 403, error: "Invalid session identity" };
+	const now = Date.now();
+	const cookieToken = readSessionCookie(req.headers?.cookie);
 
-	return { ok: true, callerId: headerId };
+	let record;
+	try {
+		record = await loadSessionRecord(id);
+	} catch (err) {
+		console.error("[auth] session lookup failed:", err?.message || err);
+		return { ok: false, status: 503, error: "Session service unavailable" };
+	}
+
+	const recordExpired =
+		!record || !record.exp || Number(record.exp) <= now;
+
+	// No record, or the stored session has passed its 30-day TTL with no
+	// cookie presented to refresh it → (re)establish a session. This is
+	// also the first-visit path after deploy.
+	if (recordExpired && !cookieToken) {
+		try {
+			await mintSession(res, req, id, now, record?.created_at);
+			return { ok: true, callerId: id };
+		} catch (err) {
+			console.error("[auth] session mint failed:", err?.message || err);
+			return { ok: false, status: 503, error: "Session service unavailable" };
+		}
+	}
+
+	// Record exists and is live, but no cookie was presented. Normally the
+	// caller knows the (disclosed) id without holding the session token →
+	// deny. Exception: a record minted seconds ago whose Set-Cookie is still
+	// in flight — parallel first-load requests (heartbeat + notifications
+	// fired together) otherwise 403 spuriously before the browser stores
+	// the cookie. The window is 20s from first mint; created_at is preserved
+	// across refreshes, so established records never qualify and stolen-ID
+	// denial stays intact.
+	if (!cookieToken) {
+		const bornAt = Date.parse(record?.created_at || "") || 0;
+		if (bornAt > 0 && now - bornAt <= 20_000)
+			return { ok: true, callerId: id };
+		return { ok: false, status: 403, error: "Invalid session identity", code: "session_unrecoverable" };
+	}
+
+	const presentedHash = sha256Hex(cookieToken);
+	if (record?.th && safeStringEqual(presentedHash, record.th)) {
+		// Valid session. Slide the expiry if it lapsed, re-issuing the
+		// cookie so browser Max-Age and server TTL stay in step.
+		if (recordExpired) {
+			try {
+				await saveSessionRecord(id, {
+					...record,
+					exp: now + SESSION_TTL_MS,
+				});
+				setSessionCookie(res, cookieToken, req);
+			} catch (err) {
+				console.error("[auth] session refresh failed:", err?.message || err);
+				return { ok: false, status: 503, error: "Session service unavailable" };
+			}
+		}
+		return { ok: true, callerId: id };
+	}
+
+	// Hash mismatch. Inside the mint grace window this is the losing side
+	// of a concurrent first-visit mint — rotate to the record's current
+	// value and keep the original created_at so the window stays fixed.
+	const createdAt = Date.parse(record?.created_at || "") || now;
+	if (record && now - createdAt < SESSION_MINT_GRACE_MS) {
+		try {
+			const token = randomBytes(32).toString("hex");
+			await saveSessionRecord(id, {
+				...record,
+				th: sha256Hex(token),
+				exp: now + SESSION_TTL_MS,
+			});
+			setSessionCookie(res, token, req);
+			return { ok: true, callerId: id };
+		} catch (err) {
+			console.error("[auth] session rotate failed:", err?.message || err);
+			return { ok: false, status: 503, error: "Session service unavailable" };
+		}
+	}
+
+	return { ok: false, status: 403, error: "Invalid session identity", code: "session_unrecoverable" };
+}
+
+/**
+ * Client IP for rate-limit keys (#11): x-real-ip when a proxy sets it,
+ * otherwise the RIGHTMOST X-Forwarded-For hop (appended by the nearest
+ * trusted proxy — the leftmost hops are client-controlled and spoofable),
+ * otherwise the direct socket address. Never the raw header verbatim.
+ */
+export function clientIp(req) {
+	const real = String(req?.headers?.["x-real-ip"] || "").trim();
+	if (real) return real;
+	const xff = String(req?.headers?.["x-forwarded-for"] || "").trim();
+	if (xff) {
+		const hops = xff.split(",").map((h) => h.trim()).filter(Boolean);
+		if (hops.length) return hops[hops.length - 1];
+	}
+	return req?.socket?.remoteAddress || "unknown";
 }
 
 // Shared anon_id format validation (matches checkUser + users_meta)

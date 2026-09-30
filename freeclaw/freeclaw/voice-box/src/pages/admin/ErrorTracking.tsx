@@ -17,8 +17,7 @@ import {
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useApp } from "../../contexts/AppContext";
 import { api } from "../../lib/api";
-import { useRealtime } from "../../lib/useRealtime";
-import { safeStringify, timeAgo } from "../../lib/utils";
+import { safeStringify, errorText, timeAgo } from "../../lib/utils";
 
 interface HealthCheck {
 	status: string;
@@ -145,8 +144,6 @@ export default function ErrorTracking() {
 
 	useEffect(() => {
 		loadFeErrors();
-		const iv = setInterval(loadFeErrors, 30000);
-		return () => clearInterval(iv);
 	}, [loadFeErrors]);
 
 	const loadHealth = useCallback(async (fresh = false) => {
@@ -200,17 +197,22 @@ export default function ErrorTracking() {
 		loadErrors();
 	}, [loadHealth, loadChunks, loadErrors]);
 
-	// 🔴 Live: error/audit events and agent failures refresh automatically (fresh, no cache)
-	useRealtime(
-		["activity_logs", "agent_executions"],
-		() => loadErrors(true),
-		1500,
-	);
+	// Refresh is explicit through the visible "Refresh all" and section
+	// controls; passive error/audit events do not reorder this page.
 
 	const sendTestError = () => {
 		const err = new Error(
 			"Admin-triggered test error from Voice Box Error Tracking",
 		);
+		// captureException() is a silent no-op when Sentry has no DSN —
+		// claiming success then would be a lie. Verify configuration first.
+		const dsn = Sentry.getClient?.()?.getOptions?.()?.dsn;
+		if (!dsn) {
+			const msg = "Sentry DSN is not configured — nothing was sent.";
+			setLastSent({ ok: false, at: new Date().toISOString(), msg });
+			toast(msg, "err");
+			return;
+		}
 		try {
 			Sentry.captureException(err);
 			setLastSent({
@@ -227,7 +229,7 @@ export default function ErrorTracking() {
 			setLastSent({
 				ok: false,
 				at: new Date().toISOString(),
-				msg: `Sentry capture failed: ${e instanceof Error ? e.message : "unknown error"}`,
+				msg: `Sentry capture failed: ${errorText(e) || "no details — check the DSN"}`,
 			});
 			toast("Sentry capture failed — check the DSN", "err");
 		}
@@ -283,8 +285,8 @@ export default function ErrorTracking() {
 						<Bug size={18} className="text-bad" />
 					</div>
 					<div>
-						<h1 className="font-display font-bold text-xl flex items-center gap-2">
-							Error Tracking{" "}
+						<h1 className="font-display font-bold text-xl flex items-center gap-2 tracking-tight">
+							<span className="vb-gradient-text">Error Tracking</span>{" "}
 							<span className="chip !text-[9px] !text-accent !border-accent/30">
 								Sentry + Health
 							</span>
@@ -323,7 +325,7 @@ export default function ErrorTracking() {
 			</div>
 
 			{/* Sentry status */}
-			<div className="grid md:grid-cols-3 gap-3">
+			<div className="grid grid-cols-1 md:grid-cols-3 gap-3">
 				<div className="card p-5 vb-rise">
 					<div className="flex items-center justify-between mb-3">
 						<p className="font-display font-semibold text-sm flex items-center gap-2">
@@ -459,7 +461,7 @@ export default function ErrorTracking() {
 			</div>
 
 			{/* System memory / runtime */}
-			<div className="grid lg:grid-cols-2 gap-3">
+			<div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
 				<div className="card p-5">
 					<h2 className="font-display font-semibold text-sm mb-3 flex items-center gap-2">
 						<Cpu size={14} className="text-accent" /> Runtime (server instance)
@@ -654,7 +656,7 @@ export default function ErrorTracking() {
 									</div>
 									<div className="text-right shrink-0">
 										<p className="text-[9px] text-ink3">
-											{Object.entries(e.devices)
+											{Object.entries(e.devices || {})
 												.map(([d, c]) => `${d}:${c}`)
 												.join(" · ")}
 										</p>

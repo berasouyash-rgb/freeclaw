@@ -69,6 +69,17 @@ describe("offline queue", () => {
 		expect(fetchMock).not.toHaveBeenCalled();
 	});
 
+	it("does not replay a write queued for a different anonymous identity", async () => {
+		localStorage.setItem("vb:anonId", "anon_first");
+		queueAction("POST", "/api/posts", { title: "belongs to first identity" });
+		localStorage.setItem("vb:anonId", "anon_second");
+		fetchMock.mockResolvedValue(okResponse({}));
+
+		await expect(flushQueue()).resolves.toBe(0);
+		expect(fetchMock).not.toHaveBeenCalled();
+		expect(queuedCount()).toBe(0);
+	});
+
 	it("flushQueue replays successful writes and clears the queue", async () => {
 		queueAction("POST", "/api/posts", { title: "x" });
 		queueAction("DELETE", "/api/posts/1", null);

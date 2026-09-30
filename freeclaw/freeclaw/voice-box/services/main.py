@@ -8,13 +8,15 @@ Exposes the workforce runtime as a REST API for:
 - Agent monitoring
 - Observability metrics
 """
-
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import hmac
 import logging
 import os
 import time
+from collections import deque
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Optional
@@ -36,7 +38,6 @@ from voicebox.workforce.workers import ALL_WORKERS, WORKER_MAP
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ─── Lifespan ───────────────────────────────────────────────────────
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -57,9 +58,9 @@ async def lifespan(app: FastAPI):
     logger.info(f"[Workforce] {len(tools._tools)} tools registered (including write tools)")
 
     # Wire event bus → SSE push (so SSE subscribers get live events)
-    _original_emit = bus.emit
-    async def _emit_with_sse(event_type: str, data=None, source="system"):
-        result = await _original_emit(event_type, data, source)
+    # Use a subscription hook instead of monkey-patching bus.emit — cleaner,
+    # type-safe, and survives future refactors to the bus API.
+    async def _sse_hook(event_type: str, data=None, source="system"):
         try:
             await push_sse_event({
                 "event_type": event_type,
@@ -67,9 +68,17 @@ async def lifespan(app: FastAPI):
                 "source": source,
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             })
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"[SSE] push failed for {event_type}: {e}")
+
+    bus._sse_hook = _sse_hook
+    _original_emit = bus.emit
+
+    async def _emit_with_sse(event_type: str, data=None, source="system"):
+        result = await _original_emit(event_type, data, source)
+        await bus._sse_hook(event_type, data, source)
         return result
+
     bus.emit = _emit_with_sse  # type: ignore
 
     # Subscribe event consumer for automatic task dispatch
@@ -83,13 +92,11 @@ async def lifespan(app: FastAPI):
     import voicebox.workforce.main_patrol as patrol_mod
     patrol_task = asyncio.create_task(patrol_mod.run_patrol_loop())
 
-    # Emit startup event
     await bus.emit("SERVICE_RECOVERED", {"service": "workforce_runtime"}, source="system")
-
     logger.info("[Workforce] Runtime ready — event consumer + patrol active")
+
     yield
 
-    # Shutdown
     patrol_task.cancel()
     try:
         await patrol_task
@@ -100,8 +107,6 @@ async def lifespan(app: FastAPI):
     logger.info("[Workforce] Shutdown complete")
 
 
-# ─── App ────────────────────────────────────────────────────────────
-
 app = FastAPI(
     title="Voice Box AI Workforce",
     description="Production-grade autonomous AI operations workforce",
@@ -109,13 +114,63 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+allowed_origins_env = os.getenv("ALLOWED_ORIGINS", "")
+if allowed_origins_env.strip():
+    allowed_origins = [o.strip() for o in allowed_origins_env.split(",") if o.strip()]
+else:
+    allowed_origins = [
+        "https://voice-box-psi.vercel.app",
+        "https://voice-box-ballyvisiontutorial-hues-projects.vercel.app",
+        "http://localhost:5173",
+        "http://localhost:4173",
+        "http://localhost:3000",
+    ]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=allowed_origins,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization", "X-Admin-Token", "X-Anon-Id"],
 )
+
+
+# ─── Admin-token auth middleware (AUDIT FIX #4) ─────────────────────
+# Registered AFTER CORS add_middleware so it wraps it (outermost): every
+# request must present X-Admin-Token (or Authorization: Bearer <token>)
+# matching the ADMIN_TOKEN env var. Fail-closed — if ADMIN_TOKEN is unset
+# the whole API rejects non-exempt traffic instead of running open.
+# Exemptions: CORS preflight (OPTIONS) and /health (container healthchecks
+# run unauthenticated from inside the network).
+_EXEMPT_PATHS = {"/health"}
+
+
+@app.middleware("http")
+async def _require_admin_token(request, call_next):
+    if request.method == "OPTIONS" or request.url.path in _EXEMPT_PATHS:
+        return await call_next(request)
+
+    expected = os.getenv("ADMIN_TOKEN", "")
+    if not expected:
+        return JSONResponse(
+            {"detail": "ADMIN_TOKEN not configured — refusing all requests"},
+            status_code=503,
+        )
+
+    presented = request.headers.get("X-Admin-Token", "")
+    if not presented:
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.lower().startswith("bearer "):
+            presented = auth_header[7:].strip()
+
+    # Compare sha256 digests with hmac.compare_digest: constant-time even
+    # when the presented token has a different length than the expected one.
+    expected_digest = hashlib.sha256(expected.encode("utf-8")).digest()
+    presented_digest = hashlib.sha256(presented.encode("utf-8")).digest()
+    if not hmac.compare_digest(expected_digest, presented_digest):
+        return JSONResponse({"detail": "Not authenticated"}, status_code=401)
+
+    return await call_next(request)
 
 
 # ─── Request/Response Models ────────────────────────────────────────
@@ -127,7 +182,7 @@ class EmitEventRequest(BaseModel):
 
 
 class SubmitTaskRequest(BaseModel):
-    title: str
+    title: str = ""
     description: str = ""
     source: str = "api"
     priority: str = "medium"
@@ -143,14 +198,71 @@ class PolicyOverrideRequest(BaseModel):
     reason: str = ""
 
 
-# ─── Health ─────────────────────────────────────────────────────────
+class FabricRunRequest(BaseModel):
+    input: str
+    task_title: str = "fabric-run"
+    system_instruction: Optional[str] = None
+    timeout_seconds: int = 120
+    max_turns: int = 3
+
+
+_SERVICES_ROOT = os.path.dirname(os.path.abspath(__file__))
+
+
+@app.get("/api/workforce/fabric/status")
+async def fabric_status():
+    """NeMo Fabric readiness: adapter plan + doctor checks (honest 503 when unavailable)."""
+    from voicebox.fabric_bridge import (
+        FabricUnavailable,
+        VoiceBoxFabricJob,
+        check_job,
+    )
+
+    try:
+        return await check_job(
+            VoiceBoxFabricJob(name="voicebox-status-probe"), _SERVICES_ROOT
+        )
+    except FabricUnavailable as e:
+        raise HTTPException(status_code=503, detail=str(e))
+
+
+@app.post("/api/workforce/fabric/run")
+async def fabric_run(req: FabricRunRequest):
+    """Run one real agent invocation through NeMo Fabric (NVIDIA NIM).
+
+    Single-invocation lifecycle, normalized result. No retries here.
+    503 when nemo-fabric is not installed; 502 on lifecycle failure.
+    """
+    from voicebox.fabric_bridge import (
+        FabricUnavailable,
+        VoiceBoxFabricJob,
+        run_agent,
+    )
+
+    job = VoiceBoxFabricJob(
+        name=req.task_title[:80] or "fabric-run",
+        system_instruction=req.system_instruction,
+        timeout_seconds=max(10, min(req.timeout_seconds, 600)),
+        max_turns=max(1, min(req.max_turns, 10)),
+    )
+    try:
+        out = await run_agent(job, req.input, _SERVICES_ROOT)
+    except FabricUnavailable as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except Exception as e:
+        # FabricError subclasses (lifecycle failures) land here as 502;
+        # normalized harness failures arrive as status != succeeded in body.
+        name = type(e).__name__
+        if "Fabric" in name:
+            raise HTTPException(status_code=502, detail=f"{name}: {e}")
+        raise
+    return out
+
 
 @app.get("/health")
 async def health():
     return {"status": "ok", "service": "voicebox-workforce", "timestamp": datetime.now(timezone.utc).isoformat()}
 
-
-# ─── Workforce Overview ─────────────────────────────────────────────
 
 @app.get("/api/workforce/overview")
 async def workforce_overview():
@@ -187,13 +299,8 @@ async def workforce_overview():
     }
 
 
-# ─── Events ─────────────────────────────────────────────────────────
-
 @app.get("/api/workforce/events")
-async def list_events(
-    limit: int = Query(50, ge=1, le=200),
-    event_type: Optional[str] = None,
-):
+async def list_events(limit: int = Query(50, ge=1, le=200), event_type: Optional[str] = None):
     """Get recent events."""
     bus = get_event_bus()
     events = await bus.get_recent_events(limit, event_type)
@@ -204,11 +311,9 @@ async def list_events(
 async def emit_event(req: EmitEventRequest):
     """Emit an event into the workforce."""
     if req.event_type not in EVENT_TYPES:
-        raise HTTPException(400, f"Invalid event type. Valid: {EVENT_TYPES}")
-
+        raise HTTPException(status_code=400, detail=f"Invalid event type. Valid: {EVENT_TYPES}")
     bus = get_event_bus()
     await bus.emit(req.event_type, req.data, req.source)
-
     return {"status": "emitted", "event_type": req.event_type}
 
 
@@ -223,61 +328,57 @@ async def list_event_types():
     return {"types": types, "total": len(types)}
 
 
-# ─── Tasks ──────────────────────────────────────────────────────────
-
 @app.post("/api/workforce/tasks")
 async def submit_task(req: SubmitTaskRequest):
     """Submit a task to the workforce."""
+    try:
+        priority = TaskPriority(req.priority)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Invalid priority: {req.priority}")
+    try:
+        risk_level = RiskLevel(req.risk_level)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Invalid risk_level: {req.risk_level}")
     task = AgentTask(
         title=req.title,
         description=req.description,
         source=req.source,
-        priority=TaskPriority(req.priority),
-        risk_level=RiskLevel(req.risk_level),
+        priority=priority,
+        risk_level=risk_level,
         required_capability=req.required_capability,
         input_data=req.input_data,
     )
-
     orchestrator = get_orchestrator()
     result = await orchestrator.submit_task(task)
-
     return result
 
 
 @app.get("/api/workforce/tasks")
-async def list_tasks(
-    status: Optional[str] = None,
-    limit: int = Query(50, ge=1, le=200),
-):
-    """List recent tasks."""
-    # For now, return from orchestrator stats
+async def list_tasks(status: Optional[str] = None, limit: int = Query(50, ge=1, le=200)):
+    """List recent task outcomes (newest first), optionally filtered by status."""
     orchestrator = get_orchestrator()
-    return {
-        "tasks": [],
-        "stats": orchestrator.get_stats(),
-    }
+    tasks = orchestrator.get_recent_tasks(limit=limit, status=status)
+    return {"tasks": tasks, "count": len(tasks), "stats": orchestrator.get_stats()}
 
-
-# ─── Agents ─────────────────────────────────────────────────────────
 
 @app.get("/api/workforce/agents")
 async def list_agents():
     """List all 100 registered agents with their real definitions."""
     agents = []
-    for a in ALL_AGENTS:
+    for agent in ALL_AGENTS:
         agents.append({
-            "id": a.agent_id,
-            "name": a.name,
-            "domain": a.domain,
-            "type": a.agent_type,
-            "purpose": a.purpose,
-            "tools": list(a.tools),
-            "events": list(a.events),
+            "id": agent.agent_id,
+            "name": agent.name,
+            "domain": agent.domain,
+            "type": agent.agent_type,
+            "purpose": agent.purpose,
+            "tools": list(agent.tools),
+            "events": list(agent.events),
             "status": "active",
-            "version": a.version,
-            "max_runs_per_hour": a.max_runs_per_hour,
-            "confidence_threshold": a.confidence_threshold,
-            "verification_method": a.verification_method,
+            "version": agent.version,
+            "max_runs_per_hour": agent.max_runs_per_hour,
+            "confidence_threshold": agent.confidence_threshold,
+            "verification_method": agent.verification_method,
         })
     return {"agents": agents, "total": len(agents)}
 
@@ -287,7 +388,7 @@ async def get_agent(agent_id: str):
     """Get detailed information about a specific agent."""
     agent = AGENT_MAP.get(agent_id)
     if not agent:
-        raise HTTPException(404, f"Agent not found: {agent_id}")
+        raise HTTPException(status_code=404, detail=f"Agent not found: {agent_id}")
     return {
         "agent": {
             "id": agent.agent_id,
@@ -309,8 +410,6 @@ async def get_agent(agent_id: str):
     }
 
 
-# ─── Agent Registry ────────────────────────────────────────────────
-
 @app.get("/api/workforce/registry")
 async def get_registry():
     """Get the full agent registry organized by domain."""
@@ -330,11 +429,7 @@ async def get_registry():
                 for a in agents
             ],
         }
-    return {
-        "total": len(ALL_AGENTS),
-        "domains": domains,
-        "domain_count": len(DOMAIN_MAP),
-    }
+    return {"domains": domains, "total": len(ALL_AGENTS), "domain_count": len(DOMAIN_MAP)}
 
 
 @app.get("/api/workforce/events/{event_type}/agents")
@@ -351,27 +446,19 @@ async def get_agents_for_event(event_type: str):
     }
 
 
-# ─── Tools ──────────────────────────────────────────────────────────
-
 @app.get("/api/workforce/tools")
 async def list_tools():
     """List all registered tools."""
     registry = get_tool_registry()
     tools = registry.list_tools()
     stats = registry.get_tool_stats()
-    return {
-        "tools": [
-            {
-                "id": t.id,
-                "name": t.name,
-                "description": t.description,
-                "permission": t.permission.value,
-                "stats": stats.get(t.id, {}),
-            }
-            for t in tools
-        ],
-        "total": len(tools),
-    }
+    out = []
+    for t in tools:
+        info = {"id": t.get("id"), "name": t.get("name"), "description": t.get("description"), "permission": t.get("permission")}
+        st = stats.get(t.get("id"), {})
+        info["stats"] = st
+        out.append(info)
+    return {"tools": out, "total": len(out)}
 
 
 @app.get("/api/workforce/tools/executions")
@@ -381,8 +468,6 @@ async def list_tool_executions(limit: int = Query(50, ge=1, le=200)):
     executions = registry.get_recent_executions(limit)
     return {"executions": [e.model_dump() for e in executions], "count": len(executions)}
 
-
-# ─── Policy ─────────────────────────────────────────────────────────
 
 @app.get("/api/workforce/policy")
 async def get_policy():
@@ -403,6 +488,7 @@ async def set_policy_override(req: PolicyOverrideRequest):
 
 from voicebox.workforce.action_ledger import get_action_ledger
 
+
 @app.get("/api/workforce/actions")
 async def get_actions(
     limit: int = Query(50, ge=1, le=200),
@@ -414,11 +500,7 @@ async def get_actions(
         actions = ledger.get_by_worker(worker_id, limit)
     else:
         actions = ledger.get_recent(limit)
-    return {
-        "actions": actions,
-        "total": len(actions),
-        "stats": ledger.get_stats(),
-    }
+    return {"actions": actions, "total": len(actions), "stats": ledger.get_stats()}
 
 
 @app.get("/api/workforce/actions/stats")
@@ -428,33 +510,43 @@ async def get_action_stats():
     return ledger.get_stats()
 
 
-# ─── Lock Manager ───────────────────────────────────────────────────
-
-from voicebox.workforce.locks import get_lock_manager
-
 @app.get("/api/workforce/locks")
 async def get_locks():
     """Get current resource lock status."""
-    lock_mgr = get_lock_manager()
-    return lock_mgr.get_stats()
+    from voicebox.workforce.locks import get_lock_manager
+    return get_lock_manager().get_stats()
 
-
-# ─── SSE (Server-Sent Events) ──────────────────────────────────────
 
 import json
 from fastapi.responses import StreamingResponse
 
-# In-memory event buffer for SSE subscribers (last 100 events)
-_sse_buffer: list[dict] = []
+
+# In-memory event buffer for SSE subscribers (last 100 events).
+# Uses deque(maxlen) for O(1) FIFO eviction instead of list.pop(0) which is O(n).
+# NOTE: per-process only. With multiple workers/instances, subscribers on
+# other processes miss local events unless Redis fan-out is configured
+# (REDIS_URL). Slow-subscriber drops are counted and exposed in stream status.
+_sse_buffer: deque[dict] = deque(maxlen=100)
 _sse_subscribers: list[asyncio.Queue] = []
-_SSE_BUFFER_MAX = 100
+_sse_seq = 0
+_sse_dropped = 0
 
 
 async def push_sse_event(event: dict):
     """Push an event to all SSE subscribers. Called by event bus hook in lifespan."""
-    _sse_buffer.append(event)
-    if len(_sse_buffer) > _SSE_BUFFER_MAX:
-        _sse_buffer.pop(0)
+    global _sse_seq, _sse_dropped
+    _sse_seq += 1
+    event = {**event, "seq": _sse_seq}
+    _sse_buffer.append(event)  # deque(maxlen=100) auto-evicts oldest
+    # Best-effort cross-instance fan-out via Redis; local delivery continues regardless.
+    try:
+        from voicebox.workforce.events import get_event_bus as _get_bus
+        _bus = _get_bus()
+        _redis = getattr(_bus, "_redis", None)
+        if _redis is not None:
+            await _redis.publish("workforce:sse", json.dumps(event))
+    except Exception as e:
+        logger.warning(f"[SSE] redis fan-out failed: {e}")
     dead: list[asyncio.Queue] = []
     for q in list(_sse_subscribers):
         try:
@@ -462,7 +554,12 @@ async def push_sse_event(event: dict):
         except asyncio.QueueFull:
             dead.append(q)
     for q in dead:
-        _sse_subscribers.remove(q)
+        try:
+            _sse_subscribers.remove(q)
+        except ValueError:
+            pass
+        _sse_dropped += 1
+        logger.warning(f"[SSE] dropped slow subscriber (total_dropped={_sse_dropped})")
 
 
 @app.get("/api/workforce/stream")
@@ -478,7 +575,7 @@ async def sse_stream():
     async def event_generator():
         try:
             # Send recent buffered events on connect
-            for evt in _sse_buffer[-20:]:
+            for evt in list(_sse_buffer)[-20:]:
                 yield f"event: {evt.get('event_type', 'unknown')}\ndata: {json.dumps(evt)}\n\n"
 
             # Then stream live events
@@ -511,6 +608,9 @@ async def sse_status():
     return {
         "subscribers": len(_sse_subscribers),
         "buffer_size": len(_sse_buffer),
+        "seq": _sse_seq,
+        "dropped": _sse_dropped,
+        "multi_instance_note": "in-memory fan-out only; configure REDIS_URL for cross-instance delivery",
     }
 
 
@@ -523,20 +623,16 @@ async def get_metrics():
     tools = get_tool_registry()
     policy = get_policy_engine()
     stats = orchestrator.get_stats()
-
-    metrics = {
+    return {
         "workforce_tasks_total": stats["tasks_received"],
         "workforce_tasks_completed": stats["tasks_completed"],
         "workforce_tasks_failed": stats["tasks_failed"],
         "workforce_tasks_blocked": stats["tasks_blocked"],
         "workforce_tools_registered": len(tools._tools),
-        "workforce_tool_executions": sum(
-            t.execution_count for t in tools._tools.values()
-        ),
+        "workforce_tool_executions": sum(s["execution_count"] for s in tools.get_tool_stats().values()),
         "workforce_policy_decisions": policy.get_stats()["total_decisions"],
         "workforce_policy_blocked": policy.get_stats()["blocked"],
     }
-    return metrics
 
 
 @app.get("/metrics")
@@ -545,7 +641,6 @@ async def prometheus_metrics():
     orchestrator = get_orchestrator()
     tools = get_tool_registry()
     stats = orchestrator.get_stats()
-
     lines = [
         "# HELP voicebox_tasks_total Total tasks received",
         "# TYPE voicebox_tasks_total counter",
@@ -566,13 +661,16 @@ async def prometheus_metrics():
         "# HELP voicebox_tools_registered Total registered tools",
         "# TYPE voicebox_tools_registered gauge",
         f"voicebox_tools_registered {len(tools._tools)}",
-        "",
     ]
     return PlainTextResponse("\n".join(lines))
 
 
-# ─── Run ────────────────────────────────────────────────────────────
-
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    # FIX #4 (AUDIT): default to loopback — bind all interfaces only when
+    # the container explicitly asks for it (compose sets HOST=0.0.0.0).
+    uvicorn.run(
+        app,
+        host=os.getenv("HOST", "127.0.0.1"),
+        port=int(os.getenv("PORT", "8000")),
+    )

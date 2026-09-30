@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 from typing import Any, Optional
 
@@ -36,10 +37,13 @@ class AIReasoningAgent:
         """
         try:
             import httpx
+            # Platform AI endpoint — configurable for Docker/prod where
+            # localhost:3000 is wrong. Set WORKFORCE_AI_URL to the real URL.
+            ai_url = os.getenv("WORKFORCE_AI_URL", "http://localhost:3000/api/ai")
             # Try the platform's AI endpoint first
             async with httpx.AsyncClient(timeout=30) as client:
                 resp = await client.post(
-                    "http://localhost:3000/api/ai",
+                    ai_url,
                     json={
                         "action": "analyze",
                         "system": system_prompt,
@@ -58,6 +62,7 @@ class AIReasoningAgent:
             "analysis": "LLM unavailable — deterministic fallback",
             "confidence": 0.5,
             "recommendation": "Manual review recommended",
+            "fallback": True,
         })
 
     async def execute(self, task: AgentTask) -> dict[str, Any]:

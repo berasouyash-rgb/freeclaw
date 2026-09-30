@@ -28,7 +28,7 @@ const FAQS = [
 	},
 	{
 		q: "How does voting work?",
-		a: "Each anonymous ID can support or disagree once per post, and vote once per poll (you can change your poll vote while it\u2019s open). Votes are counted anonymously.",
+		a: "Each anonymous ID can support a post once, and there is no downvote — if a post is wrong or harmful, report it instead. Vote once per poll, and vote once per poll (you can change your poll vote while it\u2019s open). Votes are counted anonymously.",
 	},
 	{
 		q: "Who runs the AI features?",

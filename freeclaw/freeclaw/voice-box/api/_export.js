@@ -4,7 +4,13 @@
 //            poll_votes, saved, follows, notifications }
 // Personal data leaves only at the caller's request; no names/emails/IPs stored.
 
-import { clean, cors, rateLimitResponse } from "./_auth.js";
+import {
+	clean,
+	clientIp,
+	cors,
+	rateLimitResponse,
+	verifyCallerIdentity,
+} from "./_auth.js";
 import supabase from "./_db-client.js";
 
 /* ── IP-based rate limiting (aggregation is heavier than a page load) ── */
@@ -59,14 +65,20 @@ export default async function handler(req, res) {
 	if (req.method !== "GET")
 		return res.status(405).json({ error: "Method not allowed" });
 
-	const ip =
-		(req.headers["x-forwarded-for"] || "").split(",")[0].trim() || "unknown";
+	const ip = clientIp(req); // FIX #11: proxy-aware, rightmost XFF hop
 	if (isRateLimited(ip)) return rateLimitResponse(res, 60, "Too many requests");
 
 	try {
 		const anonId = clean(req.query.anon_id, 40);
 		if (!anonId) return res.status(400).json({ error: "Missing anon_id" });
 		const id = anonId.toLowerCase();
+
+		const caller = await verifyCallerIdentity(req, res, id);
+		if (!caller.ok) {
+			return res
+				.status(caller.status || 403)
+				.json({ error: caller.error || "Forbidden" });
+		}
 
 		const [
 			profile,

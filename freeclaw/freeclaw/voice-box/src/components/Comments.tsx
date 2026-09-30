@@ -1,10 +1,12 @@
 ﻿import {
+	AlertCircle,
 	Ban,
 	CornerDownRight,
 	Flag,
 	Lock,
 	Pause,
 	Pencil,
+	RefreshCw,
 	Reply,
 	Send,
 	ShieldAlert,
@@ -13,10 +15,11 @@
 } from "lucide-react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useApp } from "../contexts/AppContext";
-import { api, hasAdminSession } from "../lib/api";
+import { api, hasAdminSession, queuedCount } from "../lib/api";
 import { checkCooldown, lsGet, lsSet, stampCooldown } from "../lib/identity";
 import {
-	isBlocked,
+	commentBlockMessage,
+	isBlockedByServer,
 	type ModerationResult,
 	moderateContent,
 } from "../lib/moderation";
@@ -87,6 +90,7 @@ export default memo(function Comments({
 	const restricted = !!(accountStatus?.banned || accountStatus?.suspended);
 	const [comments, setComments] = useState<CommentData[]>([]);
 	const [loading, setLoading] = useState(true);
+	const [loadError, setLoadError] = useState("");
 	const [text, setText] = useState("");
 	const [replyTo, setReplyTo] = useState<string | null>(null);
 	const [editing, setEditing] = useState<string | null>(null);
@@ -95,27 +99,71 @@ export default memo(function Comments({
 	const [reportTarget, setReportTarget] = useState<string | null>(null);
 	const [asAdmin, setAsAdmin] = useState(false);
 	const [moderation, setModeration] = useState<ModerationResult | null>(null);
+	const [editModeration, setEditModeration] = useState<ModerationResult | null>(
+		null,
+	);
 	const modSeq = useRef(0);
+	const editModSeq = useRef(0);
 	const isAdminSession = hasAdminSession();
 
-	const load = useCallback(async () => {
-		try {
-			const data = await api.get<CommentData[]>(
-				`/api/comments?post_id=${postId}&viewer=${anonId}`,
-			);
-			setComments(data.filter((c) => !c.deleted));
-		} catch {
-			toast("Could not load comments — will retry shortly", "err");
-		}
-		setLoading(false);
-	}, [postId, anonId, toast]);
+	/**
+	 * Load the thread.
+	 *
+	 * `fresh` bypasses the client's 5s GET cache. Every path EXCEPT first mount
+	 * must pass it: a realtime event means the database already changed, and
+	 * re-reading through a cache that was populated seconds ago returns the
+	 * pre-change body — the comment exists but never renders. That is the
+	 * "realtime fired but the UI did not update" failure, and it is why the
+	 * thread looked frozen until a manual refresh.
+	 */
+	const load = useCallback(
+		async (fresh = false) => {
+			setLoadError("");
+			try {
+				const path = `/api/comments?post_id=${postId}&viewer=${anonId}`;
+				const data = fresh
+					? await api.getFresh<CommentData[]>(path)
+					: await api.get<CommentData[]>(path);
+				setComments(
+					(Array.isArray(data) ? data : []).filter((c) => !c.deleted),
+				);
+			} catch (error: unknown) {
+				setLoadError(
+					error instanceof Error ? error.message : "Could not load comments",
+				);
+			}
+			setLoading(false);
+		},
+		[postId, anonId],
+	);
 
 	useEffect(() => {
 		load();
 	}, [load]);
 
 	// 🔴 new comments appear live for everyone in the thread
-	useRealtime(["comments"], () => load());
+	//
+	// SCALE: the realtime channel is shared GLOBALLY per table, so this
+	// callback fires for EVERY comment written anywhere in the platform, not
+	// just this thread. The previous version ignored the payload and refetched
+	// unconditionally — at school scale (thousands of open threads) a single
+	// comment anywhere could fan out into thousands of unrelated requests.
+	// Filter on the changed post_id so only the affected thread refetches;
+	// latency for the thread that actually changed stays at 150ms.
+	useRealtime(
+		["comments"],
+		(_table, payload) => {
+			const next = payload?.new as { post_id?: string } | undefined;
+			const prev = payload?.old as { post_id?: string } | undefined;
+			const changedPostId =
+				payload?.eventType === "DELETE" ? prev?.post_id : next?.post_id;
+			// No post_id in the payload (unexpected shape) → stay conservative
+			// and refresh rather than risk showing a stale thread.
+			if (changedPostId && changedPostId !== postId) return;
+			void load(true);
+		},
+		150,
+	);
 
 	// 🔔 When a new comment @mentions the current anonymous user, fire a
 	// notification + toast (deduped per comment id via localStorage).
@@ -171,6 +219,22 @@ export default memo(function Comments({
 		return () => clearTimeout(t);
 	}, [text]);
 
+	// Live moderation on the EDIT box — edits go through the same server
+	// comment gate (api/_comments.js PUT), so an ungated edit would be
+	// rejected after the user pressed Save with no explanation.
+	useEffect(() => {
+		if (editing === null || editText.length < 3) {
+			setEditModeration(null);
+			return;
+		}
+		const seq = ++editModSeq.current;
+		const t = setTimeout(() => {
+			if (seq === editModSeq.current)
+				setEditModeration(moderateContent(editText));
+		}, 200);
+		return () => clearTimeout(t);
+	}, [editing, editText]);
+
 	const submit = async () => {
 		const body = sanitize(text, 500);
 		if (body.length < 2) {
@@ -182,39 +246,83 @@ export default memo(function Comments({
 			toast(`Please wait ${cd}s before commenting again`, "err");
 			return;
 		}
-		// Check moderation before submission
-		const mod = moderateContent(text);
-		if (isBlocked(mod)) {
-			toast("Content blocked: please remove inappropriate language", "err");
+		// Gate on the RAW sanitized text with the exact server comment verdict.
+		// Sending the pre-masked string here made `serverModerate` see stars
+		// instead of the words that were actually typed — masking happens at
+		// INSERT time on the server, never before the gate.
+		const mod = moderateContent(body);
+		if (isBlockedByServer(mod)) {
+			toast(commentBlockMessage(mod), "err");
 			return;
 		}
-		// Use masked text for submission
-		const maskedBody = sanitize(mod.maskedText, 500);
 		setBusy(true);
+		// Optimistic entry: the comment appears the instant it is sent instead of
+		// after a round-trip. It is replaced by the authoritative list on success
+		// and removed on failure, so a failed send can never look like a posted one.
+		// Display uses the masked text (what the server will store); the request
+		// body stays raw so the server's gate sees the real content.
+		const tempId = `pending-${Date.now()}`;
+		const optimistic: CommentData = {
+			id: tempId,
+			post_id: postId,
+			parent_id: replyTo,
+			author_id: anonId,
+			body: sanitize(mod.maskedText, 500),
+			is_admin: asAdmin && isAdminSession,
+			created_at: new Date().toISOString(),
+			is_mine: true,
+		};
+		setComments((prev) => [...prev, optimistic]);
+		const queuedBefore = queuedCount();
 		try {
 			await api.post("/api/comments", {
 				post_id: postId,
 				parent_id: replyTo,
 				author_id: anonId,
-				body: maskedBody,
+				body,
 				is_admin: asAdmin && isAdminSession,
 			});
 			stampCooldown("comment");
 			setText("");
 			setReplyTo(null);
-			await load();
+			await load(true);
 		} catch (e: unknown) {
-			toast(e instanceof Error ? e.message : "Failed to post comment", "err");
+			// A transient failure is auto-queued by the api layer for replay, so
+			// the comment IS going to be posted. Saying "failed" here was wrong and
+			// actively harmful: the user retypes it and the queue posts both.
+			if (queuedCount() > queuedBefore) {
+				stampCooldown("comment");
+				setText("");
+				setReplyTo(null);
+				toast(
+					"Saved offline — it will post automatically when you reconnect",
+					"info",
+				);
+				// Keep the optimistic row; the queue flush plus the realtime event
+				// will replace it with the server's copy.
+			} else {
+				setComments((prev) => prev.filter((c) => c.id !== tempId));
+				toast(e instanceof Error ? e.message : "Failed to post comment", "err");
+			}
 		}
 		setBusy(false);
 	};
 
 	const saveEdit = async (id: string) => {
+		const body = sanitize(editText, 500);
+		// Edits hit the same server comment gate (PUT → serverModerate on raw
+		// body). Pre-gate here with the same comment verdict so Save is blocked
+		// BEFORE the request, not rejected after it.
+		const mod = moderateContent(body);
+		if (isBlockedByServer(mod)) {
+			toast(commentBlockMessage(mod), "err");
+			return;
+		}
 		try {
 			await api.put("/api/comments", {
 				id,
 				author_id: anonId,
-				body: sanitize(editText, 500),
+				body,
 			});
 			setEditing(null);
 			await load();
@@ -282,27 +390,45 @@ export default memo(function Comments({
 					</span>
 				</div>
 				{editing === c.id ? (
-					<div className="mt-1.5 flex gap-2">
-						<input
-							className="input !py-1.5 text-sm"
-							value={editText}
-							onChange={(e) => setEditText(e.target.value)}
-							maxLength={500}
-							aria-label="Edit comment"
-						/>
-						<button
-							className="btn btn-primary !py-1.5 !px-3 !text-xs"
-							onClick={() => saveEdit(c.id)}
-						>
-							Save
-						</button>
-						<button
-							className="btn btn-ghost !py-1.5 !px-3 !text-xs"
-							onClick={() => setEditing(null)}
-						>
-							Cancel
-						</button>
-					</div>
+					<>
+						<div className="mt-1.5 flex gap-2">
+							<input
+								className="input !py-1.5 text-sm"
+								value={editText}
+								onChange={(e) => setEditText(e.target.value)}
+								maxLength={500}
+								aria-label="Edit comment"
+							/>
+							<button
+								className="btn btn-primary !py-1.5 !px-3 !text-xs"
+								onClick={() => saveEdit(c.id)}
+								disabled={
+									!!editModeration && isBlockedByServer(editModeration)
+								}
+								aria-label="Save edit"
+							>
+								{editModeration && isBlockedByServer(editModeration) ? (
+									<ShieldAlert size={12} />
+								) : (
+									"Save"
+								)}
+							</button>
+							<button
+								className="btn btn-ghost !py-1.5 !px-3 !text-xs"
+								onClick={() => {
+									setEditing(null);
+									setEditModeration(null);
+								}}
+							>
+								Cancel
+							</button>
+						</div>
+						{editModeration && isBlockedByServer(editModeration) && (
+							<p className="mt-1 text-[11px] text-bad" role="alert">
+								{commentBlockMessage(editModeration)}
+							</p>
+						)}
+					</>
 				) : (
 					<p className="text-sm mt-1 prose-desc">{renderMentions(c.body)}</p>
 				)}
@@ -356,6 +482,26 @@ export default memo(function Comments({
 			<h2 className="font-display font-semibold text-sm mb-2">
 				{comments.length} Comment{comments.length !== 1 ? "s" : ""}
 			</h2>
+			{loadError && (
+				<div
+					role="alert"
+					className="mb-3 flex items-center gap-2 rounded-xl border border-bad/30 bg-bad/5 px-3 py-2 text-xs text-bad"
+				>
+					<AlertCircle size={14} aria-hidden />
+					<span className="min-w-0 flex-1">{loadError}</span>
+					<button
+						type="button"
+						className="btn btn-ghost !px-2 !py-1 !text-[11px]"
+						onClick={() => {
+							setLoading(true);
+							void load();
+						}}
+						aria-label="Retry comments"
+					>
+						<RefreshCw size={12} /> Retry
+					</button>
+				</div>
+			)}
 			{locked ? (
 				<p className="text-sm text-ink3 bg-surface2 rounded-xl px-4 py-3 flex items-center gap-2">
 					<Lock size={14} /> Comments are locked on this post.
@@ -398,7 +544,7 @@ export default memo(function Comments({
 					>
 						<input
 							id="comment-input"
-							className={`input flex-1 transition-all duration-200 ${moderation?.flags.some((f) => f.severity === "critical" || f.severity === "high") ? "moderation-flag border-bad" : moderation && moderation.flags.length === 0 && text.length > 5 ? "moderation-ok border-good" : ""}`}
+							className={`input flex-1 transition-all duration-200 ${(moderation?.flags ?? []).some((f) => f.severity === "critical" || f.severity === "high") ? "moderation-flag border-bad" : moderation && (moderation.flags ?? []).length === 0 && text.length > 5 ? "moderation-ok border-good" : ""}`}
 							placeholder={
 								asAdmin
 									? "Reply as Admin (official)…"
@@ -415,11 +561,11 @@ export default memo(function Comments({
 							disabled={
 								busy ||
 								text.trim().length < 2 ||
-								(moderation ? isBlocked(moderation) : false)
+								(moderation ? isBlockedByServer(moderation) : false)
 							}
 							aria-label="Send comment"
 						>
-							{moderation && isBlocked(moderation) ? (
+							{moderation && isBlockedByServer(moderation) ? (
 								<ShieldAlert size={15} />
 							) : (
 								<Send size={15} />
@@ -427,28 +573,28 @@ export default memo(function Comments({
 						</button>
 					</form>
 					{/* Comment moderation feedback */}
-					{moderation && moderation.flags.length > 0 && (
+					{moderation && (moderation.flags ?? []).length > 0 && (
 						<div
-							className={`mt-2 rounded-lg px-2.5 py-1.5 text-xs ${isBlocked(moderation) ? "moderation-blocked" : moderation.overallSeverity === "medium" ? "moderation-warn" : "moderation-info"}`}
+							className={`mt-2 rounded-lg px-2.5 py-1.5 text-xs ${isBlockedByServer(moderation) ? "moderation-blocked" : moderation.overallSeverity === "medium" ? "moderation-warn" : "moderation-info"}`}
 						>
 							<div className="flex items-center gap-1.5 mb-1">
-								{isBlocked(moderation) ? (
+								{isBlockedByServer(moderation) ? (
 									<ShieldAlert size={11} className="text-bad" />
 								) : (
 									<ShieldCheck size={11} className="text-warn" />
 								)}
 								<span className="font-semibold">
-									{isBlocked(moderation)
+									{isBlockedByServer(moderation)
 										? "Content blocked"
 										: "Content flagged"}
 								</span>
 							</div>
-							{moderation.flags.slice(0, 2).map((flag, i) => (
+							{(moderation.flags ?? []).slice(0, 2).map((flag, i) => (
 								<p key={i} className="text-ink2 mt-0.5">
 									{flag.message}
 								</p>
 							))}
-							{isBlocked(moderation) && (
+							{isBlockedByServer(moderation) && (
 								<p
 									className="mt-1 font-semibold"
 									style={{ color: "var(--vb-bad)" }}

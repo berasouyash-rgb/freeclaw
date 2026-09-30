@@ -12,7 +12,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import PostCard from "../components/PostCard";
 import type { PostData } from "../types";
 
@@ -63,12 +63,12 @@ function makePost(overrides: Partial<PostData> = {}): PostData {
     title: "Broken elevator in Building A",
     description: "The elevator has been broken for 2 days. Nobody can use it.",
     category: "Facilities",
-    status: "open",
+    status: "reported",
     priority: "high",
     type: "problem",
     author_id: "user-1",
     created_at: "2025-07-20T10:00:00Z",
-    reactions: { support: 5, concerned: 2, frustrated: 1, appreciate: 0 },
+    reactions: { support: 5, disagree: 2 },
     comment_count: 3,
     tags: ["elevator", "safety"],
     ...overrides,
@@ -99,14 +99,49 @@ describe("PostCard", () => {
     });
 
     it("renders status chip", () => {
-      render(<PostCard post={makePost({ status: "open" })} />);
+      render(<PostCard post={makePost({ status: "reported" })} />);
       expect(screen.getByText("Reported")).toBeInTheDocument();
+    });
+
+    it("renders the content-type chip so suggestions never read as complaints", () => {
+      render(<PostCard post={makePost({ type: "problem" })} />);
+      expect(screen.getByText("Problem")).toBeInTheDocument();
+    });
+
+    it("labels suggestions distinctly from problems", () => {
+      render(<PostCard post={makePost({ type: "suggestion" })} />);
+      expect(screen.getByText("Suggestion")).toBeInTheDocument();
+    });
+
+    it("labels polls distinctly", () => {
+      render(<PostCard post={makePost({ type: "poll" })} />);
+      expect(screen.getByText("Poll")).toBeInTheDocument();
+    });
+
+    it("tags user-deleted posts", () => {
+      render(<PostCard post={makePost({ deleted: true })} />);
+      expect(screen.getByText("Deleted by user")).toBeInTheDocument();
+    });
+
+    it("shows no deleted tag on live posts", () => {
+      render(<PostCard post={makePost()} />);
+      expect(screen.queryByText("Deleted by user")).not.toBeInTheDocument();
     });
 
     it("renders tags", () => {
       render(<PostCard post={makePost()} />);
       expect(screen.getByText("#elevator")).toBeInTheDocument();
       expect(screen.getByText("#safety")).toBeInTheDocument();
+    });
+
+    it("links each hashtag to a tag search", () => {
+      render(<PostCard post={makePost()} />);
+      expect(
+        screen.getByRole("link", { name: "Show all posts tagged elevator" }),
+      ).toHaveAttribute("href", "/search?q=%23elevator");
+      expect(
+        screen.getByRole("link", { name: "Show all posts tagged safety" }),
+      ).toHaveAttribute("href", "/search?q=%23safety");
     });
 
     it("renders a time element", () => {
@@ -118,19 +153,27 @@ describe("PostCard", () => {
   });
 
   describe("reactions", () => {
-    it("renders all 4 reaction types", () => {
-      render(<PostCard post={makePost()} />);
+    // Support-only by design: no Against, no Downvote, anywhere.
+    it("renders only the Support button on problems (no Against)", () => {
+      render(<PostCard post={makePost({ type: "problem" })} />);
       expect(screen.getByLabelText(/Support/)).toBeInTheDocument();
-      expect(screen.getByLabelText(/Concerned/)).toBeInTheDocument();
-      expect(screen.getByLabelText(/Frustrated/)).toBeInTheDocument();
-      expect(screen.getByLabelText(/Appreciate/)).toBeInTheDocument();
+      expect(screen.queryByLabelText(/Against/)).not.toBeInTheDocument();
+      expect(screen.queryByLabelText(/Downvote/)).not.toBeInTheDocument();
+      expect(screen.queryByLabelText(/Concerned/)).not.toBeInTheDocument();
+      expect(screen.queryByLabelText(/Frustrated/)).not.toBeInTheDocument();
+      expect(screen.queryByLabelText(/Appreciate/)).not.toBeInTheDocument();
+    });
+
+    it("renders only Upvote on suggestions (no Downvote)", () => {
+      render(<PostCard post={makePost({ type: "suggestion" })} />);
+      expect(screen.getByLabelText(/Upvote/)).toBeInTheDocument();
+      expect(screen.queryByLabelText(/Downvote/)).not.toBeInTheDocument();
+      expect(screen.queryByLabelText(/Against/)).not.toBeInTheDocument();
     });
 
     it("shows correct reaction counts", () => {
       render(<PostCard post={makePost()} />);
       expect(screen.getByLabelText(/Support.*5/)).toBeInTheDocument();
-      expect(screen.getByLabelText(/Concerned.*2/)).toBeInTheDocument();
-      expect(screen.getByLabelText(/Frustrated.*1/)).toBeInTheDocument();
     });
 
     it("marks active reactions with aria-pressed", () => {
@@ -143,6 +186,24 @@ describe("PostCard", () => {
       render(<PostCard post={makePost()} myReactions={[]} />);
       const supportBtn = screen.getByLabelText(/Support/);
       expect(supportBtn).toHaveAttribute("aria-pressed", "false");
+    });
+
+    it("celebrates an activating Support tap with a burst, then cleans up", async () => {
+      render(<PostCard post={makePost()} />);
+      fireEvent.click(screen.getByLabelText(/Support/));
+      expect(screen.getByTestId("support-burst")).toBeInTheDocument();
+      await waitFor(
+        () => {
+          expect(screen.queryByTestId("support-burst")).not.toBeInTheDocument();
+        },
+        { timeout: 2000 },
+      );
+    });
+
+    it("does not burst when toggling Support off", () => {
+      render(<PostCard post={makePost()} myReactions={["support"]} />);
+      fireEvent.click(screen.getByLabelText(/Support/));
+      expect(screen.queryByTestId("support-burst")).not.toBeInTheDocument();
     });
 
     it("calls onReacted when reaction is clicked", async () => {
@@ -220,6 +281,7 @@ describe("PostCard", () => {
             vote_counts: [10, 2],
             total_votes: 12,
             ptype: "yesno",
+            author_id: "user-1",
           }}
         />,
       );
@@ -232,6 +294,36 @@ describe("PostCard", () => {
       render(<PostCard post={makePost({ comment_count: 7 })} />);
       // The comment link shows the count
       expect(screen.getByText("7")).toBeInTheDocument();
+    });
+  });
+
+  describe("overlap hardening", () => {
+    // Long unbroken user strings must wrap inside the card instead of
+    // painting over neighbouring rows (audit: reaction-row text overlapping
+    // the category header on real prod titles).
+    it("breaks long unbroken title and description tokens", () => {
+      const { container } = render(
+        <PostCard
+          post={makePost({
+            title: "x".repeat(200),
+            description: "y".repeat(300),
+          })}
+        />,
+      );
+      const h3 = container.querySelector("h3");
+      expect(h3?.className).toMatch(/break-words/);
+      const desc = container.querySelector("h3 + p");
+      expect(desc?.className).toMatch(/break-words/);
+    });
+
+    // The Deleted-by-user chip must be a sibling of the status chip, never
+    // a bordered chip nested inside another bordered chip.
+    it("renders the deleted chip beside, not inside, the status chip", () => {
+      const { container } = render(
+        <PostCard post={makePost({ deleted: true })} />,
+      );
+      expect(screen.getByText("Deleted by user")).toBeInTheDocument();
+      expect(container.querySelector(".chip .chip")).toBeNull();
     });
   });
 });

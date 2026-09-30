@@ -33,12 +33,26 @@ function getDevice(): string {
 const dedupMap = new Map<string, FrontendError>();
 const buffer: FrontendError[] = [];
 let flushTimer: ReturnType<typeof setTimeout> | null = null;
+// Rate limiting: max 30 errors per minute to prevent error loops from
+// flooding the backend with thousands of identical reports.
+const RATE_LIMIT_PER_MINUTE = 30;
+let rateWindowStart = Date.now();
+let rateCount = 0;
 
 function dedupKey(e: FrontendError): string {
   return `${e.source}:${e.message?.slice(0, 120)}:${e.filename}:${e.lineno}:${e.colno}`;
 }
 
 function addToBuffer(entry: FrontendError) {
+  // Rate limiting: reset window every 60s, drop excess errors
+  const now = Date.now();
+  if (now - rateWindowStart > 60_000) {
+    rateWindowStart = now;
+    rateCount = 0;
+  }
+  if (rateCount >= RATE_LIMIT_PER_MINUTE) return;
+  rateCount++;
+
   const key = dedupKey(entry);
   const existing = dedupMap.get(key);
   if (existing && Date.now() - new Date(existing.timestamp).getTime() < 5000) {
@@ -48,10 +62,14 @@ function addToBuffer(entry: FrontendError) {
   dedupMap.set(key, entry);
   buffer.push(entry);
 
-  // Keep dedup map from growing unbounded
+  // Keep dedup map from growing unbounded — batch evict oldest 25%
   if (dedupMap.size > 200) {
-    const oldest = dedupMap.keys().next().value;
-    if (oldest) dedupMap.delete(oldest);
+    const toDelete = Math.floor(dedupMap.size * 0.25);
+    const iter = dedupMap.keys();
+    for (let i = 0; i < toDelete; i++) {
+      const k = iter.next().value;
+      if (k) dedupMap.delete(k);
+    }
   }
 
   scheduleFlush();

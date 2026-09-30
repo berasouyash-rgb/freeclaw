@@ -189,7 +189,7 @@ export function staleWhileRevalidate(fn, options = {}) {
 	// firing one DB query per request (thundering herd during the stale window).
 	const _inflightRevalidate = new Map(); // cacheKey → Promise<fresh>
 
-	return async function swrFn(...args) {
+	async function swrFn(...args) {
 		const cacheKey = `${keyPrefix}:${JSON.stringify(args).slice(0, 200)}`;
 		const entry = _swrCache.get(cacheKey);
 		const now = Date.now();
@@ -240,7 +240,19 @@ export function staleWhileRevalidate(fn, options = {}) {
 		});
 
 		return result;
+	}
+
+	// Invalidate every entry this wrapper holds. Write paths must call this so
+	// new/changed data shows immediately — the old cacheClear("^postsfeed")
+	// only touched the cacheMem store, NOT this closure's _swrCache, so feed
+	// rows served via staleWhileRevalidate could stay hidden for the whole
+	// stale window (up to staleTtl) after a write.
+	swrFn.invalidate = () => {
+		_swrCache.clear();
+		_inflightRevalidate.clear();
 	};
+
+	return swrFn;
 }
 
 // ─── Cleanup ────────────────────────────────────────────────────

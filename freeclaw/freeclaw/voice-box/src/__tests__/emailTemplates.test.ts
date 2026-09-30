@@ -128,8 +128,10 @@ describe("Default Templates", () => {
       const allText = t.subject + " " + t.body;
       const used = new Set<string>();
       const re = /\{\{#?(\w+)\}\}/g;
-      let m;
-      while ((m = re.exec(allText))) used.add(m[1]);
+      let m: RegExpExecArray | null;
+      while ((m = re.exec(allText))) {
+        if (m[1]) used.add(m[1]);
+      }
 
       // Template's declared variables should cover all used variables
       for (const v of used) {

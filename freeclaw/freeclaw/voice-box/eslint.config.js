@@ -48,6 +48,15 @@ export default defineConfig([
 		},
 	},
 	{
+		// Ambient declarations describe untyped JS modules (api/*.js). `any` is
+		// the correct type at that boundary — it is a declaration, not app code,
+		// so the "no any" rule does not apply and must not fail the lint gate.
+		files: ["**/*.d.ts"],
+		rules: {
+			"@typescript-eslint/no-explicit-any": "off",
+		},
+	},
+	{
 		// Test files: vi.mock factories and Web-platform mocks (speech, IO,
 		// sentry events) are inherently dynamic. `any` is the sanctioned
 		// exception for test doubles — never ship `any` in app code.

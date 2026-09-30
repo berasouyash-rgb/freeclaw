@@ -12,6 +12,8 @@ import {
 } from "./_observability.js";
 import { buildChain } from "./_providers.js";
 import { getAllCircuitStatus } from "./_reliability.js";
+import { getLoadStats } from "./_load-guard.js";
+import { aiHealthCheck } from "./_ai-health.js";
 
 async function checkTable(tableName) {
 	const start = Date.now();
@@ -171,6 +173,7 @@ export default async function handler(req, res) {
 		const systemHealth = getSystemHealth();
 		const circuitStatus = getAllCircuitStatus();
 		const cacheInfo = cacheStats();
+		const loadInfo = getLoadStats();
 
 		// Determine overall status
 		const checks = {
@@ -180,6 +183,8 @@ export default async function handler(req, res) {
 			users: usersCheck,
 			reports: reportsCheck,
 			llm_providers: llmCheck,
+			ai: aiHealthCheck(),
+			load: { status: loadInfo.shed_total > 0 ? "warning" : "ok", ...loadInfo },
 			errors: {
 				status: errorCount < 10 ? "ok" : "warning",
 				count_last_hour: errorCount,

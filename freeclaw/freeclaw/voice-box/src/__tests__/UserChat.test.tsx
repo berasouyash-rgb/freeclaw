@@ -24,9 +24,11 @@ const mocks = vi.hoisted(() => ({
 	toast: vi.fn(),
 	setChatUnread: vi.fn(),
 	postInbox: vi.fn(),
+	post: vi.fn(),
 	get: vi.fn(),
 	put: vi.fn(),
 	uploadImage: vi.fn(),
+	postSlow: vi.fn(),
 	useRealtime: vi.fn(),
 }));
 
@@ -34,8 +36,10 @@ vi.mock("../lib/api", () => ({
 	api: {
 		get: mocks.get,
 		put: mocks.put,
+		post: mocks.post,
 		postInbox: mocks.postInbox,
 		uploadImage: mocks.uploadImage,
+		postSlow: mocks.postSlow,
 	},
 }));
 
@@ -147,6 +151,58 @@ describe("UserChat � duplicate prevention", () => {
 		// not duplicated).
 		const matches = screen.queryAllByText("I need help");
 		expect(matches.length).toBe(1);
+	});
+
+	it("restores the draft when the send provably never landed server-side", async () => {
+		const user = userEvent.setup();
+		renderPage();
+		await waitFor(() =>
+			expect(screen.getByText("Hello! How can I help?")).toBeTruthy(),
+		);
+
+		// Hard failure AND the follow-up sync has no trace of the message —
+		// the words must come back instead of being eaten.
+		mocks.postInbox.mockRejectedValue(new Error("Failed to fetch"));
+		const input = screen.getByLabelText("Chat message");
+		await user.type(input, "my lost words");
+		await user.click(screen.getByRole("button", { name: /send/i }));
+
+		await waitFor(() => expect(input).toHaveValue("my lost words"));
+	});
+
+	it("does not restore the draft when the sync confirms the save", async () => {
+		const user = userEvent.setup();
+		renderPage();
+		await waitFor(() =>
+			expect(screen.getByText("Hello! How can I help?")).toBeTruthy(),
+		);
+
+		// The POST failed but the message WAS saved — sync proves it, so the
+		// input stays clear (restoring would invite a double-send).
+		mocks.postInbox.mockRejectedValue(new Error("network"));
+		mocks.get.mockResolvedValueOnce({
+			messages: [
+				...SERVER_MESSAGES,
+				{
+					id: "db-user-1",
+					sender: "user",
+					body: "hello again",
+					created_at: "2026-08-01T10:02:00.000Z",
+					read: true,
+				},
+			],
+			thread: { thread_id: "anon-test", status: "open" },
+		});
+
+		const input = screen.getByLabelText("Chat message");
+		await user.type(input, "hello again");
+		await user.click(screen.getByRole("button", { name: /send/i }));
+
+		await waitFor(() => {
+			const matches = screen.queryAllByText("hello again");
+			expect(matches.length).toBeLessThanOrEqual(1);
+		});
+		expect(input).toHaveValue("");
 	});
 
 	it("replaces an existing optimistic bubble when a realtime sync confirms it", async () => {
@@ -691,10 +747,35 @@ describe("UserChat � fallbacks, banners and attachments", () => {
 		clickSpy.mockRestore();
 	});
 
-	it("reloads the conversation when a realtime event fires", async () => {
-		let push: ((events: string[]) => void) | null = null;
+	it("does not refetch this chat for another user's message", async () => {
+		let push: ((table: string, payload: unknown) => void) | null = null;
 		mocks.useRealtime.mockImplementation(
-			(_events: string[], cb: () => void) => {
+			(_events: string[], cb: (table: string, payload: unknown) => void) => {
+				push = cb;
+			},
+		);
+
+		renderPage();
+		await waitFor(() =>
+			expect(screen.getByText("Hello! How can I help?")).toBeTruthy(),
+		);
+		expect(push).toBeTruthy();
+		const initialReads = mocks.get.mock.calls.length;
+
+		// chat_messages is a global table. A message in somebody else's thread
+		// must not make every open user chat issue a full-thread request.
+		push!("chat_messages", {
+			eventType: "INSERT",
+			new: { thread_id: "anon-someone-else" },
+		});
+
+		expect(mocks.get).toHaveBeenCalledTimes(initialReads);
+	});
+
+	it("raises a badge instead of reloading when a realtime event fires", async () => {
+		let push: ((table: string, payload: unknown) => void) | null = null;
+		mocks.useRealtime.mockImplementation(
+			(_events: string[], cb: (table: string, payload: unknown) => void) => {
 				push = cb;
 			},
 		);
@@ -718,9 +799,21 @@ describe("UserChat � fallbacks, banners and attachments", () => {
 			expect(screen.getByText("Realtime fresh reply")).toBeTruthy(),
 		);
 		expect(push).toBeTruthy();
+		const readsBefore = mocks.get.mock.calls.length;
 
-		// Simulate a realtime push: the callback must re-run load() and render
-		// the next server state.
+		// A realtime push for our own thread must NOT refetch — only the
+		// badge appears. The thread reloads on one explicit tap.
+		await act(async () => {
+			push!("chat_messages", {
+				eventType: "INSERT",
+				new: { thread_id: "anon-test" },
+			});
+		});
+		expect(mocks.get.mock.calls.length).toBe(readsBefore);
+		expect(
+			await screen.findByRole("button", { name: /View 1 new update/ }),
+		).toBeInTheDocument();
+
 		mocks.get.mockImplementation(() =>
 			Promise.resolve({
 				messages: [
@@ -742,9 +835,11 @@ describe("UserChat � fallbacks, banners and attachments", () => {
 				thread: { thread_id: "anon-test", status: "open" },
 			}),
 		);
-		expect(push).toBeTruthy();
-		push!(["chat_messages"]);
+		fireEvent.click(screen.getByRole("button", { name: /View 1 new update/ }));
 		await waitFor(() => expect(screen.getByText("Pushed update")).toBeTruthy());
+		expect(
+			screen.queryByRole("button", { name: /View \d+ new update/ }),
+		).toBeNull();
 	});
 
 	it("suppresses an attachment send while a message send is already in flight", async () => {
@@ -788,20 +883,24 @@ describe("UserChat � fallbacks, banners and attachments", () => {
 		vi.unstubAllGlobals();
 	});
 });
-
-// ─── Initial-loader minimum display time ─────────────────────────
-// The motive loader tells a 5-line story over the full cycle (16000ms:
-// 5 motives × 3200ms each). If the inbox answers instantly, the loader
-// used to vanish before the story played — it must stay up for the full
-// cycle even when data arrives immediately, then release.
+// ─── Loader reflects real load state ─────────────────────────────
+//
+// The loader used to be held for VB_FULL_CYCLE_MS — 16000ms (5 motives
+// x 3200ms) — UNCONDITIONALLY, even when the inbox had already answered.
+// That turned a ~50ms response into a 16s wait, and made a genuine load
+// failure indistinguishable from a slow network: the "cover the problem
+// with a spinner" antipattern. The previous test asserted that behaviour
+// as if it were a requirement, which is exactly how it survived.
+//
+// The only defensible hold is a tiny anti-flicker floor (~250ms): a loader
+// that appears for 30ms and vanishes reads as a rendering glitch.
 
 describe("UserChat loader minimum display time", () => {
 	afterEach(() => {
 		vi.useRealTimers();
 	});
 
-	it("holds the loader for the full story when data loads instantly, then releases", async () => {
-		const FULL_CYCLE_MS = 16000; // VB_MOTIVES.length × VB_MOTIVE_MS in ErrorBoundary
+	it("releases the loader as soon as data is ready, with only a brief anti-flicker floor", async () => {
 		vi.useFakeTimers();
 		mocks.get.mockResolvedValue({
 			messages: [...SERVER_MESSAGES],
@@ -814,21 +913,201 @@ describe("UserChat loader minimum display time", () => {
 			await vi.advanceTimersByTimeAsync(0);
 		});
 
-		// Data rendered…
+		// Data rendered.
 		expect(screen.getByText("Hello! How can I help?")).toBeTruthy();
-		// …but the loader is still telling its story.
-		expect(screen.getByTestId("ai-loader")).toBeTruthy();
 
-		// The loader must NOT release before the full story time.
+		// Far short of the old 16s story cycle the loader is gone. If this
+		// regresses, a fast inbox looks like a 16s stall to a real user.
 		await act(async () => {
-			await vi.advanceTimersByTimeAsync(FULL_CYCLE_MS - 1);
-		});
-		expect(screen.getByTestId("ai-loader")).toBeTruthy();
-
-		// Once the story time has fully elapsed, the loader releases.
-		await act(async () => {
-			await vi.advanceTimersByTimeAsync(100);
+			await vi.advanceTimersByTimeAsync(1000);
 		});
 		expect(screen.queryByTestId("ai-loader")).not.toBeInTheDocument();
+	});
+
+	it("keeps the loader up while the request is genuinely still in flight", async () => {
+		vi.useFakeTimers();
+		// Never resolves: the request is hung, not slow-but-arriving.
+		mocks.get.mockImplementation(() => new Promise(() => {}));
+
+		renderPage();
+		await act(async () => {
+			await vi.advanceTimersByTimeAsync(1000);
+		});
+
+		// A hung request must stay visibly loading rather than resolve to an
+		// empty thread that reads as "you have no messages".
+		expect(screen.getByTestId("ai-loader")).toBeTruthy();
+	});
+});
+
+describe("UserChat — draft note", () => {
+	it("tells the student a draft went to admin review without overwriting triage", async () => {
+		const user = userEvent.setup();
+		renderPage();
+		await waitFor(() =>
+			expect(screen.getByText("Hello! How can I help?")).toBeTruthy(),
+		);
+		mocks.postInbox.mockResolvedValue({
+			message: { id: "db-u-9", sender: "user", body: "post this please", created_at: "2026-08-01T10:01:00.000Z", read: true },
+			auto_reply: null,
+			emotion: { level: "none" },
+			triage: { reported: true, urgency: "normal", private: true },
+			draft_proposed: true,
+		});
+		await user.type(screen.getByLabelText("Chat message"), "post this please");
+		await user.click(screen.getByRole("button", { name: /send/i }));
+
+		await waitFor(() => expect(screen.getByText(/Filed as a private report/)).toBeTruthy());
+		expect(screen.getByText(/drafted a post from what you asked/)).toBeTruthy();
+	});
+});
+
+describe("UserChat — in-chat draft card", () => {
+	const DRAFT = {
+		title: "Broken lift in Block C",
+		description: "The lift has been broken for two days.",
+		category: "Facilities",
+		private: true,
+	};
+
+	async function sendWithDraft(user: unknown) {
+		(mocks.postInbox as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+			message: { id: "db-u-7", sender: "user", body: "post this please", created_at: "2026-08-01T10:01:00.000Z", read: true },
+			auto_reply: null,
+			emotion: { level: "none" },
+			triage: { reported: false, urgency: "none", private: false },
+			draft_proposed: true,
+			draft: DRAFT,
+		});
+		const u = user as { type: (el: Element, text: string) => Promise<void>; click: (el: Element) => Promise<void> };
+		await u.type(screen.getByLabelText("Chat message"), "post this please");
+		await u.click(screen.getByRole("button", { name: /send/i }));
+		await screen.findByTestId("draft-card");
+	}
+
+	it("shows the draft with private-only accept and dismiss", async () => {
+		const user = userEvent.setup();
+		renderPage();
+		await waitFor(() => expect(screen.getByText("Hello! How can I help?")).toBeTruthy());
+		await sendWithDraft(user);
+
+		expect(screen.getByText("Broken lift in Block C")).toBeInTheDocument();
+		expect(screen.getByText("Facilities")).toBeInTheDocument();
+		expect(screen.getByText("Suggested post — private only")).toBeInTheDocument();
+
+		await user.click(screen.getByRole("button", { name: "Dismiss" }));
+		expect(screen.queryByTestId("draft-card")).not.toBeInTheDocument();
+		// Dismissing posts nothing.
+		expect(mocks.postInbox).not.toHaveBeenCalledWith(
+			"/api/inbox",
+			expect.objectContaining({ action: "accept_own_draft" }),
+		);
+	});
+
+	it("accept publishes privately through the owner endpoint", async () => {
+		const user = userEvent.setup();
+		renderPage();
+		await waitFor(() => expect(screen.getByText("Hello! How can I help?")).toBeTruthy());
+		await sendWithDraft(user);
+
+		(mocks.postInbox as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({ ok: true });
+		await user.click(screen.getByRole("button", { name: "Post privately" }));
+		await waitFor(() => {
+			expect(mocks.postInbox).toHaveBeenCalledWith("/api/inbox", {
+				thread_id: "anon-test",
+				action: "accept_own_draft",
+			});
+		});
+		expect(screen.queryByTestId("draft-card")).not.toBeInTheDocument();
+		expect(screen.getByText(/private post is live/)).toBeInTheDocument();
+	});
+});
+
+describe("UserChat — typewriter reveal and read-aloud toggle", () => {
+	it("reveals the fresh AI reply with the typewriter, history stays plain", async () => {
+		const user = userEvent.setup();
+		renderPage();
+		await waitFor(() => expect(screen.getByText("Hello! How can I help?")).toBeTruthy());
+		mocks.postInbox.mockResolvedValue({
+			message: { id: "db-u-8", sender: "user", body: "hi again", created_at: "2026-08-01T10:02:00.000Z", read: true },
+			auto_reply: { id: "db-ai-8", sender: "ai", body: "Fresh streamed reply here", created_at: "2026-08-01T10:02:01.000Z", read: false },
+			emotion: { level: "none" },
+			triage: { reported: false, urgency: "none", private: false },
+		});
+		await user.type(screen.getByLabelText("Chat message"), "hi again");
+		await user.click(screen.getByRole("button", { name: /send/i }));
+
+		// The fresh bubble carries the typewriter caret; the older AI bubble does not stream.
+		await waitFor(() => expect(document.querySelector(".vb-caret")).toBeTruthy());
+		expect(screen.getByLabelText("AI reply")).toBeInTheDocument();
+	});
+
+	it("toggles read-aloud and persists the choice", async () => {
+		const user = userEvent.setup();
+		renderPage();
+		await waitFor(() => expect(screen.getByLabelText("Chat message")).toBeInTheDocument());
+		const toggle = screen.getByRole("button", { name: "Read AI replies aloud" });
+		expect(toggle.getAttribute("aria-pressed")).toBe("true");
+		await user.click(toggle);
+		expect(toggle.getAttribute("aria-pressed")).toBe("false");
+		expect(localStorage.getItem("vb:readaloud")).toBe("false");
+	});
+});
+
+describe("UserChat — derived title + owner delete", () => {
+	function mockThread(title?: string) {
+		mocks.get.mockResolvedValue({
+			messages: [...SERVER_MESSAGES],
+			thread: { thread_id: "anon-test", status: "open" },
+			...(title !== undefined ? { title } : {}),
+		});
+		mocks.put.mockResolvedValue({ ok: true });
+	}
+
+	it("shows the server-derived title, never an invented one", async () => {
+		mockThread("my canteen complaint");
+		renderPage();
+		expect(await screen.findByTestId("chat-title")).toHaveTextContent(
+			"my canteen complaint",
+		);
+	});
+
+	it("hides the title line when the server sends none", async () => {
+		mockThread(undefined);
+		renderPage();
+		await waitFor(() => expect(screen.getByText("Hello! How can I help?")).toBeTruthy());
+		expect(screen.queryByTestId("chat-title")).toBeNull();
+	});
+
+	it("deletes the conversation after confirm and clears the view", async () => {
+		mockThread("my canteen complaint");
+		mocks.post.mockResolvedValue({ ok: true });
+		const user = userEvent.setup();
+		renderPage();
+		await screen.findByTestId("chat-title");
+		await user.click(screen.getByRole("button", { name: "Delete conversation" }));
+		await user.click(screen.getByRole("button", { name: "Delete" }));
+		await waitFor(() =>
+		expect(mocks.post).toHaveBeenCalledWith("/api/inbox", {
+			action: "delete_thread",
+			thread_id: "anon-test",
+		}),
+		);
+		expect(mocks.toast).toHaveBeenCalledWith("Conversation deleted", "ok");
+		expect(screen.queryByTestId("chat-title")).toBeNull();
+	});
+
+	it("reports a failed delete honestly and keeps the conversation", async () => {
+		mockThread("my canteen complaint");
+		mocks.post.mockRejectedValueOnce(new Error("You can only delete your own conversation"));
+		const user = userEvent.setup();
+		renderPage();
+		await screen.findByTestId("chat-title");
+		await user.click(screen.getByRole("button", { name: "Delete conversation" }));
+		await user.click(screen.getByRole("button", { name: "Delete" }));
+		await waitFor(() =>
+		expect(mocks.toast).toHaveBeenCalledWith("You can only delete your own conversation", "err"),
+		);
+		expect(screen.getByTestId("chat-title")).toBeInTheDocument();
 	});
 });

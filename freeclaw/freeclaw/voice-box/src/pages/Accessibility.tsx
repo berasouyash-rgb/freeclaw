@@ -79,7 +79,7 @@ export default function Accessibility() {
 						Our Commitments
 					</h2>
 				</FadeIn>
-				<div className="grid md:grid-cols-2 gap-6">
+				<div className="grid grid-cols-1 md:grid-cols-2 gap-6">
 					{COMMITMENTS.map((c, i) => (
 						<FadeIn key={c.title} delay={i * 0.1}>
 							<div className="card p-6 h-full">
@@ -91,7 +91,7 @@ export default function Accessibility() {
 											key={item}
 											className="flex items-start gap-2 text-sm text-ink2"
 										>
-											<Check className="w-4 h-4 text-emerald-500 mt-0.5 shrink-0" />
+											<Check className="w-4 h-4 text-good mt-0.5 shrink-0" />
 											{item}
 										</li>
 									))}
@@ -169,8 +169,7 @@ export default function Accessibility() {
 							<div key={i} className="card p-4">
 								<div className="flex items-start justify-between mb-1">
 									<h3 className="font-medium text-ink text-sm">{item.issue}</h3>
-									<span
-										className={`text-xs px-2 py-0.5 rounded-full ${item.status === "Resolved" ? "bg-emerald-500/10 text-emerald-500" : "bg-amber-500/10 text-amber-500"}`}
+									<span												className={`text-xs px-2 py-0.5 rounded-full ${item.status === "Resolved" ? "bg-good/10 text-good" : "bg-warn/10 text-warn"}`}
 									>
 										{item.status}
 									</span>

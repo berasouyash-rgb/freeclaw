@@ -24,6 +24,7 @@ import OpsCenter from "../pages/admin/OpsCenter";
 vi.mock("../lib/api", () => ({
 	api: {
 		post: vi.fn(),
+		postAgent: vi.fn(),
 		get: vi.fn(),
 		getSlow: vi.fn(),
 		put: vi.fn(),
@@ -35,14 +36,93 @@ vi.mock("../contexts/AppContext", () => ({
 	useApp: () => ({ toast: vi.fn() }),
 }));
 
+const smartPollMock = vi.hoisted(() =>
+	vi.fn((fetcher: () => Promise<unknown>) => {
+		void Promise.resolve().then(fetcher);
+		return {
+			forceRefresh: fetcher,
+			isPolling: false,
+			lastError: null,
+		};
+	}),
+);
+
 vi.mock("../lib/useRealtime", () => ({
 	useRealtime: () => undefined,
+}));
+
+vi.mock("../lib/useSmartPoll", () => ({
+	useSmartPoll: smartPollMock,
 }));
 
 import { api } from "../lib/api";
 
 const mockedGetSlow = api.getSlow as ReturnType<typeof vi.fn>;
+const mockedGet = api.get as ReturnType<typeof vi.fn>;
 const mockedPost = api.post as ReturnType<typeof vi.fn>;
+const mockedPostAgent = api.postAgent as ReturnType<typeof vi.fn>;
+
+// ── Agent scorecard fixture ────────────────────────────────────────
+// The point of this endpoint is that HEALTH and IMPACT are separate
+// numbers. `silent-agent` has run 9,000 times and changed nothing — under
+// the old dashboard that volume read as productive work.
+const SCORECARD = {
+	summary: {
+		agents: 90,
+		healthy: 58,
+		no_real_impact: 88,
+		state_changing_agents: 2,
+		total_executions: 9124,
+		executions_without_state_change: 9021,
+		verdicts: { impactful: 2, "advisory-only": 56, "no-impact": 32 },
+	},
+	agents: [
+		{
+			agent_id: "silent-agent",
+			name: "Silent Agent",
+			division: "OPS",
+			status: "active",
+			verdict: "no-impact",
+			impact: {
+				class: "READ_AND_CLASSIFY",
+				behaviour_label: null,
+				state_changing: false,
+				disable_test: "Nothing changes if this agent is disabled.",
+			},
+			health: { runs: 9000, failures: 0, failure_rate: 0, alive: true },
+		},
+		{
+			agent_id: "spam-sentinel",
+			name: "Spam Sentinel",
+			division: "SAFETY",
+			status: "active",
+			verdict: "impactful",
+			impact: {
+				class: "UPDATE_CASE",
+				behaviour_label: "moderation",
+				state_changing: true,
+				disable_test: "Double-confirmed spam would stay visible.",
+			},
+			health: { runs: 103, failures: 0, failure_rate: 0, alive: true },
+		},
+	],
+	roster_audit: {
+		agents_total: 90,
+		agents_reaching_a_behaviour: 59,
+		agents_retired: 31,
+		behaviours_available: 57,
+		behaviours_reachable: 26,
+		behaviours_state_changing: 3,
+		retired_agents: [
+			{
+				agent_id: "orphan-agent",
+				name: "Orphan Agent",
+				division: "ANALYTICS",
+				reason: "routes to no behaviour",
+			},
+		],
+	},
+};
 
 const now = new Date().toISOString();
 const minuteAgo = new Date(Date.now() - 60_000).toISOString();
@@ -141,6 +221,7 @@ function seedData(
 		autoResolved: unknown[];
 		alerts: unknown[];
 		activity: unknown[];
+		paused: boolean;
 	}> = {},
 ) {
 	mockedGetSlow.mockImplementation(async (path: string) => {
@@ -173,7 +254,7 @@ function seedData(
 					status: "ready",
 					note: "AI provider configured",
 				},
-				config: { paused: false },
+				config: { paused: overrides.paused ?? false },
 				incidents: overrides.incidents ?? [INCIDENT],
 				attention: overrides.attention ?? [ATTENTION],
 				auto_resolved: overrides.autoResolved ?? [RESOLVED],
@@ -236,7 +317,72 @@ beforeEach(() => {
 	vi.clearAllMocks();
 });
 
+/** Seed the independently-fetched scorecard (plain api.get, not getSlow). */
+function seedScorecard(card: unknown = SCORECARD) {
+	mockedGet.mockImplementation(async (path: string) => {
+		if (path.startsWith("/api/agent-executions?action=scorecard")) return card;
+		return {};
+	});
+}
+
+describe("OpsCenter — agent scorecard (health is not impact)", () => {
+	it("separates process health from real state-changing impact", async () => {
+		seedData();
+		seedScorecard();
+		render(<OpsCenter />);
+
+		await waitFor(() => {
+			expect(screen.getByText("ROSTER REALITY")).toBeInTheDocument();
+		});
+
+		const section = screen
+			.getByText("ROSTER REALITY")
+			.closest("section") as HTMLElement;
+
+		// Health and impact are reported as different numbers, never merged.
+		expect(within(section).getByText("Healthy")).toBeInTheDocument();
+		expect(within(section).getByText("58")).toBeInTheDocument();
+		expect(within(section).getByText("State-changing")).toBeInTheDocument();
+		expect(within(section).getByText("No real impact")).toBeInTheDocument();
+		expect(within(section).getByText("88")).toBeInTheDocument();
+
+		// The volume that used to read as productive work is called out.
+		expect(
+			within(section).getByText(/of 9,124 recorded/),
+		).toBeInTheDocument();
+
+		// An agent that ran 9,000 times without changing state is labelled
+		// NO IMPACT rather than counted as productive.
+		expect(within(section).getByText("NO IMPACT")).toBeInTheDocument();
+		expect(within(section).getByText("Silent Agent")).toBeInTheDocument();
+		expect(within(section).getByText("9000 runs")).toBeInTheDocument();
+		expect(within(section).getByText("no behaviour")).toBeInTheDocument();
+
+		// Retired agents are named with a reason, not silently dropped.
+		expect(within(section).getByText(/31 agents reach no behaviour/)).toBeInTheDocument();
+	});
+
+	it("keeps the Ops Center usable when the scorecard endpoint fails", async () => {
+		seedData();
+		mockedGet.mockRejectedValue(new Error("scorecard unavailable"));
+		render(<OpsCenter />);
+
+		// Ops data still rendered; only the optional panel is absent.
+		await waitFor(() => {
+			expect(screen.getByText("AI Operations")).toBeInTheDocument();
+		});
+		expect(screen.queryByText("ROSTER REALITY")).not.toBeInTheDocument();
+		expect(screen.queryByText("OPS DATA UNAVAILABLE")).not.toBeInTheDocument();
+	});
+});
+
 describe("OpsCenter (hidden workforce command view)", () => {
+	it("does not install a recurring page poll", () => {
+		seedData();
+		render(<OpsCenter />);
+		expect(smartPollMock).not.toHaveBeenCalled();
+	});
+
 	it("renders live KPIs, provider chip and patrol freshness from real data", async () => {
 		seedData();
 		render(<OpsCenter />);
@@ -500,6 +646,46 @@ describe("OpsCenter (hidden workforce command view)", () => {
 		expect(screen.getByRole("button", { name: /Retry/ })).toBeInTheDocument();
 	});
 
+	it("renders the overnight briefing with sourced numbers", async () => {
+		seedData();
+		mockedGet.mockImplementation(async (path: string) => {
+			if (path.startsWith("/api/agent-executions?action=scorecard")) return SCORECARD;
+			if (path.startsWith("/api/workforce?action=overnight-briefing"))
+				return {
+					window: "24h",
+					generated_at: new Date().toISOString(),
+					items: [
+						{ label: "Workforce executions (24h)", value: 23, detail: "21 verified ok · 2 verified failed · 0 budget-blocked", source: "workforce ledger" },
+						{ label: "Workers paused by supervisor", value: 1, detail: "followup", source: "supervisor" },
+						{ label: "Open reports", value: null, detail: "ledger unreadable", source: "reports table" },
+					],
+					needs_attention: 1,
+				};
+			return {};
+		});
+		render(<OpsCenter />);
+
+		await waitFor(() => {
+			expect(screen.getByText("Overnight briefing")).toBeInTheDocument();
+		});
+		expect(screen.getByText("23")).toBeInTheDocument();
+		expect(screen.getByText(/needs attention/)).toBeInTheDocument();
+		// unknown renders as —, never 0
+		expect(screen.getByText("Open reports").closest("li")).toHaveTextContent("—");
+		expect(screen.getByText(/source: workforce ledger/)).toBeInTheDocument();
+	});
+
+	it("hides the briefing section when the endpoint answers nothing", async () => {
+		seedData();
+		seedScorecard();
+		render(<OpsCenter />);
+
+		await waitFor(() => {
+			expect(screen.getByText("AI Operations")).toBeInTheDocument();
+		});
+		expect(screen.queryByText("Overnight briefing")).not.toBeInTheDocument();
+	});
+
 	it("open-workforce button navigates to the AI Operations tab", async () => {
 		seedData();
 		render(<OpsCenter />);
@@ -516,10 +702,67 @@ describe("OpsCenter (hidden workforce command view)", () => {
 
 		await waitFor(() => {
 			expect(listener).toHaveBeenCalledWith(
-				expect.objectContaining({ detail: "ai-operations" }),
+				expect.objectContaining({ detail: "ops-center" }),
 			);
 		});
 		window.removeEventListener("vb:admin-tab", listener);
+	});
+
+	it("ask-the-agent answers through ask-agent and labels the engine", async () => {
+		seedData();
+		seedScorecard();
+		mockedPostAgent.mockResolvedValue({
+			ok: true,
+			status: "succeeded",
+			response: "2 open reports need triage.",
+			backend: "builtin",
+			model: "test-model",
+		});
+		render(<OpsCenter />);
+
+		await waitFor(() => {
+			expect(screen.getByPlaceholderText(/Summarize open high-priority reports/)).toBeInTheDocument();
+		});
+		fireEvent.change(
+			screen.getByPlaceholderText(/Summarize open high-priority reports/),
+			{ target: { value: "what needs attention?" } },
+		);
+		fireEvent.click(screen.getByRole("button", { name: /^Ask$/ }));
+
+		await waitFor(() => {
+			expect(mockedPostAgent).toHaveBeenCalledWith("/api/workforce", {
+				action: "ask-agent",
+				input: "what needs attention?",
+			});
+		});
+		expect(await screen.findByText("2 open reports need triage.")).toBeInTheDocument();
+		expect(screen.getByText(/built-in engine/)).toBeInTheDocument();
+		expect(screen.getByText(/test-model/)).toBeInTheDocument();
+	});
+
+	it("ask-the-agent preserves the question when the backend cannot answer", async () => {
+		seedData();
+		seedScorecard();
+		mockedPostAgent.mockResolvedValue({
+			ok: false,
+			error: "No AI provider key is configured",
+		});
+		render(<OpsCenter />);
+
+		await waitFor(() => {
+			expect(screen.getByPlaceholderText(/Summarize open high-priority reports/)).toBeInTheDocument();
+		});
+		fireEvent.change(
+			screen.getByPlaceholderText(/Summarize open high-priority reports/),
+			{ target: { value: "hello?" } },
+		);
+		fireEvent.click(screen.getByRole("button", { name: /^Ask$/ }));
+
+		await waitFor(() => {
+			expect(screen.getByText(/No AI provider key is configured/)).toBeInTheDocument();
+		});
+		// draft preserved for retry
+		expect(screen.getByDisplayValue("hello?")).toBeInTheDocument();
 	});
 
 	it("run-patrol triggers a real workforce patrol through the API", async () => {
@@ -578,5 +821,149 @@ describe("OpsCenter (hidden workforce command view)", () => {
 			screen.getByText(/Triage report: Bullying or harassment/),
 		).toBeInTheDocument();
 		expect(screen.getByText("3 correlated events")).toBeInTheDocument();
+	});
+});
+
+describe("OpsCenter — automations (visible workers)", () => {
+	const WORKERS = [
+		{
+			id: "trends",
+			name: "Trend Watch",
+			description: "Alerts on spikes.",
+			last: { at: new Date().toISOString(), ok: true, summary: "0 spikes" },
+		},
+		{
+			id: "sla",
+			name: "SLA Watch",
+			description: "Warns and escalates.",
+			last: null,
+		},
+	];
+
+	function seedAutomations() {
+		mockedGet.mockImplementation(async (path: string) => {
+			if (path.startsWith("/api/agent-executions?action=scorecard"))
+				return SCORECARD;
+			if (path.startsWith("/api/workforce?action=automation-status"))
+				return { ok: true, workers: WORKERS };
+			return {};
+		});
+	}
+
+	it("lists every worker with its last-run output", async () => {
+		seedData();
+		seedAutomations();
+		render(<OpsCenter />);
+
+		await waitFor(() => {
+			expect(screen.getByText("Trend Watch")).toBeInTheDocument();
+		});
+		expect(screen.getByText("Alerts on spikes.")).toBeInTheDocument();
+		expect(screen.getByText(/Last run: 0 spikes/)).toBeInTheDocument();
+		expect(screen.getByText("SLA Watch")).toBeInTheDocument();
+		expect(
+			screen.getByText("No recorded run yet — runs on cron schedule."),
+		).toBeInTheDocument();
+	});
+
+	it("runs a worker on demand and shows its output", async () => {
+		seedData();
+		seedAutomations();
+		mockedPost.mockResolvedValue({
+			ok: true,
+			worker: "trends",
+			result: { checked: 42 },
+			last: { summary: "1 spike" },
+			duration_ms: 120,
+		});
+		render(<OpsCenter />);
+
+		await waitFor(() => {
+			expect(screen.getByText("Trend Watch")).toBeInTheDocument();
+		});
+		fireEvent.click(screen.getByRole("button", { name: /Run Trend Watch now/ }));
+
+		await waitFor(() => {
+			expect(mockedPost).toHaveBeenCalledWith("/api/workforce", {
+				action: "automation-run",
+				worker: "trends",
+			});
+		});
+		await waitFor(() => {
+			expect(screen.getByText("Just ran: 1 spike")).toBeInTheDocument();
+		});
+	});
+
+	it("keeps the question on run failure (no silent loss)", async () => {
+		seedData();
+		seedAutomations();
+		mockedPost.mockResolvedValue({ ok: false, error: "backend down" });
+		render(<OpsCenter />);
+
+		await waitFor(() => {
+			expect(screen.getByText("Trend Watch")).toBeInTheDocument();
+		});
+		fireEvent.click(screen.getByRole("button", { name: /Run Trend Watch now/ }));
+
+		await waitFor(() => {
+			expect(screen.getByText(/backend down/)).toBeInTheDocument();
+		});
+	});
+});
+
+describe("OpsCenter — workforce kill switch", () => {
+	it("pauses through the confirm dialog and posts the pause action", async () => {
+		seedData();
+		seedScorecard();
+		mockedPost.mockResolvedValue({ ok: true, paused: true });
+		render(<OpsCenter />);
+		await screen.findByRole("button", { name: /Run patrol/ });
+
+		fireEvent.click(screen.getByRole("button", { name: /Pause workforce/ }));
+		const dialog = await screen.findByRole("dialog", {
+			name: "Pause workforce?",
+		});
+		fireEvent.click(within(dialog).getByRole("button", { name: "Pause" }));
+		await waitFor(() => {
+			expect(mockedPost).toHaveBeenCalledWith("/api/workforce", {
+				action: "pause",
+			});
+		});
+	});
+
+	it("does not pause when the confirm dialog is cancelled", async () => {
+		seedData();
+		seedScorecard();
+		render(<OpsCenter />);
+		await screen.findByRole("button", { name: /Run patrol/ });
+
+		fireEvent.click(screen.getByRole("button", { name: /Pause workforce/ }));
+		const dialog = await screen.findByRole("dialog", {
+			name: "Pause workforce?",
+		});
+		fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+		expect(mockedPost).not.toHaveBeenCalledWith("/api/workforce", {
+			action: "pause",
+		});
+	});
+
+	it("resumes directly when the workforce is paused", async () => {
+		seedData({ paused: true });
+		seedScorecard();
+		mockedPost.mockResolvedValue({ ok: true, paused: false });
+		render(<OpsCenter />);
+		const btn = await screen.findByRole("button", {
+			name: /Resume workforce/,
+		});
+		expect(
+			screen.queryByRole("button", { name: /Pause workforce/ }),
+		).not.toBeInTheDocument();
+
+		fireEvent.click(btn);
+		await waitFor(() => {
+			expect(mockedPost).toHaveBeenCalledWith("/api/workforce", {
+				action: "resume",
+			});
+		});
 	});
 });

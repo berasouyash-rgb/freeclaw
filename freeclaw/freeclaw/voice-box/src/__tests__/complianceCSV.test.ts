@@ -25,7 +25,7 @@ function makePost(overrides: Partial<PostData> = {}): PostData {
     title: "Test Post",
     description: "A test post description",
     category: "Facilities",
-    status: "open",
+    status: "reported",
     priority: "medium",
     type: "problem",
     author_id: "user-1",
@@ -114,7 +114,7 @@ describe("filterByDateRange", () => {
     ];
     const result = filterByDateRange(posts, { preset: "today" });
     expect(result).toHaveLength(1);
-    expect(result[0].id).toBe("post-1");
+    expect(result[0]!.id).toBe("post-1");
   });
 
   it("filters posts for custom date range", () => {
@@ -130,7 +130,7 @@ describe("filterByDateRange", () => {
     };
     const result = filterByDateRange(posts, range);
     expect(result).toHaveLength(1);
-    expect(result[0].id).toBe("p2");
+    expect(result[0]!.id).toBe("p2");
   });
 
   it("returns empty array when no posts match", () => {
@@ -157,47 +157,57 @@ describe("buildComplianceCSV", () => {
     vi.useRealTimers();
   });
 
-  it("returns empty-ish CSV when no posts", () => {
+  it("starts with an Excel-readable UTF-8 BOM and one header row", () => {
     const csv = buildComplianceCSV([], { preset: "all" }, "problem");
-    expect(csv).toContain("Voice Box — Compliance Export");
-    expect(csv).toContain("Total Records: 0");
-    // Should still have header row
-    expect(csv).toContain("Title");
-    expect(csv).toContain("Category");
+    expect(csv.startsWith('\uFEFF"Title","Category","Status","Priority"')).toBe(true);
+    expect(csv.slice(1).split("\r\n")).toHaveLength(1);
   });
 
-  it("includes summary section with status breakdown", () => {
-    const posts = [
-      makePost({ status: "open" }),
-      makePost({ id: "p2", status: "open" }),
-      makePost({ id: "p3", status: "solved" }),
-    ];
+  it("contains only a rectangular table, with no summary or separator rows", () => {
+    const posts = [makePost(), makePost({ id: "p2", title: "Second complaint" })];
     const csv = buildComplianceCSV(posts, { preset: "all" }, "problem");
-    expect(csv).toContain("— Status Breakdown —");
-    expect(csv).toContain("— Category Breakdown —");
-    expect(csv).toContain("— Priority Breakdown —");
-    expect(csv).toContain("— Engagement Summary —");
+    const lines = csv.slice(1).split("\r\n");
+    expect(lines).toHaveLength(3);
+    const widths = lines.map((line) => line.split('","').length);
+    expect(widths).toEqual([21, 21, 21]);
+    expect(lines[0]).toContain('"Supports","Hearts","Comments"');
+    expect(csv).not.toContain("Breakdown");
+    expect(csv).not.toContain("════");
+  });
+
+  it("preserves international text, commas, quotes and multiline descriptions", () => {
+    const csv = buildComplianceCSV([makePost({
+      title: 'Café, "library"',
+      description: "पहली पंक्ति\nSecond line",
+    })], { preset: "all" }, "problem");
+    const first3 = Array.from(new TextEncoder().encode(csv).slice(0, 3));
+    expect(first3).toEqual([239, 187, 191]);
+    expect(csv).toContain('"Café, ""library"""');
+    expect(csv).toContain('"पहली पंक्ति\nSecond line"');
+  });
+
+  it("returns only the data table when no posts", () => {
+    const csv = buildComplianceCSV([], { preset: "all" }, "problem");
+    expect(csv.slice(1).split("\r\n")).toHaveLength(1);
+    expect(csv).toContain('"Title"');
   });
 
   it("generates correct CSV header columns", () => {
     const csv = buildComplianceCSV([makePost()], { preset: "all" }, "problem");
-    const lines = csv.split("\n");
-    // Find the header line (after separator)
-    const sepIdx = lines.findIndex((l) => l.includes("══════"));
-    const headerLine = lines[sepIdx + 1];
-    expect(headerLine).toContain("Title");
-    expect(headerLine).toContain("Category");
-    expect(headerLine).toContain("Status");
-    expect(headerLine).toContain("Priority");
-    expect(headerLine).toContain("Created");
-    expect(headerLine).toContain("Post ID");
+    const headerLine = csv.slice(1).split("\r\n")[0];
+    expect(headerLine).toContain('"Title"');
+    expect(headerLine).toContain('"Category"');
+    expect(headerLine).toContain('"Status"');
+    expect(headerLine).toContain('"Priority"');
+    expect(headerLine).toContain('"Created"');
+    expect(headerLine).toContain('"Post ID"');
   });
 
   it("includes data rows with correct values", () => {
     const post = makePost({
       title: "Broken Elevator",
       category: "Facilities",
-      status: "open",
+      status: "reported",
     });
     const csv = buildComplianceCSV([post], { preset: "all" }, "problem");
     expect(csv).toContain("Broken Elevator");
@@ -225,28 +235,25 @@ describe("buildComplianceCSV", () => {
     expect(csv).toMatch(/\d{4}-\d{2}-\d{2} \d{2}:\d{2}/);
   });
 
-  it("includes engagement totals in summary", () => {
+  it("includes per-record engagement counts", () => {
     const posts = [
       makePost({ reactions: { support: 10, heart: 5 }, comment_count: 3 }),
       makePost({ id: "p2", reactions: { support: 2, heart: 1 }, comment_count: 7 }),
     ];
     const csv = buildComplianceCSV(posts, { preset: "all" }, "problem");
-    expect(csv).toContain("Total Supports");
-    expect(csv).toContain("12"); // 10 + 2
-    expect(csv).toContain("Total Hearts");
-    expect(csv).toContain("6"); // 5 + 1
-    expect(csv).toContain("Total Comments");
-    expect(csv).toContain("10"); // 3 + 7
+    const rows = csv.slice(1).split("\r\n").slice(1);
+    expect(rows[0]).toContain('"10","5","3"');
+    expect(rows[1]).toContain('"2","1","7"');
   });
 
-  it("labels suggestion type correctly", () => {
+  it("marks type column as Suggestion", () => {
     const csv = buildComplianceCSV([makePost()], { preset: "all" }, "suggestion");
-    expect(csv).toContain("Suggestions Report");
+    expect(csv).toContain('"Suggestion"');
   });
 
-  it("labels problem type correctly", () => {
+  it("marks type column as Problem", () => {
     const csv = buildComplianceCSV([makePost()], { preset: "all" }, "problem");
-    expect(csv).toContain("Complaints Report");
+    expect(csv).toContain('"Problem"');
   });
 
   it("filters by date range before generating CSV", () => {
@@ -255,20 +262,23 @@ describe("buildComplianceCSV", () => {
       makePost({ id: "p2", created_at: "2020-01-01T00:00:00Z" }), // old
     ];
     const csv = buildComplianceCSV(posts, { preset: "today" }, "problem");
-    expect(csv).toContain("Total Records: 1");
-    expect(csv).toContain("Test Post"); // default title from makePost
+    const lines = csv.slice(1).split("\r\n");
+    expect(lines).toHaveLength(2); // header + 1 filtered row
+    expect(lines[1]).toContain('"Test Post"');
   });
 
-  it("shows percentage breakdowns in summary", () => {
+  it("includes one row per filtered record", () => {
     const posts = [
-      makePost({ status: "open" }),
-      makePost({ id: "p2", status: "open" }),
+      makePost({ status: "reported" }),
+      makePost({ id: "p2", status: "reported" }),
       makePost({ id: "p3", status: "solved" }),
     ];
     const csv = buildComplianceCSV(posts, { preset: "all" }, "problem");
-    // 2/3 = 66.7%, 1/3 = 33.3%
-    expect(csv).toMatch(/66\.7%/);
-    expect(csv).toMatch(/33\.3%/);
+    const lines = csv.slice(1).split("\r\n");
+    expect(lines).toHaveLength(4); // header + 3 rows
+    expect(lines[1]).toContain('"Reported"');
+    expect(lines[2]).toContain('"Reported"');
+    expect(lines[3]).toContain('"Solved"');
   });
 
   it("handles posts with missing optional fields", () => {

@@ -30,7 +30,14 @@ import { resetTutorial } from "../components/Tutorial";
 import { ConfirmDialog } from "../components/ui";
 import { useApp } from "../contexts/AppContext";
 import { api } from "../lib/api";
+import { sendNotificationEmail } from "../lib/email";
 import { getDisplayName } from "../lib/identity";
+import {
+	INFRASTRUCTURE_COPY,
+	LOCAL_PROFILE_COPY,
+	NOTIFY_PRIVACY_COPY,
+	RETENTION_COPY,
+} from "../lib/privacyCopy";
 
 interface NotifyChannelPrefs {
 	phone: string;
@@ -110,6 +117,8 @@ export default function Settings() {
 	});
 	const [channelSaving, setChannelSaving] = useState(false);
 	const channelLoaded = useRef(false);
+	/** Last email persisted on the server — detects added/changed addresses. */
+	const lastSavedEmail = useRef("");
 
 	useEffect(() => {
 		if (channelLoaded.current) return;
@@ -125,6 +134,12 @@ export default function Settings() {
 					email_enabled: p.email_enabled !== false,
 				}),
 			)
+			.then(() =>
+				setChannelPrefs((cur) => {
+					lastSavedEmail.current = cur.email || "";
+					return cur;
+				}),
+			)
 			.catch(() => {
 				/* offline / prefs endpoint unavailable — keep defaults */
 			});
@@ -133,6 +148,7 @@ export default function Settings() {
 	const saveChannelPrefs = async () => {
 		setChannelSaving(true);
 		try {
+			const prevEmail = lastSavedEmail.current;
 			const saved = await api.post<NotifyChannelPrefs>(
 				"/api/notify-prefs",
 				{
@@ -151,12 +167,35 @@ export default function Settings() {
 				status_updates: saved.status_updates !== false,
 				email_enabled: saved.email_enabled !== false,
 			});
+			lastSavedEmail.current = saved.email || "";
 			toast(
 				saved.phone || saved.email
 					? "Alert channels saved — you'll get SMS/email on updates"
 					: "Alert channels cleared",
 				"ok",
 			);
+			// Free welcome email the moment an email is added (or changed) with
+			// alerts on — proves delivery works and confirms the address.
+			// Best-effort: a failed send never blocks the saved prefs.
+			if (
+				saved.email &&
+				saved.email_enabled !== false &&
+				saved.email.trim().toLowerCase() !== prevEmail.trim().toLowerCase()
+			) {
+				sendNotificationEmail({
+					to_email: saved.email.trim(),
+					notification_title: "Email alerts are on",
+					notification_body:
+						"You'll now get an email when a post you follow is solved or updated by the team. You can switch this off anytime in Settings → Notifications.",
+					notification_url: "https://voicebox.app/activity",
+				})
+					.then((r) => {
+						if (r.success) toast("Welcome email sent — check your inbox", "ok");
+					})
+					.catch(() => {
+						/* welcome send is best-effort — prefs are already saved */
+					});
+			}
 		} catch (e: unknown) {
 			const msg =
 				e instanceof Error ? e.message : "Could not save alert channels";
@@ -288,9 +327,7 @@ export default function Settings() {
 									Phone & email alerts
 								</p>
 								<p className="text-xs text-ink3 mb-3">
-									Get an SMS or email when a post you follow is solved or
-									updated by the team. Numbers/emails are stored on the
-									server only to deliver these alerts.
+									{NOTIFY_PRIVACY_COPY}
 								</p>
 								<div className="space-y-3">
 									<label className="block">
@@ -641,8 +678,8 @@ export default function Settings() {
 							/>
 							<ActionRow
 								icon={Download}
-								label="Export your data"
-								desc="Download all your posts, comments, and votes as JSON"
+								label="Export on-device settings"
+								desc="Download the settings and activity stored in this browser as JSON"
 								action="Export"
 								onClick={() => {
 									const data = {
@@ -693,9 +730,8 @@ export default function Settings() {
 											className="text-good mt-0.5 flex-shrink-0"
 										/>
 										<span>
-											<strong className="text-ink">Collected:</strong> Posts,
-											comments, votes, and reactions (linked to anonymous ID
-											only)
+											<strong className="text-ink">Public content:</strong> Posts,
+											comments, votes, and reactions are linked to an anonymous ID.
 										</span>
 									</li>
 									<li className="flex items-start gap-2">
@@ -703,32 +739,21 @@ export default function Settings() {
 											size={12}
 											className="text-good mt-0.5 flex-shrink-0"
 										/>
-										<span>
-											<strong className="text-ink">Not collected:</strong>{" "}
-											Names, emails, IP addresses, device fingerprints, browsing
-											history
-										</span>
+										<span>{NOTIFY_PRIVACY_COPY}</span>
 									</li>
 									<li className="flex items-start gap-2">
 										<Check
 											size={12}
 											className="text-good mt-0.5 flex-shrink-0"
 										/>
-										<span>
-											<strong className="text-ink">No tracking:</strong> No
-											analytics, no third-party cookies, no advertising scripts
-										</span>
+										<span>{LOCAL_PROFILE_COPY}</span>
 									</li>
 									<li className="flex items-start gap-2">
 										<Check
 											size={12}
 											className="text-good mt-0.5 flex-shrink-0"
 										/>
-										<span>
-											<strong className="text-ink">Your data:</strong> Your
-											avatar, profile photo, bio, and display name are stored
-											only in your browser and never sent to the server.
-										</span>
+										<span>{INFRASTRUCTURE_COPY}</span>
 									</li>
 								</ul>
 							</div>
@@ -738,10 +763,7 @@ export default function Settings() {
 									Data Retention
 								</h3>
 								<p className="text-xs text-ink3 leading-relaxed">
-									Posts and comments are retained indefinitely unless you delete
-									them. Anonymous IDs are stored in your browser's localStorage
-									and never leave your device. Server-side data contains no
-									personally identifiable information.
+									{RETENTION_COPY}
 								</p>
 							</div>
 
@@ -750,9 +772,9 @@ export default function Settings() {
 									Open Source
 								</h3>
 								<p className="text-xs text-ink3 leading-relaxed">
-									Voice Box is open source. You can audit the code to verify our
-									privacy claims. No hidden telemetry, no sneaky data
-									collection.
+									Voice Box is open source. Review the code and current deployment
+									settings together, including the server-side contact and moderation
+									paths described above.
 								</p>
 							</div>
 						</div>

@@ -15,7 +15,7 @@
 //   const result = await orchestrateWorkflow(workflow, context);
 
 import supabase from "./_db-client.js";
-import { executeTool } from "./_tool-registry.js";
+import { executeTool } from "./_agent-tool-registry.js";
 
 // ─── Agent Definitions ────────────────────────────────────────────
 const AGENTS = {

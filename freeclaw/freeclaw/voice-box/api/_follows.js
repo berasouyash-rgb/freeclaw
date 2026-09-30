@@ -124,7 +124,7 @@ export default async function handler(req, res) {
 
 		// P0 SECURITY FIX: Verify caller identity on all operations
 		if (req.method !== "OPTIONS") {
-			const caller = await verifyCallerIdentity(req, userId);
+			const caller = await verifyCallerIdentity(req, res, userId);
 			if (!caller.ok)
 				return res.status(caller.status).json({ error: caller.error });
 		}

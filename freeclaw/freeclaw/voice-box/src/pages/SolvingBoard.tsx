@@ -1,7 +1,9 @@
-﻿import { KanbanSquare } from "lucide-react";
+﻿import { KanbanSquare, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router";
 import PurgeCountdown from "../components/PurgeCountdown";
+import UpdateNotice from "../components/admin/UpdateNotice";
+import { useUpdateSignal } from "../hooks/useUpdateSignal";
 import { api } from "../lib/api";
 import { useRealtime } from "../lib/useRealtime";
 import { CAT_EMOJI, STATUS_META, timeAgo } from "../lib/utils";
@@ -20,11 +22,16 @@ export default function SolvingBoard() {
 	const [posts, setPosts] = useState<PostData[]>([]);
 	const [loading, setLoading] = useState(true);
 	const [error, setError] = useState("");
+	// Safety net: statuses the board has no column for (e.g. future
+	// workflow states) must never vanish silently — they get their own
+	// column below.
+	const orphans = posts.filter((p) => !COLUMNS.includes(p.status));
 
-	const load = useCallback(async () => {
+	const load = useCallback(async (silent = false) => {
 		try {
 			setError("");
-			setPosts(await api.getSlow("/api/posts?type=problem"));
+			if (!silent) setLoading(true);
+			setPosts((await api.getSlow("/api/posts?type=problem")) || []);
 		} catch (e: unknown) {
 			setError(e instanceof Error ? e.message : "Failed to load data");
 		}
@@ -35,33 +42,63 @@ export default function SolvingBoard() {
 		load();
 	}, [load]);
 
-	// Real-time: cards should move between columns when admin changes status
-	useRealtime(
-		["posts"],
-		useCallback(() => {
-			load();
-		}, [load]),
-		1200,
-	);
+	// Freshness signal, not a refetch: the old wiring reloaded the WHOLE
+	// board (skeletons and all) on every posts event, so under any steady
+	// write activity the columns visibly rebuilt every ~1s and no work was
+	// possible. Realtime now only raises a badge; the reader pulls a fresh
+	// snapshot with Refresh or the update notice. Cards still move between
+	// columns — exactly one click later.
+	const { updatesAvailable, markUpdatesAvailable, clearUpdates } =
+		useUpdateSignal();
+	const [refreshing, setRefreshing] = useState(false);
+
+	const handleRefresh = useCallback(async () => {
+		setRefreshing(true);
+		try {
+			await load(true);
+			clearUpdates();
+		} finally {
+			setRefreshing(false);
+		}
+	}, [load, clearUpdates]);
+
+	useRealtime(["posts"], markUpdatesAvailable, 1_000);
 
 	return (
 		<div>
-			<h1 className="font-display font-bold text-2xl flex items-center gap-2 mb-1">
-				<KanbanSquare className="text-accent" size={24} /> Public Solving Board
-			</h1>
+			<div className="flex items-center justify-between gap-3 flex-wrap">
+				<h1 className="font-display font-bold text-2xl flex items-center gap-2 mb-1">
+					<KanbanSquare className="text-accent" size={24} /> Public Solving Board
+				</h1>
+				<button
+					className="btn btn-soft !py-1.5 !px-3 text-xs flex items-center gap-1.5"
+					onClick={() => void handleRefresh()}
+					disabled={refreshing}
+					aria-label="Refresh solving board"
+				>
+					<RefreshCw size={13} className={refreshing ? "animate-spin" : ""} />
+					{refreshing ? "Refreshing…" : "Refresh"}
+				</button>
+			</div>
 			<p className="text-sm text-ink3 mb-6">
 				Full transparency — track every reported issue from submission to
 				resolution.
 			</p>
+			<UpdateNotice
+				count={updatesAvailable}
+				onViewUpdates={() => void handleRefresh()}
+				refreshing={refreshing}
+			/>
 
 			{error && (
 				<div className="card p-6 text-center">
 					<p className="text-bad text-sm">{error}</p>
 					<button
 						className="btn btn-soft mt-3"
+						// Silent retry: keep the error card honest without
+						// blanking to skeletons first.
 						onClick={() => {
-							setLoading(true);
-							load();
+							load(true);
 						}}
 					>
 						Retry
@@ -78,6 +115,23 @@ export default function SolvingBoard() {
 
 			{!loading && !error && (
 				<div className="flex gap-3 overflow-x-auto pb-4 snap-x">
+					{orphans.length > 0 && (
+						<div key="__needs-triage" className="w-72 shrink-0 snap-start">
+						<div className="flex items-center gap-2 mb-2 px-1">
+							<span className="w-2.5 h-2.5 rounded-full" style={{ background: "#d98a0b" }} aria-hidden />
+							<h2 className="font-display font-semibold text-sm">Needs triage</h2>
+							<span className="chip !text-[10px] ml-auto">{orphans.length}</span>
+						</div>
+						<div className="space-y-2 min-h-24 rounded-2xl bg-surface2/50 p-2">
+							{orphans.map((p) => (
+								<Link key={p.id} to={`/post/${p.id}`} className="card card-hover block p-3">
+									<p className="text-[13px] font-semibold leading-snug line-clamp-2">{p.title}</p>
+									<p className="text-[10px] text-ink3 mt-1">status: {p.status || "unknown"}</p>
+								</Link>
+							))}
+						</div>
+						</div>
+					)}
 					{COLUMNS.map((col) => {
 						const meta = STATUS_META[col] ?? {
 							label: col,

@@ -45,6 +45,11 @@ function getDevice(): string {
 // Batch buffer — send every 5 seconds if there are pending metrics
 const buffer: VitalMetric[] = [];
 let flushTimer: ReturnType<typeof setTimeout> | null = null;
+// Rate limiting: max 50 metric reports per minute (INP fires on every
+// long interaction, so a busy page can generate hundreds of reports)
+const VITALS_RATE_LIMIT = 50;
+let vitalsRateStart = Date.now();
+let vitalsRateCount = 0;
 
 function flush() {
   if (buffer.length === 0) return;
@@ -73,6 +78,14 @@ function scheduleFlush() {
 }
 
 function report(name: string, value: number, delta: number, id: string) {
+  const now = Date.now();
+  if (now - vitalsRateStart > 60_000) {
+    vitalsRateStart = now;
+    vitalsRateCount = 0;
+  }
+  if (vitalsRateCount >= VITALS_RATE_LIMIT) return;
+  vitalsRateCount++;
+
   const metric: VitalMetric = {
     name,
     value: Math.round(name === "CLS" ? value * 1000 : value),
@@ -108,18 +121,26 @@ function observeLCP() {
   }
 }
 
-/** Observe CLS */
+/** Observe CLS — accumulate shifts and report final value on page hide,
+ *  matching the official web-vitals library behavior. */
 function observeCLS() {
   try {
+    let clsReported = false;
     const po = new PerformanceObserver((list) => {
       for (const entry of list.getEntries()) {
         const e = entry as PerformanceEntry & { hadRecentInput?: boolean; value: number };
         if (e.hadRecentInput) continue;
         _clsValue += e.value;
-        report("CLS", _clsValue, e.value, `${Date.now()}-cls`);
       }
     });
     po.observe({ type: "layout-shift", buffered: true });
+    // Report final CLS once when the page is about to be hidden
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "hidden" && !clsReported && _clsValue > 0) {
+        clsReported = true;
+        report("CLS", _clsValue, _clsValue, `${Date.now()}-cls`);
+      }
+    });
   } catch {
     /* not supported */
   }

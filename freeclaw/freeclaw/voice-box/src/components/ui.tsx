@@ -1,5 +1,6 @@
 import { AlertTriangle, Flag, X } from "lucide-react";
 import { type ReactNode, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 
 /* ---------- Modal ---------- */
 export function Modal({
@@ -31,7 +32,10 @@ export function Modal({
 	}, [open, onClose]);
 
 	if (!open) return null;
-	return (
+	// Portal to <body>: callers render Modal deep inside cards/rows whose
+	// overflow, transforms, or filters would otherwise clip the fixed dialog
+	// and trap it under siblings (report dialog painting inside the post).
+	return createPortal(
 		<div
 			className="fixed inset-0 z-[70] grid place-items-end sm:place-items-center p-0 sm:p-4 overflow-y-auto"
 			role="dialog"
@@ -67,7 +71,8 @@ export function Modal({
 					</div>
 				)}
 			</div>
-		</div>
+		</div>,
+		document.body,
 	);
 }
 
@@ -83,12 +88,35 @@ export function ConfirmDialog({
 }: {
 	open: boolean;
 	onClose: () => void;
-	onConfirm: () => void;
+	onConfirm: () => void | Promise<void>;
 	title: string;
 	message: string;
 	confirmLabel?: string;
 	danger?: boolean;
 }) {
+	const [busy, setBusy] = useState(false);
+
+	/* Async handlers (e.g. bulk deletes) get real busy feedback: the confirm
+	 * button disables and shows progress while the action runs, and the dialog
+	 * only closes on success — a failure leaves the dialog open so the admin
+	 * can retry. Sync handlers keep the old fire-and-close behavior. A busy
+	 * guard also stops a double-click from firing the action twice. */
+	const handleConfirm = async () => {
+		if (busy) return;
+		const result = onConfirm();
+		if (result instanceof Promise) {
+			setBusy(true);
+			try {
+				await result;
+				onClose();
+			} finally {
+				setBusy(false);
+			}
+		} else {
+			onClose();
+		}
+	};
+
 	return (
 		<Modal
 			open={open}
@@ -96,18 +124,16 @@ export function ConfirmDialog({
 			title={title}
 			footer={
 				<div className="flex gap-2 justify-end">
-					<button className="btn btn-ghost" onClick={onClose}>
+					<button className="btn btn-ghost" onClick={onClose} disabled={busy}>
 						Cancel
 					</button>
 					<button
 						className={`btn ${danger ? "btn-danger !bg-bad !text-white" : "btn-primary"}`}
-						onClick={() => {
-							onConfirm();
-							onClose();
-						}}
+						onClick={handleConfirm}
+						disabled={busy}
 						autoFocus
 					>
-						{confirmLabel}
+						{busy ? "Working…" : confirmLabel}
 					</button>
 				</div>
 			}

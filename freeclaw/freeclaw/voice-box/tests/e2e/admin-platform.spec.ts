@@ -19,7 +19,11 @@ test.describe("Admin Login Page", () => {
     await page.waitForLoadState("domcontentloaded");
 
     // Should show the admin login form
-    const heading = page.locator('text="Admin access"').first();
+    // NOTE: quoted `text="..."` is an EXACT, case-sensitive match, and the UI
+    // renders "Admin Access". These three assertions therefore matched nothing
+    // and failed as "element(s) not found" — a stale-selector bug, not a
+    // product bug. A case-insensitive text match tracks the real copy.
+    const heading = page.getByText(/admin access/i).first();
     await expect(heading).toBeVisible({ timeout: 10000 });
   });
 
@@ -107,7 +111,11 @@ test.describe("Admin Login Page", () => {
     await page.waitForLoadState("domcontentloaded");
 
     // Login form should be visible
-    const heading = page.locator('text="Admin access"').first();
+    // NOTE: quoted `text="..."` is an EXACT, case-sensitive match, and the UI
+    // renders "Admin Access". These three assertions therefore matched nothing
+    // and failed as "element(s) not found" — a stale-selector bug, not a
+    // product bug. A case-insensitive text match tracks the real copy.
+    const heading = page.getByText(/admin access/i).first();
     await expect(heading).toBeVisible({ timeout: 10000 });
 
     // No horizontal overflow
@@ -164,7 +172,7 @@ test.describe("Admin Dashboard (Authenticated)", () => {
     // Should show either the admin sidebar (if auth works) or login form (if not)
     const hasSidebar = await page.locator(".vb-admin-nav, .vb-admin-sidebar").first()
       .isVisible({ timeout: 3000 }).catch(() => false);
-    const hasLoginForm = await page.locator('text="Admin access"').first()
+    const hasLoginForm = await page.getByText(/admin access/i).first()
       .isVisible({ timeout: 3000 }).catch(() => false);
 
     expect(hasSidebar || hasLoginForm).toBe(true);

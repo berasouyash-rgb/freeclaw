@@ -19,8 +19,8 @@ const TypingIndicator: FC<TypingIndicatorProps> = ({
 }) => {
 	if (variant === "minimal") {
 		return (
-			<div className={`flex items-center gap-2 ${className}`}>
-				<div className="flex items-center gap-1">
+			<div className={`flex items-center gap-2 ${className}`} role="status" aria-label={label}>
+				<div className="flex items-center gap-1" aria-hidden="true">
 					<span className="typing-dot w-1.5 h-1.5 rounded-full bg-current opacity-60" />
 					<span className="typing-dot w-1.5 h-1.5 rounded-full bg-current opacity-60" />
 					<span className="typing-dot w-1.5 h-1.5 rounded-full bg-current opacity-60" />
@@ -33,8 +33,9 @@ const TypingIndicator: FC<TypingIndicatorProps> = ({
 		return (
 			<div
 				className={`inline-flex items-center gap-3 px-3.5 py-2.5 rounded-2xl bg-surface2 border border-border/50 ${className}`}
+				role="status"
 			>
-				<div className="relative flex items-center gap-1">
+				<div className="relative flex items-center gap-1" aria-hidden="true">
 					<span className="w-2 h-2 rounded-full bg-accent/60 typing-dot" />
 					<span className="w-2 h-2 rounded-full bg-accent/60 typing-dot" />
 					<span className="w-2 h-2 rounded-full bg-accent/60 typing-dot" />
@@ -45,17 +46,17 @@ const TypingIndicator: FC<TypingIndicatorProps> = ({
 	}
 
 	return (
-		<div className={`flex justify-start ${className}`}>
+		<div className={`flex justify-start ${className}`} role="status">
 			<div className="max-w-[80%] rounded-2xl rounded-bl-md px-4 py-3.5 bg-surface2 border border-border/50 shadow-sm">
 				<div className="flex items-center gap-2.5 mb-2">
-					<div className="w-5 h-5 rounded-md bg-accent/10 flex items-center justify-center">
+					<div className="w-5 h-5 rounded-md bg-accent/10 flex items-center justify-center" aria-hidden="true">
 						<Bot size={11} className="text-accent" />
 					</div>
 					<span className="text-[10px] font-semibold text-accent/70 uppercase tracking-wider">
 						AI Assistant
 					</span>
 				</div>
-				<div className="flex items-center gap-1.5 mb-2">
+				<div className="flex items-center gap-1.5 mb-2" aria-hidden="true">
 					<div className="relative">
 						<span className="inline-block w-2.5 h-2.5 rounded-full bg-accent/50 typing-dot" />
 						<span

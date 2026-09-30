@@ -14,6 +14,12 @@ export default defineConfig({
 		// load spikes — this killed the whole class of stress-run flakes.
 		testTimeout: 15_000,
 		hookTimeout: 15_000,
+		// OOM guard: jsdom + heavy dynamic imports exhaust fork-worker
+		// memory when the full suite runs wide open on modest machines.
+		// One lane is slower but keeps the complete suite deterministic and
+		// prevents worker exits from being reported as false-positive passes.
+		pool: "forks",
+		maxWorkers: 1,
 		coverage: {
 			provider: "v8",
 			reporter: ["text", "json", "html"],

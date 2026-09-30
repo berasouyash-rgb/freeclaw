@@ -11,10 +11,14 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
 	CAT_EMOJI,
 	CATEGORIES,
+	dedupeById,
 	downloadFile,
 	errorText,
 	fmtDate,
 	isExecutableSuggestion,
+	isTestAccount,
+	maskContactPreview,
+	presenceTier,
 	PRIORITY_META,
 	STATUS_META,
 	safeStringify,
@@ -190,6 +194,53 @@ describe("timeAgo", () => {
 		expect(out).toMatch(/[A-Za-z]{3}/);
 		expect(out).not.toContain("ago");
 	});
+
+	it("clamps future dates (clock skew) to just now, never negative", () => {
+		expect(timeAgo(new Date(Date.now() + 3 * 60 * 1000).toISOString())).toBe(
+			"just now",
+		);
+		expect(timeAgo(new Date(Date.now() + 60 * 1000).toISOString())).toBe(
+			"just now",
+		);
+	});
+});
+
+describe("maskContactPreview — appeal previews never show full contacts", () => {
+	it("masks phone-like digit runs", () => {
+		const out = maskContactPreview("Call me on 123-456-7890 any time");
+		expect(out).not.toContain("123-456-7890");
+		expect(out).toContain("•");
+	});
+	it("masks email local parts but keeps the domain", () => {
+		const out = maskContactPreview("mail john.doe@example.com now");
+		expect(out).not.toContain("john.doe@");
+		expect(out).toContain("@example.com");
+	});
+	it("leaves ordinary text untouched", () => {
+		expect(maskContactPreview("Broken cooler on floor 2")).toBe(
+			"Broken cooler on floor 2",
+		);
+	});
+});
+
+describe("dedupeById — realtime + pagination overlap never duplicates rows", () => {
+	it("keeps first occurrence order and drops repeats", () => {
+		const rows = [
+			{ id: "a", v: 1 },
+			{ id: "b", v: 2 },
+			{ id: "a", v: 3 },
+			{ id: "c", v: 4 },
+			{ id: "b", v: 5 },
+		];
+		expect(dedupeById(rows)).toEqual([
+			{ id: "a", v: 1 },
+			{ id: "b", v: 2 },
+			{ id: "c", v: 4 },
+		]);
+	});
+	it("returns an empty list untouched", () => {
+		expect(dedupeById([])).toEqual([]);
+	});
 });
 
 describe("fmtDate", () => {
@@ -287,6 +338,39 @@ describe("trendingScore", () => {
 		expect(trendingScore(low)).toBe(0);
 	});
 
+	it("down-votes subtract at full up-vote weight", () => {
+		const clean: PostData = {
+			...base,
+			reactions: { support: 5 },
+			comment_count: 2,
+		};
+		const pileOn: PostData = {
+			...base,
+			reactions: { support: 5, disagree: 4 },
+			comment_count: 2,
+		};
+		expect(trendingScore(pileOn)).toBeLessThan(trendingScore(clean));
+	});
+
+	it("a brigaded post (down-votes erase engagement) never trends", () => {
+		const brigaded: PostData = {
+			...base,
+			reactions: { support: 8, disagree: 10 },
+			comment_count: 0,
+		};
+		expect(trendingScore(brigaded)).toBe(0);
+	});
+
+	it("suggestion up-votes trend (they previously scored 0)", () => {
+		const suggestion: PostData = {
+			...base,
+			type: "suggestion",
+			reactions: { upvote: 4 },
+			comment_count: 1,
+		};
+		expect(trendingScore(suggestion)).toBeGreaterThan(0);
+	});
+
 	it("posts with 1 like and 1 comment (engage=5) do trend", () => {
 		const justEnough: PostData = {
 			...base,
@@ -295,6 +379,34 @@ describe("trendingScore", () => {
 		};
 		const score = trendingScore(justEnough);
 		expect(score).toBeGreaterThan(0);
+	});
+});
+
+describe("presenceTier", () => {
+	const NOW = new Date("2026-09-27T12:00:00.000Z").getTime();
+	const iso = (ms: number) => new Date(ms).toISOString();
+
+	it("tiers by age: now < 2min, hour < 60min, today < 24h, else idle", () => {
+		expect(presenceTier(iso(NOW - 90_000), NOW)).toBe("now");
+		expect(presenceTier(iso(NOW - 30 * 60_000), NOW)).toBe("hour");
+		expect(presenceTier(iso(NOW - 5 * 3600_000), NOW)).toBe("today");
+		expect(presenceTier(iso(NOW - 3 * 24 * 3600_000), NOW)).toBe("idle");
+	});
+
+	it("never invents presence: missing/garbage stamps are idle", () => {
+		expect(presenceTier(undefined, NOW)).toBe("idle");
+		expect(presenceTier(null, NOW)).toBe("idle");
+		expect(presenceTier("not-a-date", NOW)).toBe("idle");
+	});
+
+	it("floors future stamps (clock skew) to now", () => {
+		expect(presenceTier(iso(NOW + 60_000), NOW)).toBe("now");
+	});
+
+	it("flags load-test residue ids only", () => {
+		expect(isTestAccount("anon_loadtest_abc_12")).toBe(true);
+		expect(isTestAccount("anon_abc123")).toBe(false);
+		expect(isTestAccount(undefined)).toBe(false);
 	});
 });
 
@@ -382,7 +494,9 @@ describe("metadata tables", () => {
 
 	it("defines priority metadata for every priority", () => {
 		for (const p of ["low", "medium", "high", "critical"]) {
-			expect(PRIORITY_META[p]!.color).toMatch(/^#/);
+			// Colours are theme tokens (var(--vb-*)), not literal hexes, so they
+			// hold WCAG AA contrast in both the light and dark palettes.
+			expect(PRIORITY_META[p]!.color).toMatch(/^(#[0-9a-fA-F]{3,8}|var\(--vb-[a-z0-9-]+\))$/);
 		}
 	});
 });

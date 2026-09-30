@@ -13,8 +13,9 @@ import {
 } from "./_auth.js";
 import supabase from "./_db-client.js";
 import { sanitizeError } from "./_error.js";
+import { EVENT_TYPES, emitEventAndBridge } from "./_events.js";
 import { sendPollClosedEmail } from "./_email.js";
-import { serverModerate } from "./_moderation.js";
+import { evaluateContentDeep, messageFor } from "./_safety-pipeline.js";
 
 async function attachResults(polls, strict = false) {
 	const ids = polls.map((p) => p.id);
@@ -41,13 +42,62 @@ async function attachResults(polls, strict = false) {
 	}));
 }
 
+/**
+ * Create one poll — the real POST path, lifted from the handler so the
+ * Poll Creation worker (#19) runs the exact same code, never a shadow
+ * implementation. Behavior is identical (same mask, same row shape, same
+ * insert + select().single()).
+ */
+export async function createPoll({
+	title,
+	ptype,
+	options,
+	post_id: linkPostId,
+	author_id,
+	expires_at,
+	admin = false,
+}) {
+	const row = {
+		id: `poll_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`,
+		// Store masked text; the gate above already ran on raw text.
+		title: maskProfanity(title),
+		ptype,
+		options,
+		post_id: linkPostId,
+		author_id: admin && !author_id ? "ADMIN" : author_id,
+		expires_at,
+		deleted: false,
+		archived: false,
+		created_at: new Date().toISOString(),
+	};
+	const { data, error } = await supabase
+		.from("polls")
+		.insert(row)
+		.select()
+		.single();
+	if (error) return { ok: false, error };
+	return { ok: true, poll: data };
+}
+
+// PostgREST unknown-column errors (pre-migration): require the column
+// NAME plus a column-ish signal so unrelated errors still throw loudly.
+function isMissingColumn(err, col) {
+	const msg = String(err?.message || "");
+	const code = String(err?.code || "");
+	return msg.toLowerCase().includes(String(col).toLowerCase()) && /column|pgrst|exist|find|schema|cache/i.test(msg + " " + code);
+}
+
 export default async function handler(req, res) {
 	cors(res, req);
 	if (req.method === "OPTIONS") return res.status(204).end();
 
 	try {
 		if (req.method === "GET") {
-			const { id, post_id, voter } = req.query;
+			const { id, post_id, voter, ids } = req.query;
+			const requestedIds = (Array.isArray(ids) ? ids : typeof ids === "string" ? ids.split(",") : [])
+				.map((value) => clean(value, 80))
+				.filter(Boolean)
+				.slice(0, 50);
 			const admin = await isAdmin(req);
 			// Cache: 30s browser + CDN for poll listings. Voter-specific responses
 			// (a user's own vote rows) must never be publicly cacheable — the CDN
@@ -69,62 +119,35 @@ export default async function handler(req, res) {
 			}
 			// Widen the fetch window: the artifact filter below runs in JS AFTER this
 			// SQL limit, so a narrow window of mostly-fuzz rows would starve the list.
-			let q = supabase
-				.from("polls")
-				.select("*")
-				.order("created_at", { ascending: false })
-				.limit(2000);
-			if (id) q = q.eq("id", id);
-			if (post_id) q = q.eq("post_id", post_id);
-			if (!admin) q = q.eq("deleted", false);
-			const { data, error } = await q;
+			const runList = async (withHidden) => {
+				let qq = supabase
+					.from("polls")
+					.select("*")
+					.order("created_at", { ascending: false })
+					.limit(2000);
+				if (id) qq = qq.eq("id", id);
+				else if (requestedIds.length) qq = qq.in("id", requestedIds);
+				if (post_id) qq = qq.eq("post_id", post_id);
+				if (!admin) qq = qq.eq("deleted", false);
+				// Blocked polls stay out of every public read. The hidden column
+				// lands with migration 018 — before that this filter errors and we
+				// retry without it (nothing can be blocked yet, so nothing leaks).
+				if (withHidden) qq = qq.eq("hidden", false);
+				return qq;
+			};
+			const hideBlocked = !admin;
+			let { data, error } = await runList(hideBlocked);
+			if (error && hideBlocked && isMissingColumn(error, "hidden")) {
+				({ data, error } = await runList(false));
+			}
 			if (error) throw error;
 
 			// Full-site zero-fuzz: hide test/fuzz polls on every surface, admin
 			// included. Rows stay intact in the DB; they are only hidden.
 			const cleanRows = (data || []).filter((p) => !isTestArtifact(p.title));
 
-			// Auto-archive polls older than 7 days past expiry — results stay
-			// visible in the UI for 7 days, then the poll is archived.
-			const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
-			const now = Date.now();
-			const staleIds = cleanRows
-				.filter((p) => p.expires_at && !p.archived && (now - new Date(p.expires_at).getTime()) > SEVEN_DAYS_MS)
-				.map((p) => p.id);
-			if (staleIds.length) {
-				supabase
-					.from("polls")
-					.update({ archived: true })
-					.in("id", staleIds)
-					.then(() => {}, () => {}); // fire-and-forget
-			}
-
-			// Validate linked posts still exist — clean orphaned post_id references
-			const pollsWithLinks = cleanRows.filter((p) => p.post_id);
-			if (pollsWithLinks.length) {
-				const postIds = [...new Set(pollsWithLinks.map((p) => p.post_id))];
-				const { data: existingPosts } = await supabase
-					.from("posts")
-					.select("id")
-					.in("id", postIds);
-				const existingSet = new Set((existingPosts || []).map((p) => p.id));
-				const orphans = pollsWithLinks.filter(
-					(p) => !existingSet.has(p.post_id),
-				);
-				if (orphans.length) {
-					// Clear orphaned post_id in background (non-blocking)
-					Promise.all(
-						orphans.map((p) =>
-							supabase.from("polls").update({ post_id: null }).eq("id", p.id),
-						),
-					).catch(() => {});
-					// Also fix in-memory for this response
-					orphans.forEach((p) => {
-						p.post_id = null;
-					});
-				}
-			}
-
+			// Maintenance (stale-archive and orphan repair) runs from an
+			// authenticated worker. A public GET only reads and shapes rows.
 			const results = await attachResults(cleanRows.slice(0, 200));
 			// Mask author IDs — they are bearer tokens for poll deletion
 			const v = clean(req.query.viewer, 40);
@@ -152,7 +175,32 @@ export default async function handler(req, res) {
 			if (!author_id)
 				return res.status(403).json({ error: "Missing session identity (x-anon-id header)" });
 
-			if (b.action === "closed") {
+			// Admin-only on-demand moderation scan: read-only, audited. Lets an
+			// admin check a poll that predates the write-time gate (or that a
+			// user report flagged) without deleting or hiding it first.
+			if (b.action === "scan") {
+				if (!admin) return res.status(403).json({ error: "Admin only" });
+				const { data: poll } = await supabase
+					.from("polls")
+					.select("id,title,options")
+					.eq("id", b.poll_id)
+					.maybeSingle();
+				if (!poll) return res.status(404).json({ error: "Poll not found" });
+				// Deep scan: the admin explicitly asked, so the model budget is
+				// justified — this catches contextual PII the regexes miss.
+				const decision = await evaluateContentDeep(`${poll.title || ""} ${(poll.options || []).join(" ")}`, "direct", null, {
+					taskKey: "polls.scan",
+				});
+				await auditLog("admin", "poll_scan", `${b.poll_id} [${decision.flags.map((f) => f.type).join(",") || "clean"}]`);
+				return res.status(200).json({
+					id: poll.id,
+					flags: decision.flags.map((f) => f.type),
+					blocked: decision.blocked,
+					message: decision.blocked ? decision.message : "Clean — nothing to block.",
+					code: decision.code,
+				});
+			}
+						if (b.action === "closed") {
 				// Poll-close notification — notifies the poll's author that it has
 				// closed so they can review results. Idempotent per poll.
 				const { data: poll } = await supabase
@@ -225,6 +273,8 @@ export default async function handler(req, res) {
 					return res.status(404).json({ error: "Poll not found" });
 				if (poll.archived)
 					return res.status(400).json({ error: "Poll is archived." });
+				if (poll.hidden)
+					return res.status(400).json({ error: "Poll is blocked." });
 				if (poll.expires_at && new Date(poll.expires_at) < new Date())
 					return res.status(400).json({ error: "Poll has ended." });
 				const choices = (Array.isArray(b.choices) ? b.choices : [])
@@ -289,6 +339,13 @@ export default async function handler(req, res) {
 				}
 				if (write.error) throw write.error;
 				const [withResults] = await attachResults([poll], true);
+				// Emit poll.voted event for workforce consumption
+				emitEventAndBridge(EVENT_TYPES.REACTION_ADDED, {
+					target_id: poll.id,
+					target_type: "poll",
+					kind: "vote",
+					author_id,
+				}).catch(() => {});
 				return res.status(200).json(withResults);
 			}
 
@@ -303,7 +360,9 @@ export default async function handler(req, res) {
 						"Please wait before creating another poll.",
 					);
 			}
-			const title = maskProfanity(clean(b.title, 140));
+			// Raw text through the gate below; masked only at insert (masking
+			// first would blind serverModerate to slurs).
+			const title = clean(b.title, 140);
 			if (title.length < 5)
 				return res
 					.status(400)
@@ -320,23 +379,24 @@ export default async function handler(req, res) {
 			if (ptype !== "yesno" && (options.length < 2 || options.length > 10)) {
 				return res.status(400).json({ error: "Provide 2–10 options." });
 			}
-			// Server-side PII/safety gate — poll questions and options can leak addresses too.
-			const mod = serverModerate(title, options.join(" "));
-			// Weak privacy signals also block polls — they have no review queue.
-			if (mod.blocked || mod.flags.some((f) => f.type === "privacy_weak")) {
-				const isPII = mod.flags.some(
+			// Server-side PII/safety gate — verdict from the unified pipeline
+		// (same blocked set the old inline check computed).
+			const pollDecision = await evaluateContentDeep(`${title} ${options.join(" ")}`, "direct", null, {
+				taskKey: "polls.write",
+			});
+			if (pollDecision.blocked) {
+				const isPII = pollDecision.flags.some(
 					(f) => f.type === "privacy" || f.type === "privacy_weak",
 				);
 				await auditLog(
 					"moderation",
 					"poll_blocked",
-					`${author_id}: ${title.slice(0, 60)} [${mod.flags.map((f) => f.type).join(", ")}]`,
+					`${author_id}: ${title.slice(0, 60)} [${pollDecision.flags.map((f) => f.type).join(", ")}]`,
 				);
+				const pollCode = isPII ? "PII_BLOCKED" : pollDecision.code;
 				return res.status(403).json({
-					error: isPII
-						? "Personal information detected (address, phone, or email). This is an anonymous platform — please remove personal details."
-						: "This poll violates our safety guidelines and cannot be published.",
-					code: isPII ? "PII_BLOCKED" : "CONTENT_BLOCKED",
+					error: messageFor("poll", pollCode),
+					code: pollCode,
 				});
 			}
 			const expRaw = b.expires_at;
@@ -344,25 +404,35 @@ export default async function handler(req, res) {
 				expRaw && !Number.isNaN(new Date(expRaw).getTime())
 					? new Date(expRaw).toISOString()
 					: null;
-			const row = {
-				id: `poll_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`,
+			// Own-post linking rule: a poll may only link to a post authored by
+			// the same identity (admins exempt). The client already filters the
+			// picker to own posts, but the server is the enforcement point —
+			// otherwise anyone could attach polls to anyone else's complaints.
+			let linkPostId = b.post_id ? clean(b.post_id, 60) : null;
+			if (linkPostId && !admin) {
+				const { data: linked } = await supabase
+					.from("posts")
+					.select("id,author_id")
+					.eq("id", linkPostId)
+					.maybeSingle();
+				if (!linked)
+					return res.status(404).json({ error: "Linked post not found." });
+				if (linked.author_id !== author_id)
+					return res
+						.status(403)
+						.json({ error: "Polls can only link to your own posts." });
+			}
+			const created = await createPoll({
 				title,
 				ptype,
 				options,
-				post_id: b.post_id ? clean(b.post_id, 60) : null,
-				author_id: admin && !author_id ? "ADMIN" : author_id,
+				post_id: linkPostId,
+				author_id,
 				expires_at,
-				deleted: false,
-				archived: false,
-				created_at: new Date().toISOString(),
-			};
-			const { data, error } = await supabase
-				.from("polls")
-				.insert(row)
-				.select()
-				.single();
-			if (error) throw error;
-			return res.status(201).json(data);
+				admin,
+			});
+			if (!created.ok) throw created.error;
+			return res.status(201).json(created.poll);
 		}
 
 		if (req.method === "PUT") {
@@ -389,6 +459,7 @@ export default async function handler(req, res) {
 			const patch = {};
 			if (typeof b.archived === "boolean") patch.archived = b.archived;
 			if (typeof b.deleted === "boolean") patch.deleted = b.deleted;
+			if (admin && typeof b.hidden === "boolean") patch.hidden = b.hidden;
 			if (admin && b.expires_at !== undefined) patch.expires_at = b.expires_at;
 			const { data, error } = await supabase
 				.from("polls")
@@ -396,7 +467,11 @@ export default async function handler(req, res) {
 				.eq("id", b.id)
 				.select()
 				.single();
-			if (error) throw error;
+			if (error) {
+				if (patch.hidden !== undefined && isMissingColumn(error, "hidden"))
+					return res.status(400).json({ error: "Poll blocking needs migration 018 (polls.hidden) — not yet applied." });
+				throw error;
+			}
 			if (admin) await auditLog("admin", "update_poll", b.id);
 			return res.status(200).json(data);
 		}
@@ -404,13 +479,30 @@ export default async function handler(req, res) {
 		if (req.method === "DELETE") {
 			if (!(await isAdmin(req)))
 				return res.status(403).json({ error: "Admin only" });
-			await supabase.from("poll_votes").delete().eq("poll_id", req.body?.id);
-			const { error } = await supabase
+			// DELETE bodies are not parsed on some hosts (Vercel drops them),
+			// so the id travels in the query string; body accepted as fallback.
+			const id = req.query?.id || req.body?.id;
+			if (!id) return res.status(400).json({ error: "Missing id" });
+			// Delete the poll row FIRST and prove it landed (0 rows => 404):
+			// wiping votes before the poll was proven gone used to erase every
+			// vote of a poll whose row delete then failed (live poll, zeroed
+			// results). poll_votes has no FK on polls, so order is safe.
+			const { data: removed, error } = await supabase
 				.from("polls")
 				.delete()
-				.eq("id", req.body?.id);
+				.eq("id", id)
+				.select("id");
 			if (error) throw error;
-			await auditLog("admin", "delete_poll", req.body?.id);
+			// Prove the delete landed instead of no-op + ok:true (row "comes back").
+			if (!removed || removed.length === 0)
+				return res.status(404).json({ error: "Poll not found" });
+			// A failed votes wipe must not ship ok:true with orphaned votes.
+			const { error: votesErr } = await supabase
+				.from("poll_votes")
+				.delete()
+				.eq("poll_id", id);
+			if (votesErr) throw votesErr;
+			await auditLog("admin", "delete_poll", id);
 			return res.status(200).json({ ok: true });
 		}
 

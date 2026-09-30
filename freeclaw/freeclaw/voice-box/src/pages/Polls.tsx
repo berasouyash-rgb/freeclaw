@@ -1,11 +1,10 @@
-﻿import { PlusCircle } from "lucide-react";
+﻿import { PlusCircle, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router";
 import PollCard from "../components/PollCard";
 import { Segmented } from "../components/ui";
 import { useApp } from "../contexts/AppContext";
 import { api } from "../lib/api";
-import { useRealtime } from "../lib/useRealtime";
 import type { PollData, PollVote } from "../types";
 
 export default function Polls() {
@@ -16,58 +15,73 @@ export default function Polls() {
 	const [error, setError] = useState("");
 	const [tab, setTab] = useState<"active" | "ended">("active");
 
-	const load = useCallback(async () => {
-		try {
-			setError("");
-			const [data, myVotes] = await Promise.all([
-				api.get<PollData[]>(`/api/polls?viewer=${anonId}`),
-				api.get<PollVote[]>(`/api/polls?voter=${anonId}`),
-			]);
-			setPolls(data.filter((p) => !p.deleted));
-			const map: Record<string, number[]> = {};
-			myVotes.forEach((v) => {
-				map[v.poll_id] = v.choices;
-			});
-			setVotes(map);
-		} catch (e: unknown) {
-			setError(e instanceof Error ? e.message : "Failed to load polls");
-		}
-		setLoading(false);
-	}, [anonId]);
+	const load = useCallback(
+		async (opts?: { fresh?: boolean }) => {
+			try {
+				setError("");
+				// fresh bypasses the 5s GET cache — required for realtime-triggered
+				// reloads, where the DB has already changed and a cached read shows
+				// pre-vote results.
+				const fetcher = opts?.fresh ? api.getFresh : api.get;
+				const [data, myVotes] = await Promise.all([
+					fetcher<PollData[]>(`/api/polls?viewer=${anonId}`),
+					fetcher<PollVote[]>(`/api/polls?voter=${anonId}`),
+				]);
+				setPolls(data.filter((p) => !p.deleted));
+				const map: Record<string, number[]> = {};
+				myVotes.forEach((v) => {
+					map[v.poll_id] = v.choices;
+				});
+				setVotes(map);
+			} catch (e: unknown) {
+				setError(e instanceof Error ? e.message : "Failed to load polls");
+			}
+			setLoading(false);
+		},
+		[anonId],
+	);
 
 	useEffect(() => {
 		load();
 	}, [load]);
 
-	// 🔴 poll results update live as votes come in
-	useRealtime(["polls", "poll_votes"], () => load());
+	// Poll results are reconciled after this user's vote/delete action or via
+	// the explicit Refresh control. Do not refetch the entire list for every
+	// unrelated vote event elsewhere in the product.
 
-	const now = Date.now();
-	const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
 	const isEnded = (p: PollData) =>
 		p.archived || (p.expires_at && new Date(p.expires_at) < new Date());
-	// After expiry, results stay visible for 7 days, then the poll is hidden
-	const isWithinResultsWindow = (p: PollData) => {
-		if (!p.expires_at) return false;
-		const expiryMs = new Date(p.expires_at).getTime();
-		return now - expiryMs < SEVEN_DAYS_MS;
-	};
-	const isHidden = (p: PollData) => isEnded(p) && !isWithinResultsWindow(p);
-	const shown = polls.filter((p) =>
-		tab === "ended" ? isEnded(p) && isWithinResultsWindow(p) : !isEnded(p) && !isHidden(p),
-	);
+	// Ended polls stay permanently readable in the "Ended & archived" tab.
+	// They used to disappear entirely 7 days after expiry, which quietly
+	// deleted the community's voting history and made old polls unreachable.
+	const shown = polls.filter((p) => (tab === "ended" ? isEnded(p) : !isEnded(p)));
 
 	return (
 		<div className="max-w-3xl mx-auto">
 			<div className="flex items-center justify-between mb-1">
 				<h1 className="font-display font-bold text-2xl">Polls</h1>
-				<Link to="/submit?type=poll" className="btn btn-primary !py-2">
-					<PlusCircle size={15} /> New poll
-				</Link>
+				<div className="flex items-center gap-2">
+					<button
+						type="button"
+						className="btn btn-ghost !py-2"
+						onClick={() => {
+							setLoading(true);
+							void load();
+						}}
+						disabled={loading}
+						aria-label="Refresh polls"
+					>
+						<RefreshCw size={14} /> Refresh
+					</button>
+					<Link to="/submit?type=poll" className="btn btn-primary !py-2">
+						<PlusCircle size={15} /> New poll
+					</Link>
+				</div>
 			</div>
 			<p className="text-sm text-ink3 mb-5">
-				Vote anonymously. Results update live — change your vote anytime while a
-				poll is open.
+				Vote anonymously. Your vote updates the results immediately; use Refresh
+				to check for changes from other people. Every poll stays readable after it
+				closes.
 			</p>
 
 			<div className="mb-4">

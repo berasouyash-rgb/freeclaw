@@ -1,13 +1,11 @@
 import {
-	AlertCircle,
-	Angry,
+	ArrowUp,
 	BarChart3,
 	Bookmark,
 	CheckCircle2,
 	Flag,
 	Flame,
 	Gavel,
-	Heart,
 	Lock,
 	MessageCircle,
 	Pin,
@@ -15,9 +13,11 @@ import {
 	ThumbsUp,
 } from "lucide-react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { ComponentType, CSSProperties } from "react";
 import { Link } from "react-router";
 import { useApp } from "../contexts/AppContext";
 import { api, hasAdminSession } from "../lib/api";
+import { prefetchRouteChunk } from "../lib/routeChunks";
 import PostCardAdminBar from "./PostCardAdminBar";
 import {
 	CAT_EMOJI,
@@ -30,22 +30,139 @@ import type { PollData, PostData, ReactionMeta } from "../types";
 import PollCard from "./PollCard";
 import { ReportDialog } from "./ui";
 
-export const REACTION_META: ReactionMeta[] = [
+// Support-only voting: problems get thumbs-up Support, suggestions get
+// arrow Upvote. There is deliberately no negative feedback UI — no Against,
+// no Downvote. Historical disagree/downvote rows still count server-side
+// (ranking stability), but no button offers them anymore.
+const PROBLEM_REACTIONS: ReactionMeta[] = [
 	{
 		kind: "support",
 		label: "Support",
 		icon: ThumbsUp,
 		color: "var(--vb-accent)",
 	},
-	{
-		kind: "concerned",
-		label: "Concerned",
-		icon: AlertCircle,
-		color: "#d98a0b",
-	},
-	{ kind: "frustrated", label: "Frustrated", icon: Angry, color: "#dc4b4b" },
-	{ kind: "appreciate", label: "Appreciate", icon: Heart, color: "#16a06a" },
 ];
+const SUGGESTION_REACTIONS: ReactionMeta[] = [
+	{
+		kind: "upvote",
+		label: "Upvote",
+		icon: ArrowUp,
+		color: "var(--vb-accent)",
+	},
+];
+export const REACTION_META: ReactionMeta[] = PROBLEM_REACTIONS;
+export function getReactionMeta(type?: string): ReactionMeta[] {
+	return type === "suggestion" ? SUGGESTION_REACTIONS : PROBLEM_REACTIONS;
+}
+
+/** Support-style vote button with a YouTube-like burst on activation: an
+ *  expanding ring plus eight radiating particles (transform/opacity only,
+ *  GPU-cheap), then the element unmounts itself. Fires on activating taps
+ *  only — toggling off just unfills. Under prefers-reduced-motion the burst
+ *  stays invisible (base opacity 0 + animation killed globally) while the
+ *  count pop (existing vb-pop) still confirms the tap. */
+export function ReactionButton({
+	kind,
+	label,
+	icon: Icon,
+	color,
+	active,
+	count,
+	disabled,
+	onReact,
+	inactiveClassName,
+}: {
+	kind: string;
+	label: string;
+	icon: ComponentType<{
+		size?: number | string;
+		fill?: string;
+		className?: string;
+	}>;
+	color: string;
+	active: boolean;
+	count: number;
+	disabled: boolean;
+	onReact: (kind: string) => void;
+	inactiveClassName: string;
+}) {
+	const [burst, setBurst] = useState(0);
+	const timer = useRef<number | null>(null);
+	useEffect(
+		() => () => {
+			if (timer.current !== null) window.clearTimeout(timer.current);
+		},
+		[],
+	);
+	const click = () => {
+		if (!active) {
+			setBurst((b) => b + 1);
+			if (timer.current !== null) window.clearTimeout(timer.current);
+			timer.current = window.setTimeout(() => setBurst(0), 650);
+		}
+		onReact(kind);
+	};
+	return (
+		<button
+			onClick={click}
+			disabled={disabled}
+			aria-label={`${label} (${count})`}
+			aria-pressed={active}
+			title={label}
+			className={`relative flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-semibold transition-all duration-200 ${
+				active ? "vb-pop ring-1" : inactiveClassName
+			}`}
+			style={
+				active
+					? {
+							color,
+							background: "var(--vb-surface2)",
+							boxShadow: `0 0 0 1px color-mix(in srgb, ${color} 20%, transparent)`,
+						}
+					: undefined
+			}
+		>
+			{burst > 0 && (
+				<span
+					key={burst}
+					className="vb-burst"
+					aria-hidden
+					data-testid="support-burst"
+				>
+					<span className="vb-burst-ring" />
+					{Array.from({ length: 8 }, (_, i) => {
+						const a = (i * Math.PI) / 4;
+						return (
+							<span
+								key={i}
+								className="vb-burst-particle"
+								style={
+									{
+										"--tx": `${Math.round(Math.cos(a) * 26)}px`,
+										"--ty": `${Math.round(Math.sin(a) * 26)}px`,
+										animationDelay: `${i * 18}ms`,
+									} as CSSProperties
+								}
+							/>
+						);
+					})}
+				</span>
+			)}
+			<Icon
+				size={13}
+				fill={active ? "currentColor" : "none"}
+				className={`transition-transform duration-200 ${active ? "scale-110" : ""}`}
+			/>
+			<span className="hidden sm:inline">{label}</span>
+			<span
+				key={count}
+				className="vb-pop inline-block min-w-[14px] text-center"
+			>
+				{count}
+			</span>
+		</button>
+	);
+}
 
 interface PostCardProps {
 	post: PostData;
@@ -94,11 +211,14 @@ function PostCardInner({ post, myReactions, onReacted, pollData, myPollVote, onP
 	}, [myReactions]);
 
 	const status = STATUS_META[post.status] ??
-		STATUS_META.reported ?? { label: "Unknown", color: "#888", pct: 0 };
+		STATUS_META.reported ?? { label: "Unknown", color: "var(--vb-ink3)", pct: 0 };
 	// Trending: fast-rising support relative to age
 	const isTrending =
 		trendingScore(post) > 1.2 &&
 		Date.now() - +new Date(post.created_at) < 7 * 86400000;
+
+	// Priority meta for chip (only show for non-medium priorities)
+	const priorityMeta = post.priority && post.priority !== "medium" ? PRIORITY_META[post.priority] : null;
 
 	const react = useCallback(
 		async (kind: string) => {
@@ -170,8 +290,8 @@ function PostCardInner({ post, myReactions, onReacted, pollData, myPollVote, onP
 							<span
 								className="chip !border-transparent vb-pop"
 								style={{
-									background: "rgba(22,160,106,0.14)",
-									color: "#16a06a",
+									background: "color-mix(in srgb, var(--vb-good) 14%, transparent)",
+									color: "var(--vb-good)",
 								}}
 								title={`Reached ${post.ready_threshold} co-signs — flagged for admin decision`}
 							>
@@ -183,8 +303,8 @@ function PostCardInner({ post, myReactions, onReacted, pollData, myPollVote, onP
 							<span
 								className="chip !border-transparent vb-pop"
 								style={{
-									background: "rgba(217,138,11,0.12)",
-									color: "#d98a0b",
+									background: "color-mix(in srgb, var(--vb-warn) 12%, transparent)",
+									color: "var(--vb-warn)",
 								}}
 							>
 								<Flame size={11} className="vb-trend-bounce" /> Trending
@@ -209,34 +329,68 @@ function PostCardInner({ post, myReactions, onReacted, pollData, myPollVote, onP
 							</span>
 						)}							<span className="chip">{post.category}</span>
 							<span
-							className="chip"
-							style={{ color: status.color, borderColor: `${status.color}44` }}
+								className="chip"
+								title={
+									post.type === "suggestion"
+										? "Suggestion — an idea, not a complaint"
+										: post.type === "poll"
+											? "Poll — vote, not a complaint"
+											: "Problem — a complaint needing a fix"
+								}
+							>
+								{post.type === "suggestion"
+									? "Suggestion"
+									: post.type === "poll"
+										? "Poll"
+										: "Problem"}
+							</span>
+						<span
+						className="chip"
+						style={{
+							color: status.color,
+							borderColor: `color-mix(in srgb, ${status.color} 27%, transparent)`,
+						}}
 						>
-							{post.status === "solved" && <CheckCircle2 size={11} />}{" "}
-							{status.label}
+						{post.status === "solved" && <CheckCircle2 size={11} />}{" "}
+						{status.label}
 						</span>
-						{post.priority && post.priority !== "medium" && PRIORITY_META[post.priority] && (
-							(() => {
-								const pm = PRIORITY_META[post.priority!];
-								return (
-									<span
-										className="chip"
-										style={{ color: pm.color, borderColor: `${pm.color}44` }}
-										title={`Auto-assigned priority: ${pm.label}`}
-									>
-										{post.priority === "critical" && "🔴"}
-										{post.priority === "high" && "🟠"}
-										{post.priority === "low" && "🟢"}
-										{" "}{pm.label}
-									</span>
-								);
-							})()
+						{post.deleted && (
+							<span
+							className="chip"
+							style={{
+								color: "var(--vb-ink3)",
+								borderColor: "color-mix(in srgb, var(--vb-ink3) 27%, transparent)",
+							}}
+							title="This post was deleted by its author"
+							>
+								Deleted by user
+							</span>
+						)}
+						{post.priority && post.priority !== "medium" && priorityMeta && (
+							<span
+								className="chip"
+								style={{
+									color: priorityMeta.color,
+									borderColor: `color-mix(in srgb, ${priorityMeta.color} 27%, transparent)`,
+								}}
+								title={`Auto-assigned priority: ${priorityMeta.label}`}
+							>
+								{post.priority === "critical" && "🔴"}
+								{post.priority === "high" && "🟠"}
+								{post.priority === "low" && "🟢"}
+								{" "}{priorityMeta.label}
+							</span>
 						)}
 					</div>
-					<Link to={`/post/${post.id}`} className="block group">
-						<h3 className="font-display font-semibold text-[15px] sm:text-base leading-snug group-hover:text-accent transition-colors duration-200">
+					<Link
+						to={`/post/${post.id}`}
+						className="block group"
+						onMouseEnter={() => prefetchRouteChunk("post")}
+						onFocus={() => prefetchRouteChunk("post")}
+					>
+						<h3 className="font-display font-semibold text-[15px] sm:text-base leading-snug break-words group-hover:text-accent transition-colors duration-200">
 							{post.title}
-						</h3>							<p className="text-sm text-ink2 mt-1.5 line-clamp-2 leading-relaxed">
+						</h3>							<p className="text-sm text-ink2 mt-1.5 line-clamp-2 leading-relaxed break-words">
 								{post.description}
 							</p>
 							{post.ai_summary && (
@@ -249,56 +403,33 @@ function PostCardInner({ post, myReactions, onReacted, pollData, myPollVote, onP
 					{post.tags && post.tags.length > 0 && (
 						<div className="flex flex-wrap gap-1.5 mt-2">
 							{post.tags.map((t) => (
-								<span key={t} className="text-[11px] text-accent font-medium">
+								<Link
+									key={t}
+									to={`/search?q=${encodeURIComponent(`#${t}`)}`}
+									className="text-[11px] text-accent font-medium hover:underline"
+									aria-label={`Show all posts tagged ${t}`}
+									onClick={(e) => e.stopPropagation()}
+								>
 									#{t}
-								</span>
+								</Link>
 							))}
 						</div>
 					)}
 					<div className="flex flex-wrap items-center gap-1 mt-3 -ml-1">
-						{REACTION_META.map(({ kind, label, icon: Icon, color }) => {
-							const active = mine.includes(kind);
-							const n = counts[kind] || 0;
-							return (
-								<button
-									key={kind}
-									onClick={() => react(kind)}
-									disabled={busy !== null}
-									aria-label={`${label} (${n})`}
-									aria-pressed={active}
-									title={label}
-									className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-semibold transition-all duration-200 ${
-										active
-											? "vb-pop ring-1"
-											: "text-ink3 hover:text-accent"
-									}`}
-									style={
-										active
-											? {
-													color,
-													background: "var(--vb-surface2)",
-													boxShadow: `0 0 0 1px ${color}33`,
-												}
-											: undefined
-									}
-								>
-									<Icon
-										size={13}
-										fill={
-											active && kind !== "concerned" ? "currentColor" : "none"
-										}
-										className={`transition-transform duration-200 ${active ? "scale-110" : ""}`}
-									/>
-									<span className="hidden sm:inline">{label}</span>
-									<span
-										key={n}
-										className="vb-pop inline-block min-w-[14px] text-center"
-									>
-										{n}
-									</span>
-								</button>
-							);
-						})}
+						{getReactionMeta(post.type).map(({ kind, label, icon: Icon, color }) => (
+							<ReactionButton
+							key={kind}
+							kind={kind}
+							label={label}
+							icon={Icon}
+							color={color}
+							active={mine.includes(kind)}
+							count={counts[kind] || 0}
+							disabled={busy !== null}
+							onReact={react}
+							inactiveClassName="text-ink3 hover:text-accent"
+							/>
+						))}
 					<Link
 						to={`/post/${post.id}`}
 						data-tour="comments-link"

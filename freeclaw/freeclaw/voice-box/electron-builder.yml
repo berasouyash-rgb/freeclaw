@@ -1,0 +1,23 @@
+# Voice Box — electron-builder config (Windows desktop app).
+# Built in CI (.github/workflows/native.yml), never committed as a binary.
+# Per-user install (no admin rights needed on school devices).
+appId: app.voicebox
+productName: Voice Box
+directories:
+  output: electron/dist
+files:
+  - dist/**
+  - electron/preload.cjs
+  - electron/icon.png
+  - package.json
+extraMetadata:
+  main: electron/main.cjs
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+  artifactName: Voice-Box-Desktop-${version}-win-x64.${ext}
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  shortcutName: Voice Box

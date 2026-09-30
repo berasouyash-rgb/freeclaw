@@ -57,6 +57,7 @@ export interface EmailParams {
 
 export interface ReportEmailParams {
   to_email: string;
+  to_name?: string;
   report_title: string;
   report_category: string;
   report_status: string;

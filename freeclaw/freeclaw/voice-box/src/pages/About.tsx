@@ -102,7 +102,7 @@ export default function About() {
 						What We Believe
 					</h2>
 				</FadeIn>
-				<div className="grid md:grid-cols-2 gap-6">
+				<div className="grid grid-cols-1 md:grid-cols-2 gap-6">
 					{VALUES.map((v, i) => (
 						<FadeIn key={v.title} delay={i * 0.1}>
 							<div className="card p-6 h-full">

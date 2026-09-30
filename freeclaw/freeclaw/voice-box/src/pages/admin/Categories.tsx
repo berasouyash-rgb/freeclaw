@@ -75,7 +75,9 @@ export default function Categories() {
 	return (
 		<div>
 			<div className="flex items-center justify-between mb-4">
-				<h1 className="font-display font-bold text-xl">Categories</h1>
+				<h1 className="font-display font-bold text-xl tracking-tight">
+					<span className="vb-gradient-text">Categories</span>
+				</h1>
 				<span className="text-xs text-ink3">{cats.length} active</span>
 			</div>
 

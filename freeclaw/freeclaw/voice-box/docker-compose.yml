@@ -4,10 +4,18 @@ services:
   # ── Redis (event bus + caching) ──────────────────────────────
   redis:
     image: redis:7-alpine
+    # Port stays published for local dev tooling (redis-cli, unit tests).
     ports:
       - "6379:6379"
+    # FIX #7 (AUDIT): require a password — the open published port let any
+    # process on the host read/write the event bus. Pick a URL-safe value
+    # (it is embedded in redis://:password@host URLs). Override via
+    # REDIS_PASSWORD in .env; the default is for local dev only.
+    command: redis-server --requirepass ${REDIS_PASSWORD:-voicebox-local}
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      # REDISCLI_AUTH avoids `redis-cli -a`'s stderr warning; grep confirms
+      # authenticated PONG (unauthenticated ping would error, not PONG).
+      test: ["CMD-SHELL", "REDISCLI_AUTH=${REDIS_PASSWORD:-voicebox-local} redis-cli ping | grep -q PONG"]
       interval: 10s
       timeout: 5s
       retries: 3
@@ -19,17 +27,37 @@ services:
     build:
       context: ./services
       dockerfile: Dockerfile
-    ports:
-      - "8000:8000"
+    # FIX #4 (AUDIT): no published port by default — the admin-token
+    # middleware guards every route; exposing it on the host without a
+    # reverse proxy only invites scanners. Uncomment for local debugging:
+    # ports:
+    #   - "8000:8000"
     environment:
-      - REDIS_URL=redis://redis:6379
+      # Container must listen inside the network; the app's default bind
+      # is loopback for bare-metal runs.
+      - HOST=0.0.0.0
+      - PORT=8000
+      # Fail-closed when unset: the middleware rejects everything (503)
+      # except /health, so a forgotten token cannot ship an open API.
+      - ADMIN_TOKEN=${ADMIN_TOKEN}
+      # FIX #7: authenticated URL for the password-protected redis above.
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-voicebox-local}@redis:6379
       - SUPABASE_URL=${SUPABASE_URL}
-      - SUPABASE_KEY=${SUPABASE_KEY}
+      # FIX #8 (AUDIT): the workforce writes platform data — it needs the
+      # server key, not the anon key (SUPABASE_KEY is what services read).
+      - SUPABASE_KEY=${SUPABASE_SERVICE_ROLE_KEY}
       - NVIDIA_API_KEY=${NVIDIA_API_KEY}
+      # FIX #9 (AUDIT): inside a container "localhost" is the container
+      # itself — route the AI fallback to the host's Node API instead.
+      - WORKFORCE_AI_URL=${WORKFORCE_AI_URL:-http://host.docker.internal:3000/api/ai}
+    extra_hosts:
+      # Lets host.docker.internal resolve to the host on Linux too.
+      - "host.docker.internal:host-gateway"
     depends_on:
       redis:
         condition: service_healthy
     healthcheck:
+      # /health is exempt from the admin-token middleware.
       test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:8000/health').raise_for_status()"]
       interval: 30s
       timeout: 5s
@@ -46,9 +74,9 @@ services:
   #     - "3000:3000"
   #   environment:
   #     - SUPABASE_URL=${SUPABASE_URL}
-  #     - SUPABASE_KEY=${SUPABASE_KEY}
+  #     - SUPABASE_KEY=${SUPABASE_SERVICE_ROLE_KEY}
   #     - NVIDIA_API_KEY=${NVIDIA_API_KEY}
-  #     - REDIS_URL=redis://redis:6379
+  #     - REDIS_URL=redis://:${REDIS_PASSWORD:-voicebox-local}@redis:6379
   #   depends_on:
   #     redis:
   #       condition: service_healthy

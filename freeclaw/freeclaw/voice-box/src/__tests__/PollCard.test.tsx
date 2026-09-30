@@ -14,7 +14,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import PollCard from "../components/PollCard";
 import type { PollData } from "../types";
 
@@ -73,6 +73,15 @@ describe("PollCard", () => {
       expect(screen.getByText(/18 vote/)).toBeInTheDocument();
     });
 
+    it("says no votes yet instead of identical 0% bars on a voteless poll", () => {
+      render(
+        <PollCard
+          poll={makePoll({ vote_counts: [0, 0, 0], total_votes: 0, archived: true })}
+        />,
+      );
+      expect(screen.getByText(/no votes yet/i)).toBeInTheDocument();
+    });
+
     it("renders poll type label", () => {
       render(<PollCard poll={makePoll()} />);
       expect(screen.getByText(/single choice/)).toBeInTheDocument();
@@ -115,6 +124,14 @@ describe("PollCard", () => {
       const voteBtn = screen.getByRole("button", { name: "Vote" });
       expect(voteBtn).toBeDisabled();
     });
+
+    it("explains why Vote is disabled when nothing is selected", () => {
+      render(<PollCard poll={makePoll()} />);
+      const voteBtn = screen.getByRole("button", { name: "Vote" });
+      const label =
+        voteBtn.getAttribute("title") || voteBtn.getAttribute("aria-label") || "";
+      expect(label.toLowerCase()).toContain("select");
+    });
   });
 
   describe("option selection", () => {
@@ -150,6 +167,27 @@ describe("PollCard", () => {
       fireEvent.click(noBtn);
       expect(yesBtn).toHaveAttribute("aria-checked", "true");
       expect(noBtn).toHaveAttribute("aria-checked", "true");
+    });
+  });
+
+  describe("single-vote guard", () => {
+    it("sends exactly one vote request for two rapid Vote taps", async () => {
+      // One tap = one vote. Two taps inside one frame must not fire two
+      // requests: the server upserts per author, but a doubled request is a
+      // doubled chance at a double count.
+      const { api } = await import("../lib/api");
+      const postSpy = api.post as ReturnType<typeof vi.fn>;
+      postSpy.mockImplementationOnce(() => new Promise(() => {}));
+      render(<PollCard poll={makePoll()} />);
+      fireEvent.click(screen.getByRole("radio", { name: /Yes/ }));
+      const voteBtn = screen.getByRole("button", { name: /^Vote$/ });
+      voteBtn.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      voteBtn.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await waitFor(() => {
+        expect(
+          postSpy.mock.calls.filter(([u]) => String(u).includes("/api/polls")),
+        ).toHaveLength(1);
+      });
     });
   });
 
@@ -249,6 +287,14 @@ describe("PollCard", () => {
       const futureDate = new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString(); // 2 hours from now
       render(<PollCard poll={makePoll({ expires_at: futureDate })} />);
       expect(screen.getByText(/ends in/)).toBeInTheDocument();
+    });
+
+    it("uses minute precision so no per-second timer re-render is needed", () => {
+      const futureDate = new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString();
+      render(<PollCard poll={makePoll({ expires_at: futureDate })} />);
+      // ~2h out reads as 1h 59m or 2h 0m depending on render milliseconds —
+      // either way it is hours+minutes with no seconds component.
+      expect(screen.getByText(/^ends in \d+h \d+m$/)).toBeInTheDocument();
     });
   });
 });

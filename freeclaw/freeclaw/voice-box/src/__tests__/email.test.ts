@@ -182,8 +182,8 @@ describe("Email Service", () => {
         report_url: "https://example.com/report/42",
       });
 
-      const call = mockSend.mock.calls[0][2];
-      expect(call.message).toContain("https://example.com/report/42");
+      const call = mockSend.mock.calls[0]?.[2] as { message: string } | undefined;
+      expect(call?.message).toContain("https://example.com/report/42");
     });
   });
 
@@ -214,8 +214,8 @@ describe("Email Service", () => {
         alert_message: "API latency increased",
       });
 
-      const call = mockSend.mock.calls[0][2];
-      expect(call.subject).toContain("WARNING");
+      const call = mockSend.mock.calls[0]?.[2] as { subject: string } | undefined;
+      expect(call?.subject).toContain("WARNING");
     });
 
     it("formats info alert correctly", async () => {
@@ -226,8 +226,8 @@ describe("Email Service", () => {
         alert_message: "System update at 2am",
       });
 
-      const call = mockSend.mock.calls[0][2];
-      expect(call.subject).toContain("INFO");
+      const call = mockSend.mock.calls[0]?.[2] as { subject: string } | undefined;
+      expect(call?.subject).toContain("INFO");
     });
 
     it("includes alert URL when provided", async () => {
@@ -239,8 +239,8 @@ describe("Email Service", () => {
         alert_url: "https://example.com/alert/1",
       });
 
-      const call = mockSend.mock.calls[0][2];
-      expect(call.message).toContain("https://example.com/alert/1");
+      const call = mockSend.mock.calls[0]?.[2] as { message: string } | undefined;
+      expect(call?.message).toContain("https://example.com/alert/1");
     });
 
     it("omits alert URL when not provided", async () => {
@@ -251,8 +251,8 @@ describe("Email Service", () => {
         alert_message: "Something happened",
       });
 
-      const call = mockSend.mock.calls[0][2];
-      expect(call.message).not.toContain("View details");
+      const call = mockSend.mock.calls[0]?.[2] as { message: string } | undefined;
+      expect(call?.message).not.toContain("View details");
     });
   });
 
@@ -282,8 +282,8 @@ describe("Email Service", () => {
         notification_body: "Something changed.",
       });
 
-      const call = mockSend.mock.calls[0][2];
-      expect(call.message).not.toContain("View:");
+      const call = mockSend.mock.calls[0]?.[2] as { message: string } | undefined;
+      expect(call?.message).not.toContain("View:");
     });
   });
 

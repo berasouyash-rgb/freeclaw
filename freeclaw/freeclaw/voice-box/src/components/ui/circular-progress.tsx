@@ -27,7 +27,7 @@ function CircularProgressInner({
   sublabel,
   className,
   animate = true,
-}: CircularProgressProps) {
+}: CircularProgressProps): React.ReactElement {
   const [mounted, setMounted] = useState(false);
   const radius = (size - strokeWidth) / 2;
   const circumference = 2 * Math.PI * radius;
@@ -41,6 +41,7 @@ function CircularProgressInner({
       return () => cancelAnimationFrame(raf);
     }
     setMounted(true);
+    return undefined;
   }, [animate]);
 
   const colorByValue =

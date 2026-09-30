@@ -6,10 +6,9 @@
 	Eye,
 	ImagePlus,
 	Lightbulb,
+	Loader2,
 	Lock,
 	Megaphone,
-	Mic,
-	MicOff,
 	Pencil,
 	Save,
 	Send,
@@ -18,28 +17,31 @@
 	Sparkles,
 	X,
 } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router";
 import { fireConfetti } from "../components/Confetti";
+import AppealPanel, { type AppealSurface } from "../components/AppealPanel";
 import { useApp } from "../contexts/AppContext";
 import { useCategories } from "../hooks/useCategories";
 import { api } from "../lib/api";
+import { downscaleImage } from "../lib/image";
 import { checkCooldown, lsGet, lsSet, stampCooldown } from "../lib/identity";
 import {
-	getModerationSummary,
-	isBlocked,
+	isBlockedByServer,
 	type ModerationResult,
 	moderateContent,
+	normalizePrePubResult,
+	type PrePubCheckKey,
+	PREPUB_CHECK_KEYS,
+	type PrePubResult,
+	submitBlockMessage,
 } from "../lib/moderation";
-import {
-	type SpeechSession,
-	speechSupported,
-	startDictation,
-} from "../lib/speech";
+
 import { CAT_EMOJI, sanitize } from "../lib/utils";
 import type { PostData, PostType } from "../types";
 
 const DRAFT_KEY = "vb:drafts";
+
 
 interface Draft {
 	title?: string;
@@ -64,25 +66,11 @@ interface PollSuggest {
 	ptype?: string | null;
 	note?: string | null;
 }
-interface PrePubResult {
-	decision: string;
-	reason: string;
-	risk_score: number;
-	review_id?: string;
-	checks?: {
-		privacy: { pass: boolean; issues: string[] };
-		safety: { pass: boolean; issues: string[] };
-		spam: { pass: boolean; issues: string[] };
-		quality: { pass: boolean; issues: string[] };
-	};
-	analysis?: {
-		priority: string;
-		department: string;
-		summary: string;
-		estimated_resolution_time: string;
-		llm_analyzed: boolean;
-	};
-}
+/**
+ * The pre-publish verdict type and its normalizer live together in
+ * ../lib/moderation. This page only ever renders a NORMALIZED verdict, so the
+ * shape it reads and the shape the boundary guarantees cannot drift apart.
+ */
 
 export default function Submit() {
 	const { anonId, toast, pushNotif, accountStatus } = useApp();
@@ -112,6 +100,14 @@ export default function Submit() {
 	const [preview, setPreview] = useState(false);
 	const [busy, setBusy] = useState(false);
 	const [draftSaved, setDraftSaved] = useState(false);
+	// Recourse: when safety blocks the write (client pre-gate or server 403),
+	// offer a human appeal carrying the exact blocked text.
+	const [blockedAppeal, setBlockedAppeal] = useState<{
+		surface: AppealSurface;
+		title: string;
+		body: string;
+		context?: { ptype?: string; options?: string[]; category?: string };
+	} | null>(null);
 	// Inline validation errors
 	const [titleError, setTitleError] = useState("");
 	const [descError, setDescError] = useState("");
@@ -123,18 +119,24 @@ export default function Submit() {
 	const [expiry, setExpiry] = useState("");
 	const [linkPost, setLinkPost] = useState("");
 	const [linkablePosts, setLinkablePosts] = useState<PostData[]>([]);
+	const [attachPoll, setAttachPoll] = useState(false);
+	const [attachQuestion, setAttachQuestion] = useState("");
+	const [attachOptions, setAttachOptions] = useState<string[]>(["", ""]);
 
-	// Load open problems for the "link poll to complaint" selector
+	// Load the author's open problems AND suggestions for the poll link selector
 	useEffect(() => {
 		if (type !== "poll") return;
-		api
-			.get<PostData[]>("/api/posts?type=problem")				.then((all) =>
+		Promise.all([
+			api.get<PostData[]>(`/api/posts?type=problem&viewer=${encodeURIComponent(anonId)}`).catch((): PostData[] => []),
+			api.get<PostData[]>(`/api/posts?type=suggestion&viewer=${encodeURIComponent(anonId)}`).catch((): PostData[] => []),
+		])				.then(([problems, suggestions]) =>
 					setLinkablePosts(
-						all
+						[...problems, ...suggestions]
 							.filter((p) =>
 								!["solved", "archived"].includes(p.status) &&
 								p.author_id === anonId,
 						)
+							.filter((p, i, arr) => arr.findIndex((q) => q.id === p.id) === i)
 							.slice(0, 50),
 					),
 				)
@@ -147,6 +149,10 @@ export default function Submit() {
 	}, [type, anonId]);
 	const fileRef = useRef<HTMLInputElement>(null);
 	const restoredRef = useRef(false);
+	/** Synchronous double-submit guard (ref, not state): two fast clicks run
+	 *  before React re-renders `busy`, so state alone can't stop a second
+	 *  concurrent publish — which creates twin posts + twin notifications. */
+	const submitBusyRef = useRef(false);
 	const [duplicates, setDuplicates] = useState<PostData[]>([]);
 	const allPostsRef = useRef<PostData[] | null>(null);
 	/** Real-time AI suggestions (category + tags + priority + improved title) */
@@ -158,8 +164,31 @@ export default function Submit() {
 	const pollSuggestSeq = useRef(0);
 	const pollSuggestBusy = useRef(false);
 
-	/** Content moderation state — live checks as user types */
-	const [moderation, setModeration] = useState<ModerationResult | null>(null);
+	/**
+	 * Content moderation state — live checks as user types.
+	 *
+	 * The verdict is stored WITH the text it was computed for. A verdict is a
+	 * claim about one exact string, so applying it to whatever is on screen
+	 * invents facts: deleting a flagged word used to keep "Fix issues first"
+	 * and the appeal panel alive (for a debounce + a round-trip) over text that
+	 * was already clean, and typing on after a clean verdict kept "No issues
+	 * found by the safety check" over text no check had ever seen.
+	 * `moderation` — derived below, next to `liveText` — is null unless the
+	 * verdict describes the current text. Unknown, never a stale claim.
+	 */
+	const [modVerdict, setModVerdict] = useState<{
+		text: string;
+		result: ModerationResult;
+	} | null>(null);
+	/**
+	 * True while a check is in flight. The UI must NOT render
+	 * "Content looks good — no issues detected" while this is true: the old
+	 * code ran a client-side word list, which had no notion of "Dhansiri,
+	 * I will hate you" and so congratulated a student on publishing a
+	 * targeted threat. Silence pending a verdict is honest; a false green
+	 * checkmark is not.
+	 */
+	const [modChecking, setModChecking] = useState(false);
 	const modSeq = useRef(0);
 
 	/** Pre-publish AI review result */
@@ -250,58 +279,264 @@ export default function Submit() {
 		}
 	}, [desc, touched.desc, type]);
 
-	// Live moderation checks on title + description
+	// Every text field the author can type into. The live check used to send
+	// only `title + desc`, so PII typed into a poll option (or an attached
+	// poll's question/options) never reached the endpoint and the user got
+	// zero real-time feedback — the privacy flag simply never appeared until
+	// submit. One memo feeds both the live check and the pre-send gate so
+	// they can never disagree about what was checked.
+	const liveText = useMemo(() => {
+		const parts = [title, desc];
+		if (type === "poll") parts.push(...options);
+		if (attachPoll) parts.push(attachQuestion, ...attachOptions);
+		return parts
+			.map((p) => String(p || "").trim())
+			.filter(Boolean)
+			.join("\n");
+	}, [title, desc, type, options, attachPoll, attachQuestion, attachOptions]);
+
+	/**
+	 * The live verdict — present ONLY while it describes the text on screen.
+	 * Anything else is "not checked yet", which every consumer below already
+	 * knows how to render: silence, with the local scan standing in as the
+	 * pre-send backstop. See the state comment above for the bugs this closes.
+	 */
+	const moderation =
+		modVerdict && modVerdict.text === liveText ? modVerdict.result : null;
+	/**
+	 * Render-safe flag list. `moderation` comes from the network and may be a
+	 * partial/mocked shape without `flags` — every direct `moderation.flags`
+	 * access below crashed the entire page (empty render, no error UI) the
+	 * moment one such response arrived. A missing list means "no flags", never
+	 * an exception.
+	 */
+	const modFlags = moderation?.flags ?? [];
+
+	/**
+	 * A pre-publish verdict describes the exact text it reviewed. Once the
+	 * author rewrites that text, the panel's risk score and its reason are
+	 * claims about words that no longer exist — drop it rather than keep
+	 * asserting them.
+	 */
 	useEffect(() => {
-		const text = `${title} ${desc}`.trim();
+		setPrePubResult(null);
+	}, [liveText]);
+
+	/**
+	 * The checks the advisory verdict actually reported, in canonical order,
+	 * carrying their display labels. An absent check is omitted — a check that
+	 * never ran is not a pass — so the render below never indexes a missing
+	 * entry (which used to throw and unmount the page).
+	 */
+	const prePubCheckRows = useMemo(() => {
+		const checks = prePubResult?.checks;
+		if (!checks) return [];
+		const labels: Record<PrePubCheckKey, string> = {
+			privacy: "Personal info",
+			safety: "Safety",
+			spam: "Spam",
+			quality: "Quality",
+		};
+		return PREPUB_CHECK_KEYS.flatMap((key) => {
+			const check = checks[key];
+			return check ? [{ key, label: labels[key], check }] : [];
+		});
+	}, [prePubResult]);
+
+	// Live moderation on all author text.
+	//
+	// This calls the SERVER (`/api/moderate`), which runs the full pipeline:
+	// deterministic keyword gates PLUS the contextual classifier that resolves
+	// the target of hostile language. The old client-side `moderateContent()`
+	// was a bare word list, which is exactly why "Dhansiri, I will hate you"
+	// showed as clean.
+	//
+	// The server call is deterministic-only (~0-14ms measured, no provider
+	// round-trip), so awaiting it costs nothing perceptible.
+	useEffect(() => {
+		const text = liveText;
 		if (text.length < 3) {
-			setModeration(null);
+			setModVerdict(null);
+			setModChecking(false);
 			return;
 		}
 		const seq = ++modSeq.current;
+		let cancelled = false;
 		const t = setTimeout(() => {
-			if (seq === modSeq.current) {
-				setModeration(moderateContent(text));
-			}
-		}, 200); // fast debounce for instant feel
-		return () => clearTimeout(t);
-	}, [title, desc]);
+			setModChecking(true);
+			api
+				.post<ModerationResult & { checked?: boolean; serverBlocked?: boolean }>(
+					"/api/moderate",
+					// Polls publish through the "direct" surface (no review
+					// queue); previewing them as "queued" understated blocking.
+					{ text, surface: type === "poll" ? "direct" : "queued" },
+				)
+				.then((r) => {
+					// Ignore a response for text the user has already typed past.
+					if (cancelled || seq !== modSeq.current) return;
+					// A failed check must never render as a pass.
+					if (r?.checked === false) {
+						setModVerdict(null);
+						return;
+					}
+					// A response without a flags array is unusable (test mock,
+					// proxy, older server). Fall back to the local scan for the
+					// exact text that was checked — crashing the page or
+					// silently reporting clean are both worse.
+					if (!r || !Array.isArray(r.flags)) {
+						setModVerdict({ text, result: moderateContent(text) });
+						return;
+					}
+					setModVerdict({ text, result: r });
+				})
+				.catch(() => {
+					if (cancelled || seq !== modSeq.current) return;
+					// Deliberately null, not an empty result: the UI shows
+					// "could not check" rather than "no issues found".
+					setModVerdict(null);
+				})
+				.finally(() => {
+					if (cancelled || seq !== modSeq.current) return;
+					setModChecking(false);
+				});
+		}, 250);
+		return () => {
+			cancelled = true;
+			clearTimeout(t);
+		};
+	}, [liveText, type]);
 
-	/** Optimized dictation: continuous, live interim text, vocabulary correction */
-	const [dictating, setDictating] = useState(false);
-	const [interim, setInterim] = useState("");
-	const sessionRef = useRef<SpeechSession | null>(null);
+	const [voiceBusy, setVoiceBusy] = useState(false);
+	const [voiceDraft, setVoiceDraft] = useState<{
+		title: string;
+		description: string;
+		category: string;
+		tags: string[];
+		priority: string;
+		details: string[];
+	} | null>(null);
 
-	const toggleDictation = () => {
-		if (dictating) {
-			sessionRef.current?.stop();
+
+
+
+
+
+	/** Send the typed text to the AI: ramble in, formal complaint draft out */
+	const runStructure = async (
+		task: "structure_complaint",
+		tooShortHint: string,
+	) => {
+		const spoken = desc.trim();
+		if (spoken.length < 8) {
+			toast(tooShortHint, "err");
 			return;
 		}
-		const session = startDictation({
-			onInterim: setInterim,
-			onFinal: (chunk) => {
-				setDesc((d) =>
-					(d + (d && !d.endsWith(" ") ? " " : "") + chunk).slice(0, 500),
-				);
-				setInterim("");
-			},
-			onEnd: () => {
-				setDictating(false);
-				setInterim("");
-			},
-			onError: (msg) => {
-				toast(msg, "err");
-				setDictating(false);
-				setInterim("");
-			},
-		});
-		if (session) {
-			sessionRef.current = session;
-			setDictating(true);
-			toast('Listening… say "full stop" or "comma" for punctuation', "info");
+		if (!navigator.onLine) {
+			toast("You're offline — the AI needs a connection. Your words are saved above.", "err");
+			return;
 		}
+		setVoiceBusy(true);
+		setVoiceDraft(null);
+		try {
+			const r = await api.postSlow<{
+				engine?: string;
+				draft: {
+					title: string;
+					description: string;
+					category: string;
+					tags: string[];
+					priority: string;
+					details: string[];
+				} | null;
+			}>(`/api/assist`, { task, text: spoken });
+			if (r.draft) {
+				setVoiceDraft(r.draft);
+				toast(
+					r.engine === "local"
+						? "Ready — review and apply"
+						: "AI drafted your complaint — review and apply",
+					"ok",
+				);
+			} else {
+				// 200 with no draft = the AI service is down or overloaded —
+				// say so plainly instead of blaming the user's words.
+				toast("AI is busy right now — your words are safe above, tap again in a moment", "err");
+			}
+		} catch (e: unknown) {
+			const msg = e instanceof Error ? e.message : "";
+			toast(
+				/network|fetch|failed|timeout|connection|offline/i.test(msg)
+					? "Connection failed — your words are saved above, try again when online"
+					: "AI is busy right now — your words are safe above, tap again in a moment",
+				"err",
+			);
+		}
+		setVoiceBusy(false);
 	};
 
-	useEffect(() => () => sessionRef.current?.stop(), []);
+	/** Type-mode button: rambling paragraph → the same structured draft */
+	const structureText = () =>
+		runStructure(
+			"structure_complaint",
+			"Write a little more first — one full sentence is enough",
+		);
+
+	/** The structured-draft card for the typed Transform.
+	 *  Details are display-only extracted facts (dates, places) — Apply
+	 *  fills title/description/category/tags for final review + publish. */
+	const renderDraftCard = () => {
+		if (!voiceDraft) return null;
+		return (
+			<div className="mt-3 rounded-xl bg-surface border border-accent/30 p-3 vb-rise">
+				<p className="text-[10px] font-bold uppercase tracking-wider text-accent mb-1.5">
+					AI draft — error-free and structured
+				</p>
+				<p className="text-sm font-semibold text-ink">
+					{voiceDraft.title}
+				</p>
+				<p className="text-xs text-ink2 mt-1 leading-relaxed">
+					{voiceDraft.description}
+				</p>
+				{(voiceDraft.details || []).length > 0 && (
+					<p className="text-[10px] text-ink3 mt-1.5">
+						📎 {(voiceDraft.details || []).join(" · ")}
+					</p>
+				)}
+				<div className="flex flex-wrap items-center gap-1.5 mt-2">
+					<span className="chip !text-[10px]">
+						{CAT_EMOJI[voiceDraft.category]} {voiceDraft.category}
+					</span>
+					{voiceDraft.tags.map((t) => (
+						<span key={t} className="chip !text-[10px]">
+							#{t}
+						</span>
+					))}
+				</div>
+				<button
+					type="button"
+					onClick={applyVoiceDraft}
+					className="btn btn-primary w-full mt-2.5 !py-2.5"
+				>
+					<Send size={14} /> Use this — review & publish
+				</button>
+			</div>
+		);
+	};
+
+	const applyVoiceDraft = () => {
+		if (!voiceDraft) return;
+		setTitle(voiceDraft.title.slice(0, 120));
+		setDesc(voiceDraft.description.slice(0, 500));
+		setCategory(voiceDraft.category);
+		if (voiceDraft.tags.length)
+			setTags((prev) =>
+				prev ? `${prev}, ${voiceDraft.tags.join(", ")}` : voiceDraft.tags.join(", "),
+			);
+		setVoiceDraft(null);
+		// The form stays up for final review + publish.
+
+		toast("Complaint filled in — review and publish", "ok");
+	};
 
 	/** Duplicate detection: word-overlap similarity against open posts in the same category */
 	const checkDuplicates = useCallback(
@@ -366,6 +601,8 @@ export default function Submit() {
 			setCategory(d.category || "Academics");
 			setTags(d.tags || "");
 			setType(d.type || initialType);
+			// A restored draft means unfinished typing.
+
 			toast("Draft restored", "info");
 		}
 	}, [initialType, toast]);
@@ -394,21 +631,29 @@ export default function Submit() {
 			toast("Image must be under 3 MB", "err");
 			return;
 		}
-		const reader = new FileReader();
-		reader.onload = () => {
-			const result = reader.result as string;
+		// Downscale before upload: a 3 MB phone photo becomes ~4 MB of base64
+		// (server cap is 4 MB) and bills full-size storage + egress forever.
+		// Re-encoded to a 1280px JPEG client-side — silent upgrade, preview
+		// shows the exact bytes that will upload. Falls back to the original
+		// file on old browsers (GIF/SVG always pass through untouched).
+		void downscaleImage(f).then((d) => {
+			if (!d.base64) {
+				toast("Couldn't read that image — try another file", "err");
+				return;
+			}
 			setImage({
-				preview: result,
-				base64: result.split(",")[1] ?? "",
-				type: f.type,
+				preview: d.dataUrl,
+				base64: d.base64,
+				type: d.type,
 			});
-		};
-		reader.readAsDataURL(f);
+		});
 	};
 
 	const submit = async () => {
 		// Mark fields as touched to show inline errors
 		setTouched({ title: true, desc: true });
+		// Capture before the poll early-return narrows `type`.
+		const isPollSubmit = type === "poll";
 
 		const cd = checkCooldown("post", 20);
 		if (cd) {
@@ -416,18 +661,53 @@ export default function Submit() {
 			return;
 		}
 
-		// Check moderation before allowing submission
-		const fullText = `${title} ${desc}`.trim();
-		const mod = moderateContent(fullText);
-		if (isBlocked(mod)) {
-			toast("Content blocked: " + getModerationSummary(mod), "err");
+		// Pre-send gate: saves a doomed round-trip only. The SERVER is
+		// authoritative and re-runs the full pipeline on write.
+		//
+		// Two sources, because neither is sufficient alone:
+		//  - `serverBlocked` is the real verdict from /api/moderate, which
+		//    includes the contextual classifier. This is what catches
+		//    "Dhansiri, I will hate you".
+		//  - the local word list is a synchronous backstop for the instant
+		//    after a keystroke, before the debounce has answered.
+		// Same text the live check evaluated — never a narrower slice, or the
+		// gate and the panel disagree (PII in a poll option blocked at submit
+		// with no prior warning, or vice versa).
+		const fullText = liveText;
+		const mod: ModerationResult = moderation ?? moderateContent(fullText);
+		const blockedByServer =
+			moderation?.serverBlocked === true || isBlockedByServer(mod);
+		if (blockedByServer) {
+			toast(submitBlockMessage(mod, type === "poll" ? "poll" : "post"), "err");
+			setBlockedAppeal(
+				type === "poll"
+					? {
+							surface: "poll",
+							title: sanitize(title, 140),
+							body: options.map((o) => sanitize(o, 60)).filter(Boolean).join("\n"),
+							context: { ptype: pollType, options: options.map((o) => sanitize(o, 60)).filter(Boolean) },
+						}
+					: {
+							surface: "post",
+							title: sanitize(title, 120),
+							body: sanitize(desc, 500),
+							context: { category },
+						},
+			);
 			return;
 		}
+		setBlockedAppeal(null);
 
+		// Double-fire guard: runs synchronously on click, before any await,
+		// so a second click can never start a concurrent publish.
+		if (submitBusyRef.current) return;
+		submitBusyRef.current = true;
+		try {
 		if (type === "poll") {
 			if (title.trim().length < 5) {
 				toast("Poll question must be at least 5 characters", "err");
-				return;
+				submitBusyRef.current = false;
+			return;
 			}
 			const opts =
 				pollType === "yesno"
@@ -435,12 +715,13 @@ export default function Submit() {
 					: options.map((o) => sanitize(o, 60)).filter(Boolean);
 			if (pollType !== "yesno" && opts.length < 2) {
 				toast("Add at least 2 options", "err");
-				return;
+				submitBusyRef.current = false;
+			return;
 			}
 			setBusy(true);
 			try {
-				await api.post("/api/polls", {
-					title: sanitize(moderateContent(title).maskedText, 140),
+				await api.postLong("/api/polls", {
+					title: sanitize(title, 140),
 					ptype: pollType,
 					options: opts,
 					author_id: anonId,
@@ -453,7 +734,16 @@ export default function Submit() {
 				toast("Poll published anonymously", "ok");
 				nav("/polls");
 			} catch (e: unknown) {
-				toast(e instanceof Error ? e.message : "Publish failed", "err");
+				const msg = e instanceof Error ? e.message : "Publish failed";
+				toast(msg, "err");
+				if (/safety guidelines|personal information|previously removed/i.test(msg)) {
+					setBlockedAppeal({
+						surface: "poll",
+						title: sanitize(title, 140),
+						body: opts.join("\n"),
+						context: { ptype: pollType, options: opts },
+					});
+				}
 			}
 			setBusy(false);
 			return;
@@ -461,38 +751,61 @@ export default function Submit() {
 
 		if (title.trim().length < 5) {
 			toast("Title must be at least 5 characters", "err");
+			submitBusyRef.current = false;
 			return;
 		}
 		if (desc.trim().length < 10) {
 			toast("Description must be at least 10 characters", "err");
+			submitBusyRef.current = false;
 			return;
 		}
 
+		const attachOpts = attachOptions.map((o) => sanitize(o, 60)).filter(Boolean);
+		if (attachPoll) {
+			if (attachQuestion.trim().length < 5) {
+				toast("Poll question must be at least 5 characters", "err");
+				submitBusyRef.current = false;
+				return;
+			}
+			if (attachOpts.length < 2) {
+				toast("Add at least 2 poll options", "err");
+				submitBusyRef.current = false;
+				return;
+			}
+		}
 		setBusy(true);
 		setPrePubResult(null);
 		try {
-			// Step 1: Call server-side pre-publish AI agent for moderation
+			// Step 1: Ask the advisory server-side pre-publish agent for a
+			// quality/safety signal. The POST route below remains authoritative.
 			setPrePubBusy(true);
 			let prePub: PrePubResult | null = null;
 			let holdForReview = false; // true → post is queued for admin review instead of publishing
 			try {
-				prePub = await api.post<PrePubResult>("/api/pre-publish", {
+				prePub = normalizePrePubResult(
+				// The advisory verdict is untrusted network input: normalize it
+				// at the boundary so no later render can index a missing field.
+				await api.postLong<unknown>("/api/pre-publish", {
 					content_type: type,
 					title: sanitize(title, 140),
 					description: sanitize(desc, 500),
 					category,
 					author_id: anonId,
-				});
+				}),
+			);
 			} catch (ppErr) {
-				// Moderation service unavailable — never silently publish. Queue for
-				// admin review so a bad/AI-generated post can't slip through.
+				// The advisory AI check is best-effort. The /api/posts handler is
+				// the authoritative safety boundary and runs deterministic PII,
+				// violence, profanity and weak-signal checks on every write. A
+				// timed-out advisory request must not turn an otherwise valid
+				// complaint into an invisible pending_review post (and must not
+				// be replayed by the offline queue).
 				console.warn(
-					"[Submit] pre-publish check failed, queuing for review:",
+					"[Submit] pre-publish advisory check unavailable; server gate will validate:",
 					ppErr,
 				);
-				holdForReview = true;
 				toast(
-					"Moderation is temporarily unavailable — your post will be reviewed before going public.",
+					"Moderation check is taking longer than usual — your post will still be checked when submitted.",
 					"info",
 				);
 			}
@@ -528,18 +841,16 @@ export default function Submit() {
 			if (image) {
 				image_url = await api.uploadImage(image.base64, image.type, anonId);
 			}
-			// Mask profanity in the title and description SEPARATELY. Masking the
-			// combined `${title} ${desc}` text and re-deriving both fields from it
-			// leaks the title into the description and pollutes titles with
-			// description words (title = first 20 words of combined text).
-			const maskedTitle = sanitize(moderateContent(title).maskedText, 120);
-			const maskedDesc = sanitize(moderateContent(desc).maskedText, 500);
-			const post = await api.post<{ id: string; title?: string }>(
+			// Send RAW sanitized fields — the server masks at insert (_posts.js
+			// masks profanity on the way into the DB). Masking here would feed
+			// masked text to the pre-publish gate, blinding it to the real
+			// content, and would show the user text they never typed.
+			const post = await api.postLong<{ id: string; title?: string; status?: string; deduped?: boolean }>(
 				"/api/posts",
 				{
 					type,
-					title: maskedTitle,
-					description: maskedDesc,
+					title: sanitize(title, 120),
+					description: sanitize(desc, 500),
 					category,						author_id: anonId,
 					image_url,
 					tags: tags
@@ -553,27 +864,162 @@ export default function Submit() {
 			);
 			stampCooldown("post");
 			lsSet(DRAFT_KEY, null);
+			// Server truth wins: a spam-held or deduped-held post reports
+			// pending_review even when the client pre-gate saw nothing wrong.
+			const held = holdForReview || post.status === "pending_review";
 			pushNotif({
 				kind: "submitted",
-				title: holdForReview
+				title: held
 					? "Your post is under review"
 					: "Your post is live",
 				body: post.title ?? title,
 				link: `/post/${post.id}`,
 			});
-			fireConfetti();
-			toast(
-				holdForReview
-					? "Submitted — a moderator will review it before it goes public"
-					: "Submitted anonymously",
-				"ok",
-			);
+			// Celebration only for actually-published posts — a held post is
+			// not live, and confetti would teach users that review == posted.
+			if (!held) fireConfetti();
+			if (post.deduped) {
+				toast("Already published — opened your existing post", "ok");
+			} else {
+				toast(
+					held
+						? "Submitted — a moderator will review it before it goes public"
+						: "Submitted anonymously",
+					"ok",
+				);
+			}
+						if (attachPoll && !held) {
+				try {
+					await api.postLong("/api/polls", {
+						title: sanitize(attachQuestion, 140),
+						ptype: "single",
+						options: attachOpts,
+						post_id: post.id,
+					});
+					toast("Post and poll published", "ok");
+				} catch (e: unknown) {
+					toast(`Post published, but the poll failed: ${e instanceof Error ? e.message : "Publish failed"}. You can add it later from the post page.`, "err");
+				}
+			} else if (attachPoll && held) {
+				toast("Post held for review — add the poll after it's approved.", "info");
+			}
 			nav(type === "suggestion" ? "/suggestions" : `/post/${post.id}`);
 		} catch (e: unknown) {
-			toast(e instanceof Error ? e.message : "Publish failed", "err");
+			const msg = e instanceof Error ? e.message : "Publish failed";
+			toast(msg, "err");
+			// Safety 403s (blocked / repost-fingerprint) get the same recourse
+			// as the client pre-gate — any other failure does not.
+			if (/safety guidelines|personal information|previously removed/i.test(msg)) {
+				setBlockedAppeal({
+					surface: isPollSubmit ? "poll" : "post",
+					title: sanitize(title, 140),
+					body: sanitize(desc, 500),
+					context:
+						isPollSubmit
+							? { ptype: pollType, options: options.map((o) => sanitize(o, 60)).filter(Boolean) }
+							: { category },
+				});
+			}
 		}
 		setBusy(false);
+		} finally {
+			submitBusyRef.current = false;
+		}
 	};
+
+	/**
+	 * Live moderation feedback, shared by every submission type.
+	 *
+	 * This used to live only inside the non-poll branch, so a poll author whose
+	 * wording tripped the gate saw a disabled "Fix issues first" button with no
+	 * on-screen explanation of what was wrong. `liveText` already covers the poll
+	 * question + options, so the verdict is valid here too — it just was not
+	 * rendered. One definition, called from both branches, so the two can never
+	 * drift apart.
+	 */
+	const renderLiveModerationFeedback = () => (
+		<>
+			{moderation && modFlags.length > 0 && (
+				<div
+					className={`rounded-xl p-3.5 vb-rise ${isBlockedByServer(moderation) ? "moderation-blocked" : moderation.overallSeverity === "high" ? "moderation-danger" : moderation.overallSeverity === "medium" ? "moderation-warn" : "moderation-info"}`}
+				>
+					<p className="text-[10px] font-bold uppercase tracking-wider mb-2 flex items-center gap-1.5">
+						{isBlockedByServer(moderation) ? (
+							<>
+								<ShieldAlert size={12} /> Content blocked
+							</>
+						) : (
+							<>
+								<ShieldCheck size={12} /> Content review
+							</>
+						)}
+					</p>
+					<div className="space-y-1.5">
+						{modFlags.map((flag, i) => (
+							<div key={i} className="flex items-start gap-2 text-xs">
+								<span
+									className={`shrink-0 mt-0.5 ${
+										flag.severity === "critical" || flag.severity === "high"
+											? "text-bad"
+											: flag.severity === "medium"
+												? "text-warn"
+												: "text-ink3"
+									}`}
+								>
+									{flag.severity === "critical" ||
+									flag.severity === "high" ? (
+										<X size={12} />
+									) : (
+										<AlertTriangle size={12} />
+									)}
+								</span>
+								<span className="text-ink2">{flag.message}</span>
+							</div>
+						))}
+					</div>
+					{isBlockedByServer(moderation) && (
+						<p
+							className="text-[11px] mt-2 font-semibold"
+							style={{ color: "var(--vb-bad)" }}
+						>
+							Please remove the flagged content to continue. Repeated
+							violations may result in a temporary suspension.
+						</p>
+					)}
+					{!isBlockedByServer(moderation) &&
+						moderation.overallSeverity !== "none" && (
+							<p className="text-[11px] mt-2 text-ink3">
+								Your content will be reviewed before publishing. Please
+								ensure all feedback is constructive and respectful.
+							</p>
+						)}
+				</div>
+			)}
+			{modChecking && (
+				<div className="flex items-center gap-2 rounded-lg px-3 py-2 text-xs text-ink3">
+					<Loader2 size={13} className="animate-spin" />
+					<span>Checking content against the safety policy…</span>
+				</div>
+			)}
+			{moderation &&
+				!modChecking &&
+				modFlags.length === 0 &&
+				(title.length > 10 || desc.length > 10 || liveText.trim().length > 10) && (
+					<div
+						className="flex items-center gap-2 rounded-lg px-3 py-2 text-xs vb-rise"
+						style={{
+							background: "rgba(22,160,106,0.08)",
+							border: "1px solid rgba(22,160,106,0.2)",
+						}}
+					>
+						<ShieldCheck size={13} style={{ color: "var(--vb-good)" }} />
+						<span style={{ color: "var(--vb-good)" }}>
+							No issues found so far — final AI review runs when you publish
+						</span>
+					</div>
+				)}
+		</>
+	);
 
 	const TABS = [
 		{ key: "problem", label: "Problem", icon: Megaphone },
@@ -612,8 +1058,7 @@ export default function Submit() {
 						key={key}
 						role="tab"
 						aria-selected={type === key}
-						onClick={() => setType(key)}
-						className={`btn flex-1 ${type === key ? "btn-primary" : "btn-ghost"}`}
+						onClick={() => setType(key)}						className={`btn flex-1 ${type === key ? "btn-primary" : "btn-ghost"}`}
 					>
 						<Icon size={15} /> {label}
 					</button>
@@ -631,7 +1076,7 @@ export default function Submit() {
 					</label>
 					<input
 						id="f-title"
-						className={`input ${titleError ? "moderation-flag" : ""} ${moderation?.flags.some((f) => f.category === "profanity" || f.category === "hate_speech") ? "moderation-flag" : moderation && moderation.flags.length === 0 && title.length > 10 ? "moderation-ok" : ""}`}
+						className={`input ${titleError ? "moderation-flag" : ""} ${modFlags.some((f) => f.category === "profanity" || f.category === "hate_speech" || f.category === "privacy") ? "moderation-flag" : moderation && modFlags.length === 0 && title.length > 10 ? "moderation-ok" : ""}`}
 						placeholder={
 							type === "poll"
 								? "Should the library stay open until 8pm?"
@@ -808,7 +1253,7 @@ export default function Submit() {
 								className="text-xs font-semibold text-ink2 block mb-1.5"
 								htmlFor="f-link"
 							>
-								Link to a complaint (optional)
+								Link to one of your posts (optional)
 							</label>
 							<select
 								id="f-link"
@@ -863,13 +1308,16 @@ export default function Submit() {
 									type="datetime-local"
 									className="input"
 									value={expiry}
-									onChange={(e) => setExpiry(e.target.value)}
-									min={new Date().toISOString().slice(0, 16)}
+									onChange={(e) => setExpiry(e.target.value)}									min={new Date().toISOString().slice(0, 16)}
 								/>
-						</div>
+							</div>
+						{renderLiveModerationFeedback()}
 					</>
 				) : (
 					<>
+
+
+							<>
 						<div>
 							<div className="flex items-center justify-between mb-1.5">
 								<label
@@ -878,42 +1326,12 @@ export default function Submit() {
 								>
 									Description <span className="text-bad">*</span>
 								</label>
-								{speechSupported && (
-									<button
-										type="button"
-										onClick={toggleDictation}
-										aria-pressed={dictating}
-										className={`flex items-center gap-1 text-[11px] font-semibold px-2 py-1 rounded-lg transition-all ${dictating ? "text-white vb-pop" : "text-accent bg-accent-soft hover:brightness-95"}`}
-										style={
-											dictating
-												? {
-														background: "var(--vb-bad)",
-														animation: "vb-pulse 1.2s ease-in-out infinite",
-													}
-												: undefined
-										}
-									>
-										{dictating ? (
-											<>
-												<MicOff size={12} /> Stop dictating
-											</>
-										) : (
-											<>
-												<Mic size={12} /> Speak instead
-											</>
-										)}
-									</button>
-								)}
 							</div>
 							<div className="relative">
 								<textarea
 									id="f-desc"
-									className={`input min-h-32 resize-y ${descError ? "moderation-flag" : ""} ${dictating ? "!border-bad" : moderation?.flags.some((f) => f.category === "profanity" || f.category === "hate_speech" || f.category === "dangerous") ? "moderation-flag" : moderation && moderation.flags.length === 0 && desc.length > 10 ? "moderation-ok" : ""}`}
-									placeholder={
-										dictating
-											? "Listening… speak clearly"
-											: "Describe the issue clearly. What happened? Where? How often? (max 500 characters)"
-									}
+									className={`input min-h-32 resize-y ${descError ? "moderation-flag" : ""} modFlags.some((f) => f.category === "profanity" || f.category === "hate_speech" || f.category === "privacy" || f.category === "dangerous") ? "moderation-flag" : moderation && modFlags.length === 0 && desc.length > 10 ? "moderation-ok" : ""}`}
+									placeholder="Describe the issue clearly. What happened? Where? How often? (max 500 characters)"
 									value={desc}
 									onChange={(e) => setDesc(e.target.value.slice(0, 500))}
 									onBlur={() => setTouched((t) => ({ ...t, desc: true }))}
@@ -922,31 +1340,9 @@ export default function Submit() {
 									aria-describedby="f-desc-help"
 									aria-invalid={!!descError}
 								/>
-								{dictating && interim && (
-									<div
-										className="absolute bottom-2 left-2 right-2 flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs vb-rise"
-										style={{
-											background: "rgba(220,75,75,0.08)",
-											border: "1px solid rgba(220,75,75,0.25)",
-										}}
-										aria-live="polite"
-									>
-										<span
-											className="w-2 h-2 rounded-full bg-bad shrink-0"
-											style={{ animation: "vb-pulse 1s ease-in-out infinite" }}
-											aria-hidden
-										/>
-										<span className="text-ink2 truncate italic">{interim}</span>
-									</div>
-								)}
 							</div>
 							<div className="flex justify-between mt-1">
-								{dictating ? (
-									<p className="text-[10px] text-bad font-semibold">
-										Recording — say "full stop", "comma" or "new line" for
-										punctuation
-									</p>
-								) : descError ? (
+								{descError ? (
 									<p className="text-[11px] text-bad font-medium flex items-center gap-1">
 										<AlertTriangle size={11} /> {descError}
 									</p>
@@ -960,85 +1356,22 @@ export default function Submit() {
 									{desc.length}/500
 								</p>
 							</div>
+							{(type === "problem" || type === "suggestion") && (
+								<button
+									type="button"
+									onClick={structureText}
+									disabled={voiceBusy || desc.trim().length < 8}
+									className="btn btn-ghost w-full mt-2 !py-2.5 disabled:opacity-50"
+								>
+									<Sparkles size={15} />{" "}
+									{voiceBusy ? "Writing your complaint…" : "Turn into complaint"}
+								</button>
+							)}
+							{renderDraftCard()}
 						</div>
 
-						{/* Live content moderation feedback */}
-						{moderation && moderation.flags.length > 0 && (
-							<div
-								className={`rounded-xl p-3.5 vb-rise ${isBlocked(moderation) ? "moderation-blocked" : moderation.overallSeverity === "high" ? "moderation-danger" : moderation.overallSeverity === "medium" ? "moderation-warn" : "moderation-info"}`}
-							>
-								<p className="text-[10px] font-bold uppercase tracking-wider mb-2 flex items-center gap-1.5">
-									{isBlocked(moderation) ? (
-										<>
-											<ShieldAlert size={12} /> Content blocked
-										</>
-									) : (
-										<>
-											<ShieldCheck size={12} /> Content review
-										</>
-									)}
-								</p>
-								<div className="space-y-1.5">
-									{moderation.flags.map((flag, i) => (
-										<div key={i} className="flex items-start gap-2 text-xs">
-											<span
-												className={`shrink-0 mt-0.5 ${
-													flag.severity === "critical"
-														? "text-bad"
-														: flag.severity === "high"
-															? "text-bad"
-															: flag.severity === "medium"
-																? "text-warn"
-																: "text-ink3"
-												}`}
-											>
-												{flag.severity === "critical" ||
-												flag.severity === "high" ? (
-													<X size={12} />
-												) : flag.severity === "medium" ? (
-													<AlertTriangle size={12} />
-												) : (
-													<AlertTriangle size={12} />
-												)}
-											</span>
-											<span className="text-ink2">{flag.message}</span>
-										</div>
-									))}
-								</div>
-								{isBlocked(moderation) && (
-									<p
-										className="text-[11px] mt-2 font-semibold"
-										style={{ color: "var(--vb-bad)" }}
-									>
-										Please remove the flagged content to continue. Repeated
-										violations may result in a temporary suspension.
-									</p>
-								)}
-								{!isBlocked(moderation) &&
-									moderation.overallSeverity !== "none" && (
-										<p className="text-[11px] mt-2 text-ink3">
-											Your content will be reviewed before publishing. Please
-											ensure all feedback is constructive and respectful.
-										</p>
-									)}
-							</div>
-						)}
-						{moderation &&
-							moderation.flags.length === 0 &&
-							(title.length > 10 || desc.length > 10) && (
-								<div
-									className="flex items-center gap-2 rounded-lg px-3 py-2 text-xs vb-rise"
-									style={{
-										background: "rgba(22,160,106,0.08)",
-										border: "1px solid rgba(22,160,106,0.2)",
-									}}
-								>
-									<ShieldCheck size={13} style={{ color: "var(--vb-good)" }} />
-									<span style={{ color: "var(--vb-good)" }}>
-										Content looks good — no issues detected
-									</span>
-								</div>
-							)}
+						{/* Live content moderation feedback — shared across all submission types */}
+						{renderLiveModerationFeedback()}
 
 						{/* Pre-publish AI review panel — shows after server-side AI analysis */}
 						{prePubBusy && (
@@ -1090,9 +1423,16 @@ export default function Submit() {
 											<>
 												<AlertTriangle size={12} /> AI review — needs attention
 											</>
-										) : (
+										) : prePubResult.decision === "safe" ? (
 											<>
 												<ShieldCheck size={12} /> AI review — safe to publish
+											</>
+										) : (
+											// Any other value — including a missing one — is a verdict we
+											// cannot read. The old fallthrough crowned it "safe to
+											// publish": a green light nobody issued.
+											<>
+												<AlertTriangle size={12} /> AI review — could not confirm
 											</>
 										)}
 									</p>
@@ -1149,20 +1489,9 @@ export default function Submit() {
 								</div>
 
 								{/* Check results grid */}
-								{prePubResult.checks && (
+								{prePubCheckRows.length > 0 && (
 									<div className="grid grid-cols-2 gap-2 mb-3">
-										{(
-											[
-												[
-													"privacy",
-													"Personal info",
-													prePubResult.checks.privacy,
-												],
-												["safety", "Safety", prePubResult.checks.safety],
-												["spam", "Spam", prePubResult.checks.spam],
-												["quality", "Quality", prePubResult.checks.quality],
-											] as const
-										).map(([key, label, check]) => (
+										{prePubCheckRows.map(({ key, label, check }) => (
 											<div
 												key={key}
 												className="flex items-center gap-1.5 text-[11px]"
@@ -1200,10 +1529,19 @@ export default function Submit() {
 
 								{/* Action hint */}
 								{prePubResult.decision === "high_risk" && (
-									<p className="text-[11px] mt-2 font-semibold text-bad">
-										Content held for admin review. You can edit and try again
-										with different wording.
-									</p>
+									<>
+										<p className="text-[11px] mt-2 font-semibold text-bad">
+											Not submitted — remove personal info and try again.
+											Your draft is preserved above.
+										</p>
+										<button
+											type="button"
+											onClick={() => setPrePubResult(null)}
+											className="mt-2 text-[11px] font-semibold text-ink3 hover:text-accent"
+										>
+											Dismiss
+										</button>
+									</>
 								)}
 								{prePubResult.decision === "revision" && (
 									<p className="text-[11px] mt-2 text-warn">
@@ -1401,8 +1739,83 @@ export default function Submit() {
 								}
 							/>
 						</div>
+							</>
 					</>
 				)}
+
+				{type !== "poll" && (
+					<div className="rounded-xl border border-border p-4 space-y-3">
+						<button
+							type="button"
+							onClick={() => setAttachPoll((v) => !v)}
+							aria-expanded={attachPoll}
+							className="flex items-center gap-2 text-xs font-semibold text-ink2 hover:text-ink transition-colors"
+						>
+							<BarChart3 size={14} className="text-accent" />
+							{attachPoll ? "Poll attached — tap to remove" : "Attach a poll (optional)"}
+						</button>
+						{attachPoll && (
+							<>
+								<div>
+									<label className="text-xs font-semibold text-ink2 block mb-1.5" htmlFor="f-attach-q">
+										Poll question
+									</label>
+									<input
+										id="f-attach-q"
+										className="input"
+										placeholder="What should we ask?"
+										value={attachQuestion}
+										onChange={(e) => setAttachQuestion(e.target.value)}
+										maxLength={140}
+									/>
+								</div>
+								<div>
+									<span className="text-xs font-semibold text-ink2 block mb-1.5">
+										Options (2–10)
+									</span>
+									<div className="space-y-2">
+										{attachOptions.map((o, i) => (
+											<div key={i} className="flex gap-2">
+												<input
+													className="input"
+													placeholder={`Option ${i + 1}`}
+													aria-label={`Attach poll option ${i + 1}`}
+													value={o}
+													maxLength={60}
+													onChange={(e) =>
+														setAttachOptions((prev) => prev.map((x, j) => (j === i ? e.target.value : x)),
+											)
+												}
+											/>
+												{attachOptions.length > 2 && (
+													<button
+														className="btn btn-ghost !p-2.5"
+														onClick={() => setAttachOptions((prev) => prev.filter((_, j) => j !== i))}
+														aria-label="Remove option"
+													>
+														<X size={14} />
+													</button>
+												)}
+											</div>
+										))}
+									</div>
+									{attachOptions.length < 10 && (
+										<button
+											className="btn btn-ghost !text-xs mt-2"
+											onClick={() => setAttachOptions((prev) => [...prev, ""])}
+										>
+											+ Add option
+										</button>
+									)}
+								</div>
+								<p className="text-[10px] text-ink3">
+									Created together with your post and linked to it.
+								</p>
+							</>
+						)}
+					</div>
+				)}
+
 
 				{/* Duplicate warning — similar open posts in this category */}
 				{type !== "poll" && duplicates.length > 0 && (
@@ -1426,7 +1839,8 @@ export default function Submit() {
 							>
 								{d.title}{" "}
 								<span className="text-[11px] text-ink3">
-									· {d.status.replace("_", " ")} · {d.reactions?.support || 0}{" "}
+									· {(d.status || "open").replace("_", " ")} ·{" "}
+								{d.reactions?.support || 0}{" "}
 									supports
 								</span>
 							</Link>
@@ -1477,14 +1891,14 @@ export default function Submit() {
 							busy ||
 							restricted ||
 							prePubBusy ||
-							(moderation ? isBlocked(moderation) : false)
+							(moderation ? isBlockedByServer(moderation) : false)
 						}
 						aria-label={
 							busy
 								? "Publishing your submission"
 								: prePubBusy
 									? "Running AI content check"
-									: moderation && isBlocked(moderation)
+									: moderation && isBlockedByServer(moderation)
 										? "Content has issues that must be fixed first"
 										: "Publish anonymously"
 						}
@@ -1495,7 +1909,7 @@ export default function Submit() {
 							</>
 						) : busy ? (
 							"Publishing…"
-						) : moderation && isBlocked(moderation) ? (
+						) : moderation && isBlockedByServer(moderation) ? (
 							<>
 								<ShieldAlert size={15} /> Fix issues first
 							</>
@@ -1506,6 +1920,29 @@ export default function Submit() {
 						)}
 					</button>
 				</div>
+
+				{blockedAppeal ? (
+					<AppealPanel
+						surface={blockedAppeal.surface}
+						title={blockedAppeal.title}
+						body={blockedAppeal.body}
+						context={blockedAppeal.context}
+						onFiled={() => setBlockedAppeal(null)}
+					/>
+				) : (
+					moderation && isBlockedByServer(moderation) && (
+						<AppealPanel
+							surface={type === "poll" ? "poll" : "post"}
+							title={sanitize(title, 140)}
+							body={sanitize(desc, 500)}
+							context={
+								type === "poll"
+									? { ptype: pollType, options: options.map((o) => sanitize(o, 60)).filter(Boolean) }
+									: { category }
+							}
+						/>
+					)
+				)}
 
 				<p className="text-[11px] text-ink3 flex items-start gap-1.5 pt-1">
 					<AlertTriangle size={12} className="mt-0.5 shrink-0" />

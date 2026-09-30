@@ -39,6 +39,7 @@ vi.mock("../../api/_auth.js", () => {
 		verifyCallerIdentity: vi.fn(
 			async (
 				req: { headers: Record<string, string> },
+				_res: unknown,
 				claimedUserId: string,
 			) => {
 				const headerId = (req.headers["x-anon-id"] || "")

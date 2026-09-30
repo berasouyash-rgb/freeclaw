@@ -12,7 +12,8 @@ export type PostStatus =
 	| "in_progress"
 	| "waiting"
 	| "solved"
-	| "archived";
+	| "archived"
+	| "pending_review";
 export type Priority = "low" | "medium" | "high" | "critical";
 
 export interface StatusHistoryEntry {
@@ -93,6 +94,7 @@ export interface PollData {
 	expires_at?: string | null;
 	archived?: boolean;
 	deleted?: boolean;
+	hidden?: boolean;
 	total_votes?: number;
 	vote_counts?: Record<number, number>;
 	is_mine?: boolean;
@@ -129,7 +131,14 @@ export type NotificationKind =
 	| "poll"
 	| "info"
 	| "submitted"
-	| "mention";
+	| "mention"
+	| "warning"
+	| "success"
+	| "suspension"
+	| "suspension_lifted"
+	| "ban"
+	| "unban"
+	| "moderation";
 
 export interface Notification {
 	id: string;

@@ -1,76 +1,44 @@
 /**
- * Server-side Email Helper — sends emails via EmailJS REST API.
+ * Server-side Email Helper — sends emails via the free Resend path.
  *
  * Used by API routes (_posts.js, _polls.js, etc.) to send notification
  * emails when events happen (post solved, poll closed, alerts).
  *
- * Environment variables required:
- *   EMAILJS_SERVICE_ID   — EmailJS service ID
- *   EMAILJS_TEMPLATE_ID  — EmailJS template ID
- *   EMAILJS_PUBLIC_KEY   — EmailJS public key (for REST API auth)
- *   EMAILJS_PRIVATE_KEY  — EmailJS private key (for server-side sends)
+ * The recipient is ALWAYS the real email the user saved in Settings
+ * (/api/notify-prefs) — never a fake relay address. If the user never
+ * saved an email or disabled email alerts, the send is skipped silently.
+ *
+ * Environment variables required (free Resend tier works):
+ *   RESEND_API_KEY — Resend API key (https://resend.com, free tier)
+ *   EMAIL_FROM     — sender, e.g. "VoiceBox <notifications@resend.dev>"
  *
  * All sends are fire-and-forget (best-effort) — email failures never
  * block the API response.
  */
 
-const EMAILJS_SERVICE_ID = process.env.EMAILJS_SERVICE_ID || "";
-const EMAILJS_TEMPLATE_ID = process.env.EMAILJS_TEMPLATE_ID || "";
-const EMAILJS_PUBLIC_KEY = process.env.EMAILJS_PUBLIC_KEY || "";
-const EMAILJS_PRIVATE_KEY = process.env.EMAILJS_PRIVATE_KEY || "";
-
-const EMAILJS_API_URL = "https://api.emailjs.com/api/v1.0/email/send";
+import { sendEmail as dispatchEmail } from "./_dispatch.js";
+import { getNotifyPrefs } from "./_notify-prefs.js";
 
 /**
- * Check if email is configured and ready to send.
+ * Whether server-side email can send (free Resend key present).
+ * Kept as the single source of truth — api/_email-templates.js reports it.
  */
 export function isEmailConfigured() {
-  return !!(EMAILJS_SERVICE_ID && EMAILJS_TEMPLATE_ID && EMAILJS_PUBLIC_KEY && EMAILJS_PRIVATE_KEY);
+	return !!process.env.RESEND_API_KEY;
 }
 
 /**
- * Send an email via EmailJS REST API.
- * Returns { ok: boolean, error?: string }
+ * Resolve the real, opted-in email for an author, or null when there is
+ * nothing to send to (no email saved, or email alerts disabled).
  */
-async function sendEmail({ toEmail, toName, subject, message, fromName }) {
-  if (!isEmailConfigured()) {
-    return { ok: false, error: "Email not configured" };
-  }
-
-  try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 8000);
-    const response = await fetch(EMAILJS_API_URL, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      signal: controller.signal,
-      body: JSON.stringify({
-        service_id: EMAILJS_SERVICE_ID,
-        template_id: EMAILJS_TEMPLATE_ID,
-        user_id: EMAILJS_PUBLIC_KEY,
-        accessToken: EMAILJS_PRIVATE_KEY,
-        template_params: {
-          to_email: toEmail,
-          to_name: toName || "",
-          subject,
-          message,
-          from_name: fromName || "Voice Box",
-          reply_to: toEmail,
-        },
-      }),
-    }).finally(() => clearTimeout(timeout));
-
-    if (response.ok) {
-      return { ok: true };
-    } else {
-      const text = await response.text().catch(() => "Unknown error");
-      return { ok: false, error: `EmailJS ${response.status}: ${text}` };
-    }
-  } catch (e) {
-    return { ok: false, error: e.message || "Email send failed" };
-  }
+async function recipientEmail(authorId) {
+	try {
+		const prefs = await getNotifyPrefs(authorId);
+		if (prefs?.email_enabled && prefs.email) return prefs.email;
+		return null;
+	} catch {
+		return null;
+	}
 }
 
 /**
@@ -95,14 +63,9 @@ export async function sendPostSolvedEmail({ postTitle, postId, authorId, adminRe
     .join("\n");
 
   // Fire-and-forget — don't block the API response
-  sendEmail({
-    toEmail: `${authorId}@voicebox.local`, // Anonymous relay address
-    toName: "Community Member",
-    subject,
-    message,
-  }).catch(() => {
-    /* email is best-effort */
-  });
+  const to = await recipientEmail(authorId);
+  if (!to) return { queued: false, reason: "no_opted_in_email" };
+  dispatchEmail(to, subject, message).catch((err) => { console.error("[email] send failed", { error: err?.message || String(err) }); });
 
   return { queued: true };
 }
@@ -126,14 +89,9 @@ export async function sendPollClosedEmail({ pollTitle, pollId, authorId, postId 
     `— Voice Box Team`,
   ].join("\n");
 
-  sendEmail({
-    toEmail: `${authorId}@voicebox.local`,
-    toName: "Poll Creator",
-    subject,
-    message,
-  }).catch(() => {
-    /* email is best-effort */
-  });
+  const to = await recipientEmail(authorId);
+  if (!to) return { queued: false, reason: "no_opted_in_email" };
+  dispatchEmail(to, subject, message).catch((err) => { console.error("[email] send failed", { error: err?.message || String(err) }); });
 
   return { queued: true };
 }
@@ -169,9 +127,7 @@ export async function sendAlertEmail({ title, message, severity, url }) {
     toName: "Admin",
     subject,
     message: body,
-  }).catch(() => {
-    /* email is best-effort */
-  });
+  }).catch((err) => { console.error("[email] send failed", { domain: "voicebox.local", error: err?.message || String(err) }); });
 
   return { queued: true };
 }

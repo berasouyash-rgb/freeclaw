@@ -10,6 +10,7 @@
 
 import { auditLog, cors, isAdmin, notifyUser } from "./_auth.js";
 import supabase from "./_db-client.js";
+import { logger } from "./_observability.js";
 
 export default async function handler(req, res) {
 	cors(res, req);
@@ -36,12 +37,16 @@ export default async function handler(req, res) {
 				return res.status(500).json({ error: "Failed to query review queue" });
 			}
 
-			const items = (data || []).map((row) => ({
-				key: row.key,
-				...row.value,
-			}));
+			const items = (data || [])
+				// Kept-private submissions remain durable for author/audit recovery,
+				// but they are no longer actionable review-queue work.
+				.filter((row) => row.value?.status !== "kept_private")
+				.map((row) => ({
+					key: row.key,
+					...row.value,
+				}));
 
-			console.log(`[pre-review] Returning ${items.length} review items`);
+			logger.info("pre-review", `Returning ${items.length} review items`);
 			return res.status(200).json({ items, total: items.length });
 		} catch (err) {
 			console.error("review-queue GET error:", err);
@@ -140,25 +145,68 @@ export default async function handler(req, res) {
 					`"${String(item.title || "").slice(0, 60)}" was held back by the review team. You can revise and resubmit it.`,
 				);
 			} else if (action === "keep_private") {
-				// Update status to indicate private/visible only to admin
-				const { error: keepErr } = await supabase
+				// Keep the author's content as a real private post. The old path
+				// updated the queue row and then deleted it immediately, which
+				// destroyed the only durable copy while telling the author it was
+				// still available. A private post gives My Activity a truthful,
+				// author-only record and keeps the item out of the public feed.
+				const postId = `private_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+				const now = new Date().toISOString();
+				const { error: keepErr } = await supabase.from("posts").insert({
+					id: postId,
+					type:
+						item.content_type === "poll"
+							? "suggestion"
+							: item.content_type || "problem",
+					title: String(item.title || "Untitled").slice(0, 120),
+					description: String(item.description || item.body || "").slice(0, 500),
+					category: item.category || "Other",
+					priority: ["low", "medium", "high", "critical"].includes(item.priority)
+						? item.priority
+						: "medium",
+					author_id: item.author_id || "anonymous",
+					status: "reported",
+					progress: 5,
+					image_url: item.image_url || null,
+					tags: [],
+					deleted: false,
+					hidden: false,
+					visibility: "private",
+					status_history: [
+						{
+							status: "reported",
+							at: now,
+							note: "Kept private by admin from pre-publish review",
+						},
+					],
+				});
+				if (keepErr) throw keepErr;
+				const { error: keepQueueErr } = await supabase
 					.from("settings")
 					.update({
 						value: {
 							...item,
 							status: "kept_private",
 							reviewed_by: "admin",
-							reviewed_at: new Date().toISOString(),
+							reviewed_at: now,
+							private_post_id: postId,
 						},
 					})
 					.eq("key", key);
-				if (keepErr) throw keepErr;
+				if (keepQueueErr) throw keepQueueErr;
 				await auditLog(
 					item.author_id || "anonymous",
 					"pre_publish_kept_private",
-					`Admin kept content private`,
+					`Admin kept content private as post ${postId}`,
 					"admin",
 				);
+				await notifyUser(
+					item.author_id,
+					"info",
+					"Content kept private",
+					`"${String(item.title || "").slice(0, 60)}" is now a private post in My Activity. You can revise and resubmit it.`,
+				);
+				return res.status(200).json({ ok: true, action, key, post_id: postId });
 			} else if (action === "ban") {
 				// FIX #18: Require explicit confirmation token for instant-ban (prevents accidental/ CSRF-triggered bans)
 				const body = req.body || {};

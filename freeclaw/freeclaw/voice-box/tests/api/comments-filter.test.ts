@@ -37,10 +37,13 @@ vi.mock("../../api/_error.js", () => ({
 }));
 vi.mock("../../api/_events.js", () => ({
 	emitEvent: vi.fn(() => Promise.resolve()),
+	emitEventAndBridge: vi.fn(() => Promise.resolve()),
 	EVENT_TYPES: {},
 }));
 vi.mock("../../api/_moderation.js", () => ({
 	serverModerate: () => ({ blocked: false, requiresReview: false, flags: [] }),
+	recordSafetyRepost: () => Promise.resolve(false),
+	checkSafetyRepost: () => Promise.resolve({ blocked: false }),
 }));
 
 function response() {

@@ -15,7 +15,7 @@ import {
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import PostDetail from "../pages/PostDetail";
+import PostDetail, { pickCanonicalLinkedPoll } from "../pages/PostDetail";
 
 const mocks = vi.hoisted(() => ({
 	anonId: "anon-test",
@@ -25,10 +25,12 @@ const mocks = vi.hoisted(() => ({
 	put: vi.fn(),
 	navigate: vi.fn(),
 	toggleBookmark: vi.fn(),
+	retireNotifsForLink: vi.fn(),
 	readAloud: vi.fn(),
 	stopReading: vi.fn(),
 	writeText: vi.fn(),
 	icon: () => null,
+	hasAdminSession: vi.fn(() => false),
 }));
 
 vi.mock("../lib/api", () => ({
@@ -38,10 +40,15 @@ vi.mock("../lib/api", () => ({
 		post: mocks.post,
 		put: mocks.put,
 	},
-	// Tests exercise the public (non-admin) experience; admin-only actions
-	// are covered by their own suite. Without this export the mock proxy
-	// throws when PostDetail renders its admin action bar.
-	hasAdminSession: () => false,
+	// Most tests exercise the public (non-admin) experience; admin-only
+	// actions are covered by the admin describe block below, which flips
+	// this flag. Without this export the mock proxy throws when PostDetail
+	// renders its admin action bar.
+	hasAdminSession: mocks.hasAdminSession,
+	// Mirrors the real contract in src/lib/api.ts (which api.test.ts covers
+	// directly): only a 404 means the resource is genuinely absent.
+	isNotFound: (err: unknown) =>
+		!!err && typeof err === "object" && "status" in err && err.status === 404,
 }));
 
 vi.mock("../contexts/AppContext", () => ({
@@ -50,12 +57,18 @@ vi.mock("../contexts/AppContext", () => ({
 		toast: mocks.toast,
 		bookmarks: [],
 		toggleBookmark: mocks.toggleBookmark,
+		retireNotifsForLink: mocks.retireNotifsForLink,
 	}),
 }));
 
 vi.mock("react-router", () => ({
 	useParams: () => ({ id: "p1" }),
 	useNavigate: () => mocks.navigate,
+	Link: ({ to, children, ...props }: { to: string; children: React.ReactNode; [key: string]: unknown }) => (
+		<a href={to} {...props}>
+			{children}
+		</a>
+	),
 }));
 
 vi.mock("../lib/useRealtime", () => ({
@@ -78,6 +91,33 @@ vi.mock("../components/PostCard", () => ({
 	REACTION_META: [
 		{ kind: "like", label: "Like", icon: mocks.icon, color: "#f43f5e" },
 	],
+	getReactionMeta: () => [
+		{ kind: "like", label: "Like", icon: mocks.icon, color: "#f43f5e" },
+	],
+	ReactionButton: ({
+		label,
+		count,
+		active,
+		disabled,
+		onReact,
+		kind,
+	}: {
+		label: string;
+		count: number;
+		active: boolean;
+		disabled: boolean;
+		onReact: (kind: string) => void;
+		kind: string;
+	}) => (
+		<button
+			aria-label={`${label} (${count})`}
+			aria-pressed={active}
+			disabled={disabled}
+			onClick={() => onReact(kind)}
+		>
+			{label} {count}
+		</button>
+	),
 }));
 
 vi.mock("../components/Comments", () => ({ default: () => null }));
@@ -131,6 +171,7 @@ const POST: any = {
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	mocks.hasAdminSession.mockReturnValue(false);
 	mocks.writeText.mockResolvedValue(undefined);
 	mocks.get.mockImplementation((url: string) => {
 		if (url.includes("/api/posts"))
@@ -138,6 +179,49 @@ beforeEach(() => {
 		if (url.includes("/api/follows"))
 			return Promise.resolve({ follows: [], count: 0 });
 		return Promise.resolve({});
+	});
+});
+
+describe("PostDetail — attach a poll", () => {
+	it("lets the author create a poll under a post without one", async () => {
+		mocks.post.mockResolvedValue({ id: "poll_9" });
+		mocks.get.mockImplementation((url: string) => {
+			if (url.includes("/api/posts"))
+				return Promise.resolve({
+					post: { ...POST, author_id: "anon-test", linked_poll: null },
+					counts: {},
+					mine: [],
+				});
+			if (url.includes("/api/follows")) return Promise.resolve({ follows: [], count: 0 });
+			if (url.includes("/api/polls")) return Promise.resolve([]);
+			return Promise.resolve({});
+		});
+		render(<PostDetail />);
+		await screen.findByText("Broken projector in Room 204");
+		fireEvent.click(screen.getByRole("button", { name: "Attach a poll" }));
+		fireEvent.change(screen.getByLabelText("Attached poll question"), {
+			target: { value: "Fix it this week?" },
+		});
+		fireEvent.change(screen.getByLabelText("Attached poll option 1"), {
+			target: { value: "Yes" },
+		});
+		fireEvent.change(screen.getByLabelText("Attached poll option 2"), {
+			target: { value: "No" },
+		});
+		fireEvent.click(screen.getByRole("button", { name: "Create poll" }));
+		await waitFor(() => {
+			expect(mocks.post).toHaveBeenCalledWith(
+				"/api/polls",
+				expect.objectContaining({ title: "Fix it this week?", post_id: "p1" }),
+			);
+		});
+		expect(mocks.toast).toHaveBeenCalledWith("Poll attached to this post", "ok");
+	});
+
+	it("hides the poll builder from other viewers", async () => {
+		render(<PostDetail />);
+		await screen.findByText("Broken projector in Room 204");
+		expect(screen.queryByRole("button", { name: "Attach a poll" })).toBeNull();
 	});
 });
 
@@ -258,22 +342,41 @@ describe("PostDetail — loading and error states", () => {
 		await screen.findByText("Broken projector in Room 204");
 	});
 
-	it('renders "Post not found" when the fetch fails with an Error', async () => {
+	// REGRESSION: a failed request is NOT a missing post. These used to render
+	// "Post not found", which told users their content had been deleted when
+	// the API was merely busy (429/timeout) — the reported "Not found" storm.
+	it("says the post failed to load, not that it is missing, on a network error", async () => {
 		mocks.get.mockImplementation(() =>
 			Promise.reject(new Error("network down")),
 		);
 		render(<PostDetail />);
 
-		await screen.findByText("Post not found");
-		expect(screen.getByText("network down")).toBeInTheDocument();
+		await screen.findByText("Couldn't load this post");
+		expect(screen.queryByText("Post not found")).toBeNull();
+		expect(
+			screen.getByText(/network down/),
+		).toBeInTheDocument();
+		// The post still exists, so retrying must be offered.
+		expect(screen.getByRole("button", { name: /retry/i })).toBeInTheDocument();
 	});
 
 	it("falls back to a generic message when the error is not an Error", async () => {
 		mocks.get.mockImplementation(() => Promise.reject("boom"));
 		render(<PostDetail />);
 
+		await screen.findByText("Couldn't load this post");
+		expect(screen.getByText(/Failed to load post/)).toBeInTheDocument();
+	});
+
+	it('says "Post not found" only when the server reports 404', async () => {
+		const notFound = Object.assign(new Error("Not found"), { status: 404 });
+		mocks.get.mockImplementation(() => Promise.reject(notFound));
+		render(<PostDetail />);
+
 		await screen.findByText("Post not found");
-		expect(screen.getByText("Failed to load post")).toBeInTheDocument();
+		expect(screen.queryByText(/Couldn't load this post/)).toBeNull();
+		// Nothing to retry — it really is gone.
+		expect(screen.queryByRole("button", { name: /retry/i })).toBeNull();
 	});
 });
 
@@ -666,6 +769,29 @@ describe("PostDetail — rich post rendering", () => {
 	});
 });
 
+describe("PostDetail — canonical linked poll", () => {
+	it("shows the highest-vote duplicate when several polls link to one post", () => {
+		const dup = {
+			id: "pl-new",
+			title: "Do you agree?",
+			ptype: "yesno",
+			options: ["Yes", "No"],
+			total_votes: 2,
+			created_at: "2026-09-20T00:00:00.000Z",
+		} as any;
+		const orig = {
+			id: "pl-old",
+			title: "Do you agree?",
+			ptype: "yesno",
+			options: ["Yes", "No"],
+			total_votes: 28,
+			created_at: "2026-09-10T00:00:00.000Z",
+		} as any;
+		expect(pickCanonicalLinkedPoll([dup, orig])?.id).toBe("pl-old");
+		expect(pickCanonicalLinkedPoll([])).toBeNull();
+	});
+});
+
 describe("PostDetail — edge paths", () => {
 	it("navigates back from the loading state", async () => {
 		let resolvePost!: (v: unknown) => void;
@@ -690,7 +816,8 @@ describe("PostDetail — edge paths", () => {
 		const user = userEvent.setup();
 		render(<PostDetail />);
 
-		await screen.findByText("Post not found");
+		// A plain Error is a failed load, not a missing post.
+		await screen.findByText("Couldn't load this post");
 		await user.click(screen.getByRole("button", { name: /back/i }));
 		expect(mocks.navigate).toHaveBeenCalledWith(-1);
 	});
@@ -831,5 +958,49 @@ describe("PostDetail — edge paths", () => {
 		expect(
 			screen.queryByRole("button", { name: "Close Report" }),
 		).not.toBeInTheDocument();
+	});
+});
+
+describe("PostDetail — admin inline actions", () => {
+	async function renderAsAdmin() {
+		mocks.hasAdminSession.mockReturnValue(true);
+		render(<PostDetail />);
+		await screen.findByText("Broken projector in Room 204");
+	}
+
+	it("hides the post and toasts on success", async () => {
+		mocks.put.mockResolvedValueOnce({});
+		await renderAsAdmin();
+
+		fireEvent.click(screen.getByTitle("Hide post (flag)"));
+		await waitFor(() => {
+			expect(mocks.put).toHaveBeenCalledWith("/api/posts", {
+				id: "p1",
+				hidden: true,
+			});
+		});
+		expect(mocks.toast).toHaveBeenCalledWith("Post hidden", "ok");
+	});
+
+	it("shows an error and changes nothing when hide fails", async () => {
+		mocks.put.mockRejectedValueOnce(new Error("hide boom"));
+		await renderAsAdmin();
+
+		fireEvent.click(screen.getByTitle("Hide post (flag)"));
+		await waitFor(() => {
+			expect(mocks.toast).toHaveBeenCalledWith("hide boom", "err");
+		});
+		// UI still offers Hide (not Hidden) — no optimistic lie applied.
+		expect(screen.getByTitle("Hide post (flag)")).toBeInTheDocument();
+	});
+
+	it("shows an error when mark-solved fails", async () => {
+		mocks.put.mockRejectedValueOnce(new Error("solve boom"));
+		await renderAsAdmin();
+
+		fireEvent.click(screen.getByTitle("Mark solved"));
+		await waitFor(() => {
+			expect(mocks.toast).toHaveBeenCalledWith("solve boom", "err");
+		});
 	});
 });

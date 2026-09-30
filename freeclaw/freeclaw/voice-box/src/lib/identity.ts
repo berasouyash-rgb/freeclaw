@@ -203,13 +203,29 @@ export function clearAllLocalData() {
 }
 
 // ---------- typed localStorage helpers ----------
+const corruptWarned = new Set<string>();
 export function lsGet<T>(key: string, fallback: T): T {
 	try {
 		const raw = readMemItem(key);
 		if (!raw) return fallback;
 		const parsed: unknown = JSON.parse(raw);
 		return parsed as T;
-	} catch {
+	} catch (err) {
+		// Corrupt JSON previously meant a silent reset to defaults (e.g. the
+		// dashboard layout vanishing). Back the raw value up and warn once so
+		// the reset is explainable instead of mysterious.
+		try {
+			writeMemItem(`vb:corrupt:${key}`, String(readMemItem(key) ?? "").slice(0, 2000));
+		} catch {
+			/* backup is best-effort */
+		}
+		if (!corruptWarned.has(key)) {
+			corruptWarned.add(key);
+			console.warn("[identity] corrupt stored value, restored defaults", {
+				key,
+				error: err instanceof Error ? err.message : String(err),
+			});
+		}
 		return fallback;
 	}
 }
@@ -217,8 +233,11 @@ export function lsGet<T>(key: string, fallback: T): T {
 export function lsSet<T>(key: string, value: T) {
 	try {
 		writeMemItem(key, JSON.stringify(value));
-	} catch {
-		/* storage full — ignore */
+	} catch (err) {
+		console.warn("[identity] persist failed (storage full or blocked)", {
+			key,
+			error: err instanceof Error ? err.message : String(err),
+		});
 	}
 }
 

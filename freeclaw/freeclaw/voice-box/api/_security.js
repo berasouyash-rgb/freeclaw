@@ -2,6 +2,7 @@
 // CSP headers, prompt injection detection, abuse prevention,
 // input sanitization, and request security validation.
 import { log } from "./_audit.js";
+import { clientIp } from "./_auth.js";
 
 // ─── Content Security Policy ────────────────────────────────────
 // Strict CSP for API responses — no inline scripts, no eval, no remote styles
@@ -111,9 +112,21 @@ export function detectPromptInjection(text) {
 // anonymous users fall back to IP-only key so they don't share one bucket.
 const _abuseTracker = new Map(); // key → { timestamps: number[], errors: number[], blocked: boolean, blockedUntil: number }
 
+// Disable test: disable this limiter for 24h → a scripted client can hammer
+// every endpoint unthrottled (measured: the app itself costs ~10 API calls per
+// page view, so bursts of fast navigation are normal, not abusive).
+// Policy (measured against real usage):
+//   - 120/min per identity ≈ 12 rapid full page loads in a minute. Fast
+//     navigation (feed → post → back → next post, ~10 calls each) stays under
+//     it; only nonstop hammering trips it. Kept.
+//   - 2000/h meant ~16 page loads/min sustained for a whole hour — reachable
+//     by a genuinely engaged user or an admin dashboard open all day
+//     (realtime refreshes count). Raised to 3600/h (~60/min sustained) so
+//     legitimate power users don't get locked out mid-session; the per-minute
+//     limit still caps bursts, so abuse protection is unchanged.
 export const ABUSE_LIMITS = {
 	maxRequestsPerMinute: 120, // per identity
-	maxRequestsPerHour: 2000, // per identity
+	maxRequestsPerHour: 3600, // per identity (~60/min sustained; was 2000)
 	maxErrorsPerMinute: 20,
 	blockDurationMs: 30_000, // 30 seconds (down from 5 minutes)
 	maxRequestSize: 500_000, // 500KB
@@ -241,44 +254,15 @@ export function recordError(ip, identity = null) {
 }
 
 /**
- * Lightweight body peek — reads only the first 2 KB of the request body
- * to extract a user identity (anon_id) without a full parse.
- * Returns the identity string or null.
- * The read data is pushed back into the stream via unshift for the real parseBody later.
+ * Read a caller identity from the already-parsed body.
+ * Raw streams are intentionally not consumed here; the bounded parser owns
+ * stream reads and must run before abuse checks use an identity.
  */
 export async function peekBodyIdentity(req) {
 	if (req.method === "GET" || req.method === "HEAD") return null;
-	try {
-		// If body is already parsed (some Vercel configs), just read it
-		if (req.body && typeof req.body === "object") {
-			return req.body.anon_id || req.body.author_id || req.body.user_id || null;
-		}
-		// Otherwise peek at the raw stream
-		const chunks = [];
-		let total = 0;
-		for await (const chunk of req) {
-			chunks.push(chunk);
-			total += chunk.length;
-			if (total >= 2048) break; // only need first 2 KB to find the identity field
-		}
-		// Push chunks back for the real parseBody
-		if (req.push) {
-			for (const c of chunks) req.push(c);
-		}
-		// Quick JSON scan for "anon_id" or "author_id"
-		const raw = Buffer.concat(chunks.map((c) => (typeof c === "string" ? Buffer.from(c) : c))).toString("utf8");
-		// Try to parse — if it's valid JSON we can read directly
-		try {
-			const parsed = JSON.parse(raw);
-			return parsed.anon_id || parsed.author_id || parsed.user_id || null;
-		} catch {
-			// Not valid JSON yet — regex fallback
-			const m = raw.match(/"(?:anon_id|author_id|user_id)"\s*:\s*"([^"]{1,60})"/);
-			return m?.[1] || null;
-		}
-	} catch {
-		return null;
-	}
+	const body = req.body;
+	if (!body || typeof body !== "object" || Buffer.isBuffer(body)) return null;
+	return body.anon_id || body.author_id || body.user_id || null;
 }
 
 // ─── Input Sanitization ─────────────────────────────────────────
@@ -329,7 +313,7 @@ export function validateRequestSize(req) {
  * Returns { ok: boolean, status: number, error: string }
  */
 export function securityCheck(req, identity = null) {
-	const ip = req.headers["x-forwarded-for"]?.split(",")[0]?.trim() || "unknown";
+	const ip = clientIp(req);
 
 	// Accept identity from header for GET requests too (load-test / client identification)
 	if (!identity) {

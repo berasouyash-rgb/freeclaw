@@ -3,12 +3,14 @@
 	BarChart3,
 	Bell,
 	CheckCheck,
+	CheckCircle2,
 	Clock,
 	Filter,
 	Info,
 	MessageSquare,
 	Send,
 	Settings,
+	ShieldAlert,
 	Trash2,
 } from "lucide-react";
 import { useMemo, useState } from "react";
@@ -28,10 +30,19 @@ const KIND_META: Record<
 	info: { label: "Info", icon: Info, color: "text-ink3" },
 	submitted: { label: "Submitted", icon: Send, color: "text-accent" },
 	mention: { label: "Mention", icon: MessageSquare, color: "text-violet-400" },
+	warning: { label: "Warning", icon: ShieldAlert, color: "text-warn" },
+	success: { label: "Success", icon: CheckCircle2, color: "text-good" },
+	suspension: { label: "Suspension", icon: ShieldAlert, color: "text-warn" },
+	suspension_lifted: { label: "Suspension lifted", icon: CheckCircle2, color: "text-good" },
+	ban: { label: "Ban", icon: ShieldAlert, color: "text-bad" },
+	unban: { label: "Unban", icon: CheckCircle2, color: "text-good" },
+	moderation: { label: "Moderation", icon: ShieldAlert, color: "text-violet-400" },
 };
 
 function timeAgo(iso: string) {
+	if (!iso) return "—";
 	const diff = Date.now() - new Date(iso).getTime();
+	if (!Number.isFinite(diff)) return "—";
 	const mins = Math.floor(diff / 60000);
 	if (mins < 1) return "just now";
 	if (mins < 60) return `${mins}m ago`;
@@ -54,10 +65,17 @@ const ALL_KINDS: NotificationKind[] = [
 	"info",
 	"submitted",
 	"mention",
+	"warning",
+	"success",
+	"suspension",
+	"suspension_lifted",
+	"ban",
+	"unban",
+	"moderation",
 ];
 
 export default function Notifications() {
-	const { notifications, markNotifsRead, clearNotifs } = useApp();
+	const { notifications, markNotifsRead, markNotifRead, clearNotifs } = useApp();
 	const [filter, setFilter] = useState<NotificationKind | "all">("all");
 	const [showUnreadOnly, setShowUnreadOnly] = useState(false);
 
@@ -94,7 +112,9 @@ export default function Notifications() {
 	return (
 		<div className="max-w-3xl mx-auto px-4 py-6 space-y-6 vb-page-enter">
 			{/* Header */}
-			<div className="vb-page-header flex items-center justify-between">
+			{/* Stacks on phones: title + two action buttons on one row did not fit
+			    a 375px viewport, so the page scrolled sideways. */}
+			<div className="vb-page-header flex flex-col sm:flex-row sm:items-center gap-3 sm:justify-between">
 				<div>
 					<h1 className="flex items-center gap-2">
 						<Bell size={22} /> Notifications
@@ -105,7 +125,7 @@ export default function Notifications() {
 							: "All caught up"}
 					</p>
 				</div>
-				<div className="flex gap-2">
+				<div className="flex flex-wrap items-center gap-2">
 					<button
 						onClick={markNotifsRead}
 						disabled={unreadCount === 0}
@@ -127,7 +147,7 @@ export default function Notifications() {
 				<Filter size={13} className="text-ink3" />					<button
 						onClick={() => setFilter("all")}
 						aria-pressed={filter === "all"}
-						className={`px-3 py-1 rounded-full text-xs font-semibold transition-all duration-150 ${filter === "all" ? "bg-accent text-white shadow-sm" : "text-ink3 hover:text-ink2 hover:bg-surface2"}`}
+						className={`px-3 py-1 rounded-full text-xs font-semibold transition-all duration-150 ${filter === "all" ? "bg-accent text-on-accent shadow-sm" : "text-ink3 hover:text-ink2 hover:bg-surface2"}`}
 					>
 						All ({counts.all})
 					</button>
@@ -139,7 +159,7 @@ export default function Notifications() {
 								onClick={() => setFilter(k)}
 								aria-pressed={filter === k}
 								aria-label={`Filter by ${KIND_META[k]?.label ?? k}: ${counts[k] ?? 0} notifications`}
-								className={`px-3 py-1 rounded-full text-xs font-semibold transition-all duration-150 ${filter === k ? "bg-accent text-white shadow-sm" : "text-ink3 hover:text-ink2 hover:bg-surface2"}`}
+								className={`px-3 py-1 rounded-full text-xs font-semibold transition-all duration-150 ${filter === k ? "bg-accent text-on-accent shadow-sm" : "text-ink3 hover:text-ink2 hover:bg-surface2"}`}
 							>
 								{KIND_META[k]?.label ?? k} ({counts[k] ?? 0})
 							</button>
@@ -179,12 +199,15 @@ export default function Notifications() {
 					</div>
 				)}
 				{filtered.map((n) => {
-					const meta = KIND_META[n.kind];
+					// Belt-and-braces: unknown future kinds render as info
+					// instead of crashing on meta.icon.
+					const meta = KIND_META[n.kind] ?? KIND_META.info;
 					const Icon = meta.icon;
 					return (
 						<Link
 							key={n.id}
 							to={n.link || "#"}
+							onClick={() => markNotifRead(n.id)}
 							className={`vb-notif-item flex items-start gap-3 px-4 py-3 rounded-xl ${!n.read ? "bg-accent-soft/30" : ""}`}
 						>
 							<div className={`mt-0.5 ${meta.color}`}>

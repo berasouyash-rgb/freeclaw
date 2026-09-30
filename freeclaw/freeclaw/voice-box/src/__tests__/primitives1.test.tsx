@@ -398,10 +398,13 @@ describe("Trend", () => {
 		).toBeInTheDocument();
 	});
 
-	it("handles previous <= 0 as 100% when current is positive", () => {
+	it("handles previous <= 0 with the honest absolute delta, not a fake percent", () => {
+		// A percent change from a zero base is undefined (infinite), so the
+		// badge must NOT render "100%" — it shows the real absolute delta and
+		// the accessible name omits the misleading percentage.
 		render(<Trend current={42} previous={0} />);
-		expect(screen.getByText("100%")).toBeInTheDocument();
-		expect(screen.getByLabelText("Trend up 100 percent")).toBeInTheDocument();
+		expect(screen.getByText("+42")).toBeInTheDocument();
+		expect(screen.getByLabelText("Trend up")).toBeInTheDocument();
 	});
 
 	it("shows a flat badge when both values are zero", () => {
@@ -489,6 +492,18 @@ describe("TypingIndicator", () => {
 	it("passes through a custom className", () => {
 		const { container } = render(<TypingIndicator className="my-typing" />);
 		expect(container.firstElementChild).toHaveClass("my-typing");
+	});
+
+	it("announces itself as a live status region in every variant", () => {
+		for (const variant of ["default", "preview", "minimal"] as const) {
+			const { unmount } = render(
+				<TypingIndicator variant={variant} label="Working…" />,
+			);
+			// role=status carries implicit aria-live=polite — screen readers
+			// announce "AI is responding" state changes in every chat surface.
+			expect(screen.getByRole("status")).toBeInTheDocument();
+			unmount();
+		}
 	});
 });
 

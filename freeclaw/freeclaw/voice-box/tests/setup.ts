@@ -134,13 +134,35 @@ Object.defineProperty(window, "matchMedia", {
 });
 
 // ─── Mock IntersectionObserver ────────────────────────────────────
+// Constructable + capturable: production code calls `new
+// IntersectionObserver(cb)` (feed sentinel, infinite-scroll hook), and
+// tests fire the captured callback to simulate scrolling into view.
+class MockIntersectionObserver {
+	static instances: MockIntersectionObserver[] = [];
+	callback: IntersectionObserverCallback;
+	observe = vi.fn();
+	unobserve = vi.fn();
+	disconnect = vi.fn();
+	constructor(callback: IntersectionObserverCallback) {
+		this.callback = callback;
+		MockIntersectionObserver.instances.push(this);
+	}
+	static triggerIntersecting(isIntersecting = true) {
+		for (const inst of MockIntersectionObserver.instances) {
+			inst.callback(
+				[{ isIntersecting } as IntersectionObserverEntry],
+				inst as unknown as IntersectionObserver,
+			);
+		}
+	}
+	static clear() {
+		MockIntersectionObserver.instances = [];
+	}
+}
 Object.defineProperty(window, "IntersectionObserver", {
 	writable: true,
-	value: vi.fn().mockImplementation(() => ({
-		observe: vi.fn(),
-		unobserve: vi.fn(),
-		disconnect: vi.fn(),
-	})),
+	configurable: true,
+	value: MockIntersectionObserver,
 });
 
 // ─── Mock Speech Recognition ──────────────────────────────────────
