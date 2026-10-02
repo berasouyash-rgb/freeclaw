@@ -233,6 +233,44 @@ export default async function handler(req, res) {
 				post.author_id !== author_id
 			)
 				return res.status(403).json({ error: "Not authorized" });
+			// Idempotent submit (mirrors the posts 90s twin rule): double-tap
+			// past the client cooldown, retry-after-timeout, and offline-queue
+			// flush can deliver the same comment twice with both copies passing
+			// moderation. Same author + same post + same thread (parent_id) +
+			// exact normalized body within 90s returns the original row
+			// (200 + deduped:true) instead of a visible twin. Deleted/hidden
+			// twins are skipped (a fresh repost after delete is legitimate);
+			// empty normalized bodies never match.
+			const normalizeCommentBody = (s) =>
+				String(s || "")
+					.toLowerCase()
+					.replace(/[^a-z0-9\s]/g, "")
+					.replace(/\s+/g, " ")
+					.trim();
+			const normalizedBody = normalizeCommentBody(body);
+			const CTWIN_MS = 90000;
+			const twinCutoff = Date.now() - CTWIN_MS;
+			const parentKey = b.parent_id ? clean(b.parent_id, 60) : null;
+			const { data: recentComments } = await supabase
+				.from("comments")
+				.select("id,post_id,parent_id,body,created_at,deleted,hidden")
+				.eq("author_id", author_id)
+				.eq("post_id", clean(b.post_id, 60))
+				.gte("created_at", new Date(twinCutoff).toISOString())
+				.order("created_at", { ascending: false })
+				.limit(10);
+			const twin = (recentComments || []).find(
+				(c) =>
+					!c.deleted &&
+					!c.hidden &&
+					(c.parent_id || null) === parentKey &&
+					Number(Date.parse(c.created_at || 0)) > twinCutoff &&
+					normalizeCommentBody(c.body || "") === normalizedBody &&
+					normalizedBody !== "",
+			);
+			if (twin) {
+				return res.status(200).json({ ...twin, deduped: true });
+			}
 			const row = {
 				id: `cmt_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`,
 				post_id: clean(b.post_id, 60),

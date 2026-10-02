@@ -73,6 +73,7 @@ function chainFor(table: string) {
 		neq: vi.fn().mockReturnThis(),
 		in: vi.fn().mockReturnThis(),
 		lt: vi.fn().mockReturnThis(),
+		gte: vi.fn().mockReturnThis(),
 		order: vi.fn().mockReturnThis(),
 		limit: vi.fn().mockReturnThis(),
 		maybeSingle: vi.fn().mockResolvedValue({ data: null, error: null }),

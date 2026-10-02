@@ -6,9 +6,20 @@
 //   4. Bursts remain debounced without starving delivery
 //   5. Channels are torn down when the last subscriber unmounts
 
-import { act, renderHook } from "@testing-library/react";
+import { act, renderHook as baseRenderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { REALTIME_TABLES, useRealtime } from "../lib/useRealtime";
+
+// The hook attaches its channel after a dynamic import() resolves, so every
+// render must flush microtasks before channel assertions run.
+async function renderHook(
+	callback: (...args: any[]) => unknown,
+	options?: any,
+): Promise<any> {
+	const result = baseRenderHook(callback, options);
+	await act(async () => {});
+	return result;
+}
 
 // ── Mock supabase channel ─────────────────────────────────────────
 const mock = vi.hoisted(() => {
@@ -50,7 +61,7 @@ vi.mock("../lib/supabase", () => ({
 }));
 
 describe("useRealtime — public contract", () => {
-	it("exposes only the three anonymous-readable tables", () => {
+	it("exposes only the three anonymous-readable tables", async () => {
 		expect([...REALTIME_TABLES].sort()).toEqual(["comments", "polls", "posts"]);
 	});
 });
@@ -81,9 +92,9 @@ describe("useRealtime — hidden-tab optimization", () => {
 		mock.channels.get(`rt-${key}`)?.statusCb(status);
 	};
 
-	it("skips fallback polls while the tab is hidden", () => {
+	it("skips fallback polls while the tab is hidden", async () => {
 		const onChange = vi.fn();
-		renderHook(() => useRealtime(["posts"], onChange, 0));
+	await renderHook(() => useRealtime(["posts"], onChange, 0));
 
 		// Force the fallback-polling path (channel not subscribed)
 		act(() => {
@@ -97,9 +108,9 @@ describe("useRealtime — hidden-tab optimization", () => {
 		expect(onChange).not.toHaveBeenCalled();
 	});
 
-	it("does not fire fallback polls while the tab is visible", () => {
+	it("does not fire fallback polls while the tab is visible", async () => {
 		const onChange = vi.fn();
-		renderHook(() => useRealtime(["comments"], onChange, 0));
+	await renderHook(() => useRealtime(["comments"], onChange, 0));
 
 		// A failed channel is not converted into a recurring page refresh.
 		act(() => {
@@ -112,7 +123,7 @@ describe("useRealtime — hidden-tab optimization", () => {
 		expect(onChange).not.toHaveBeenCalled();
 	});
 
-	it("still delivers while events arrive faster than the debounce window", () => {
+	it("still delivers while events arrive faster than the debounce window", async () => {
 		// REGRESSION (user-reported: "it only refreshes once"). The debounce
 		// was implemented as a pure reset-on-every-event timer. On a busy feed
 		// — posts arriving faster than the 2.5s admin debounce — that timer is
@@ -123,7 +134,7 @@ describe("useRealtime — hidden-tab optimization", () => {
 		// A debounce needs a max-wait guarantee: a burst must coalesce, but a
 		// sustained stream must still deliver.
 		const onChange = vi.fn();
-		renderHook(() => useRealtime(["posts"], onChange, 2500));
+	await renderHook(() => useRealtime(["posts"], onChange, 2500));
 
 		act(() => {
 			simulateStatus("posts", "SUBSCRIBED");
@@ -147,9 +158,9 @@ describe("useRealtime — hidden-tab optimization", () => {
 		expect(onChange.mock.calls.length).toBeLessThan(150);
 	});
 
-	it("coalesces a short burst into a single delivery", () => {
+	it("coalesces a short burst into a single delivery", async () => {
 		const onChange = vi.fn();
-		renderHook(() => useRealtime(["polls"], onChange, 500));
+	await renderHook(() => useRealtime(["polls"], onChange, 500));
 
 		act(() => {
 			simulateStatus("polls", "SUBSCRIBED");
@@ -168,9 +179,9 @@ describe("useRealtime — hidden-tab optimization", () => {
 		expect(onChange).toHaveBeenCalledTimes(1);
 	});
 
-	it("does not refresh when the tab becomes visible again", () => {
+	it("does not refresh when the tab becomes visible again", async () => {
 		const onChange = vi.fn();
-		renderHook(() => useRealtime(["comments"], onChange, 0));
+	await renderHook(() => useRealtime(["comments"], onChange, 0));
 
 		act(() => {
 			simulateStatus("comments", "CHANNEL_ERROR");
@@ -186,9 +197,9 @@ describe("useRealtime — hidden-tab optimization", () => {
 		expect(onChange).not.toHaveBeenCalled();
 	});
 
-	it("does not poll while realtime is connected and healthy", () => {
+	it("does not poll while realtime is connected and healthy", async () => {
 		const onChange = vi.fn();
-		renderHook(() => useRealtime(["polls"], onChange, 0));
+	await renderHook(() => useRealtime(["polls"], onChange, 0));
 
 		act(() => {
 			simulateStatus("polls", "SUBSCRIBED");
@@ -203,9 +214,9 @@ describe("useRealtime — hidden-tab optimization", () => {
 		expect(onChange).not.toHaveBeenCalled();
 	});
 
-	it("still delivers realtime postgres_changes events", () => {
+	it("still delivers realtime postgres_changes events", async () => {
 		const onChange = vi.fn();
-		const { unmount } = renderHook(() => useRealtime(["polls"], onChange, 0));
+		const { unmount } = await renderHook(() => useRealtime(["polls"], onChange, 0));
 
 		act(() => {
 			simulateStatus("polls", "SUBSCRIBED");
@@ -224,9 +235,9 @@ describe("useRealtime — hidden-tab optimization", () => {
 		unmount();
 	});
 
-	it("tears down the channel when the last subscriber unmounts", () => {
+	it("tears down the channel when the last subscriber unmounts", async () => {
 		const onChange = vi.fn();
-		const { unmount } = renderHook(() =>
+		const { unmount } = await renderHook(() =>
 			useRealtime(["posts"], onChange, 0),
 		);
 		expect(mock.createChannel).toHaveBeenCalledWith("rt-posts");
@@ -235,16 +246,16 @@ describe("useRealtime — hidden-tab optimization", () => {
 		expect(mock.removeChannel).toHaveBeenCalled();
 	});
 
-	it("delivers debounced events to EVERY subscriber on the same key", () => {
+	it("delivers debounced events to EVERY subscriber on the same key", async () => {
 		// Regression test for the per-subscriber timer fix: two subscribers on the
 		// same table with different debounceMs must BOTH receive the event. A
 		// shared timer map (old design) let the last-writer win and dropped A.
 		const onChangeA = vi.fn();
 		const onChangeB = vi.fn();
-		const { unmount: unmountA } = renderHook(() =>
+		const { unmount: unmountA } = await renderHook(() =>
 			useRealtime(["comments"], onChangeA, 0),
 		);
-		const { unmount: unmountB } = renderHook(() =>
+		const { unmount: unmountB } = await renderHook(() =>
 			useRealtime(["comments"], onChangeB, 100),
 		);
 
@@ -272,9 +283,9 @@ describe("useRealtime — hidden-tab optimization", () => {
 		unmountB();
 	});
 
-	it("does not start polling after a channel recovers", () => {
+	it("does not start polling after a channel recovers", async () => {
 		const onChange = vi.fn();
-		renderHook(() => useRealtime(["polls"], onChange, 0));
+	await renderHook(() => useRealtime(["polls"], onChange, 0));
 
 		act(() => {
 			simulateStatus("polls", "CHANNEL_ERROR");
@@ -291,9 +302,9 @@ describe("useRealtime — hidden-tab optimization", () => {
 		expect(onChange).not.toHaveBeenCalled();
 	});
 
-	it("does not poll when a connected channel is quiet", () => {
+	it("does not poll when a connected channel is quiet", async () => {
 		const onChange = vi.fn();
-		renderHook(() => useRealtime(["posts"], onChange, 0));
+	await renderHook(() => useRealtime(["posts"], onChange, 0));
 
 		act(() => {
 			simulateStatus("posts", "SUBSCRIBED");
@@ -304,9 +315,9 @@ describe("useRealtime — hidden-tab optimization", () => {
 		expect(onChange).not.toHaveBeenCalled();
 	});
 
-	it("coalesces duplicate realtime events within the debounce window", () => {
+	it("coalesces duplicate realtime events within the debounce window", async () => {
 		const onChange = vi.fn();
-		renderHook(() => useRealtime(["comments"], onChange, 1000));
+	await renderHook(() => useRealtime(["comments"], onChange, 1000));
 
 		act(() => {
 			simulateStatus("comments", "SUBSCRIBED");
@@ -333,9 +344,9 @@ describe("useRealtime — hidden-tab optimization", () => {
 		);
 	});
 
-	it("does not start a recurring fallback poll after a channel error", () => {
+	it("does not start a recurring fallback poll after a channel error", async () => {
 		const onChange = vi.fn();
-		renderHook(() => useRealtime(["posts"], onChange, 0));
+	await renderHook(() => useRealtime(["posts"], onChange, 0));
 
 		act(() => {
 			simulateStatus("posts", "CHANNEL_ERROR");
@@ -347,9 +358,9 @@ describe("useRealtime — hidden-tab optimization", () => {
 		expect(onChange).not.toHaveBeenCalled();
 	});
 
-	it("does not refresh passive data when a hidden tab becomes visible", () => {
+	it("does not refresh passive data when a hidden tab becomes visible", async () => {
 		const onChange = vi.fn();
-		renderHook(() => useRealtime(["posts"], onChange, 0));
+	await renderHook(() => useRealtime(["posts"], onChange, 0));
 
 		act(() => {
 			simulateStatus("posts", "SUBSCRIBED");
@@ -363,9 +374,9 @@ describe("useRealtime — hidden-tab optimization", () => {
 		expect(onChange).not.toHaveBeenCalled();
 	});
 
-	it("does not schedule work for repeated visibility changes", () => {
+	it("does not schedule work for repeated visibility changes", async () => {
 		const onChange = vi.fn();
-		renderHook(() => useRealtime(["comments"], onChange, 1000));
+	await renderHook(() => useRealtime(["comments"], onChange, 1000));
 
 		act(() => {
 			setHidden(true);
@@ -386,9 +397,9 @@ describe("useRealtime — hidden-tab optimization", () => {
 		expect(onChange).not.toHaveBeenCalled();
 	});
 
-	it("resubscribes when the table key changes and tears down the old channel", () => {
+	it("resubscribes when the table key changes and tears down the old channel", async () => {
 		const onChange = vi.fn();
-		const { rerender, unmount } = renderHook(
+		const { rerender, unmount } = await renderHook(
 			({ tables }) => useRealtime(tables, onChange, 0),
 			{ initialProps: { tables: ["polls"] } },
 		);
@@ -407,8 +418,12 @@ describe("useRealtime — hidden-tab optimization", () => {
 			expect.objectContaining({ eventType: "INSERT" }),
 		);
 
-		// Switch tables → old channel torn down, new one created
-		rerender({ tables: ["posts"] });
+		// Switch tables → old channel torn down, new one created.
+		// The re-subscription attaches after a dynamic import(), so flush
+		// microtasks before driving the new channel.
+		await act(async () => {
+			rerender({ tables: ["posts"] });
+		});
 		act(() => {
 			simulateStatus("posts", "SUBSCRIBED");
 		});
@@ -426,9 +441,9 @@ describe("useRealtime — hidden-tab optimization", () => {
 		unmount();
 	});
 
-	it("tears down a channel after a failed connection without polling", () => {
+	it("tears down a channel after a failed connection without polling", async () => {
 		const onChange = vi.fn();
-		const { unmount } = renderHook(() =>
+		const { unmount } = await renderHook(() =>
 			useRealtime(["comments"], onChange, 0),
 		);
 
@@ -446,10 +461,10 @@ describe("useRealtime — hidden-tab optimization", () => {
 		expect(mock.removeChannel).toHaveBeenCalled();
 	});
 
-	it("does not open channels for private or unsupported tables", () => {
+	it("does not open channels for private or unsupported tables", async () => {
 		for (const table of ["reports", "chat_messages", "poll_votes", "reactions"]) {
 			const onChange = vi.fn();
-			const { unmount } = renderHook(() => useRealtime([table], onChange, 0));
+			const { unmount } = await renderHook(() => useRealtime([table], onChange, 0));
 			expect(mock.channels.has(`rt-${table}`)).toBe(false);
 			act(() => {
 				vi.advanceTimersByTime(30_000);
@@ -459,14 +474,14 @@ describe("useRealtime — hidden-tab optimization", () => {
 		}
 	});
 
-	it("keeps the allowed tables live when mixed with private ones", () => {
+	it("keeps the allowed tables live when mixed with private ones", async () => {
 		// REGRESSION (the dead home feed): useRealtime(["posts","reactions",
 		// "comments","polls","poll_votes"]) opened NO channel at all, because
 		// the allowlist gate rejected the whole key over the private tables —
 		// so posts/comments/polls silently lost realtime too. The allowed
 		// subset must subscribe normally while the rest stay dark.
 		const onChange = vi.fn();
-		const { unmount } = renderHook(() =>
+		const { unmount } = await renderHook(() =>
 			useRealtime(["posts", "reactions", "poll_votes"], onChange, 0),
 		);
 		expect(mock.channels.has("rt-posts")).toBe(true);
@@ -488,11 +503,11 @@ describe("useRealtime — hidden-tab optimization", () => {
 		unmount();
 	});
 
-	it("does not open or poll tables outside the realtime publication", () => {		// Admin-only tables (agent_*, settings, vitals, …) are neither in the
+	it("does not open or poll tables outside the realtime publication", async () => {		// Admin-only tables (agent_*, settings, vitals, …) are neither in the
 		// supabase_realtime publication nor readable by the anon key, so a
 		// channel could never deliver. No dead WebSocket or poll loop is opened.
 		const onChange = vi.fn();
-		const { unmount } = renderHook(() =>
+		const { unmount } = await renderHook(() =>
 			useRealtime(["agent_tasks", "agent_executions"], onChange, 0),
 		);
 		expect(mock.channels.has("rt-agent_tasks,agent_executions")).toBe(false);

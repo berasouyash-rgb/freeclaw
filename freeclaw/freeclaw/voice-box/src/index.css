@@ -168,7 +168,7 @@ h1,h2,h3,h4 { font-family: var(--font-display); letter-spacing: -0.01em; }
 
 /* Reduce motion for users who prefer it */
 @media (prefers-reduced-motion: reduce) {
-  .vb-rise, .vb-pop, .vb-bar-anim, .vb-trend-bounce, .vb-burst-ring, .vb-burst-particle, .vb-logo-arcs path, .btn:active:not(:disabled) {
+  .vb-rise, .vb-pop, .vb-bar-anim, .vb-trend-bounce, .vb-burst-ring, .vb-burst-particle, .vb-logo-arcs path, .vb-feed-item, .btn:active:not(:disabled) {
     animation: none !important;
     transform: none !important;
   }
@@ -260,6 +260,21 @@ h1,h2,h3,h4 { font-family: var(--font-display); letter-spacing: -0.01em; }
   animation: vb-rise 0.08s linear both;
 }
 .vb-pop { animation: vb-pop 0.05s ease both; will-change: transform; }
+
+/* APK-only feed entrance: staggered fade for the first cards, so the list
+   feels alive as it paints. The .vb-feed-item class is only rendered when
+   isMobileApp() — web/desktop never match these selectors. Brief by design
+   (≤0.3s total) with no vertical travel, and killed under
+   prefers-reduced-motion like every other vb-* animation. */
+@media (prefers-reduced-motion: no-preference) {
+  .vb-feed-item { animation: vb-rise 0.16s ease-out both; }
+  .vb-feed-item:nth-child(2) { animation-delay: 0.03s; }
+  .vb-feed-item:nth-child(3) { animation-delay: 0.06s; }
+  .vb-feed-item:nth-child(4) { animation-delay: 0.09s; }
+  .vb-feed-item:nth-child(5) { animation-delay: 0.12s; }
+  .vb-feed-item:nth-child(6) { animation-delay: 0.15s; }
+  .vb-feed-item:nth-child(n+7) { animation-delay: 0.18s; }
+}
 
 /* ---------- Voice logo — radiating sound arcs (opacity/scale only).
    Static mode (.vb-logo-static) and prefers-reduced-motion render the

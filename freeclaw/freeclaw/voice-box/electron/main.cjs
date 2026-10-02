@@ -10,7 +10,7 @@
  * (see electron/preload.cjs and src/lib/storage.ts). No Node access in the
  * renderer, no secrets here.
  */
-const { app, BrowserWindow, ipcMain } = require("electron");
+const { app, BrowserWindow, ipcMain, shell } = require("electron");
 const {
 	existsSync,
 	readFileSync,
@@ -162,6 +162,13 @@ function createWindow() {
 		},
 	});
 	win.loadFile(join(__dirname, "..", "dist", "index.html"));
+	// Never spawn renderer windows: target=_blank links (docs, legal pages)
+	// would otherwise open an uncontrolled second window with no app chrome.
+	// http(s) links open in the user's default browser instead.
+	win.webContents.setWindowOpenHandler(({ url }) => {
+		if (/^https?:\/\//i.test(url)) void shell.openExternal(url);
+		return { action: "deny" };
+	});
 	return win;
 }
 

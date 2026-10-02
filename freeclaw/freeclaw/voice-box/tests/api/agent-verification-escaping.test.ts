@@ -20,7 +20,7 @@ const db = vi.hoisted(() => ({ or: [] as string[] }));
 
 vi.mock("../../api/_db-client.js", () => ({
 	default: {
-		from: (table: string) => {
+		from: (_table: string) => {
 			const builder: Record<string, unknown> = {};
 			builder.select = () => builder;
 			builder.eq = () => builder;

@@ -1,11 +1,14 @@
 // ═══════════════════════════════════════════════════════════════════
-// Home feed — load once, badge after that, never a background reload
+// Home feed — live merge near the top, badge when scrolled, never a storm
 // ═══════════════════════════════════════════════════════ realtime block
-// The feed loads exactly once per visit. Realtime events do one of two
+// The feed loads exactly once per visit. Realtime events do one of three
 // things, nothing else:
 //   • reaction/comment payloads apply exact local deltas instantly
 //     (bumps below — zero network);
-//   • posts/polls/votes raise the update badge. No fetch fires until the
+//   • posts INSERTs quiet-merge through the silent path (newcomers prepend
+//     near the top; parked behind the pill when scrolled down);
+//   • polls INSERTs/UPDATEs refresh just that poll row (one small GET).
+//   • everything else raises the update badge. No fetch fires until the
 //     reader taps it (or the pill, or pull-to-refresh).
 //
 // Pinned:
@@ -13,9 +16,10 @@
 //   2. A reaction DELETE decrements NOW (e.g. un-like).
 //   3. A comment INSERT bumps comment_count NOW (mirrors the server's
 //      deleted/hidden counting rule).
-//   4. A posts event fetches NOTHING and raises the badge.
-//   5. Tapping the badge pulls one fresh snapshot and clears the badge.
-//   6. A burst of votes fires zero GETs.
+//   4. A posts INSERT near the top merges silently (quiet refresh, no badge).
+//   5. A posts INSERT while scrolled parks behind the pill (badge path).
+//   6. Tapping the badge pulls one fresh snapshot and clears the badge.
+//   7. A burst of votes fires zero feed GETs (targeted poll refresh only).
 // ═══════════════════════════════════════════════════════════════════
 
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
@@ -202,7 +206,7 @@ describe("Home — realtime deltas from other users", () => {
 		expect(screen.getByTestId("card-support")).toHaveTextContent("2");
 	});
 
-	it("raises a badge instead of reloading when posts change", async () => {
+	it("quiet-merges new posts near the top instead of badging", async () => {
 		await renderFeed();
 		expect(mocks.realtimeCallback).toBeTruthy();
 		mocks.getSlow.mockClear();
@@ -216,18 +220,26 @@ describe("Home — realtime deltas from other users", () => {
 			});
 		});
 
-		// No fetch of any kind — the feed sits perfectly still.
-		expect(mocks.getSlow).not.toHaveBeenCalled();
-		expect(mocks.getSlowFresh).not.toHaveBeenCalled();
+		// Silent merge path: one quiet refresh, no badge, no pill.
+		await waitFor(() => {
+			expect(mocks.getSlowFresh).toHaveBeenCalled();
+		});
 		expect(
-			await screen.findByRole("button", { name: /View 1 new update/ }),
-		).toBeInTheDocument();
+			screen.queryByRole("button", { name: /View \d+ new updates?/ }),
+		).toBeNull();
 	});
 
-	it("pulls one fresh snapshot when the badge is tapped", async () => {
-		mocks.getSlow.mockImplementation(async () => [POST]);
-		mocks.getSlowFresh.mockImplementation(async () => [POST]);
+	it("parks newcomers behind the pill when scrolled down", async () => {
 		await renderFeed();
+		Object.defineProperty(window, "scrollY", {
+			value: 1200,
+			configurable: true,
+		});
+		mocks.getSlow.mockClear();
+		mocks.getSlowFresh.mockClear();
+		const NEWER = { ...POST, id: "new-9", title: "Just arrived" };
+		mocks.getSlowFresh.mockResolvedValue([NEWER, POST]);
+
 		await act(async () => {
 			mocks.realtimeCallback!("posts", {
 				eventType: "INSERT",
@@ -236,10 +248,38 @@ describe("Home — realtime deltas from other users", () => {
 			});
 		});
 
+		// Parked, not merged: the pill owns scrolled reads (the update badge
+		// stays down — one prompt, not two).
+		const pill = await screen.findByRole("button", { name: /1 new post/ });
+		expect(pill).toBeInTheDocument();
+		// …but the visible list is untouched until the pill is tapped.
+		expect(screen.queryByText("Fresh broken bench")).toBeNull();
+		Object.defineProperty(window, "scrollY", { value: 0, configurable: true });
+	});
+
+	it("pulls one fresh snapshot when the pill is tapped", async () => {
+		mocks.getSlow.mockImplementation(async () => [POST]);
+		mocks.getSlowFresh.mockImplementation(async () => [POST]);
+		await renderFeed();
+		// Pill only rises while scrolled — the near-top path merges quietly.
+		Object.defineProperty(window, "scrollY", {
+			value: 1200,
+			configurable: true,
+		});
 		const NEWER = { ...POST, id: "new-9", title: "Just arrived" };
+		mocks.getSlowFresh.mockResolvedValue([NEWER, POST]);
+		await act(async () => {
+			mocks.realtimeCallback!("posts", {
+				eventType: "INSERT",
+				new: { id: "new-9" },
+				old: {},
+			});
+		});
+		Object.defineProperty(window, "scrollY", { value: 0, configurable: true });
+
 		mocks.getSlowFresh.mockImplementation(async () => [NEWER, POST]);
 		fireEvent.click(
-			await screen.findByRole("button", { name: /View 1 new update/ }),
+			await screen.findByRole("button", { name: /1 new post/ }),
 		);
 
 		// Explicit pulls demand a fully fresh read (never the shared snapshot).
@@ -248,7 +288,7 @@ describe("Home — realtime deltas from other users", () => {
 		});
 		expect(await screen.findByText("Just arrived")).toBeInTheDocument();
 		expect(
-			screen.queryByRole("button", { name: /View \d+ new update/ }),
+			screen.queryByRole("button", { name: /new posts?/ }),
 		).toBeNull();
 	});
 

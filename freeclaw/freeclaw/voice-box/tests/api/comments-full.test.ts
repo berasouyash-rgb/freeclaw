@@ -108,6 +108,7 @@ interface Chain {
 	eq: () => Chain;
 	in: () => Chain;
 	lt: () => Chain;
+	gte: () => Chain;
 	order: () => Chain;
 	limit: () => Chain;
 	maybeSingle: () => Chain;
@@ -133,6 +134,9 @@ function chainFor(table: string): Chain {
 			return this;
 		},
 		lt() {
+			return this;
+		},
+		gte() {
 			return this;
 		},
 		order() {

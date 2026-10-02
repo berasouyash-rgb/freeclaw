@@ -60,6 +60,16 @@ export function isNativeShell(): boolean {
 }
 
 /**
+ * True ONLY inside the Capacitor Android app (the APK). Use for APK-only
+ * UI layers — mobile sticky header, entrance animations, skeleton loaders,
+ * alternate logo. Web and desktop builds never take these branches, so
+ * their experience is byte-for-byte unchanged.
+ */
+export function isMobileApp(): boolean {
+	return getPlatform() === "mobile";
+}
+
+/**
  * Absolute API origin for native shells, e.g. "https://voice-box-psi.vercel.app".
  * Baked in at build time via VITE_API_BASE. Empty string = same-origin,
  * which is correct for the browser build served alongside /api.

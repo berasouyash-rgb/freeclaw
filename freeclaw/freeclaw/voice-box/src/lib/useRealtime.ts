@@ -1,6 +1,10 @@
 import { useEffect, useRef } from "react";
 import realtimeContract from "./realtimeContract.json";
-import supabase from "./supabase";
+// Type-only: the realtime client module (@supabase/supabase-js, ~169KB) must
+// NOT be a static import — it would join the boot chunk parsed before first
+// paint. It is loaded via dynamic import() inside the hook effect instead,
+// so the chunk downloads and parses after paint. Type-only imports erase.
+import type supabaseDefault from "./supabase";
 
 /**
  * Global Realtime subscription manager.
@@ -57,11 +61,16 @@ interface Subscriber {
  */
 const MAX_BURST_WAIT_MS = 10_000;
 
+type RealtimeClient = NonNullable<typeof supabaseDefault>;
+
 interface ChannelEntry {
 	// null when the Supabase client is unavailable (bad/missing env config) or
 	// when the requested tables are not in the public Realtime allowlist.
-	channel: ReturnType<NonNullable<typeof supabase>["channel"]> | null;
+	channel: ReturnType<RealtimeClient["channel"]> | null;
 	subscribers: Map<number, Subscriber>;
+	// The resolved client that owns this entry's channel — removeChannel must
+	// go to the same instance that created it.
+	client: RealtimeClient | null;
 }
 
 let nextId = 0;
@@ -106,7 +115,7 @@ function liveTables(tables: string[]): string[] {
 	return out.sort();
 }
 
-function getOrCreate(key: string): ChannelEntry {
+function getOrCreate(key: string, supabase: RealtimeClient | null): ChannelEntry {
 	let entry = registry.get(key);
 	if (entry) return entry;
 
@@ -124,6 +133,7 @@ function getOrCreate(key: string): ChannelEntry {
 	entry = {
 		channel,
 		subscribers: new Map(),
+		client: supabase,
 	};
 
 	// No fallback polling or visibility refresh is started here. The page
@@ -199,7 +209,7 @@ function removeSubscriber(id: number, key: string) {
 	if (entry.subscribers.size === 0) {
 		// No channel exists when the client is unavailable or the tables are
 		// outside the public Realtime allowlist; there is nothing to remove.
-		if (supabase && entry.channel) supabase.removeChannel(entry.channel);
+		if (entry.client && entry.channel) entry.client.removeChannel(entry.channel);
 		registry.delete(key);
 	}
 }
@@ -243,19 +253,28 @@ export function useRealtime(
 		const liveKey = liveTables(key === "" ? [] : key.split(",")).join(",");
 		if (!liveKey) return;
 		const id = idRef.current!;
-		const entry = getOrCreate(liveKey);
-		entry.subscribers.set(id, {
-			// Fire through the ref: the callback identity changes every render,
-			// but this subscriber record is created once per [key, debounceMs].
-			// Reading cbRef.current at dispatch time means realtime events always
-			// invoke the LATEST closure instead of a stale first-render snapshot.
-			callback: (table, payload) => cbRef.current(table, payload),
-			debounceMs,
-			timer: null,
-			burstStartedAt: null,
+		// The realtime client module is loaded asynchronously (dynamic
+		// import) so its ~169KB stays out of the boot chunk. Subscription
+		// attaches when the load resolves — one microtask later in tests,
+		// after paint in production. Unmounting first cancels the attach.
+		let cancelled = false;
+		void import("./supabase").then((m) => {
+			if (cancelled) return;
+			const entry = getOrCreate(liveKey, m.default);
+			entry.subscribers.set(id, {
+				// Fire through the ref: the callback identity changes every render,
+				// but this subscriber record is created once per [key, debounceMs].
+				// Reading cbRef.current at dispatch time means realtime events always
+				// invoke the LATEST closure instead of a stale first-render snapshot.
+				callback: (table, payload) => cbRef.current(table, payload),
+				debounceMs,
+				timer: null,
+				burstStartedAt: null,
+			});
 		});
 
 		return () => {
+			cancelled = true;
 			removeSubscriber(id, liveKey);
 		};
 	}, [key, debounceMs]);

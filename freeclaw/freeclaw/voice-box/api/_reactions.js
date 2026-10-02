@@ -1,7 +1,7 @@
 // Reaction toggles — positive-only voting (Support on problems, Upvote on ideas).
 // One vote per anonymous browser per item; tapping again removes it.
 
-import { checkUser, clean, cors, isAdmin } from "./_auth.js";
+import { checkUser, clean, cors, isAdmin, rateLimited, rateLimitResponse } from "./_auth.js";
 import supabase from "./_db-client.js";
 import { sanitizeError } from "./_error.js";
 import { EVENT_TYPES, emitEventAndBridge } from "./_events.js";
@@ -78,6 +78,16 @@ export default async function handler(req, res) {
 				return res.status(400).json({ error: "Invalid reaction" });
 			const gate = await checkUser(author_id);
 			if (!gate.ok) return res.status(403).json({ error: gate.error });
+			// Toggle floods (scripted tapping) each cost a delete + insert +
+			// counts + a parent touch that fans out to realtime badges on every
+			// client. 30 toggles per 10s is far beyond human tapping.
+			if (await rateLimited("reactions", author_id, 10, 30)) {
+				return rateLimitResponse(
+					res,
+					10,
+					"Too many reactions — please wait a moment.",
+				);
+			}
 
 			// Toggle in one shot: DELETE returns the removed row if it existed.
 			// If nothing was removed we insert (toggle ON). This avoids the extra

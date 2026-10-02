@@ -8,8 +8,20 @@ import { initVitals } from "./lib/vitals";
 import { initErrorCapture } from "./lib/errors";
 import { hydrateStore } from "./lib/storage";
 
-// Initialize Sentry error tracking as early as possible
-initSentry();
+// Initialize Sentry error tracking AFTER first paint — the SDK (~100KB+)
+// must never sit in the boot chunk parsed before first paint. Idle-deferred
+// with a timeout ceiling so slow devices still get coverage within seconds.
+function initSentryIdle() {
+	const start = () => {
+		void initSentry();
+	};
+	if (typeof requestIdleCallback === "function") {
+		requestIdleCallback(start, { timeout: 4000 });
+	} else {
+		setTimeout(start, 1500);
+	}
+}
+initSentryIdle();
 // Collect real Core Web Vitals and report to backend
 initVitals();
 // Capture real JS errors and send to backend for admin visibility

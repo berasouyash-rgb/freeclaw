@@ -33,7 +33,7 @@ import WordCloud from "../components/WordCloud";
 import { useApp } from "../contexts/AppContext";
 import { useCategories } from "../hooks/useCategories";
 import { api } from "../lib/api";
-import { apiBase, isNativeShell } from "../lib/platform";
+import { apiBase, isMobileApp, isNativeShell } from "../lib/platform";
 import { useRealtime, type RealtimePayload } from "../lib/useRealtime";
 import { dedupeById, errorText, trendingScore } from "../lib/utils";
 import type { PollData, PostData, ReactionEntry } from "../types";
@@ -191,6 +191,13 @@ export default function Home() {
 	const [statusFilter, setStatusFilter] = useState("all");
 	const [showFilters, setShowFilters] = useState(false);
 	const [pendingNew, setPendingNew] = useState(0);
+	// APK-only UI layers (sticky glass toolbar, skeleton loaders, entrance
+	// stagger) branch on this. Web and desktop never take these branches,
+	// so their experience is byte-for-byte unchanged.
+	const mobileApp = isMobileApp();
+	// Filters hidden behind the toggle on mobile (sort row + status row).
+	const hiddenActiveCount =
+		(sort !== "newest" ? 1 : 0) + (statusFilter !== "all" ? 1 : 0);
 	const [pollsMap, setPollsMap] = useState<Record<string, PollData>>({});
 	const [myPollVotes, setMyPollVotes] = useState<Record<string, number[]>>({});
 	const knownIdsRef = useRef<Set<string>>(new Set());
@@ -513,6 +520,26 @@ export default function Home() {
 		[applyDelta],
 	);
 
+	// Targeted single-poll refresh for realtime vote/poll events: one small
+	// GET merged into pollsMap, never a full feed reload. A failed fetch
+	// keeps the stale poll rather than breaking the feed over one row.
+	const refreshPoll = useCallback(
+		async (pollId: string) => {
+			try {
+				const rows = await api.getFresh<PollData[]>(
+					`/api/polls?ids=${encodeURIComponent(pollId)}&viewer=${anonId}`,
+				);
+				const row = (Array.isArray(rows) ? rows : []).find(
+					(p) => p?.id === pollId,
+				);
+				if (row) setPollsMap((prev) => ({ ...prev, [pollId]: row }));
+			} catch {
+				/* keep stale poll */
+			}
+		},
+		[anonId],
+	);
+
 	useRealtime(
 		["posts", "reactions", "comments", "polls", "poll_votes"],
 		(table: string, payload: RealtimePayload) => {
@@ -562,11 +589,43 @@ export default function Home() {
 				return;
 			}
 
-			// ── Posts, polls and votes: freshness signal only. ──
-			// No fetch here at all — not even the targeted per-poll one. A
-			// viral poll fires one vote event per voter, and any refetch per
-			// event rebuilds the feed under the reader. The badge below is
-			// one click from current; own votes stay instant (optimistic).
+			// ── New posts: quiet auto-merge (live feed). ──
+			// The silent path refreshes known rows in place and prepends
+			// genuinely new ids when the reader is near the top; scrolled
+			// down, newcomers park behind the pill instead, so the list
+			// never reorders under a finger. A reader with an active search
+			// keeps the badge — a live row must not clobber search results.
+			if (table === "posts" && evt === "INSERT") {
+				if (!query.trim()) {
+					void load({
+						silent: true,
+						search: query,
+						feedType,
+						category: cat,
+						status: statusFilter,
+					});
+				} else {
+					markUpdatesAvailable();
+				}
+				return;
+			}
+
+			// ── Poll changes: targeted single-poll refresh. ──
+			// Votes land as polls UPDATE (updated_at touch); refetching just
+			// that row keeps counts live for the exact cost of one small GET
+			// instead of a badge or a full feed reload.
+			if (table === "polls" && (evt === "INSERT" || evt === "UPDATE")) {
+				const row = rowLike(payload.new) ?? rowLike(payload.old);
+				const pollId = (row as { id?: string } | undefined)?.id;
+				if (pollId) void refreshPoll(pollId);
+				else markUpdatesAvailable();
+				return;
+			}
+
+			// ── Everything else: freshness signal only. ──
+			// Comment events bump counts above (the open thread refetches
+			// itself); a feed GET per comment would rebuild the list under
+			// every busy minute — the old reload storm. No fetch here.
 			markUpdatesAvailable();
 		},
 		1500, // longer debounce for the batch
@@ -921,9 +980,13 @@ export default function Home() {
 				</div>
 			)}
 
-			{/* Search + filters — single clean toolbar */}
-			<div className="card p-3 mb-4 space-y-3">
-				<div className="flex flex-col gap-2 sm:flex-row">
+			{/* Search + filters — single clean toolbar.
+			On the APK it pins as a glass header so filters stay reachable
+			while scrolling; web/desktop keep the static card. */}
+			<div
+				className={`card p-3 mb-4 space-y-3 ${mobileApp ? "sticky top-0 z-30 !bg-surface/85 backdrop-blur-md shadow-sm" : ""}`}
+			>
+				<div className="flex flex-col gap-2">
 					<div className="relative flex-1 min-w-0" data-tour="search">
 						<Search
 							size={15}
@@ -939,10 +1002,14 @@ export default function Home() {
 							aria-label={feedType === "problem" ? "Search problems" : "Search all posts"}
 						/>
 					</div>
+					{/* Compact control row: selects + toggle share one row on
+					mobile instead of stacking full-width and pushing the
+					feed off-screen. */}
+					<div className="flex flex-row gap-2 items-center">
 					<select
 						id="feed-type-filter"
 						name="content-type"
-						className="input !w-auto !py-2 text-sm max-w-32"
+						className="input !py-2 text-sm flex-1 min-w-0"
 						value={feedType}
 						onChange={(e) => setFeedType(e.target.value as FeedType)}
 						aria-label="Filter by content type"
@@ -955,7 +1022,7 @@ export default function Home() {
 					<select
 						id="feed-category-filter"
 						name="category"
-						className="input !w-auto !py-2 text-sm max-w-36"
+						className="input !py-2 text-sm flex-1 min-w-0"
 						value={cat}
 						onChange={(e) => setCat(e.target.value)}
 						aria-label="Filter by category"
@@ -968,13 +1035,22 @@ export default function Home() {
 						))}
 					</select>
 					<button
-						className={`btn !py-2 sm:hidden ${showFilters ? "btn-soft" : "btn-ghost"}`}
+						className={`btn !py-2 sm:hidden relative shrink-0 ${showFilters ? "btn-soft" : "btn-ghost"}`}
 						onClick={() => setShowFilters((s) => !s)}
 						aria-label="Toggle filters"
 						aria-expanded={showFilters}
 					>
 						<SlidersHorizontal size={15} />
+						{mobileApp && hiddenActiveCount > 0 && (
+							<span
+								className="absolute -top-1.5 -right-1.5 min-w-5 h-5 px-1 rounded-full bg-accent text-white text-[10px] font-bold flex items-center justify-center"
+								aria-label={`${hiddenActiveCount} filters active`}
+							>
+								{hiddenActiveCount}
+							</span>
+						)}
 					</button>
+					</div>
 				</div>
 				<div
 					className={`${showFilters ? "flex" : "hidden sm:flex"} flex-wrap items-center gap-2`}
@@ -1050,6 +1126,20 @@ export default function Home() {
 					</button>
 				</div>
 			)}
+			{/* APK-only skeleton loaders: shimmer placeholders while the first
+			load settles, so the app feels alive instead of blank. Web and
+			desktop keep the quiet list (deliberate — no flash). */}
+			{mobileApp && !hasLoaded && !error && (
+				<div className="space-y-3" aria-hidden data-testid="feed-skeleton">
+					{[0, 1, 2].map((i) => (
+						<div key={i} className="card p-4">
+							<div className="skeleton h-4 w-2/3 mb-2" />
+							<div className="skeleton h-3 w-full mb-2" />
+							<div className="skeleton h-3 w-5/6" />
+						</div>
+					))}
+				</div>
+			)}
 			{hasLoaded && !error && filtered.length === 0 && (
 				<div className="card p-10 text-center vb-rise">
 					<div className="vb-empty-icon">
@@ -1065,7 +1155,11 @@ export default function Home() {
 				</div>
 			)}					<div className="space-y-3 vb-feed-list">
 						{filtered.map((p, i) => (
-							<div key={p.id} {...(i === 0 ? { "data-tour": "post-card" } : {})}>
+							<div
+								key={p.id}
+								className={mobileApp ? "vb-feed-item" : undefined}
+								{...(i === 0 ? { "data-tour": "post-card" } : {})}
+							>
 											<PostCard
 										post={p}
 										myReactions={myReactions[p.id]}

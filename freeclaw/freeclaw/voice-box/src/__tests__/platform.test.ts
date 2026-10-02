@@ -2,7 +2,7 @@
 // Pins: default web, vbDesktop bridge, Capacitor native flag, API base
 // validation, and the honest storage-location copy per shell.
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { apiBase, getPlatform, isNativeShell, storageWhere } from "../lib/platform";
+import { apiBase, getPlatform, isMobileApp, isNativeShell, storageWhere } from "../lib/platform";
 
 function clearShellGlobals() {
 	try {
@@ -61,6 +61,19 @@ describe("getPlatform", () => {
 			isNativePlatform: () => true,
 		};
 		expect(getPlatform()).toBe("mobile");
+	});
+});
+
+describe("isMobileApp — APK-only UI gate", () => {
+	it("is false on web and desktop, true only on Capacitor native", () => {
+		expect(isMobileApp()).toBe(false);
+		(window as unknown as Record<string, unknown>).vbDesktop = true;
+		expect(isMobileApp()).toBe(false);
+		clearShellGlobals();
+		(window as unknown as Record<string, unknown>).Capacitor = {
+			isNativePlatform: () => true,
+		};
+		expect(isMobileApp()).toBe(true);
 	});
 });
 

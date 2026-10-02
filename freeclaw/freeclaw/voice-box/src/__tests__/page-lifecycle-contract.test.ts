@@ -209,8 +209,17 @@ describe("page lifecycle contracts", () => {
 			{
 				file: "src/pages/Home.tsx",
 				// exact reaction/comment deltas are local state writes, not
-				// fetches — they stay; every fetch leaves the handler.
-				mustKeep: ["bumpReaction", "bumpCommentCount", "markUpdatesAvailable"],
+				// fetches — they stay. The live feed may quiet-merge through
+				// the silent path (silent: true only — never a loud refetch)
+				// and refresh a single poll row (refreshPoll); the badge
+				// raise stays for everything else.
+				mustKeep: [
+					"bumpReaction",
+					"bumpCommentCount",
+					"markUpdatesAvailable",
+					"silent: true",
+					"refreshPoll",
+				],
 			},
 		];
 		for (const { file, mustKeep } of filtered) {
@@ -223,10 +232,24 @@ describe("page lifecycle contracts", () => {
 						token,
 					);
 				}
-				expect(
-					args,
-					`${file} realtime handler must not fetch`,
-				).not.toMatch(/load\(|getFresh|getSlow|refreshMyReactions\(/);
+				if (file.endsWith("Home.tsx")) {
+					// Live feed: the ONLY fetches allowed inside the handler are
+					// the quiet near-top merge (load with silent: true) and the
+					// single-poll refresh (refreshPoll). No raw network calls.
+					expect(
+						args,
+						`${file} realtime handler must not fetch directly`,
+					).not.toMatch(/getSlow|getFresh|api\.put|api\.post|api\.del/);
+					expect(
+						args,
+						`${file} realtime merge must stay silent`,
+					).not.toMatch(/load\(\{\s*[^}]*silent:\s*false/);
+				} else {
+					expect(
+						args,
+						`${file} realtime handler must not fetch`,
+					).not.toMatch(/load\(|getFresh|getSlow|refreshMyReactions\(/);
+				}
 			}
 			expect(source, file).toContain("UpdateNotice");
 			expect(source, file).toContain("clearUpdates");

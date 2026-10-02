@@ -295,4 +295,19 @@ describe("POST /api/reactions — optimized toggle contract", () => {
 			mine: ["upvote"],
 		});
 	});
+
+	it("rate-limits toggle floods → 429 before any DB roundtrip", async () => {
+		const { rateLimited } = await import("../../api/_auth.js");
+		(rateLimited as ReturnType<typeof vi.fn>).mockResolvedValueOnce(true);
+
+		const { default: handler } = await import("../../api/_reactions.js");
+		const res = response();
+		await handler(
+			{ method: "POST", query: {}, body: body(), headers: { "x-anon-id": "anon-1" } },
+			res,
+		);
+
+		expect(res.statusCode).toBe(429);
+		expect(from).not.toHaveBeenCalled();
+	});
 });

@@ -24,6 +24,10 @@ const authMocks = {
 	clean: (s: unknown, max = 2000) => String(s ?? "").slice(0, max),
 	isAdmin: vi.fn().mockResolvedValue(false),
 	checkUser: vi.fn().mockResolvedValue({ ok: true, user: { id: "u1" } }),
+	rateLimited: vi.fn().mockResolvedValue(false),
+	rateLimitResponse: vi.fn((res) =>
+		res.status(429).json({ error: "Too many requests" }),
+	),
 };
 vi.mock("../../api/_auth.js", () => authMocks);
 vi.mock("../../api/_error.js", () => ({

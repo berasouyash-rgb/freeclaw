@@ -6,7 +6,15 @@ import globals from "globals";
 import tseslint from "typescript-eslint";
 
 export default defineConfig([
-	globalIgnores(["dist", "coverage"]),
+	globalIgnores([
+		"dist",
+		"coverage",
+		// Generated native shells — Capacitor/Capacitor-Gradle outputs and
+		// the packaged Electron app contain thousands of vendored JS files
+		// (e.g. android/.../native-bridge.js) that must never be linted.
+		"android",
+		"electron/dist",
+	]),
 	{
 		files: ["**/*.{ts,tsx}"],
 		extends: [

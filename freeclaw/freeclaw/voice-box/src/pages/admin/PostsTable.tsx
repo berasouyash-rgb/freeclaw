@@ -33,8 +33,9 @@ import { ConfirmDialog, PromptDialog, StatusDialog } from "../../components/ui";
 import { useApp } from "../../contexts/AppContext";
 import { useCategories } from "../../hooks/useCategories";
 import { useInfiniteScroll } from "../../hooks/useInfiniteScroll";
-import { BULK_CONCURRENCY, mapWithConcurrency } from "../../lib/async";
-import { api } from "../../lib/api";
+import { BULK_CONCURRENCY, mapWithConcurrency } from "../../lib/async";
+import { api } from "../../lib/api";
+import { applyOptimistic, revertOptimistic } from "../../lib/optimistic";
 import { useRealtime } from "../../lib/useRealtime";
 import { useUpdateSignal } from "../../hooks/useUpdateSignal";
 import {
@@ -468,6 +469,16 @@ export default function PostsTable({
 		patch: Partial<PostData>,
 		options?: { silent?: boolean },
 	): Promise<boolean> => {
+		// Optimistic: reflect the tap instantly (slow school Wi-Fi used to
+		// leave hide/pin/verify feeling dead for 1-3s). The exact previous
+		// row is snapshotted so a failed request rolls back precisely.
+		const { prev } = applyOptimistic(posts, id, patch);
+		const prevSelected = selected?.id === id ? selected : null;
+		setItems((prevItems) =>
+			prevItems.map((p) => (p.id === id ? { ...p, ...patch } : p)),
+		);
+		if (prevSelected)
+			setSelected({ ...prevSelected, ...patch });
 		try {
 			const updated = await api.put<Record<string, unknown>>("/api/posts", {
 				id,
@@ -486,6 +497,8 @@ export default function PostsTable({
 			}
 			return true;
 		} catch (e: unknown) {
+			setItems((prevItems) => revertOptimistic(prevItems, prev));
+			if (prevSelected) setSelected(prevSelected);
 			if (!options?.silent) {
 				toast(
 					e instanceof Error

@@ -1,0 +1,31 @@
+{
+	"name": "Voice Box — Anonymous School Feedback",
+	"short_name": "Voice Box",
+	"description": "Share anonymous feedback, report issues, and track solutions at your school.",
+	"start_url": "/",
+	"scope": "/",
+	"display": "standalone",
+	"orientation": "portrait",
+	"background_color": "#f6f6f9",
+	"theme_color": "#5652d6",
+	"icons": [
+		{
+			"src": "/icons/icon-192.png",
+			"sizes": "192x192",
+			"type": "image/png",
+			"purpose": "any"
+		},
+		{
+			"src": "/icons/icon-512.png",
+			"sizes": "512x512",
+			"type": "image/png",
+			"purpose": "any"
+		},
+		{
+			"src": "/icons/icon-512.png",
+			"sizes": "512x512",
+			"type": "image/png",
+			"purpose": "maskable"
+		}
+	]
+}
