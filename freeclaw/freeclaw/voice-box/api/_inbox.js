@@ -26,7 +26,7 @@ import { EVENT_TYPES, emitEventAndBridge } from "./_events.js";
 import { logger } from "./_observability.js";
 import { serverModerate } from "./_moderation.js";
 import { mergeSlang } from "./_slang.js";
-import { evaluateContent } from "./_safety-pipeline.js";
+import { evaluateContentDeep } from "./_safety-pipeline.js";
 import { callLLMChain, callNvidiaFast } from "./_providers.js";
 import { getNotifyPrefs } from "./_notify-prefs.js";
 import { createTask } from "./_workforce.js";
@@ -565,7 +565,8 @@ async function notifyAdmin(threadId, message, emotion, agent) {
 // admin clicks "Draft post", the pipeline drafts a post proposal into thread
 // state. The admin popup shows title + description + category + a Private
 // toggle with the chat excerpt; Accept creates the post through the REAL
-// safety gate (evaluateContent, same as /api/posts), Reject drops it.
+// safety gate (evaluateContentDeep, same pipeline as /api/posts), Reject
+// drops it.
 // Nothing ever publishes without the admin click.
 const POST_INTENT = [
   /\bpost (this|it|that)\b/, /\bpublish( this| it)?\b/, /\bshare (this|it|that)\b/,
@@ -645,9 +646,16 @@ async function acceptDraft(threadId, visibility, opts) {
   if (!proposal || proposal.status !== "proposed")
     return { ok: false, error: "No open proposal on this thread" };
   const vis = visibility === "public" ? "public" : "private";
-  // The REAL gate: identical surface + policy to the posts route. A blocked
-  // draft stays blocked here too — the popup cannot launder unsafe text.
-  const decision = evaluateContent(`${proposal.title} ${proposal.description}`, "queued", null);
+  // The REAL gate: the SAME pipeline the posts route runs, not just the same
+  // POLICY table. `evaluateContent` (the old call here) was only the
+  // synchronous keyword floor — so a draft whose harm lived in context
+  // (a named target, a politely-worded threat) passed this accept while the
+  // identical text would have been held if the student had submitted it
+  // directly. `evaluateContentDeep` adds the deterministic contextual scan
+  // AND the model layer, and it SKIPS the model when the floor already
+  // blocks, so the common case stays cheap. A provider outage degrades to
+  // the deterministic verdict — never to "cleared".
+  const decision = await evaluateContentDeep(`${proposal.title} ${proposal.description}`, "queued", null);
   if (decision.blocked) {
     return { ok: false, error: "Draft blocked by safety review", code: decision.code || "CONTENT_BLOCKED" };
   }

@@ -238,6 +238,23 @@ describe("Home — default feed behavior", () => {
 		expect(screen.getByRole("tab", { name: /solved/i })).toBeInTheDocument();
 	});
 
+	it("labels the public counters with what they actually count", async () => {
+		const { default: Home } = await import("../pages/Home");
+		render(
+			<MemoryRouter>
+				<Home />
+			</MemoryRouter>,
+		);
+		// The counters must read as the thing they measure. "Total reports"
+		// and "Being worked on" both described a COUNT, not a STATE — a
+		// student could not tell what "worked on" meant, and 29 open items
+		// read as 29 items somebody had picked up.
+		expect(screen.getByText("Reported")).toBeInTheDocument();
+		expect(screen.getByText("In progress")).toBeInTheDocument();
+		expect(screen.queryByText(/Being worked on/i)).toBeNull();
+		expect(screen.queryByText(/Total reports/i)).toBeNull();
+	});
+
 	it("defaults to 'newest' sort (newest button is selected)", async () => {
 		const { default: Home } = await import("../pages/Home");
 		render(

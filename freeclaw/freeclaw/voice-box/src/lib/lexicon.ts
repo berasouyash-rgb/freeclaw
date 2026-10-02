@@ -215,7 +215,7 @@ const LEET_MAP: Record<string, string> = {
 const LEET_RE = /[0134578$@!+]/g;
 const INVISIBLE_RE = /[\u200b-\u200d\ufeff\u00ad\u2060]/g;
 const SEP_RE = /[\s.\-_*·•]+/g;
-const TOKEN_RE = /[a-z0-9$@!+]+(?:[._*\-][a-z0-9$@!+]+)*/g;
+const TOKEN_RE = /[a-z0-9$@!+]+(?:[._*-][a-z0-9$@!+]+)*/g;
 
 export function collapseRepeats(value: string, to = 1): string {
 	return String(value).replace(/(.)\1{2,}/g, (_m, ch: string) => ch.repeat(to));

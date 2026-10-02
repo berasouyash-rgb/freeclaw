@@ -132,6 +132,11 @@ vi.mock("../../api/_providers.js", () => ({
 
 const pipe = vi.hoisted(() => ({
   evaluateContent: vi.fn(),
+  // The accept path runs the SAME gate as the posts route: keyword floor +
+  // deterministic contextual scan + model. Mock the deep entry point the
+  // route actually calls, or the harness silently passes a route it never
+  // exercised.
+  evaluateContentDeep: vi.fn(),
 }));
 vi.mock("../../api/_safety-pipeline.js", () => pipe);
 
@@ -219,7 +224,7 @@ beforeEach(() => {
   authMocks.clientIp.mockReturnValue("test-ip");
   providers.fast.mockResolvedValue({ text: DRAFT_JSON });
   providers.chain.mockResolvedValue(null);
-  pipe.evaluateContent.mockReturnValue({
+  pipe.evaluateContentDeep.mockResolvedValue({
     blocked: false,
     needsReview: false,
     flags: [],
@@ -280,10 +285,35 @@ describe("accept_draft", () => {
 
   it("blocks unsafe drafts with no post row", async () => {
     await post({ action: "draft_post", thread_id: "thread-1" });
-    pipe.evaluateContent.mockReturnValue({
+    pipe.evaluateContentDeep.mockResolvedValue({
       blocked: true,
       needsReview: false,
       flags: [{ type: "profanity" }],
+      code: "CONTENT_BLOCKED",
+    });
+    const res = await post({ action: "accept_draft", thread_id: "thread-1", visibility: "private" });
+    expect(res.statusCode).toBe(403);
+    expect(state.inserted.filter((r) => r.table === "posts")).toHaveLength(0);
+  });
+
+  it("runs the SAME deep gate the posts route runs, not the keyword floor", async () => {
+    await post({ action: "draft_post", thread_id: "thread-1" });
+    pipe.evaluateContentDeep.mockClear();
+    pipe.evaluateContent.mockClear();
+    await post({ action: "accept_draft", thread_id: "thread-1", visibility: "private" });
+    expect(pipe.evaluateContentDeep).toHaveBeenCalledTimes(1);
+    // The keyword floor alone cannot see a named target or a politely
+    // worded threat; accepting a draft through it would launder text the
+    // posts route would have held.
+    expect(pipe.evaluateContent).not.toHaveBeenCalled();
+  });
+
+  it("blocks a draft the contextual layer flags even when no keyword matched", async () => {
+    await post({ action: "draft_post", thread_id: "thread-1" });
+    pipe.evaluateContentDeep.mockResolvedValue({
+      blocked: true,
+      needsReview: false,
+      flags: [{ type: "threat", source: "context-classify" }],
       code: "CONTENT_BLOCKED",
     });
     const res = await post({ action: "accept_draft", thread_id: "thread-1", visibility: "private" });
