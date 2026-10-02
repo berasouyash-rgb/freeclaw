@@ -36,6 +36,47 @@ export interface ModerationResult {
 	serverBlocked?: boolean;
 	/** False when the server check itself failed. A failed check is not a pass. */
 	checked?: boolean;
+	/**
+	 * Advisory: is this an actionable school problem, or noise?
+	 *
+	 * Present only on results from `/api/moderate`. `undefined`/`null` means
+	 * "not known" (the check has not run, or it failed) — callers must never
+	 * render an absent verdict as a positive claim about the content.
+	 *
+	 * This NEVER blocks. There is deliberately no `blocked` field: the write
+	 * path is the only authority on what may be published, and a confident
+	 * machine judgement that silences a real complaint is a worse failure
+	 * than a noisy inbox.
+	 */
+	relevance?: RelevanceResult | null;
+}
+
+/** The exact text evidence behind one relevance signal. */
+export interface RelevanceReason {
+	kind: "distress" | "problem" | "school" | "off_topic";
+	signal: string;
+	label: string;
+	/** The literal substring that matched, for the "why" shown to the author. */
+	evidence: string;
+}
+
+export type RelevanceVerdict =
+	| "school_problem"
+	| "unclear"
+	| "not_school_related";
+export type RelevanceRoute = "post" | "post_with_note" | "support";
+
+/** Output of `api/_relevance.js`, mirrored here for the UI. */
+export interface RelevanceResult {
+	policyVersion: string;
+	verdict: RelevanceVerdict;
+	route: RelevanceRoute;
+	confidence: "low" | "medium" | "high";
+	reasons: RelevanceReason[];
+	explanation: string;
+	/** True when the author is invited (never required) to double-check. */
+	askUserToConfirm: boolean;
+	limits: string[];
 }
 
 // ─── Word lists ───────────────────────────────────────────────────

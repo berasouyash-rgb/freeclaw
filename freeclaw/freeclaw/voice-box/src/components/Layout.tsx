@@ -1,4 +1,5 @@
 ﻿import {
+	Accessibility,
 	Activity,
 	BarChart3,
 	Bell,
@@ -14,6 +15,7 @@
 	MessageSquare,
 	Moon,
 	PlusCircle,
+	Scale,
 	Search,
 	ShieldCheck,
 	Sun,		Trash2,
@@ -70,6 +72,18 @@ const NAV_MORE = [
 	{ to: "/saved", label: "Saved", icon: Bookmark, tour: "" },
 	{ to: "/privacy", label: "Privacy", icon: ShieldCheck, tour: "nav-privacy" },
 	{ to: "/faq", label: "FAQ", icon: HelpCircle, tour: "" },
+	// Terms and Accessibility were fully written and routed, but nothing in
+	// the app ever linked to them — a Terms of Use that cannot be reached is
+	// not a Terms of Use, and that is exactly the legal exposure it was
+	// written to prevent. Both render in the desktop "More" list and the
+	// mobile More sheet, so they are reachable from every screen.
+	{ to: "/terms", label: "Terms", icon: Scale, tour: "" },
+	{
+		to: "/accessibility",
+		label: "Accessibility",
+		icon: Accessibility,
+		tour: "",
+	},
 ];
 /** Full nav (core + more) for anything that needs the complete list. */
 export const NAV_ALL = [...NAV_CORE, ...NAV_MORE];

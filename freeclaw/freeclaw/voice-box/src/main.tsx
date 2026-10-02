@@ -6,6 +6,7 @@ import { isChunkLoadError, reloadOnceForStaleChunk } from "./lib/retryLazy";
 import { initSentry } from "./lib/sentry";
 import { initVitals } from "./lib/vitals";
 import { initErrorCapture } from "./lib/errors";
+import { hydrateStore } from "./lib/storage";
 
 // Initialize Sentry error tracking as early as possible
 initSentry();
@@ -80,7 +81,19 @@ function showFatal(message: string) {
 	splash.appendChild(wrapper);
 }
 
-try {
+/**
+ * Boot the app.
+ *
+ * Device-local storage is hydrated BEFORE the first render. That ordering is
+ * load-bearing: the anonymous identity is read during the initial render, and
+ * if the mirror were still empty we would mint a brand-new ID and orphan the
+ * student's existing posts. `hydrateStore` is internally time-capped, so a
+ * slow or broken native bridge cannot hold the splash up — it just falls back
+ * to localStorage (which is what the web build uses anyway, and resolves in
+ * one microtask there).
+ */
+async function boot(): Promise<void> {
+	await hydrateStore();
 	createRoot(document.getElementById("root")!).render(
 		<StrictMode>
 			<App />
@@ -92,10 +105,12 @@ try {
 	// so if we reach here the app IS running — never leave the splash up)
 	window.addEventListener("load", killSplash);
 	setTimeout(killSplash, 3000);
-} catch (err: unknown) {
+}
+
+void boot().catch((err: unknown) => {
 	console.error("[VoiceBox] fatal boot error:", err);
 	showFatal(err instanceof Error ? err.message : "Unknown startup error");
-}
+});
 
 // ─── Unified global error handling ───────────────────────────────
 // Handles two concerns in one listener to avoid races:

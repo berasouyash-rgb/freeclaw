@@ -67,14 +67,56 @@ interface ChannelEntry {
 let nextId = 0;
 const registry = new Map<string, ChannelEntry>();
 
+/** Tables already warned about — one dev-time warning each, not one per render. */
+const warnedTables = new Set<string>();
+
+/**
+ * Split a subscription into the tables that can actually deliver.
+ *
+ * A mixed set like ["posts", "reactions"] used to open NO channel at all:
+ * the allowlist gate rejected the whole key, so the valid tables silently
+ * lost realtime too (the home feed's reaction/comment deltas, the
+ * suggestions board, the admin badges). Now the allowed subset subscribes
+ * normally and the rest are skipped with a one-time dev warning.
+ *
+ * Order is canonicalized (sorted) so ["posts","comments"] and
+ * ["comments","posts"] share one channel instead of opening two.
+ */
+function liveTables(tables: string[]): string[] {
+	const out: string[] = [];
+	const seen = new Set<string>();
+	for (const t of tables) {
+		if (!REALTIME_TABLES.has(t)) {
+			if (!warnedTables.has(t)) {
+				warnedTables.add(t);
+				if (typeof console !== "undefined")
+					console.warn(
+						`[realtime] "${t}" is outside the anon realtime contract ` +
+							`(no publication / no anon read) — no events will arrive ` +
+							`for it; allowed tables in the same call still subscribe.`,
+					);
+			}
+			continue;
+		}
+		if (!seen.has(t)) {
+			seen.add(t);
+			out.push(t);
+		}
+	}
+	return out.sort();
+}
+
 function getOrCreate(key: string): ChannelEntry {
 	let entry = registry.get(key);
 	if (entry) return entry;
 
 	const tables = key.split(",");
-	// Skip dead channels: tables outside the realtime publication (or with no
-	// anon read policy) can never deliver events. Do not open a dead channel;
-	// the page keeps its bounded snapshot until an explicit refresh.
+	// Defense in depth: useRealtime() already partitions to allowed tables,
+	// so a disallowed name here means a programming error — refuse the whole
+	// channel rather than open a half-specified one. Tables outside the
+	// realtime publication (or with no anon read policy) can never deliver
+	// events. Do not open a dead channel; the page keeps its bounded snapshot
+	// until an explicit refresh.
 	const channel =
 		supabase && tables.every((t) => REALTIME_TABLES.has(t))
 			? supabase.channel(`rt-${key}`)
@@ -167,6 +209,11 @@ function removeSubscriber(id: number, key: string) {
  * Calls `onChange` (debounced) whenever any row changes.
  * Cleans up the channel on unmount — no leaks, no duplicate listeners.
  *
+ * Only tables in the anon realtime contract (posts, comments, polls) can
+ * deliver; any others in the list are skipped with a dev-time warning while
+ * the allowed subset subscribes normally. A list with NO allowed table
+ * opens nothing.
+ *
  * Multiple components subscribing to the same tables share a single
  * Supabase channel, reducing WebSocket connections and bandwidth.
  *
@@ -189,8 +236,14 @@ export function useRealtime(
 	if (idRef.current === null) idRef.current = nextId++;
 
 	useEffect(() => {
+		// Partition here (not at render): the subscription key is derived
+		// state, and the dev warning for skipped tables is a side effect.
+		// Re-split from `key` (already a dep) so no extra dep is needed;
+		// table names never contain commas, so the split is lossless.
+		const liveKey = liveTables(key === "" ? [] : key.split(",")).join(",");
+		if (!liveKey) return;
 		const id = idRef.current!;
-		const entry = getOrCreate(key);
+		const entry = getOrCreate(liveKey);
 		entry.subscribers.set(id, {
 			// Fire through the ref: the callback identity changes every render,
 			// but this subscriber record is created once per [key, debounceMs].
@@ -203,7 +256,7 @@ export function useRealtime(
 		});
 
 		return () => {
-			removeSubscriber(id, key);
+			removeSubscriber(id, liveKey);
 		};
 	}, [key, debounceMs]);
 }

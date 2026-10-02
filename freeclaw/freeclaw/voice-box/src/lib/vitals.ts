@@ -5,6 +5,7 @@
  */
 
 import { getAnonId } from "./identity";
+import { apiBase } from "./platform";
 
 interface VitalMetric {
   name: string;
@@ -56,10 +57,11 @@ function flush() {
   const batch = buffer.splice(0, buffer.length);
   try {
     const anonId = getAnonId();
-    fetch("/api/vitals", {
+    fetch(apiBase() + "/api/vitals", {
       method: "POST",
       headers: { "Content-Type": "application/json", "x-anon-id": anonId },
       body: JSON.stringify({ metrics: batch }),
+      credentials: "include",
       keepalive: true,
     }).catch(() => {
       /* vitals reporting is best-effort */

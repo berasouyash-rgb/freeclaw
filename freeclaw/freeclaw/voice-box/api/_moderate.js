@@ -30,9 +30,11 @@
 // `useModel: false` — measured ~0-14ms, no network, no provider. A
 // model call here would put a multi-second spinner in front of every
 // keystroke, which is the "hide it behind a spinner" antipattern.
+// `assessRelevance` is likewise deterministic and in-process.
 // ═══════════════════════════════════════════════════════════════════
 
 import { cors, rateLimited, rateLimitResponse } from "./_auth.js";
+import { assessRelevance } from "./_relevance.js";
 import { evaluateContentAsync } from "./_safety-pipeline.js";
 
 /** Server flag type -> the client-facing category vocabulary. */
@@ -98,6 +100,8 @@ export default async function handler(req, res) {
 				action: "ALLOW_ACTION",
 				policy: null,
 				context: null,
+				// Too short to judge relevance — say so rather than guess.
+				relevance: assessRelevance(text),
 				checked: true,
 			});
 		}
@@ -127,6 +131,10 @@ export default async function handler(req, res) {
 		// to "queued", never to an invented third surface.
 		const surface = req.body?.surface === "direct" ? "direct" : "queued";
 		const decision = await evaluateContentAsync(text, surface);
+		// Advisory only: is this an actionable school problem, or noise?
+		// It never blocks and never changes `serverBlocked` — the write path
+		// is the authority on what may be published.
+		const relevance = assessRelevance(text);
 
 		const flags = (decision.flags || [])
 			.map((f) => ({
@@ -163,6 +171,7 @@ export default async function handler(req, res) {
 			context: decision.trace?.length
 				? { trace: decision.trace }
 				: null,
+			relevance,
 			checked: true,
 		});
 	} catch (error) {
@@ -178,6 +187,9 @@ export default async function handler(req, res) {
 			action: "UNKNOWN",
 			policy: null,
 			context: null,
+			// Relevance is unknown, not "clean". A failed check must not
+			// render as a positive verdict about the submission.
+			relevance: null,
 			checked: false,
 			// A static, non-leaking message. `sanitizeError` SENDS a response of
 			// its own (and is keyed on `res`), so calling it inside this 200 body

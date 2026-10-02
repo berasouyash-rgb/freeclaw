@@ -191,6 +191,39 @@ const COERCION_VICTIM_REPORT =
 // Ambiguous sexualization � HELD for human review on posts (never public
 // auto), blocked on comments/polls which have no review queue.
 const EXPLICIT_HOLD = /\b(?:sexy|hookups?)\b/i;
+// Romantic / relationship sharing — HELD for review, never hard-blocked
+// (posts → pending_review, comments/polls → blocked). Deliberately narrow:
+// bare `love` and bare `date`/`proposal`/`engaged`/`break up` are excluded
+// because they are ordinary school vocabulary ("I love the canteen",
+// "due date", "project proposal", "students are engaged", "break up the
+// fight") — only person-directed or unambiguous relationship forms match.
+const ROMANTIC_HOLD = new RegExp(
+	"\\b(?:" +
+		// person-directed affection — bare "love" never matches
+		"love\\s+(?:him|her|them|you|u|each\\s+other|one\\s+another)" +
+		"|in\\s+love\\s+with" +
+		// relationship nouns (determiner-anchored so "crush the exam" is clean)
+		"|(?:my|his|her|our|your|this|that|first|new|big)\\s+(?:crush|girl\\s?friend|boy\\s?friend)" +
+		"|\\bcrush(?:es)?\\s+on\\b" +
+		// dating — verb form only; bare "date" is calendar vocabulary
+		"|(?:am|is|are|was|were|be|being|start(?:ed|ing)?|keep(?:s|ing)?)\\s+dating\\b" +
+		"|\\bdate\\s+(?:a|an|her|him|them|my|someone|somebody)\\b" +
+		"|(?:go|went|going|out)\\s+(?:out\\s+)?on\\s+a\\s+date\\b" +
+		"|\\bask(?:ed|ing)?\\s+(?:her|him|me)\\s+out\\b" +
+		// physical / affectionate
+		"|\\bkiss(?:es|ed|ing)?\\b" +
+		"|\\bflirt(?:s|ed|ing|atious)?\\b" +
+		"|\\bromanc(?:e|es|ed|ing)|\\bromantic(?:ally)?\\b" +
+		"|\\b(?:hooked\\s+up|making\\s+out|make\\s+out|seeing\\s+each\\s+other)\\b" +
+		// commitment vocabulary — anchored, never bare
+		"|\\b(?:marri(?:ed|age)|wedding)s?\\b" +
+		"|\\bengaged\\s+to\\b" +
+		"|\\b(?:propos(?:e|es|ed|ing))\\s+(?:to\\s+)?(?:her|him|me|you)\\b" +
+		"|\\b(?:breakup|break-ups?|broke\\s+up)\\b" +
+		"|\\b(?:my|your|our|the)\\s+(?:boy|girl)\\s?friend\\b" +
+		")\\b",
+	"i",
+);
 
 
 // Leaked secrets — passwords, API keys, tokens (spec §14). All require an
@@ -470,6 +503,18 @@ export function serverModerate(title, description, learned = null) {
 			type: "explicit_weak",
 			severity: "high",
 			message: "Possible sexual content — needs review",
+		});
+	}
+
+	// Romantic / relationship sharing — same route as EXPLICIT_HOLD but its
+	// own flag: severity "high" (NOT critical) so `blocked` below stays
+	// false and posts HOLD for review instead of 403ing, while the
+	// safety-pipeline row turns comments/polls into BLOCK_ACTION.
+	if (ROMANTIC_HOLD.test(text)) {
+		flags.push({
+			type: "romantic_weak",
+			severity: "high",
+			message: "Possible romantic content — needs review",
 		});
 	}
 

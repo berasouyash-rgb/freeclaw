@@ -20,6 +20,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router";
 import { fireConfetti } from "../components/Confetti";
+import RelevanceNote from "../components/RelevanceNote";
 import AppealPanel, { type AppealSurface } from "../components/AppealPanel";
 import { useApp } from "../contexts/AppContext";
 import { useCategories } from "../hooks/useCategories";
@@ -311,6 +312,12 @@ export default function Submit() {
 	 * an exception.
 	 */
 	const modFlags = moderation?.flags ?? [];
+
+	/**
+	 * Advisory relevance verdict for the current text, or null when the check
+	 * has not run or has failed. Null must never render as a positive claim.
+	 */
+	const relevance = moderation?.relevance ?? null;
 
 	/**
 	 * A pre-publish verdict describes the exact text it reviewed. Once the
@@ -888,7 +895,17 @@ export default function Submit() {
 					"ok",
 				);
 			}
-						if (attachPoll && !held) {
+						if (attachPoll && post.deduped) {
+				// The post API matched this submission to a complaint the
+				// author ALREADY published. Attaching a poll here would put a
+				// second poll on someone else's (or an earlier) post — the
+				// reported "two polls on the same post" bug. This submission
+				// created no new post, so it owns no new poll.
+				toast(
+					"That complaint was already posted — opened it without adding a second poll.",
+					"info",
+				);
+			} else if (attachPoll && !held) {
 				try {
 					await api.postLong("/api/polls", {
 						title: sanitize(attachQuestion, 140),
@@ -939,6 +956,12 @@ export default function Submit() {
 	 */
 	const renderLiveModerationFeedback = () => (
 		<>
+			{/* Advisory: does this read as an actionable school problem? */}
+			<RelevanceNote
+				relevance={relevance}
+				text={liveText}
+				checking={modChecking}
+			/>
 			{moderation && modFlags.length > 0 && (
 				<div
 					className={`rounded-xl p-3.5 vb-rise ${isBlockedByServer(moderation) ? "moderation-blocked" : moderation.overallSeverity === "high" ? "moderation-danger" : moderation.overallSeverity === "medium" ? "moderation-warn" : "moderation-info"}`}

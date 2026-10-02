@@ -5,7 +5,7 @@ transport adapts (router type, API origin).
 
 | Shell | How it runs | Your activity is stored… | API |
 |---|---|---|---|
-| Chrome / browser | `voice-box.vercel.app` | in this browser (localStorage) | same-origin `/api` |
+| Chrome / browser | `voice-box-psi.vercel.app` | in this browser (localStorage) | same-origin `/api` |
 | Desktop app | Electron window (Windows installer) | on this computer, inside the app's on-device profile | `VITE_API_BASE` baked at build |
 | Mobile app | Capacitor WebView (Android APK) | on this phone, inside the app's on-device data | `VITE_API_BASE` baked at build |
 
@@ -27,7 +27,7 @@ Details: `src/lib/platform.ts` (detection), `src/lib/api.ts` (base prefix),
 Local builds need free disk and (for Android) Android Studio — neither is
 assumed. The supported path is CI:
 
-1. Set three repo variables `VITE_API_BASE` (e.g. `https://voice-box.vercel.app`),
+1. Set three repo variables `VITE_API_BASE` (e.g. `https://voice-box-psi.vercel.app`),
    `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY` (Settings → Secrets and variables →
    Actions → Variables — all three are public-by-design `VITE_` values, same as
    the browser build). Without them the shells build but boot into demo mode
@@ -42,6 +42,24 @@ Local (when disk allows): `npm ci`, `npm run icons`,
 electron-builder.yml --win --publish never` for desktop;
 `npx cap add android && npx cap sync android` then open in Android Studio
 for mobile. `npm run desktop:start` runs the shell against `dist/`.
+Set `VITE_API_BASE=https://voice-box-psi.vercel.app` in the same shell before the
+local desktop build, or the app falls back to production automatically.
+
+## "Failed to fetch" in the desktop app
+
+The window loads (dist/index.html over file://) but every list is empty and
+the console shows `TypeError: Failed to fetch`. That always means the app has
+no working API origin — the build went out without `VITE_API_BASE` baked in,
+or the API is refusing the shell's origin. Check in order:
+
+1. `VITE_API_BASE` was set when the EXE/APK was built (repo Variables for CI,
+   shell env for local builds). Native shells fall back to
+   `https://voice-box-psi.vercel.app` when it is missing, so an old broken build
+   just needs reinstalling from a fixed artifact.
+2. The API allows the shell: Electron sends `Origin: null`, Capacitor sends
+   `capacitor://localhost` — both are allowlisted in `api/_auth.js cors()`.
+3. No action needed for cookies: the client sends `credentials: include` and
+   the server mints `SameSite=None; Secure` cookies for these origins.
 
 ## Honest limitations
 

@@ -68,7 +68,7 @@ export default async function handler(req, res) {
 		if (req.method === "GET" || req.method === "DELETE") {
 			const caller = await verifyCallerIdentity(req, res, userId);
 			if (!caller.ok)
-				return res.status(caller.status).json({ error: caller.error });
+				return res.status(caller.status).json({ error: caller.error, code: caller.code });
 		}
 
 		// Writes require the feed owner to be a valid, non-banned, non-suspended user

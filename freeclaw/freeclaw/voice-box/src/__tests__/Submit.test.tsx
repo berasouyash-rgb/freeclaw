@@ -408,6 +408,107 @@ describe("Submit — publish payload integrity", () => {
 		);
 	});
 
+	it("never attaches a second poll to a post it did not create", async () => {
+		// Reported bug: "two different polls for the same 1 post".
+		// Re-submitting an existing complaint WITH a poll attached used to
+		// still POST /api/polls against the EXISTING post id, leaving that
+		// post showing two unrelated polls.
+		mocks.post.mockImplementation((url: string, body?: Record<string, unknown>) => {
+			if (String(url).includes("/api/assist")) return Promise.resolve({});
+			if (String(url).includes("/api/pre-publish"))
+				return Promise.resolve(APPROVED);
+			if (String(url).includes("/api/posts"))
+				return Promise.resolve({
+					id: "post_9",
+					title: body?.title ?? "",
+					status: "reported",
+					deduped: true,
+				});
+			return Promise.resolve({});
+		});
+		renderPage();
+
+		fireEvent.change(
+			screen.getByRole("textbox", { name: "Title *" }),
+			{ target: { value: "Canteen water tastes bad" } },
+		);
+		fireEvent.change(
+			screen.getByRole("textbox", { name: "Description *" }),
+			{
+				target: {
+					value: "The water in the canteen has a strange taste every single day.",
+				},
+			},
+		);
+		fireEvent.click(
+			screen.getByRole("button", { name: /attach a poll/i }),
+		);
+		fireEvent.change(screen.getByLabelText(/poll question/i), {
+			target: { value: "Should the canteen serve filtered water?" },
+		});
+		fireEvent.change(screen.getByLabelText(/attach poll option 1/i), {
+			target: { value: "Yes" },
+		});
+		fireEvent.change(screen.getByLabelText(/attach poll option 2/i), {
+			target: { value: "No" },
+		});
+		fireEvent.click(screen.getByRole("button", { name: /publish anonymously/i }));
+
+		await waitFor(() => {
+			expect(mocks.post).toHaveBeenCalledWith("/api/posts", expect.any(Object));
+		});
+		// The post is deduped — nothing was created, so no poll may be added.
+		const pollCalls = mocks.post.mock.calls.filter((c) =>
+			String(c[0]).includes("/api/polls"),
+		);
+		expect(pollCalls).toHaveLength(0);
+		expect(mocks.toast).toHaveBeenCalledWith(
+			"That complaint was already posted — opened it without adding a second poll.",
+			"info",
+		);
+	});
+
+	it("still attaches the poll when the post really is new", async () => {
+		// The guard above must not disable the feature it protects.
+		mocks.post.mockImplementation((url: string, body?: Record<string, unknown>) => {
+			if (String(url).includes("/api/assist")) return Promise.resolve({});
+			if (String(url).includes("/api/pre-publish"))
+				return Promise.resolve(APPROVED);
+			if (String(url).includes("/api/posts"))
+				return Promise.resolve({ id: "post_new", title: body?.title ?? "" });
+			if (String(url).includes("/api/polls")) return Promise.resolve({ id: "poll_1" });
+			return Promise.resolve({});
+		});
+		renderPage();
+
+		fireEvent.change(
+			screen.getByRole("textbox", { name: "Title *" }),
+			{ target: { value: "Library closes too early" } },
+		);
+		fireEvent.change(
+			screen.getByRole("textbox", { name: "Description *" }),
+			{ target: { value: "The library shuts at four so nobody can study." } },
+		);
+		fireEvent.click(screen.getByRole("button", { name: /attach a poll/i }));
+		fireEvent.change(screen.getByLabelText(/poll question/i), {
+			target: { value: "Should the library close later?" },
+		});
+		fireEvent.change(screen.getByLabelText(/attach poll option 1/i), {
+			target: { value: "Yes" },
+		});
+		fireEvent.change(screen.getByLabelText(/attach poll option 2/i), {
+			target: { value: "No" },
+		});
+		fireEvent.click(screen.getByRole("button", { name: /publish anonymously/i }));
+
+		await waitFor(() => {
+			expect(
+				mocks.post.mock.calls.some((c) => String(c[0]).includes("/api/polls")),
+			).toBe(true);
+		});
+		expect(mocks.toast).toHaveBeenCalledWith("Post and poll published", "ok");
+	});
+
 	it("honours a server-held status even when the client pre-gate saw nothing wrong", async () => {
 		mocks.post.mockImplementation((url: string, body?: Record<string, unknown>) => {
 			if (String(url).includes("/api/assist")) return Promise.resolve({});

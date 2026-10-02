@@ -578,25 +578,34 @@ export default function PostsTable({
 	const openAuthorControls = (authorId: string) => {
 		sessionStorage.setItem("vb:adminUserTarget", authorId);
 		window.dispatchEvent(new CustomEvent("vb:admin-tab", { detail: "users" }));
-	};
-
-	const convertToPoll = async (p: PostData) => {
-		try {
-			await api.post("/api/polls", {
-				title: `Do you agree: ${p.title}?`,
-				ptype: "yesno",
-				post_id: p.id,
-				author_id: "ADMIN",
-			});
-			toast("Linked poll created", "ok");
-		} catch (e: unknown) {
-			toast(
-				e instanceof Error
-					? e.message
-					: "Operation failed - check console for details",
-				"err",
-			);
-		}
+	};/** Post ids with a "convert to poll" request already in flight. */
+	const pollBusyRef = useRef<Set<string>>(new Set());
+
+	const convertToPoll = async (p: PostData) => {
+		// Server already refuses a second poll on one post, but an admin
+		// double-clicking the row button used to fire two requests and see
+		// one of them bounce back as a confusing "already has a poll" error.
+		// Guard here so the click is simply ignored while one is in flight.
+		if (pollBusyRef.current.has(p.id)) return;
+		pollBusyRef.current.add(p.id);
+		try {
+			await api.post("/api/polls", {
+				title: `Do you agree: ${p.title}?`,
+				ptype: "yesno",
+				post_id: p.id,
+				author_id: "ADMIN",
+			});
+			toast("Linked poll created", "ok");
+		} catch (e: unknown) {
+			toast(
+				e instanceof Error
+					? e.message
+					: "Operation failed - check console for details",
+				"err",
+			);
+		} finally {
+			pollBusyRef.current.delete(p.id);
+		}
 	};
 
 	const filtered = useMemo(() => {

@@ -33,6 +33,7 @@ import WordCloud from "../components/WordCloud";
 import { useApp } from "../contexts/AppContext";
 import { useCategories } from "../hooks/useCategories";
 import { api } from "../lib/api";
+import { apiBase, isNativeShell } from "../lib/platform";
 import { useRealtime, type RealtimePayload } from "../lib/useRealtime";
 import { dedupeById, errorText, trendingScore } from "../lib/utils";
 import type { PollData, PostData, ReactionEntry } from "../types";
@@ -522,6 +523,12 @@ export default function Home() {
 					: undefined);
 
 			// ── Reaction events: apply the exact delta instantly. ──
+			// The reactions table itself never delivers (no anon read — voter
+			// identity stays private — so there is no channel for it). Its
+			// liveness arrives one level up: every toggle touches the parent
+			// posts row, which lands below as a posts UPDATE → badge. This
+			// branch stays for the exact-delta path: own optimistic toggles
+			// apply instantly, and any future allowed source reuses it.
 			// The feed only surfaces post reactions; ignore other target types.
 			if (table === "reactions" && (evt === "INSERT" || evt === "UPDATE" || evt === "DELETE")) {
 				const next = rowLike(payload.new);
@@ -1021,6 +1028,11 @@ export default function Home() {
 							? "Refresh failed — showing the last available posts."
 							: error}
 					</p>
+					{!hasLastKnownPosts && isNativeShell() && (
+						<p className="text-xs text-ink3 mt-1">
+							App is trying: {apiBase() || "(no API address set — rebuild with VITE_API_BASE)"}
+						</p>
+					)}
 					<button
 						className={`btn btn-soft ${hasLastKnownPosts ? "mt-2" : "mt-3"}`}
 						onClick={() => {

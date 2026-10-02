@@ -51,6 +51,25 @@ export function isNotFound(err: unknown): boolean {
 	return err instanceof ApiError && err.status === 404;
 }
 
+/** Server codes meaning "this browser holds no usable session for its id"
+ *  (expired, cleared cookies, or never established). Retrying the same
+ *  request is futile — only a fresh anonymous id helps. */
+const SESSION_DEAD_CODES = new Set(["session_unrecoverable", "invalid_identity"]);
+
+/** True when the server explicitly reports the session behind err is dead. */
+export function isSessionDeadError(err: unknown): boolean {
+	return (
+		err instanceof ApiError &&
+		err.code !== undefined &&
+		SESSION_DEAD_CODES.has(err.code)
+	);
+}
+
+/** Actionable recovery text shown instead of the raw server error when the
+ *  session is dead. Names the exact control that fixes it. */
+export const SESSION_DEAD_MESSAGE =
+	"Your anonymous session isn't recognized on this device anymore (it may have expired or been cleared). Your published posts stay up — to keep participating, reset your anonymous ID in Settings → Account → Start fresh.";
+
 export function hasAdminSession(): boolean {
 	return !!adminToken();
 }
@@ -256,11 +275,15 @@ async function request<T = unknown>(
 			// Native shells (Electron file://, Capacitor) have no same-origin
 			// /api — prefix the baked-in production origin there. Web stays
 			// same-origin (apiBase() is "").
+			// credentials:include — cross-origin shells (file:// → https) must
+			// send the vb_session cookie or every authed endpoint 403s as
+			// session_unrecoverable. Same-origin web is unaffected.
 			const res = await fetch(apiBase() + path, {
 				method,
 				headers,
 				body: body != null ? JSON.stringify(body) : null,
 				signal: ctrl.signal,
+				credentials: "include",
 				cache: opts.noCache ? "no-store" : "default",
 			});
 
@@ -293,10 +316,17 @@ async function request<T = unknown>(
 					typeof (data as { code?: unknown } | undefined)?.code === "string"
 						? (data as { code: string }).code
 						: undefined;
+				// A dead session never recovers by retrying: translate the
+				// machine code into the recovery action instead of echoing a
+				// message ("Invalid session identity") the user cannot act on.
+				const sessionDead =
+					serverCode !== undefined && SESSION_DEAD_CODES.has(serverCode);
 				throw new ApiError(
 					res.status === 429 && retryAfter > 0
 						? `Slow down a little — try again in ${retryAfter}s.`
-						: serverMsg,
+						: sessionDead
+							? SESSION_DEAD_MESSAGE
+							: serverMsg,
 					res.status,
 					retryAfter,
 					serverCode,
@@ -485,7 +515,18 @@ export const api = {
 			query?: Record<string, string | null | undefined>;
 		} = {},
 	): Promise<{ data: T[]; nextCursor: string | null; total: number }> => {
-		const url = new URL(path, window.location.origin);
+		// file:// shells (Electron/Capacitor) report origin "null", which makes
+		// `new URL` throw. Only pathname+search is used below (apiBase() is
+		// prefixed in request()), so a dummy http base is safe anywhere.
+		const urlBase = (() => {
+			try {
+				const o = window.location.origin;
+				return o && o !== "null" ? o : "http://localhost";
+			} catch {
+				return "http://localhost";
+			}
+		})();
+		const url = new URL(path, urlBase);
 		url.searchParams.set("paginate", "1");
 		if (params.cursor) url.searchParams.set("cursor", params.cursor);
 		if (params.limit) url.searchParams.set("limit", String(params.limit));

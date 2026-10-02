@@ -263,7 +263,7 @@ export default async function handler(req, res) {
 				if (!headerId || headerId !== tid)
 					return res.status(403).json({ error: "You can only delete your own conversation" });
 				const gate = await verifyCallerIdentity(req, res, tid);
-				if (!gate.ok) return res.status(gate.status || 403).json({ error: gate.error });
+				if (!gate.ok) return res.status(gate.status || 403).json({ error: gate.error, code: gate.code });
 			}
 			const [{ error: e1 }, { error: e2 }] = await Promise.all([
 				supabase.from("chat_messages").delete().eq("thread_id", tid),

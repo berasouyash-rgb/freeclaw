@@ -2,7 +2,7 @@
 // Session identity 403s carry machine-readable codes.
 // ═══════════════════════════════════════════════════════════════════
 // A 403 from verifyCallerIdentity is (almost) never fixed by retrying:
-// expired/missing records self-heal by minting inside the SAME request,
+// sessions do NOT self-heal by minting on claim (that would hand the identity
 // so a 403 means retry will fail identically — typically a live server
 // record with no browser cookie (cookies cleared) or a stale cookie from
 // a rotated mint. Clients must tell "reload and retry" apart from "this
@@ -16,8 +16,14 @@
 //     (boot-race grace: parallel first-load requests fire before the
 //     minter's Set-Cookie lands; no new cookie is issued so the in-flight
 //     mint stays authoritative)
-//   - expired record + no cookie → ok:true with a fresh Set-Cookie (mint
-//     heals; proves the unrecoverable branches are the only dead ends)
+//   - expired record + no cookie → 403 "session_unrecoverable", record
+//     untouched. Expired sessions stay dead; the owner starts fresh
+//     client-side while old content stays published.
+//   - NO record row + no cookie → ok:true with a fresh Set-Cookie
+//     (first-visit onboarding; safe — session rows are never deleted, so
+//     "no record" means first contact, and ids are unpredictable).
+//   - wrong cookie → 403, EXCEPT a previously-minted token (th_prev, the
+//     losing side of a concurrent double-mint) which rotates once to fresh.
 //   - valid cookie → ok:true
 // ═══════════════════════════════════════════════════════════════════
 
@@ -180,22 +186,89 @@ describe("verifyCallerIdentity — 403 codes", () => {
     expect(out.code).toBe("invalid_identity");
   });
 
-  it("mints on an expired record with no cookie (self-healing, proves the dead ends)", async () => {
-    state.settings[`session:${ID}`] = {
+  it("refuses an expired record with no cookie and never overwrites it", async () => {
+    // THE FIX for transparent takeover: an expired session used to be
+    // silently re-minted to whoever claimed the id — handing the identity
+    // over AND locking the real owner out (their valid cookie would then
+    // mismatch the attacker's hash). Now the record is left byte-identical
+    // and no cookie is issued.
+    const before = {
       th: sha("old-token"),
       exp: Date.now() - 1000,
       created_at: new Date(Date.now() - 40 * 86400 * 1000).toISOString(),
     };
+    state.settings[`session:${ID}`] = { ...before };
     const out = await verify(req());
-    expect(out.ok).toBe(true);
-    expect(state.setCookies.some((c) => c.startsWith("vb_session="))).toBe(
-      true,
-    );
+    expect(out.ok).not.toBe(true);
+    expect(out.status).toBe(403);
+    expect(out.code).toBe("session_unrecoverable");
+    expect(state.settings[`session:${ID}`]).toEqual(before);
+    expect(state.setCookies).toHaveLength(0);
   });
 
   it("accepts a valid cookie", async () => {
     seedLive(sha("good-token"), new Date().toISOString());
     const out = await verify(req(COOKIE));
     expect(out.ok).toBe(true);
+  });
+});
+
+describe("verifyCallerIdentity — takeover resistance (P0)", () => {
+  it("denies a claim on a live record without touching it", async () => {
+    // Attacker sends x-anon-id: <victim> with no cookie. Must 403 AND leave
+    // the victim's record (and therefore their working cookie) intact.
+    const before = {
+      th: sha("victim-token"),
+      exp: Date.now() + 29 * 86400 * 1000,
+      created_at: new Date(Date.now() - 3600 * 1000).toISOString(),
+    };
+    state.settings[`session:${ID}`] = { ...before };
+    const out = await verify(req());
+    expect(out.ok).not.toBe(true);
+    expect(out.code).toBe("session_unrecoverable");
+    expect(state.settings[`session:${ID}`]).toEqual(before);
+    expect(state.setCookies).toHaveLength(0);
+    // And the victim's own cookie still works afterwards (no lockout).
+    const victim = await verify(req("vb_session=victim-token"));
+    expect(victim.ok).toBe(true);
+  });
+
+  it("denies a random wrong cookie without rotating the stored hash", async () => {
+    seedLive(sha("good-token"), new Date(Date.now() - 3600 * 1000).toISOString());
+    const before = { ...state.settings[`session:${ID}`] } as Record<string, unknown>;
+    const out = await verify(req("vb_session=attacker-guess"));
+    expect(out.ok).not.toBe(true);
+    expect(out.code).toBe("session_unrecoverable");
+    // No rotation, no cookie: the attack changed nothing server-side.
+    expect(state.settings[`session:${ID}`]).toEqual(before);
+    expect(state.setCookies).toHaveLength(0);
+  });
+
+  it("recovers the losing side of a concurrent double-mint via th_prev", async () => {
+    // Two parallel first-loads both mint; the second preserves the first
+    // hash as th_prev. The loser presents the old token and is re-issued
+    // fresh — once. A random cookie still fails (covered above).
+    state.settings[`session:${ID}`] = {
+      th: sha("second-token"),
+      th_prev: sha("first-token"),
+      exp: Date.now() + 29 * 86400 * 1000,
+      created_at: new Date().toISOString(),
+    };
+    const out = await verify(req("vb_session=first-token"));
+    expect(out.ok).toBe(true);
+    // Fresh cookie issued, hash rotated forward, history preserved.
+    expect(state.setCookies.some((c) => c.startsWith("vb_session="))).toBe(true);
+    const after = state.settings[`session:${ID}`] as Record<string, unknown>;
+    expect(after.th).not.toBe(sha("second-token"));
+    expect(after.th_prev).toBe(sha("second-token"));
+  });
+
+  it("mints a brand-new id with no record (onboarding still works)", async () => {
+    expect(state.settings[`session:${ID}`]).toBeUndefined();
+    const out = await verify(req());
+    expect(out.ok).toBe(true);
+    expect(state.setCookies.some((c) => c.startsWith("vb_session="))).toBe(true);
+    const row = state.settings[`session:${ID}`] as Record<string, unknown>;
+    expect(typeof row.th).toBe("string");
   });
 });

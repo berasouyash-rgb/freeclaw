@@ -172,13 +172,18 @@ describe("Comments — realtime must not read through the cache", () => {
 		render(<Comments postId="p-1" />);
 		await screen.findByText("existing comment");
 
-		fireEvent.change(screen.getByPlaceholderText(/comment/i), {
+		const box = screen.getByPlaceholderText(/comment/i);
+		fireEvent.change(box, {
 			target: { value: "hello from mobile" },
 		});
 		fireEvent.click(screen.getByRole("button", { name: /post|send/i }));
 
 		// Visible immediately, while the request is still in flight.
 		await screen.findByText("hello from mobile");
+		// ...marked as sending, and the draft is OUT of the box so the same
+		// words never sit in both places at once.
+		expect(screen.getByRole("status", { name: /sending/i })).toBeInTheDocument();
+		expect(box).toHaveValue("");
 
 		release({ ok: true });
 	});
@@ -234,6 +239,11 @@ describe("Comments — a queued write is not a failure", () => {
 		);
 		await waitFor(() =>
 			expect(screen.queryByText("rejected comment")).not.toBeInTheDocument(),
+		);
+		// The box was cleared at send time — the words come back so the user
+		// can fix and retry instead of retyping from memory.
+		expect(screen.getByPlaceholderText(/comment/i)).toHaveValue(
+			"rejected comment",
 		);
 	});
 

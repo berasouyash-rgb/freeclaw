@@ -1536,16 +1536,22 @@ html[data-scale="110"] { font-size: 110%; }
 }
 
 /* ═══════════════════════════════════════════════════════════════
-   TOUCH DEVICE FIX — prevent :hover getting stuck with colored fills
-   On mobile/touch, once you tap an element it stays in :hover state
-   forever, leaving colored backgrounds that make text unreadable.
+   TOUCH DEVICE FIX — prevent :hover getting stuck on tap
+   On mobile/touch, a tapped element stays in :hover state, so hover-only
+   decoration (lifts, rings) would stick around after the finger leaves.
+   NOTE: this must NEVER unset color/background-color/border-color: doing
+   that stripped tapped buttons and posts of their own fill and text color
+   (white-on-purple became dark-on-transparent) — i.e. "every text turns
+   black when I tap". Stuck tints are harmless; unreadable text is not.
    ═══════════════════════════════════════════════════════════════ */
 @media (hover: none) and (pointer: coarse) {
-  /* Kill ALL hover states globally — covers every Tailwind hover: class */
+  /* No dark flash overlay while the finger is down. */
+  * {
+    -webkit-tap-highlight-color: transparent;
+  }
+  /* Kill stuck hover MOTION and rings globally — covers every Tailwind
+     hover: class. Colors and fills are deliberately left alone. */
   *:hover {
-    background-color: unset !important;
-    border-color: unset !important;
-    color: unset !important;
     transform: none !important;
     box-shadow: unset !important;
   }

@@ -8,6 +8,7 @@
  */
 
 import { getAnonId } from "./identity";
+import { apiBase } from "./platform";
 
 interface FrontendError {
   message: string;
@@ -80,10 +81,13 @@ function flush() {
   const batch = buffer.splice(0, buffer.length);
   try {
     const anonId = getAnonId();
-    fetch("/api/errors", {
+    // apiBase(): native shells (file://) have no same-origin /api — without
+    // the baked origin this fetch always throws Failed to fetch on desktop.
+    fetch(apiBase() + "/api/errors", {
       method: "POST",
       headers: { "Content-Type": "application/json", "x-anon-id": anonId },
       body: JSON.stringify({ errors: batch }),
+      credentials: "include",
       keepalive: true,
     }).catch(() => {
       /* error reporting is best-effort */

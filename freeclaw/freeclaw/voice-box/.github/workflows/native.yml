@@ -1,7 +1,7 @@
 # Native shells — Electron (Windows) installer + Android APK, built in CI.
 # Local builds need disk + Android Studio; this machine has neither, so CI
 # is the supported path. Trigger manually or by publishing a release.
-# Repo variable VITE_API_BASE (e.g. https://voice-box.vercel.app) is baked
+# Repo variable VITE_API_BASE (e.g. https://voice-box-psi.vercel.app) is baked
 # into both shells as the API origin — set it before dispatching.
 
 name: Native

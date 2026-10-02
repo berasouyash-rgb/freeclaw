@@ -2,6 +2,10 @@
   "name": "voice-box",
   "private": true,
   "version": "2.0.0",
+  "description": "Voice Box — anonymous school feedback platform for students and administrators.",
+  "author": "Voice Box",
+  "license": "UNLICENSED",
+  "homepage": "https://voice-box-psi.vercel.app",
   "type": "module",
   "engines": {
     "node": ">=22.22.0"
@@ -30,6 +34,7 @@
     "example:ai-gateway": "tsx examples/ai-gateway/index.ts"
   },
   "dependencies": {
+    "@capacitor/preferences": "^7.0.4",
     "@emailjs/browser": "^4.4.1",
     "@sentry/node": "~10.69.0",
     "@sentry/react": "^10.69.0",

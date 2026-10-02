@@ -31,7 +31,14 @@ const MAX_CREATE = 5;
 
 async function existingPollPostIds() {
 	try {
-		const { data } = await supabase.from("polls").select("post_id").limit(500);
+		// Only LIVE polls count. A soft-deleted poll must not permanently
+		// stop its post from ever getting one again — otherwise deleting a
+		// poll silently disabled the worker for that post forever.
+		const { data } = await supabase
+			.from("polls")
+			.select("post_id")
+			.eq("deleted", false)
+			.limit(500);
 		return new Set((data || []).map((p) => p?.post_id).filter(Boolean));
 	} catch {
 		return new Set();

@@ -1434,3 +1434,531 @@ updated to the real signature and the real, non-leaking contract
 
 **GREEN:** api suite **1829 passed / 165 files, 0 failures**; the
 `res.status is not a function` unhandled rejection is gone.
+
+
+### BUG-034 — The desktop installer shipped an app with no entry point
+**CATEGORY:** PACKAGING / NATIVE · **SEVERITY:** CRITICAL (the .exe could never be built, let alone run)
+**WHERE:** `electron-builder.yml` (`files:`)
+
+**ROOT CAUSE:** `extraMetadata.main` points at `electron/main.cjs`, but the
+`files:` allow-list listed only `dist/**`, `electron/preload.cjs`,
+`electron/icon.png` and `package.json`. electron-builder therefore packed an
+`app.asar` with **no main script at all** and the build died at the sanity
+check. `electron/main.cjs` was never included, so the Windows installer was
+unbuildable — the same failure would have hit the `Native` workflow in CI, which
+means "we have a desktop app" had never actually been verified end to end.
+
+**FIX:** add `electron/main.cjs` to `files:` (every runtime file the shell needs
+must be enumerated — the allow-list is not merged with `extraMetadata`).
+
+**RED (captured):** `npx electron-builder --config electron-builder.yml --win`
+→
+`⨯ Application entry file "electron\main.cjs" in the "…\app.asar" does not exist. Seems like a wrong configuration.`
+**GREEN:** build exits 0 and produces
+`electron/dist/Voice-Box-Desktop-2.0.0-win-x64.exe` (105,315,099 bytes).
+Verified inside the archive: `\electron\main.cjs`, `\electron\preload.cjs`,
+`\electron\icon.png`, `\dist\index.html`.
+
+
+### BUG-035 — The native shells kept user data in the WebView's browser storage, not device storage
+**CATEGORY:** ARCHITECTURE / DATA DURABILITY · **SEVERITY:** HIGH (silent identity loss + orphaned history)
+**WHERE:** `src/lib/identity.ts`, `src/main.tsx`, `electron/preload.cjs`, `electron/main.cjs`
+
+**ROOT CAUSE:** every local value — the anonymous identity, drafts, bookmarks,
+admin layout, notification prefs, the offline queue — was persisted through
+`window.localStorage` on **all three** shells. Inside the Electron and Capacitor
+wrappers that is the WebView's *browser* storage, not the device's own store:
+it is partitioned and evictable, and on desktop it lives in a Chromium profile
+that any "clear browsing data" action wipes. When it is cleared, `getAnonId()`
+sees nothing, mints a **brand-new** anonymous ID, and the student's entire
+history is orphaned with no error shown. Worse, `src/lib/platform.ts`'s own doc
+comments already asserted device-backed persistence ("activity is recorded on
+the phone / on the local computer") — a claim the code did not implement.
+
+**FIX:** a real device-store layer, `src/lib/storage.ts`, with three backends:
+web keeps `localStorage` (byte-for-byte the previous behaviour); mobile uses
+`@capacitor/preferences` (native SharedPreferences); desktop uses a JSON file in
+Electron `userData` over a new validated `window.vbStore` IPC bridge. Because
+every caller needs a *synchronous* read (identity is read during first render),
+the store hydrates once at boot into an in-memory mirror and serves reads from
+it, while writes land in the mirror instantly and persist debounced. Boot awaits
+hydration — deliberately, so an empty mirror can never mint a second identity —
+but the wait is internally time-capped, and any missing/throwing/non-answering
+backend degrades to `localStorage`. An empty device store is seeded from existing
+`vb:*` localStorage data so upgrading from the web build preserves the identity.
+The IPC boundary validates keys against `^vb:[A-Za-z0-9._:-]{0,190}$` and caps
+values at 1M chars, so a compromised renderer cannot traverse paths or smuggle a
+file write through the bridge.
+
+**RED (captured):** an identity seeded only into the device store was not
+visible at all — `getAnonId()` fell back to `localStorage` and minted a new id.
+**GREEN:** `src/__tests__/device-storage.test.ts` **20/20**; no regression in
+`identity.test.ts` (37), `identity-blocked.test.ts` (10), `storage-contract.test.ts`
+(4), `offline.test.ts` (22), `platform.test.ts` (12) — **85/85**.
+**MOBILE WIRING VERIFIED:** `npx cap add android && npx cap sync android` →
+`Found 1 Capacitor plugin for android: @capacitor/preferences@7.0.4`.
+
+
+### BUG-036 — A failed device-store hydration silently swallowed every later write
+**CATEGORY:** DATA LOSS · **SEVERITY:** HIGH (found by this change's own new tests)
+**WHERE:** `src/lib/storage.ts` — `storeSet` / `storeRemove` / `storeKeys` / `storeClear`
+
+**ROOT CAUSE:** the write paths branched on `storageBackend() === "device"`.
+That is right while hydration is still *in flight* (the newer write must win and
+must not be clobbered by the incoming snapshot), but it is wrong once hydration
+has definitively **failed**: the mirror is then never persisted, so every
+subsequent write went into an in-memory `Map` that was discarded on exit. A
+student whose native bridge hiccuped once would type a draft, see it saved, and
+lose it — with no error anywhere.
+
+**FIX:** a dedicated `deviceWritable()` predicate — the device
+backend **and** hydration not permanently failed. While hydrating, writes still
+go to the mirror (and are flushed on completion, covered by its own test); after
+a failure the session falls back to `localStorage`, which is what the web build
+uses anyway. Reads already fell back correctly via the `hydrated` gate; this
+aligns writes with them.
+
+**RED (captured):** `device-storage.test.ts` →
+`falls back to localStorage when the device store throws`:
+`AssertionError: expected null to be 'still-works'` — the write had gone into the
+dead mirror.
+**GREEN:** same test passes; file **20/20**.
+
+
+### BUG-037 — The installer used generic Electron branding instead of the app icon
+**CATEGORY:** POLISH / BRANDING · **SEVERITY:** LOW
+**WHERE:** `electron-builder.yml` (`win:`)
+
+**ROOT CAUSE:** no `win.icon` was set. electron-builder logged
+`default Electron icon is used  reason=application icon is not set`, so the
+shortcut, taskbar button and Add/Remove Programs entry all showed the stock
+Electron logo rather than Voice Box's.
+
+**FIX:** `win.icon: electron/icon.png` (the same asset `scripts/make-icons.mjs`
+already generates and CI already runs).
+**GREEN:** icon is pinned in config; the .exe rebuilds from the same asset set.
+
+
+### BUG-038 — Installer metadata was blank
+**CATEGORY:** POLISH / LEGAL · **SEVERITY:** LOW
+**WHERE:** `package.json`
+
+**ROOT CAUSE:** electron-builder warned twice — `description is missed in the
+package.json` and `author is missed in the package.json`. The packaged app thus
+carried no product description, no publisher, and no license declaration, which
+is exactly the metadata Windows surfaces in Add/Remove Programs and what an
+institution looks at when deciding whether the software is safe to install.
+
+**FIX:** added `description`, `author`, `homepage`, and `license: "UNLICENSED"`
+(proprietary — the honest declaration, and the opposite of accidentally
+labelling it MIT).
+**GREEN:** both electron-builder warnings are gone from the build output.
+
+
+### BUG-039 — A concurrent editor silently merged two lines of `_moderate.js`
+**CATEGORY:** CORRUPTION / PROCESS · **SEVERITY:** HIGH
+**WHERE:** `api/_moderate.js`
+
+**ROOT CAUSE:** this repository is edited by more than one session at the
+same time. A `str_replace` that matched text which had already been changed
+underneath us reported **success**, but the concurrent write had moved the
+match boundary, so the replacement landed one line early and joined what
+should have been two statements onto one line. The file stayed syntactically
+valid — no error, no red test, no crash — while no longer returning the
+`relevance` field on any of its three return paths. The feature would have
+shipped silently dead while every visible check stayed green.
+
+**FIX:** rewrote the file cleanly rather than patching around the merge, then
+proved each of the three branches returns `relevance` (short-text, normal,
+and `relevance: null` on failure) with dedicated tests instead of by reading
+the code.
+
+**WHY THIS IS IN THE LEDGER:** this is not a defect in the product, it is a
+defect in the way defects get into the product. A green suite did not protect
+this change — only reading the file back after writing it did.
+
+**LESSON:** after any multi-session edit to a file this small, re-read the
+edited region and assert on the three return paths. "The tool said the replace
+worked" is not evidence.
+
+
+### BUG-040 — The relevance check could reach the submit page as a stale verdict
+**CATEGORY:** UI / CORRECTNESS · **SEVERITY:** MEDIUM
+**WHERE:** `src/pages/Submit.tsx`, `src/components/RelevanceNote.tsx`
+
+**ROOT CAUSE:** the live check runs on a 250ms debounce and the result is
+matched to the text it reviewed (`modVerdict.text === liveText`). The new
+advisory panel was initially wired to the verdict without that guard in the
+component itself, so a verdict for the *previous* sentence could stay on
+screen while the author typed the next one — displaying a judgement about
+words that no longer exist, the same class of bug already logged once for the
+moderation risk panel.
+
+**FIX:** the panel renders nothing while `checking` is true and nothing when
+`relevance` is null, and the existing text-match guard upstream means a
+mismatch never reaches it. A thin or absent verdict (a partial network
+response, the client-side fallback path, a future policy change) renders
+nothing rather than an empty or wrong box.
+
+**RED (captured):** `RelevanceNote.test.tsx` →
+`renders nothing while a check is in flight instead of showing a stale claim` —
+the panel was present with the old verdict.
+**GREEN:** **11/11**, including "renders nothing when there is no verdict yet"
+and "handles a verdict with no reasons and no limits without crashing".
+
+
+### BUG-041 — An unescaped search query was interpolated into a PostgREST filter
+**CATEGORY:** SECURITY · **SEVERITY:** MEDIUM (latent — not currently reachable)
+**WHERE:** `api/_agent-verification.js`, `searchKnowledgeBase()`
+
+**ROOT CAUSE:** the knowledge-base search built its `.or()` filter by
+interpolating the raw query:
+
+```js
+.or(`title.ilike.%${query}%,content.ilike.%${query}%`)
+```
+
+`.or()` takes a **raw filter string**, so anything the user types is parsed
+as filter *syntax*, not as a search term. A `,` terminates the current
+condition and starts a new one, so a caller could append filter conditions
+of their own choosing to the query. Unescaped `%` and `_` were also live LIKE
+wildcards, silently rewriting what the search matched.
+
+Every other `.or()` interpolation in `api/` (`_search.js`, `_agent-chat.js`,
+`_rag.js`, `_meta-agent.js`) already escaped. This one was the single
+exception, and it survived because the module is not currently imported
+anywhere — the defect was invisible to both review and testing.
+
+**FIX:** added the same escape discipline the other call sites use, extended
+to also escape `,`, `(` and `)` so the injection cannot reassemble after
+escaping.
+
+**RED (captured, fix reverted to prove the test bites):** 5 of 6 failed —
+`expected 'title.ilike.%canteen,deleted.eq.fals…' not to match …`, plus
+failures for `)`, `(`, `%` and `_`.
+**GREEN:** **6/6** in `tests/api/agent-verification-escaping.test.ts`.
+
+**WHY IT IS RANKED MEDIUM AND NOT CRITICAL:** `verifyAnswer` and
+`searchKnowledgeBase` have no importers in `api/`, so no request reaches
+this code today. It is fixed and pinned now precisely so that wiring this
+module up later cannot silently reintroduce the hole.
+
+
+### BUG-042 — `sanitizeInput()` was documented security control that nothing called
+**CATEGORY:** SECURITY HYGIENE · **SEVERITY:** LOW
+**WHERE:** `api/_security.js`
+
+**ROOT CAUSE:** `sanitizeInput()` deep-cleans strings (control characters,
+null bytes, whitespace runs), truncates to a length cap, and explicitly skips
+`__proto__` / `constructor` / `prototype` keys to prevent prototype
+pollution. It is 30 lines of defensive code with a docstring, and **not one
+endpoint calls it** — the only references in the repository are its own two
+recursive calls. A future maintainer reading `_security.js` would reasonably
+conclude every request body is sanitized before use.
+
+**WHY THIS IS LOW AND NOT A HOLE:** the protection it advertises turns out
+to be unreachable. `JSON.parse` produces an *own* `__proto__` property rather
+than mutating `Object.prototype`, so a hostile body cannot pollute anything
+on its own; pollution additionally requires a merge or dynamic-key assignment
+into an existing object, and an audit of `api/` found no `Object.assign`,
+lodash `merge`, or `[key]:` dynamic-key write applied to a request body.
+
+**FIX / ACTION:** logged rather than wired. Threading `sanitizeInput` through
+every endpoint is a large, risky change whose only effect would be to
+re-assert protection against a vector that does not currently exist; the real
+defence is the uniform `clean(value, max)` discipline already applied on every
+write path (`_posts.js`, `_comments.js`, `_polls.js`, `_communities.js` all
+call it with a hard length cap). The honest follow-up is either to delete
+`sanitizeInput` or to call it in one documented place, so the code stops
+claiming a protection it does not provide.
+
+
+### BUG-043 — The Terms of Use and Accessibility pages existed but could not be reached
+**CATEGORY:** LEGAL / UX · **SEVERITY:** HIGH
+**WHERE:** `src/components/Layout.tsx` (`NAV_MORE`)
+
+**ROOT CAUSE:** `/terms`, `/privacy` and `/accessibility` were all fully
+written — 99, 109 and 207 lines respectively — and all three were registered
+in `App.tsx`'s route table. A repository-wide search for links found
+**zero** references to `/terms` and **zero** to `/accessibility` outside the
+route table itself. Only Privacy was linked (sidebar + Settings + MyActivity).
+
+A Terms of Use that no user can navigate to does not satisfy the purpose it
+was written for, and its unreachability is precisely the kind of gap that
+turns a "we have a privacy policy" claim into a liability. This is the one
+finding in this session that directly defeats a stated requirement.
+
+**FIX:** added both to `NAV_MORE`, which is rendered by the desktop sidebar's
+"More" list *and* by the mobile bottom-bar More sheet, so they become
+reachable from every screen on all three platforms with one edit. Icons
+(`Scale`, `Accessibility`) verified to exist in the installed lucide-react.
+
+**RED (captured, fix reverted to prove the test bites):** **4 of 5 failed** —
+`lists every legal page in the nav model`, both link tests for Terms and
+Accessibility, and the labels test. The Privacy link test correctly stayed
+green, confirming the test discriminates on the actual defect rather than
+failing indiscriminately.
+**GREEN:** **5/5** in `src/__tests__/legal-reachability.test.tsx`.
+
+**WHY A ROUTE-TABLE TEST WOULD NOT HAVE CAUGHT THIS:** `App.tsx` listed all
+three routes the whole time, so any test asserting "the route exists" passes
+while the feature is broken. The test asserts on a rendered anchor with the
+correct `href`.
+
+
+### BUG-044 — The Windows app failed EVERY request ("Failed to fetch")
+**CATEGORY:** SHIPPING / CONFIG · **SEVERITY:** CRITICAL
+**WHERE:** `src/lib/platform.ts` (`DEFAULT_NATIVE_API_BASE`)
+
+**SYMPTOM:** the desktop `.exe` opened but could not talk to the backend at
+all — every request failed. The browser build worked fine, which is exactly
+what made this so hard to see.
+
+**ROOT CAUSE:** there are two deployments:
+
+| Deployment                  | `/`     | `/api/*`                       |
+| --------------------------- | ------- | ----------------------------- |
+| `voice-box.vercel.app`      | 200     | **404 on every route**        |
+| `voice-box-psi.vercel.app`  | 200     | **200, real JSON**             |
+
+`apiBase()` falls back to `DEFAULT_NATIVE_API_BASE` whenever an EXE is built
+without `VITE_API_BASE` baked in. That constant pointed at
+**`voice-box.vercel.app`** — the deployment with the frontend but no API
+functions. `VITE_API_BASE` is set only in `.env.template` (commented out) and
+is absent from `.env`/`.env.local`, so the built bundle contained no API
+origin at all and every native-shell request went to a host that 404s.
+
+Verified against the live deployments rather than assumed:
+- `voice-box.vercel.app/api/posts`, `/api/categories`, `/api/moderate`,
+  `/api/comments`, `/api/config` → **all 404**
+- `voice-box-psi.vercel.app/api/posts`, `/api/categories` → **200** with real data
+
+**FIX:** `DEFAULT_NATIVE_API_BASE` now names the deployment that actually
+serves the API. The runtime override (`window.__VB_API_BASE` or
+`localStorage["vb:apiBase"]`) still wins, so a future mis-pin can be repaired
+on a user's machine without shipping a new installer.
+
+**RED (captured):** `platform.test.ts` →
+`AssertionError: expected 'https://voice-box.vercel.app' to be
+'https://voice-box-psi.vercel.app'` — both the desktop and mobile cases.
+**GREEN:** **16/16**.
+
+**WHY NOTHING CAUGHT THIS EARLIER:** the existing `platform.test.ts` covered
+`apiBase()` for the *baked* env var, the *rejected* env var, and same-origin
+— but nothing ever asserted the value of the native fallback constant. A
+constant that had never been tested shipped pointing at a host with no API,
+and 1689 frontend tests stayed green.
+
+**KNOWN GAP, NOT A DEFECT:** `voice-box-psi.vercel.app` runs older code — it
+also 404s on `/api/moderate`, which this session's relevance work added. The
+live relevance panel therefore renders nothing there rather than erroring
+(`RelevanceNote` returns null on a null verdict — pinned by test). Deploying
+the current `api/` to that host closes the gap.
+
+
+### BUG-045 — One complaint could end up with two linked polls
+**CATEGORY:** DATA INTEGRITY · **SEVERITY:** HIGH
+**WHERE:** `api/_polls.js` (POST create), `src/pages/Submit.tsx`
+**REPORTED AS:** "there are two different poles [polls] for the same 1 post,
+that is linked"
+
+**ROOT CAUSE — two independent defects that compound:**
+
+**1. Server — no uniqueness on `post_id`.** The create path verified that the
+linked post *exists* and that the caller *owns* it, but never asked whether
+that post already had a poll. `post_id` carries no uniqueness constraint, so
+a second insert succeeded and both polls rendered on the post page.
+
+**2. Client — a poll was attached to a post it had not created.** When
+`/api/posts` deduped a repeat submission to an existing complaint
+(`post.deduped`), the submit page *still* POSTed `/api/polls` against that
+existing `post.id`. Re-submitting the same complaint with "attach a poll"
+ticked therefore added a second poll to the original post. The identical thing
+happened on any retry after a lost response — the author never learns whether
+their first poll landed, so they retry, and the retry duplicates.
+
+**FIX — both layers, because either alone leaves the hole open:**
+- **Server:** before insert, look for a live poll on that `post_id`. If one
+  exists and normalizes to the *same* question, return **200 with that poll**
+  (idempotent — a lost response is indistinguishable from a failed write, so
+  retrying must not duplicate or alarm). If it is a *different* question,
+  return **409 `POST_ALREADY_HAS_POLL`** instead of silently creating a twin.
+  Soft-deleted polls are ignored, so a deleted poll does not permanently block
+  its post from ever having one again.
+- **Client:** skip poll creation entirely when `post.deduped`, and say so.
+
+**RED (captured, both fixes reverted to prove the tests bite):**
+- `poll-linked-duplicate.test.ts` → 2 failed / 4 passed, with
+  `expected [ {...}, {...} ] to have a length of 1 but got 2` — literally two
+  poll rows for one post. The 4 controls (first poll, standalone polls, a
+  second poll on a *different* post, soft-deleted poll) passed throughout, so
+  the test isolates the defect instead of failing indiscriminately.
+- `Submit.test.tsx` → `× never attaches a second poll to a post it did not
+  create` (1 failed / 27 passed).
+**GREEN:** `poll-linked-duplicate.test.ts` **6/6**; `Submit.test.tsx` **28/28**.
+
+**NOTE ON EXISTING DATA:** this stops new duplicates but does not remove rows
+already written to the database. The duplicates the user has seen need a one-off
+cleanup (delete all but the earliest poll per `post_id`) before the UI is clean.
+
+
+### BUG-046 — Two further routes to a duplicate poll, plus a brittle vote test
+**CATEGORY:** DATA INTEGRITY / TEST · **SEVERITY:** MEDIUM
+**WHERE:** `api/_poll-create.js`, `src/pages/admin/PostsTable.tsx`, `tests/api/polls-full.test.ts`
+
+Found while fixing BUG-045 — the first fix was not sufficient on its own.
+
+**1. The Poll Creation worker bypassed the guard entirely.** The one-poll
+rule was placed in the HTTP handler, but `api/_poll-create.js` calls
+`createPoll()` **directly**, so the worker could still attach a second poll to
+a post that already had one. Moved the invariant **inside `createPoll()`**,
+where every caller — the route, the worker, and any agent acting later —
+inherits it. This is the same reasoning the file already used for ownership:
+"the server is the enforcement point".
+
+**2. The worker counted deleted polls.** `existingPollPostIds()` selected
+every poll with no `deleted` filter, so once a poll on a post was
+soft-deleted, that post could **never** get another poll from the worker
+again. Now filters `.eq("deleted", false)`, consistent with the new guard.
+
+**3. The admin "convert to poll" row button had no double-click guard.**
+Two rapid clicks fired two requests; the second came back as a confusing
+"already has a poll" error rather than being ignored. Added an in-flight
+`Set` guard keyed by post id.
+
+**4. A pre-existing test broke for an unrelated reason — repaired, not
+suppressed.** `updates an existing vote instead of inserting a duplicate`
+asserted `state.lastUpdate === { choices: [0] }`. The mock keeps ONE
+`lastUpdate` slot, and the handler (correctly) performs a *second* update —
+`.update({ updated_at })` on the parent poll row, to nudge realtime. That
+legitimate liveness write clobbered the shared slot, so the test failed
+while the production behaviour was right. The mock now records
+`updateCalls: [{ table, patch }]` and the test asserts on the
+**`poll_votes`** update specifically, plus that exactly one such write
+happened. The assertion got *stronger* — it now also proves no duplicate
+ballot insert, which the old version only implied.
+
+**NOTE:** the `{ updated_at }` liveness write was NOT part of BUG-045; it
+arrived from a concurrent edit to `_polls.js` in the same working tree. It is
+correct behaviour and was kept.
+
+**GREEN:** API **1935/1935**, frontend **1696/1696**, `tsc -b` clean,
+eslint clean.
+
+### BUG-047 — The Android APK could not be built: no JDK, no SDK, and C: was full
+**CATEGORY:** BUILD / TOOLCHAIN · **SEVERITY:** BLOCKER
+**WHERE:** machine environment (not application code)
+**REPORTED AS:** "make android or apk version"
+
+Three separate blockers, each found and cleared in turn:
+
+1. **No Java at all.** `java` was not on PATH, `JAVA_HOME` empty, and no
+   JDK existed under `Program Files/Java`, `Eclipse Adoptium`, or
+   `Microsoft/jdk`. `./gradlew` failed with
+   `ERROR: JAVA_HOME is not set and no 'java' command could be found`.
+2. **No Android SDK.** `ANDROID_HOME` / `ANDROID_SDK_ROOT` both empty; no SDK
+   in any of the usual locations.
+3. **Disk.** `C:` was at 95% with ~3 GB free; the SDK alone needs several GB.
+
+**Fix.** Rather than install system-wide (needs admin) or fight the full
+`C:`, the entire toolchain was installed **zip-based and off-drive on `E:`**
+(141 GB free), so no admin rights were needed and `C:` was untouched:
+- Temurin JDK 17 → `E:/vb-toolchain/jdk-17.0.20.1+1`
+- Temurin JDK **21** → `E:/vb-toolchain/jdk-21.0.12.1+1` (see BUG-048)
+- Android cmdline-tools 19.0 → `E:/vb-toolchain/android-sdk`
+- `platform-tools`, `platforms;android-35`, `build-tools;35.0.0`
+- Gradle 8.11.1 cache → `E:/vb-toolchain/gradle-home`
+- SDK wired up via `android/local.properties` (machine-generated, gitignored).
+  Both `sdk.dir` and `java.home` are pinned there, so the build does not
+  depend on shell environment variables.
+
+The **Gradle distribution** needed a second fix: `./gradlew` died with
+`IOException: Downloading from https://services.gradle.org/... failed:
+timeout (10000ms)`. The CDN is fine — `curl` fetched the same 230 MB zip
+without trouble — the failure is Java's aggressive 10 s connect timeout.
+Rather than edit the tracked `gradle-wrapper.properties` to raise
+`networkTimeout`, the already-downloaded distribution was placed directly
+into the wrapper cache and marked with its `.ok` file.
+
+**Result:** `Voice-Box-Android.apk`, 7,725,833 bytes.
+
+### BUG-048 — Capacitor 7 needs Java 21, and the documented "JDK 17" was wrong
+**CATEGORY:** BUILD / TOOLCHAIN · **SEVERITY:** BLOCKER
+**WHERE:** `android/` (Capacitor 7 android project)
+
+Installing JDK 17 as planned did **not** finish the build. Gradle got all
+the way to compiling and then failed:
+
+```
+> Task :capacitor-android:compileDebugJavaWithJavac FAILED
+> error: invalid source release: 21
+```
+
+Capacitor 7's Android library targets Java **21**, not 17. A JDK 21 was
+installed alongside 17 and `android/local.properties` updated to point at
+it. `java.home` in that file now carries a comment recording *why* 21 is
+required, so the next person does not repeat the JDK 17 detour.
+
+### BUG-049 — A 0-byte `debug.keystore` made signing fail with a misleading error
+**CATEGORY:** BUILD / TOOLCHAIN · **SEVERITY:** BLOCKER
+**WHERE:** `C:/Users/lenovo/.android/debug.keystore`
+
+With compilation working, packaging failed:
+
+```
+> com.android.ide.common.signing.KeytoolException: Failed to read key
+  AndroidDebugKey from store "C:\Users\lenovo\.android\debug.keystore":
+  Tag number over 30 is not supported
+```
+
+That error text points at ASN.1/JDK version incompatibility and invites you
+to blame the JDK. The real cause: `keytool -list` on the file reports
+**`Keystore file exists, but is empty`** — it is a **zero-byte** file, a
+leftover from an earlier aborted signing attempt. Nothing about the JDK was
+wrong.
+
+A valid debug keystore was generated (`E:/vb-toolchain/debug.keystore`),
+used for the build, and the empty profile file was **repaired** — the
+original zero-byte file is preserved as
+`C:/Users/lenovo/.android/debug.keystore.empty.bak`. This is a local debug
+key only; it is not an upload/release key.
+
+**Verified after the fix:** a plain `cd android && ./gradlew assembleDebug`
+— no injected signing flags, no special env — rebuilds a signed APK. The
+previous invocation needed four `-Pandroid.injected.signing.*` flags purely
+to work around the empty file.
+
+### BUG-050 — Nothing: the APK was built from a stale web bundle
+**CATEGORY:** PROCESS · **SEVERITY:** MEDIUM
+**WHERE:** build order
+**NOTE:** recorded as a process note, not an application defect.
+
+The first successful `assembleDebug` produced a valid APK, but it packaged
+whichever assets were last synced — and `dist/` had been rebuilt by a
+concurrent session since. An APK that is valid but stale is worse than a
+failed build, because it looks done.
+
+The APK was therefore rebuilt in dependency order — `rm -rf dist` →
+`npm run build` (clean, no stale `index-*.js` accumulation) → `npx cap sync
+android` → `./gradlew assembleDebug` — and then the APK's *contents* were
+unzipped and inspected rather than trusting the build log:
+
+| Check | Result |
+|---|---|
+| `package` name | `app.voicebox` |
+| `application-label` | `Voice Box` |
+| min / target SDK | 23 / 35 |
+| `INTERNET` permission | present |
+| `assets/capacitor.config.json` | `appId: app.voicebox`, `webDir: dist` |
+| JS bundles in APK | 58 |
+| Signature | `CN=Android Debug` — `apksigner verify` passes |
+| `voice-box-psi.vercel.app` (the host that serves `/api`) | present |
+| `voice-box.vercel.app` (the host that 404s on every route) | **0 references** |
+| duplicate-poll guard toast | present in `Submit-*.js` |
+| `/accessibility` legal link | present in `index-*.js` |
+| "Why we said this" relevance panel | present in `Submit-*.js` |
+| Capacitor Preferences plugin | present |
+
+The broken-host check is the important one: BUG-044 fixed the API base, and
+this proves the fix actually ships inside the binary rather than only in the
+source tree.

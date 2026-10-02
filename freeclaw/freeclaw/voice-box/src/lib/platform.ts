@@ -60,10 +60,41 @@ export function isNativeShell(): boolean {
 }
 
 /**
- * Absolute API origin for native shells, e.g. "https://voice-box.vercel.app".
+ * Absolute API origin for native shells, e.g. "https://voice-box-psi.vercel.app".
  * Baked in at build time via VITE_API_BASE. Empty string = same-origin,
  * which is correct for the browser build served alongside /api.
+ *
+ * Desktop fallback (Failed-to-fetch fix): an EXE built without VITE_API_BASE
+ * baked in used to call fetch("/api/...") from a file:// page — which always
+ * throws TypeError: Failed to fetch. In a native shell an empty base can
+ * never work, so fall back to the production origin instead of same-origin.
+ * A runtime override (localStorage vb:apiBase or window.__VB_API_BASE) wins
+ * over both, so a mis-pinned build can still be repointed without reinstall.
+ *
+ * WHICH origin matters. There are two deployments:
+ *   - voice-box-psi.vercel.app — serves the API (/api/posts returns real JSON).
+ *   - voice-box.vercel.app    — serves the static frontend; /api/* 404s on EVERY route.
+ * This constant previously named the second one, so every request the desktop
+ * and mobile shells made failed with "Failed to fetch" while the browser build
+ * was perfectly healthy — and no test caught it, because nothing pinned the
+ * value. Verified against the live deployments when this was corrected.
  */
+const DEFAULT_NATIVE_API_BASE = "https://voice-box-psi.vercel.app";
+
+function runtimeApiOverride(): string {
+	try {
+		const w = window as unknown as { __VB_API_BASE?: unknown };
+		const raw =
+			(typeof w.__VB_API_BASE === "string" && w.__VB_API_BASE) ||
+			window.localStorage?.getItem("vb:apiBase") ||
+			"";
+		const base = raw.trim().replace(/\/+$/, "");
+		return /^https?:\/\//i.test(base) ? base : "";
+	} catch {
+		return "";
+	}
+}
+
 export function apiBase(): string {
 	try {
 		const raw =
@@ -71,9 +102,19 @@ export function apiBase(): string {
 				? ((import.meta.env?.VITE_API_BASE as string | undefined) ?? "")
 				: "";
 		const base = raw.trim().replace(/\/+$/, "");
-		// Only http(s) origins are ever valid — a typo'd scheme must fail
-		// closed to "" (same-origin) rather than produce garbage URLs.
-		return /^https?:\/\//i.test(base) ? base : "";
+		if (/^https?:\/\//i.test(base)) return base;
+		// Baked value missing/invalid — honor a runtime override first.
+		const override = runtimeApiOverride();
+		if (override) return override;
+		// Native shells have no same-origin /api (file:// page) — fail open
+		// to production rather than fail every request with Failed to fetch.
+		// Web keeps "" (same-origin) so a typo'd env can never leak cross-site.
+		try {
+			if (isNativeShell()) return DEFAULT_NATIVE_API_BASE;
+		} catch {
+			/* ignore — fall through to same-origin */
+		}
+		return "";
 	} catch {
 		return "";
 	}

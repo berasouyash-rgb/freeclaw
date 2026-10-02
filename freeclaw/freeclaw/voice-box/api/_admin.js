@@ -212,6 +212,10 @@ export default async function handler(req, res) {
 			const sessions = (await getSetting("admin_sessions")) || { tokens: [] };
 			sessions.tokens = sessions.tokens.filter((t) => t.t !== token);
 			await setSetting("admin_sessions", sessions);
+			// The token cache holds verified tokens for 30s per warm
+			// instance: without this, a logged-out token keeps passing
+			// isAdmin until the entry expires.
+			invalidateAdminTokenCache();
 			return res.status(200).json({ ok: true });
 		}
 

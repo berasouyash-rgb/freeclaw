@@ -125,7 +125,7 @@ export default async function handler(req, res) {
 		if (!caller.ok)
 			return res
 				.status(caller.status || 403)
-				.json({ error: caller.error || "Forbidden" });
+				.json({ error: caller.error || "Forbidden", code: caller.code });
 
 		// Reuse the platform's existing voice rate-limit bucket — the same one
 		// the voice assist path uses — rather than inventing a table.

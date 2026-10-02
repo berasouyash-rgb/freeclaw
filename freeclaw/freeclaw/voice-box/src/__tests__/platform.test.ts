@@ -80,6 +80,44 @@ describe("apiBase", () => {
 		vi.stubEnv("VITE_API_BASE", "not a url");
 		expect(apiBase()).toBe("");
 	});
+
+	// ── The native fallback constant ─────────────────────────────────
+	//
+	// An .exe built without VITE_API_BASE baked in falls back to a hardcoded
+	// origin. That constant used to name a deployment that serves the static
+	// frontend but 404s on every /api route, so the desktop app failed every
+	// single request with "Failed to fetch" — while the web build was fine
+	// and no test failed, because nothing pinned the constant at all.
+	//
+	// These tests name the value deliberately so the next deployment rename
+	// cannot silently repeat it.
+	it("falls back to the API host that actually serves /api, in the desktop shell", () => {
+		vi.stubEnv("VITE_API_BASE", "");
+		(window as unknown as Record<string, unknown>).vbDesktop = true;
+		expect(apiBase()).toBe("https://voice-box-psi.vercel.app");
+	});
+
+	it("uses the same fallback in the mobile shell", () => {
+		vi.stubEnv("VITE_API_BASE", "");
+		(window as unknown as Record<string, unknown>).vbDesktop = true;
+		(window as unknown as Record<string, unknown>).Capacitor = {
+			isNativePlatform: () => true,
+		};
+		expect(apiBase()).toBe("https://voice-box-psi.vercel.app");
+	});
+
+	it("keeps the web build on same-origin so a typo'd env cannot leak cross-site", () => {
+		vi.stubEnv("VITE_API_BASE", "");
+		expect(apiBase()).toBe("");
+	});
+
+	it("lets a runtime override repoint a mis-pinned build without a reinstall", () => {
+		vi.stubEnv("VITE_API_BASE", "");
+		(window as unknown as Record<string, unknown>).vbDesktop = true;
+		window.localStorage.setItem("vb:apiBase", "https://staging.example.com");
+		expect(apiBase()).toBe("https://staging.example.com");
+		window.localStorage.removeItem("vb:apiBase");
+	});
 });
 
 describe("storageWhere", () => {

@@ -71,7 +71,7 @@ export default async function handler(req, res) {
 				return res.status(403).json({ error: "Missing session identity (x-anon-id header)" });
 			if (!admin) {
 				const gate = await verifyCallerIdentity(req, res, anonId);
-				if (!gate.ok) return res.status(gate.status || 403).json({ error: gate.error });
+				if (!gate.ok) return res.status(gate.status || 403).json({ error: gate.error, code: gate.code });
 			}
 			// Banned/suspended IDs get no presence: refuse BEFORE the throttle
 			// (a refusal must not poison the throttle slot) and write nothing.
@@ -107,7 +107,7 @@ export default async function handler(req, res) {
 		// FIX #2: Verify caller identity — only allow checking your own anon_id unless admin
 		if (!(await isAdmin(req))) {
 			const gate = await verifyCallerIdentity(req, res, anonId);
-			if (!gate.ok) return res.status(gate.status || 403).json({ error: gate.error });
+			if (!gate.ok) return res.status(gate.status || 403).json({ error: gate.error, code: gate.code });
 		}
 		const { data } = await supabase
 			.from("users_meta")

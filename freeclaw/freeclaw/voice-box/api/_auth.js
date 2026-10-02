@@ -39,18 +39,43 @@ export function invalidateAdminTokenCache() {
 const _rateLimitState = new Map();
 
 // Allowed origins for CORS — production domain + Vercel preview + localhost dev
+// plus native shells: Electron loads over file:// (Origin "null"/absent),
+// legacy Capacitor schemes (capacitor://localhost / ionic://localhost), and
+// modern Capacitor (v7 default: androidScheme=https, hostname=localhost, so
+// the APK fetches with Origin: https://localhost — verified in
+// node_modules/@capacitor/android CapConfig.java). Without these the
+// desktop/mobile apps boot but every API call dies as "Failed to fetch".
 const ALLOWED_ORIGINS = [
+	"https://voice-box.vercel.app",
 	"https://voice-box-psi.vercel.app",
 	"https://voice-box-ballyvisiontutorial-hues-projects.vercel.app",
 	"http://localhost:5173",
 	"http://localhost:4173",
 	"http://localhost:3000",
+	"https://localhost",
+	"http://localhost",
+	"capacitor://localhost",
+	"ionic://localhost",
 ];
+
+// Origins that carry no meaningful host but are the app itself (Electron
+// file:// sends `Origin: null` or no Origin at all). Echoed back so the
+// browser/Electron CORS check passes with credentials.
+function isNativeOrigin(origin) {
+	if (!origin) return true; // no Origin header: curl, Electron file:// GET, same-origin
+	if (origin === "null") return true; // Electron file:// fetch
+	if (origin === "file://") return true;
+	return false;
+}
 
 export function cors(res, req) {
 	const origin = req?.headers?.origin || "";
-	if (origin && ALLOWED_ORIGINS.includes(origin)) {
-		res.setHeader("Access-Control-Allow-Origin", origin);
+	if (origin && (ALLOWED_ORIGINS.includes(origin) || isNativeOrigin(origin))) {
+		res.setHeader("Access-Control-Allow-Origin", origin === "null" ? "null" : origin || "null");
+	} else if (!origin) {
+		// file:// / curl with no Origin: answer with null so credentialed
+		// cross-origin fetches from the desktop shell still pass the check.
+		res.setHeader("Access-Control-Allow-Origin", "null");
 	}
 	res.setHeader(
 		"Access-Control-Allow-Methods",
@@ -58,7 +83,7 @@ export function cors(res, req) {
 	);
 	res.setHeader(
 		"Access-Control-Allow-Headers",
-		"Content-Type, Authorization, X-Admin-Token",
+		"Content-Type, Authorization, X-Admin-Token, x-anon-id, x-request-id, x-vercel-cron-secret, x-cron-secret",
 	);
 	res.setHeader("Access-Control-Allow-Credentials", "true");
 	res.setHeader("Vary", "Origin");
@@ -527,12 +552,21 @@ export async function rateLimited(table, authorId, seconds, limit) {
 // Returns { ok: true, callerId } or { ok: false, status, error }.
 const SESSION_COOKIE = "vb_session";
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
-// First-visit self-heal window: two concurrent requests can both take the
-// "no record" mint path; the loser's cookie mismatches the stored hash.
-// Rotating inside this window keeps that client usable instead of locking
-// it out permanently. created_at is NOT extended by rotation, so the
-// window cannot be stretched.
-const SESSION_MINT_GRACE_MS = 60_000;
+// Ownership is proven EXCLUSIVELY by presenting the session token the server
+// minted for that id — never by the id alone, which is disclosed by design
+// (mentions, URLs). Consequences, all deliberate:
+//   - A brand-new id (NO record row — session rows are never deleted, so this
+//     means first contact) mints transparently: onboarding requires it, and
+//     there is nothing to steal on an id the server has never seen (ids carry
+//     ~72 bits of entropy; a victim's future id is unpredictable).
+//   - An id WITH a record row — live or long expired — is NEVER re-minted on
+//     claim. Minting over it would hand the identity to anyone who can read
+//     the id AND lock the real owner out (their valid cookie would then
+//     mismatch). Expired sessions stay dead; the owner starts a fresh
+//     anonymous id client-side while their old content stays published.
+//   - The only rotation path is presenting a PREVIOUSLY valid token
+//     (record.th_prev, single slot): the losing side of a concurrent
+//     first-visit mint. A random wrong cookie matches nothing and is denied.
 
 function sha256Hex(value) {
 	return createHash("sha256").update(value).digest("hex");
@@ -562,15 +596,32 @@ function readSessionCookie(cookieHeader) {
 	return null;
 }
 
-/** Set the session cookie. Secure only when the request arrived over HTTPS. */
-function setSessionCookie(res, token, req) {
+/** Set the session cookie. Secure only when the request arrived over HTTPS.
+ * Cross-site shells (Electron file:// with Origin null/absent, Capacitor in
+ * any scheme) need SameSite=None + Secure or the browser never sends the
+ * cookie back and every authed call 403s as session_unrecoverable after a
+ * working mint. Exported for the desktop-cors regression tests. */
+export function setSessionCookie(res, token, req) {
 	const maxAge = Math.floor(SESSION_TTL_MS / 1000);
 	const proto = String(req?.headers?.["x-forwarded-proto"] || "").toLowerCase();
+	const origin = String(req?.headers?.origin || "");
+	const crossSite =
+		!origin ||
+		origin === "null" ||
+		origin === "file://" ||
+		origin === "https://localhost" ||
+		origin === "http://localhost" ||
+		origin.startsWith("capacitor://") ||
+		origin.startsWith("ionic://");
+	// SameSite=None requires Secure, and Secure cookies are rejected over
+	// plain http — so None is only used when the request actually arrived
+	// over https (Vercel prod). Localhost http keeps Lax (dev only).
+	const useNone = crossSite && proto === "https";
 	const attrs = [
 		`${SESSION_COOKIE}=${token}`,
 		"HttpOnly",
 		"Path=/",
-		"SameSite=Lax",
+		useNone ? "SameSite=None" : "SameSite=Lax",
 		`Max-Age=${maxAge}`,
 	];
 	if (proto === "https") attrs.push("Secure");
@@ -599,12 +650,18 @@ async function saveSessionRecord(id, record) {
 }
 
 /** Mint a fresh token, persist its hash, hand the cookie to the client. */
-async function mintSession(res, req, id, now, createdAt) {
+async function mintSession(res, req, id, now, prevRecord) {
 	const token = randomBytes(32).toString("hex");
+	// Preserve the prior hash (single slot) so the losing side of a
+	// concurrent first-visit double-mint can still prove itself via th_prev.
+	// created_at is inherited, never extended: the boot-race carve-out below
+	// keys off FIRST creation, so concurrent mints cannot stretch the window.
+	const prev = prevRecord && typeof prevRecord === "object" ? prevRecord : null;
 	await saveSessionRecord(id, {
 		th: sha256Hex(token),
+		...(prev?.th ? { th_prev: prev.th } : {}),
 		exp: now + SESSION_TTL_MS,
-		created_at: createdAt || new Date(now).toISOString(),
+		created_at: prev?.created_at || new Date(now).toISOString(),
 	});
 	setSessionCookie(res, token, req);
 	return token;
@@ -640,12 +697,20 @@ export async function verifyCallerIdentity(req, res, claimedUserId, opts = {}) {
 	const recordExpired =
 		!record || !record.exp || Number(record.exp) <= now;
 
-	// No record, or the stored session has passed its 30-day TTL with no
-	// cookie presented to refresh it → (re)establish a session. This is
-	// also the first-visit path after deploy.
-	if (recordExpired && !cookieToken) {
+	// No record row at all: first contact for this id. Mint transparently —
+	// onboarding requires it, and there is no prior session or data to steal
+	// (ids are client-generated ~72-bit randoms; a victim's future id is
+	// unpredictable). The mint re-reads first so a concurrent double-mint
+	// preserves the loser's hash as th_prev instead of silently orphaning it.
+	if (!record) {
 		try {
-			await mintSession(res, req, id, now, record?.created_at);
+			let prev = null;
+			try {
+				prev = await loadSessionRecord(id);
+			} catch {
+				prev = null;
+			}
+			await mintSession(res, req, id, now, prev);
 			return { ok: true, callerId: id };
 		} catch (err) {
 			console.error("[auth] session mint failed:", err?.message || err);
@@ -653,19 +718,30 @@ export async function verifyCallerIdentity(req, res, claimedUserId, opts = {}) {
 		}
 	}
 
-	// Record exists and is live, but no cookie was presented. Normally the
-	// caller knows the (disclosed) id without holding the session token →
-	// deny. Exception: a record minted seconds ago whose Set-Cookie is still
-	// in flight — parallel first-load requests (heartbeat + notifications
-	// fired together) otherwise 403 spuriously before the browser stores
-	// the cookie. The window is 20s from first mint; created_at is preserved
-	// across refreshes, so established records never qualify and stolen-ID
-	// denial stays intact.
+	// A record EXISTS (live or expired) but no cookie was presented. The
+	// caller knows the (disclosed) id without holding the session token, so
+	// this is denied — minting or overwriting here would hand the identity
+	// to any reader of the id and lock the real owner out (their valid
+	// cookie would then mismatch). Exception: a record minted seconds ago
+	// whose Set-Cookie is still in flight — parallel first-load requests
+	// (heartbeat + notifications fired together) otherwise 403 spuriously
+	// before the browser stores the cookie. The window is 20s from FIRST
+	// mint (created_at is inherited, never extended), so established
+	// records never qualify and stolen-ID denial stays intact. Expired
+	// sessions are NOT self-healed: the owner starts a fresh anonymous id
+	// client-side while their old content stays published.
 	if (!cookieToken) {
 		const bornAt = Date.parse(record?.created_at || "") || 0;
 		if (bornAt > 0 && now - bornAt <= 20_000)
 			return { ok: true, callerId: id };
-		return { ok: false, status: 403, error: "Invalid session identity", code: "session_unrecoverable" };
+		return {
+			ok: false,
+			status: 403,
+			error: recordExpired
+				? "Session expired. Start a fresh anonymous ID to keep participating — your published posts stay up."
+				: "Invalid session identity",
+			code: "session_unrecoverable",
+		};
 	}
 
 	const presentedHash = sha256Hex(cookieToken);
@@ -687,16 +763,19 @@ export async function verifyCallerIdentity(req, res, claimedUserId, opts = {}) {
 		return { ok: true, callerId: id };
 	}
 
-	// Hash mismatch. Inside the mint grace window this is the losing side
-	// of a concurrent first-visit mint — rotate to the record's current
-	// value and keep the original created_at so the window stays fixed.
-	const createdAt = Date.parse(record?.created_at || "") || now;
-	if (record && now - createdAt < SESSION_MINT_GRACE_MS) {
+	// Previous-token recovery — the ONLY rotation path. A presenter holding a
+	// token the server itself minted earlier for this id (the losing side of
+	// a concurrent first-visit double-mint) is re-issued a fresh token, and
+	// th_prev advances so a replayed older token can never rotate twice. A
+	// random wrong cookie matches neither hash and is denied: unlike the old
+	// 60s grace window, mere knowledge of the id buys nothing here.
+	if (record?.th_prev && safeStringEqual(presentedHash, record.th_prev)) {
 		try {
 			const token = randomBytes(32).toString("hex");
 			await saveSessionRecord(id, {
 				...record,
 				th: sha256Hex(token),
+				th_prev: record.th,
 				exp: now + SESSION_TTL_MS,
 			});
 			setSessionCookie(res, token, req);

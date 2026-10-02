@@ -5,14 +5,23 @@ appId: app.voicebox
 productName: Voice Box
 directories:
   output: electron/dist
+# Every file the shell needs at runtime must be listed — the entry point
+# (electron/main.cjs) included. Omitting it produces an app.asar with no
+# main script and electron-builder fails the build with "Application entry
+# file ... does not exist".
 files:
   - dist/**
+  - electron/main.cjs
   - electron/preload.cjs
   - electron/icon.png
   - package.json
 extraMetadata:
   main: electron/main.cjs
 win:
+  # Without this electron-builder falls back to the stock Electron icon and
+  # the installed app (shortcut, taskbar, Add/Remove Programs) shows generic
+  # branding instead of Voice Box's.
+  icon: electron/icon.png
   target:
     - target: nsis
       arch: [x64]

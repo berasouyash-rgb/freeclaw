@@ -236,6 +236,7 @@ export default memo(function Comments({
 	}, [editing, editText]);
 
 	const submit = async () => {
+		if (busy) return;
 		const body = sanitize(text, 500);
 		if (body.length < 2) {
 			toast("Comment is too short", "err");
@@ -256,12 +257,19 @@ export default memo(function Comments({
 			return;
 		}
 		setBusy(true);
+		// The typed text leaves the box the instant Send is pressed: what you
+		// see below is the sending state, not a duplicate of your draft.
+		// The box is cleared upfront so there is never a moment where the same
+		// words sit in both places. If the send hard-fails (not queued for
+		// replay), the text is restored into the box so nothing is lost.
 		// Optimistic entry: the comment appears the instant it is sent instead of
 		// after a round-trip. It is replaced by the authoritative list on success
 		// and removed on failure, so a failed send can never look like a posted one.
 		// Display uses the masked text (what the server will store); the request
 		// body stays raw so the server's gate sees the real content.
 		const tempId = `pending-${Date.now()}`;
+		const failedBody = body;
+		setText("");
 		const optimistic: CommentData = {
 			id: tempId,
 			post_id: postId,
@@ -283,7 +291,6 @@ export default memo(function Comments({
 				is_admin: asAdmin && isAdminSession,
 			});
 			stampCooldown("comment");
-			setText("");
 			setReplyTo(null);
 			await load(true);
 		} catch (e: unknown) {
@@ -292,7 +299,6 @@ export default memo(function Comments({
 			// actively harmful: the user retypes it and the queue posts both.
 			if (queuedCount() > queuedBefore) {
 				stampCooldown("comment");
-				setText("");
 				setReplyTo(null);
 				toast(
 					"Saved offline — it will post automatically when you reconnect",
@@ -302,6 +308,10 @@ export default memo(function Comments({
 				// will replace it with the server's copy.
 			} else {
 				setComments((prev) => prev.filter((c) => c.id !== tempId));
+				// The box was cleared at send time — put the words back so the
+				// user can fix and retry instead of retyping from memory.
+				// replyTo is deliberately kept: the retry is still a reply.
+				setText(failedBody);
 				toast(e instanceof Error ? e.message : "Failed to post comment", "err");
 			}
 		}
@@ -375,7 +385,16 @@ export default memo(function Comments({
 		>
 			<div className="py-2.5 transition-colors duration-150 hover:bg-surface2/30 rounded-lg px-2 -mx-2">
 				<div className="flex items-center gap-2 text-xs">
-					{c.is_admin ? (
+					{c.id.startsWith("pending-") ? (
+						<span
+							className="inline-flex items-center gap-1 font-semibold text-accent"
+							role="status"
+							aria-label="Sending comment"
+						>
+							<RefreshCw size={11} className="animate-spin" aria-hidden />
+							Sending…
+						</span>
+					) : c.is_admin ? (
 						<span className="chip !bg-accent !text-white !border-transparent">
 							<ShieldCheck size={11} /> Admin
 						</span>
@@ -554,6 +573,7 @@ export default memo(function Comments({
 							onChange={(e) => setText(e.target.value)}
 							maxLength={500}
 							aria-label="Comment text"
+							disabled={busy}
 						/>
 						<button
 							type="submit"
@@ -565,7 +585,13 @@ export default memo(function Comments({
 							}
 							aria-label="Send comment"
 						>
-							{moderation && isBlockedByServer(moderation) ? (
+							{busy ? (
+								<RefreshCw
+									size={15}
+									className="animate-spin"
+									aria-label="Sending comment"
+								/>
+							) : moderation && isBlockedByServer(moderation) ? (
 								<ShieldAlert size={15} />
 							) : (
 								<Send size={15} />

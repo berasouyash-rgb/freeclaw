@@ -1,5 +1,6 @@
 /** Offline queue: failed writes are stored locally and retried when back online. */
 import { lsGet, lsSet, getAnonId } from "./identity";
+import { apiBase } from "./platform";
 
 interface QueuedAction {
 	id: string;
@@ -114,11 +115,12 @@ export async function flushQueue(): Promise<number> {
 			const kill = setTimeout(() => ctrl.abort(), FLUSH_TIMEOUT_MS);
 			let res: Response;
 			try {
-				res = await fetch(a.path, {
+				res = await fetch(apiBase() + a.path, {
 					method: a.method,
 					headers,
 					body: a.body != null ? JSON.stringify(a.body) : null,
 					signal: ctrl.signal,
+					credentials: "include",
 				});
 			} finally {
 				clearTimeout(kill);

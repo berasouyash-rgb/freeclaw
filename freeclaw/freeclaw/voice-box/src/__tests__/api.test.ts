@@ -23,6 +23,7 @@ import {
 	clearAdminSession,
 	hasAdminSession,
 	isNotFound,
+	isSessionDeadError,
 	resetConcurrencyForTests,
 	setAdminSession,
 } from "../lib/api";
@@ -734,6 +735,34 @@ describe("api error status", () => {
 		expect(caught).toBeInstanceOf(ApiError);
 		expect((caught as ApiError).status).toBe(429);
 		expect(isNotFound(caught)).toBe(false);
+	});
+
+	it("translates session_unrecoverable into recovery guidance, keeping the code", async () => {
+		// The server code is what lets the UI distinguish "retry may help"
+		// from "this browser needs a fresh ID". The raw server text
+		// ("Invalid session identity") names no recovery, so the wrapper
+		// substitutes actionable guidance while preserving the code.
+		fetchMock.mockResolvedValue(
+			errResponse(403, { error: "Invalid session identity", code: "session_unrecoverable" }),
+		);
+		let caught: unknown;
+		try {
+			await api.get("/api/me?anon_id=anon_x");
+		} catch (e) {
+			caught = e;
+		}
+		expect(caught).toBeInstanceOf(ApiError);
+		expect((caught as ApiError).status).toBe(403);
+		expect((caught as ApiError).code).toBe("session_unrecoverable");
+		expect((caught as ApiError).message).toContain("Settings");
+		expect(isSessionDeadError(caught)).toBe(true);
+	});
+
+	it("isSessionDeadError rejects ordinary and codeless errors", () => {
+		expect(isSessionDeadError(new ApiError("nope", 403))).toBe(false);
+		expect(isSessionDeadError(new ApiError("nope", 403, 0, "other_code"))).toBe(false);
+		expect(isSessionDeadError(new Error("x"))).toBe(false);
+		expect(isSessionDeadError(null)).toBe(false);
 	});
 
 	it("falls back to a status-labelled message when the body has no error", async () => {

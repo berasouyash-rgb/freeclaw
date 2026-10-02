@@ -51,7 +51,7 @@ export default async function handler(req, res) {
 		if (req.method !== "OPTIONS") {
 			const caller = await verifyCallerIdentity(req, res, userId);
 			if (!caller.ok)
-				return res.status(caller.status).json({ error: caller.error });
+				return res.status(caller.status).json({ error: caller.error, code: caller.code });
 		}
 
 		if (req.method === "GET") {

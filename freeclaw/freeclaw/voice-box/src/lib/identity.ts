@@ -10,30 +10,22 @@
  * and (via the cookie) across refreshes even on locked-down devices.
  */
 
+import { storeClear, storeGet, storeRemove, storeSet } from "./storage";
+
 const ID_KEY = "vb:anonId";
 const CREATED_KEY = "vb:anonCreated";
 
 // ---- best-effort storage adapter ---------------------------------------
-// Priority: localStorage → cookie (identity-critical only) → in-memory.
+// The durable store is picked by lib/storage.ts: the device's OWN storage in
+// the native shells (Capacitor Preferences on the phone, a userData file in
+// the desktop app), and localStorage on the web. Everything below is the
+// escalation ladder on top of it, in priority order:
+//
+//   device / localStorage → cookie (identity-critical only) → in-memory
+//
 // Non-critical JSON (queues, prefs) uses memory only so large values never
 // overflow a cookie's size limit.
 const mem = new Map<string, string>();
-
-/** Probe once whether localStorage is reachable. Uses getItem only — real
- *  blocked storage throws on getItem too, and the quota test mocks setItem
- *  without affecting this probe. */
-let storageBlocked: boolean | null = null;
-function isStorageBlocked(): boolean {
-	if (storageBlocked === null) {
-		try {
-			window.localStorage.getItem("__vb_probe__");
-			storageBlocked = false;
-		} catch {
-			storageBlocked = true;
-		}
-	}
-	return storageBlocked;
-}
 
 function cookieName(key: string): string {
 	// Cookie names cannot contain ':' (RFC 6265 separator) — normalize it away.
@@ -70,14 +62,8 @@ function deleteCookie(key: string) {
 
 /** Read with cookie fallback — identity-critical keys only. */
 function readItem(key: string): string | null {
-	if (!isStorageBlocked()) {
-		try {
-			const v = window.localStorage.getItem(key);
-			if (v !== null) return v;
-		} catch {
-			/* fall through */
-		}
-	}
+	const stored = storeGet(key);
+	if (stored !== null) return stored;
 	const c = readCookie(key);
 	if (c !== null) return c;
 	return mem.get(key) ?? null;
@@ -85,53 +71,27 @@ function readItem(key: string): string | null {
 
 /** Write with cookie fallback — identity-critical keys only. */
 function writeItem(key: string, value: string) {
-	if (!isStorageBlocked()) {
-		try {
-			window.localStorage.setItem(key, value);
-			return;
-		} catch {
-			/* fall through */
-		}
-	}
+	if (storeSet(key, value)) return;
 	writeCookie(key, value);
 	mem.set(key, value);
 }
 
 function removeItem(key: string) {
-	if (!isStorageBlocked()) {
-		try {
-			window.localStorage.removeItem(key);
-		} catch {
-			/* ignore */
-		}
-	}
+	storeRemove(key);
 	deleteCookie(key);
 	mem.delete(key);
 }
 
 /** Read WITHOUT cookie fallback — for non-critical JSON (queues, prefs). */
 function readMemItem(key: string): string | null {
-	if (!isStorageBlocked()) {
-		try {
-			const v = window.localStorage.getItem(key);
-			if (v !== null) return v;
-		} catch {
-			/* fall through */
-		}
-	}
+	const stored = storeGet(key);
+	if (stored !== null) return stored;
 	return mem.get(key) ?? null;
 }
 
 /** Write WITHOUT cookie fallback — for non-critical JSON (queues, prefs). */
 function writeMemItem(key: string, value: string) {
-	if (!isStorageBlocked()) {
-		try {
-			window.localStorage.setItem(key, value);
-			return;
-		} catch {
-			/* fall through */
-		}
-	}
+	if (storeSet(key, value)) return;
 	mem.set(key, value);
 }
 
@@ -179,16 +139,10 @@ export function anonCreatedAt(): string {
 }
 
 export function clearAllLocalData() {
-	if (!isStorageBlocked()) {
-		try {
-			const keys = Object.keys(window.localStorage).filter((k) =>
-				k.startsWith("vb:"),
-			);
-			keys.forEach((k) => window.localStorage.removeItem(k));
-		} catch {
-			/* ignore */
-		}
-	}
+	// Clears the durable store as well — on the native shells that is the
+	// device's own storage, not just the WebView's localStorage, so "reset my
+	// data" is actually complete there.
+	storeClear("vb:");
 	// Sweep cookie fallback too (cookie names are vb_* after normalization).
 	try {
 		document.cookie.split("; ").forEach((c) => {

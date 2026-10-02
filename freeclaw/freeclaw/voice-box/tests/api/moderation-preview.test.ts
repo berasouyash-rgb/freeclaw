@@ -191,3 +191,37 @@ describe("input handling", () => {
 		expect(body.flags).toEqual([]);
 	});
 });
+
+describe("the live check tells the author whether it is actionable", () => {
+	it("reports a broken AC as a school problem", async () => {
+		const { body } = await call("the AC is not working");
+		const relevance = body.relevance as Record<string, unknown>;
+		expect(relevance.verdict).toBe("school_problem");
+		// Advisory only — the safety verdict is untouched by it.
+		expect(body.serverBlocked).toBe(false);
+		expect(relevance).not.toHaveProperty("blocked");
+	});
+
+	it("reports fatalism as not school related, and still does not block it", async () => {
+		const { status, body } = await call("my fate is not coming to me");
+		const relevance = body.relevance as Record<string, unknown>;
+		expect(relevance.verdict).toBe("not_school_related");
+		// 200, not a rejection — the author may always post.
+		expect(status).toBe(200);
+		expect(body.serverBlocked).toBe(false);
+	});
+
+	it("does not report a relevance verdict when the check failed", async () => {
+		const pipeline = await import("../../api/_safety-pipeline.js");
+		const spy = vi
+			.spyOn(pipeline, "evaluateContentAsync")
+			.mockRejectedValueOnce(new Error("provider exploded"));
+
+		const { body } = await call("the AC is not working");
+		spy.mockRestore();
+
+		// Unknown, not "clean" — a failed check must not invent a verdict.
+		expect(body.checked).toBe(false);
+		expect(body.relevance).toBeNull();
+	});
+});

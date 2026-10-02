@@ -65,6 +65,47 @@ function dedupKey(type, data) {
 const _recentEvents = new Map();
 const DEDUP_WINDOW_MS = 5000; // 5-second dedup window
 
+/**
+ * True when a Supabase error means "this RPC function does not exist"
+ * (pre-migration database). Any OTHER error is real and must throw —
+ * treating every failure as "missing" would silently disable the atomic
+ * path exactly when the database is sick.
+ */
+function isMissingFunctionError(error) {
+	if (!error) return false;
+	return (
+		error.code === "PGRST202" ||
+		/could not find the function/i.test(error.message || "")
+	);
+}
+
+/**
+ * Atomic append to a settings-KV list via migration-019 RPC (single
+ * statement → row lock → concurrent writers serialize, nothing lost).
+ * Returns true when stored. Returns false ONLY when the function is
+ * missing (pre-migration DB) so the caller can use the legacy path.
+ * THROWS on real failures — callers decide how to degrade.
+ */
+async function tryRpcAppend(key, list, item, max, prepend) {
+	const { error } = await supabase.rpc("append_setting_list_item", {
+		p_key: key,
+		p_list: list,
+		p_item: item,
+		p_max: max,
+		p_prepend: prepend,
+	});
+	if (!error) return true;
+	if (isMissingFunctionError(error)) {
+		logger.warn(
+			"events",
+			"append_setting_list_item missing (migration 019 not applied) — legacy write path",
+			{ key },
+		);
+		return false;
+	}
+	throw error;
+}
+
 export async function emitEvent(type, data = {}) {
 	try {
 		// Dedup: skip if same event was emitted within the dedup window
@@ -90,26 +131,35 @@ export async function emitEvent(type, data = {}) {
 			processed: false,
 		};
 
-		// 1. Store event in settings.event_log (rotating)
-		const { data: existing } = await supabase
-			.from("settings")
-			.select("value")
-			.eq("key", "event_log")
-			.maybeSingle();
-
-		const events = existing?.value?.events || [];
-		events.unshift(event);
-		const trimmed = events.slice(0, MAX_EVENTS);
-
-		if (existing) {
-			await supabase
+		// 1. Store event in settings.event_log (rotating).
+		// Atomic RPC first: concurrent writers serialize on the row lock.
+		// Legacy read-modify-write ONLY on pre-migration DBs — and with
+		// CHECKED writes now: a failed write throws into the catch below
+		// (loud warn + null) instead of pretending the event was stored.
+		if (!(await tryRpcAppend("event_log", "events", event, MAX_EVENTS, true))) {
+			const { data: existing, error: readErr } = await supabase
 				.from("settings")
-				.update({ value: { events: trimmed } })
-				.eq("key", "event_log");
-		} else {
-			await supabase
-				.from("settings")
-				.insert({ key: "event_log", value: { events: trimmed } });
+				.select("value")
+				.eq("key", "event_log")
+				.maybeSingle();
+			if (readErr) throw readErr;
+
+			const events = existing?.value?.events || [];
+			events.unshift(event);
+			const trimmed = events.slice(0, MAX_EVENTS);
+
+			if (existing) {
+				const { error: writeErr } = await supabase
+					.from("settings")
+					.update({ value: { events: trimmed } })
+					.eq("key", "event_log");
+				if (writeErr) throw writeErr;
+			} else {
+				const { error: writeErr } = await supabase
+					.from("settings")
+					.insert({ key: "event_log", value: { events: trimmed } });
+				if (writeErr) throw writeErr;
+			}
 		}
 
 		// 2. Trigger relevant agents for critical events (non-blocking)
@@ -141,37 +191,55 @@ export async function emitEvent(type, data = {}) {
  */
 async function triggerAgents(agentIds, event) {
 	try {
-		// Store pending agent triggers in settings
-		const { data: existing } = await supabase
-			.from("settings")
-			.select("value")
-			.eq("key", "pending_agent_events")
-			.maybeSingle();
-
-		const pending = existing?.value?.triggers || [];
-
+		// Store pending agent triggers. Atomic RPC first (one call per
+		// trigger; fan-out is small — see EVENT_AGENT_MAP): concurrent emits
+		// serialize instead of last-writer-wins dropping triggers. If the
+		// function is missing (pre-migration DB), accumulate and use the
+		// legacy path once below. Real RPC failures throw into the outer
+		// catch — same never-throw contract as before, but loud.
+		let legacy = false;
+		const legacyPending = [];
 		for (const agentId of agentIds) {
-			pending.push({
+			const item = {
 				agent_id: agentId,
 				event_type: event.type,
 				event_data: event.data,
 				timestamp: event.timestamp,
 				consumed: false,
-			});
+			};
+			if (!legacy) {
+				if (await tryRpcAppend("pending_agent_events", "triggers", item, 100, false))
+					continue;
+				legacy = true;
+			}
+			legacyPending.push(item);
 		}
-
-		// Keep only last 100 pending triggers
-		const trimmed = pending.slice(-100);
-
-		if (existing) {
-			await supabase
+		if (legacyPending.length > 0) {
+			const { data: existing, error: readErr } = await supabase
 				.from("settings")
-				.update({ value: { triggers: trimmed } })
-				.eq("key", "pending_agent_events");
-		} else {
-			await supabase
-				.from("settings")
-				.insert({ key: "pending_agent_events", value: { triggers: trimmed } });
+				.select("value")
+				.eq("key", "pending_agent_events")
+				.maybeSingle();
+			if (readErr) throw readErr;
+
+			const pending = existing?.value?.triggers || [];
+			pending.push(...legacyPending);
+
+			// Keep only last 100 pending triggers
+			const trimmed = pending.slice(-100);
+
+			if (existing) {
+				const { error: writeErr } = await supabase
+					.from("settings")
+					.update({ value: { triggers: trimmed } })
+					.eq("key", "pending_agent_events");
+				if (writeErr) throw writeErr;
+			} else {
+				const { error: writeErr } = await supabase
+					.from("settings")
+					.insert({ key: "pending_agent_events", value: { triggers: trimmed } });
+				if (writeErr) throw writeErr;
+			}
 		}
 
 		logger.info("events", `Queued ${agentIds.length} agent triggers`, { event_type: event.type });
@@ -185,11 +253,37 @@ async function triggerAgents(agentIds, event) {
  */
 export async function consumeAgentEvents(agentId, limit = 10) {
 	try {
-		const { data } = await supabase
+		// Atomic claim first: the row lock serializes concurrent cron ticks
+		// so the same trigger can never be delivered twice. Falls back to
+		// the legacy path only when the function is missing (pre-migration).
+		try {
+			const { data, error } = await supabase.rpc("claim_agent_triggers", {
+				p_agent: agentId,
+				p_limit: limit,
+			});
+			if (!error) return Array.isArray(data) ? data : [];
+			if (!isMissingFunctionError(error)) throw error;
+			logger.warn(
+				"events",
+				"claim_agent_triggers missing (migration 019 not applied) — legacy consume path",
+				{ agent_id: agentId },
+			);
+		} catch (rpcErr) {
+			// Missing function → legacy below. Real failure → outer catch
+			// (warn + []) — same never-throw contract cron relies on.
+			if (!isMissingFunctionError(rpcErr)) throw rpcErr;
+			logger.warn(
+				"events",
+				"claim_agent_triggers missing (migration 019 not applied) — legacy consume path",
+				{ agent_id: agentId },
+			);
+		}
+		const { data, error: readErr } = await supabase
 			.from("settings")
 			.select("value")
 			.eq("key", "pending_agent_events")
 			.maybeSingle();
+		if (readErr) throw readErr;
 
 		const all = data?.value?.triggers || [];
 		const unconsumed = all
@@ -207,10 +301,11 @@ export async function consumeAgentEvents(agentId, limit = 10) {
 				}
 				return t;
 			});
-			await supabase
+			const { error: writeErr } = await supabase
 				.from("settings")
 				.update({ value: { triggers: updated.slice(-100) } })
 				.eq("key", "pending_agent_events");
+			if (writeErr) throw writeErr;
 		}
 
 		return unconsumed;

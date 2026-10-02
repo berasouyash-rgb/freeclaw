@@ -459,8 +459,36 @@ describe("useRealtime — hidden-tab optimization", () => {
 		}
 	});
 
-	it("does not open or poll tables outside the realtime publication", () => {
-		// Admin-only tables (agent_*, settings, vitals, …) are neither in the
+	it("keeps the allowed tables live when mixed with private ones", () => {
+		// REGRESSION (the dead home feed): useRealtime(["posts","reactions",
+		// "comments","polls","poll_votes"]) opened NO channel at all, because
+		// the allowlist gate rejected the whole key over the private tables —
+		// so posts/comments/polls silently lost realtime too. The allowed
+		// subset must subscribe normally while the rest stay dark.
+		const onChange = vi.fn();
+		const { unmount } = renderHook(() =>
+			useRealtime(["posts", "reactions", "poll_votes"], onChange, 0),
+		);
+		expect(mock.channels.has("rt-posts")).toBe(true);
+		expect(mock.channels.has("rt-posts,reactions,poll_votes")).toBe(false);
+
+		act(() => {
+			simulateStatus("posts", "SUBSCRIBED");
+		});
+		act(() => {
+			mock.channels.get("rt-posts")?.changeCb({ eventType: "INSERT" });
+		});
+		act(() => {
+			vi.advanceTimersByTime(10);
+		});
+		expect(onChange).toHaveBeenCalledWith(
+			"posts",
+			expect.objectContaining({ eventType: "INSERT" }),
+		);
+		unmount();
+	});
+
+	it("does not open or poll tables outside the realtime publication", () => {		// Admin-only tables (agent_*, settings, vitals, …) are neither in the
 		// supabase_realtime publication nor readable by the anon key, so a
 		// channel could never deliver. No dead WebSocket or poll loop is opened.
 		const onChange = vi.fn();

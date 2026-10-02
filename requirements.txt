@@ -1,5 +1,0 @@
-# Install Freeclaw from this repo with optional runtime features enabled.
-# Usage:
-#   python -m pip install -r requirements.txt
--e .[web,discord]
-

@@ -17,6 +17,24 @@
 
 import supabase from "./_db-client.js";
 
+/**
+ * Escape a user-supplied string for interpolation into a PostgREST `.or()`
+ * filter. `%`, `_` and `\` are LIKE wildcards — unescaped, a search for "a%"
+ * or "100%" silently rewrites the query — and a comma/parenthesis would let a
+ * caller append further filter conditions of their own. Every other search
+ * call site in api/ already escapes; this one did not.
+ */
+function esc(v) {
+	if (v == null) return "";
+	return String(v)
+		.replace(/\\/g, "\\\\")
+		.replace(/%/g, "\\%")
+		.replace(/_/g, "\\_")
+		.replace(/,/g, "\\,")
+		.replace(/\)/g, "\\)")
+		.replace(/\(/g, "\\(");
+}
+
 // ─── Constants ────────────────────────────────────────────────────
 const HIGH_CONFIDENCE_THRESHOLD = 0.8;
 const MEDIUM_CONFIDENCE_THRESHOLD = 0.5;
@@ -37,7 +55,7 @@ async function searchKnowledgeBase(query, options = {}) {
 			.select(
 				"id, title, content, category, tags, confidence, source, last_verified",
 			)
-			.or(`title.ilike.%${query}%,content.ilike.%${query}%`)
+			.or(`title.ilike.%${esc(query)}%,content.ilike.%${esc(query)}%`)
 			.order("confidence", { ascending: false })
 			.limit(limit);
 

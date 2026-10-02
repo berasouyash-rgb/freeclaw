@@ -18,6 +18,11 @@ const state = {
 	existingVote: null as unknown,
 	lastInsert: null as unknown,
 	lastUpdate: null as unknown,
+	// Every update() with its target table. `lastUpdate` alone cannot tell a
+	// poll_votes write apart from the liveness touch on the parent poll row
+	// (which also calls update() on "polls"), so a vote assertion has to
+	// name the table it expected.
+	updateCalls: [] as Array<{ table: string; patch: unknown }>,
 	// Error-injection switches for the vote write-failure regression tests.
 	probeError: null as unknown,
 	writeError: null as unknown,
@@ -149,6 +154,7 @@ function chainFor(table: string): Chain {
 		update(patch: unknown) {
 			this.op = "update";
 			state.lastUpdate = patch;
+			state.updateCalls.push({ table, patch });
 			return this;
 		},
 		insert(row: unknown) {
@@ -276,6 +282,7 @@ beforeEach(() => {
 		poll_votes: [],
 		posts: [],
 		singleRow: null,
+		updateCalls: [],
 		existingVote: null,
 		lastInsert: null,
 		lastUpdate: null,
@@ -644,7 +651,17 @@ describe("POST /api/polls { action: vote }", () => {
 			res,
 		);
 		expect(res.statusCode).toBe(200);
-		expect(state.lastUpdate).toEqual({ choices: [0] });
+		// The BALLOT write must have been an update of the existing vote row,
+		// not an insert of a second one. Assert on the poll_votes update
+		// specifically: the handler also touches the parent polls row for
+		// realtime liveness, which is a separate, intentional write.
+		expect(state.updateCalls).toContainEqual({
+			table: "poll_votes",
+			patch: { choices: [0] },
+		});
+		expect(
+			state.updateCalls.filter((u) => u.table === "poll_votes"),
+		).toHaveLength(1);
 		expect(state.lastInsert).toBeNull();
 	});
 

@@ -84,6 +84,21 @@ const POLICY = [
 		postMessage: null, // queued surface holds for human review instead
 		code: "CONTENT_BLOCKED",
 	},
+	// Appended LAST on purpose: `romantic_weak` is a brand-new flag type, so
+	// first-match precedence for every existing row is unchanged. Posts
+	// (queued) QUARANTINE to pending_review; comments/polls (direct) BLOCK —
+	// _comments.js gates on `decision.blocked` alone, so the direct action is
+	// what actually stops a romance comment from publishing. Never critical:
+	// a hold, not a 403, so a student reporting harassment ("my boyfriend is
+	// threatening me") still reaches a human moderator.
+	{
+		id: "romance-review",
+		flagTypes: ["romantic_weak"],
+		action: { queued: "QUARANTINE", direct: "BLOCK_ACTION" },
+		message: "This comment violates our safety guidelines and cannot be posted.",
+		postMessage: null, // queued surface holds for human review instead
+		code: "CONTENT_BLOCKED",
+	},
 ];
 
 /**

@@ -4,9 +4,13 @@ services:
   # ── Redis (event bus + caching) ──────────────────────────────
   redis:
     image: redis:7-alpine
-    # Port stays published for local dev tooling (redis-cli, unit tests).
+    # Port stays published for local dev tooling (redis-cli, unit tests) —
+    # bound to LOOPBACK ONLY. "6379:6379" binds every interface, so on a
+    # public IP (or a hostile LAN) anyone could reach an authenticated
+    # Redis at a well-known default password. To expose it deliberately
+    # (never the default), set REDIS_PUBLISH=0.0.0.0:6379:6379 in .env.
     ports:
-      - "6379:6379"
+      - "${REDIS_PUBLISH:-127.0.0.1:6379:6379}"
     # FIX #7 (AUDIT): require a password — the open published port let any
     # process on the host read/write the event bus. Pick a URL-safe value
     # (it is embedded in redis://:password@host URLs). Override via

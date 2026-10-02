@@ -31,7 +31,7 @@ import { ConfirmDialog } from "../components/ui";
 import { useApp } from "../contexts/AppContext";
 import { api } from "../lib/api";
 import { sendNotificationEmail } from "../lib/email";
-import { getDisplayName } from "../lib/identity";
+import { getDisplayName, resetAnonId } from "../lib/identity";
 import {
 	INFRASTRUCTURE_COPY,
 	LOCAL_PROFILE_COPY,
@@ -55,6 +55,7 @@ export default function Settings() {
 	const {
 		anonId,
 		toast,
+		refreshIdentity,
 		setDisplayName: persistDisplayName,
 		theme,
 		setTheme,
@@ -71,7 +72,7 @@ export default function Settings() {
 	const [avatarDraft, setAvatarDraft] = useState(profile.avatar || "");
 	const [bioDraft, setBioDraft] = useState(profile.bio || "");
 	const [photoDraft, setPhotoDraft] = useState(profile.photo || "");
-	const [dialog, setDialog] = useState<"resetTutorial" | null>(null);
+	const [dialog, setDialog] = useState<"resetTutorial" | "resetIdentity" | null>(null);
 	const photoRef = useRef<HTMLInputElement | null>(null);
 
 	// Notification preferences (stored in localStorage)
@@ -537,6 +538,20 @@ export default function Settings() {
 								</p>
 							</div>
 
+							{/* Session recovery: an expired or cleared session cannot
+								be restored server-side (doing so would let anyone
+								claim any ID), so the way back is a fresh ID. Old
+								posts stay published; this device simply stops
+								owning them. */}
+							<ActionRow
+								icon={RotateCcw}
+								label="Start fresh with a new ID"
+								desc="If this device was ever signed out by an expired session, get a working identity again"
+								action="Start fresh"
+								onClick={() => setDialog("resetIdentity")}
+								variant="warning"
+							/>
+
 							{/* Display name — keep the anonymous ID, but sound like you */}
 							<div className="p-4 rounded-xl border border-border bg-surface2/50">
 								<div className="flex items-center gap-2 mb-2">
@@ -790,6 +805,21 @@ export default function Settings() {
 					message="The onboarding tutorial will show again on your next page visit."
 					confirmLabel="Reset"
 					onConfirm={handleResetTutorial}
+					onClose={() => setDialog(null)}
+				/>
+			)}
+			{dialog === "resetIdentity" && (
+				<ConfirmDialog
+					open
+					title="Start fresh with a new ID?"
+					message="This device gets a brand-new anonymous identity. Your previously published posts stay up, but this device will no longer own or manage them."
+					confirmLabel="Start fresh"
+					onConfirm={() => {
+						resetAnonId();
+						refreshIdentity();
+						setDialog(null);
+						toast("Fresh anonymous ID ready", "ok");
+					}}
 					onClose={() => setDialog(null)}
 				/>
 			)}

@@ -43,6 +43,19 @@ async function attachResults(polls, strict = false) {
 }
 
 /**
+ * Case/punctuation-insensitive form of a poll question, used only to tell a
+ * genuine second poll apart from the SAME poll being retried after a lost
+ * response. Deliberately conservative: if two questions normalize the same,
+ * treating the second as a retry is the safe direction (it cannot duplicate).
+ */
+function normalizeQuestion(text) {
+	return String(text ?? "")
+		.toLowerCase()
+		.replace(/[^\p{L}\p{N}]+/gu, " ")
+		.trim();
+}
+
+/**
  * Create one poll — the real POST path, lifted from the handler so the
  * Poll Creation worker (#19) runs the exact same code, never a shadow
  * implementation. Behavior is identical (same mask, same row shape, same
@@ -57,6 +70,40 @@ export async function createPoll({
 	expires_at,
 	admin = false,
 }) {
+	// One poll per linked post — enforced HERE, inside the shared writer,
+	// not in the HTTP handler. Every caller goes through this function (the
+	// POST route, the Poll Creation worker, and any agent acting later), and
+	// the rule was previously only in the route, so the worker happily
+	// created a second poll for a post that already had one.
+	//
+	// A same-question retry returns the existing poll instead of writing a
+	// second row: a lost response looks identical to a failed write, so a
+	// retry must neither duplicate nor look like an error to the author.
+	if (linkPostId) {
+		const { data: existingRows } = await supabase
+			.from("polls")
+			.select("id,title,ptype,options,post_id,created_at")
+			.eq("post_id", linkPostId)
+			.eq("deleted", false)
+			.order("created_at", { ascending: true })
+			.limit(1);
+		const existing = Array.isArray(existingRows)
+			? existingRows[0]
+			: existingRows ?? null;
+		if (existing) {
+			if (normalizeQuestion(existing.title) === normalizeQuestion(title)) {
+				return { ok: true, poll: existing, deduped: true };
+			}
+			return {
+				ok: false,
+				deduped: true,
+				code: "POST_ALREADY_HAS_POLL",
+				error: new Error(
+					"This post already has a poll. Delete it first, or add your question to it.",
+				),
+			};
+		}
+	}
 	const row = {
 		id: `poll_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`,
 		// Store masked text; the gate above already ran on raw text.
@@ -338,6 +385,21 @@ export default async function handler(req, res) {
 					}
 				}
 				if (write.error) throw write.error;
+				// Liveness: poll_votes rows are invisible to realtime (no anon
+				// policy, by design — voter identity stays private), so without
+				// this touch a vote surfaces nowhere until a manual refresh.
+				// Bumping the parent row emits one polls UPDATE event carrying
+				// zero voter data; readers re-pull totals through /api/polls.
+				// Best-effort and AFTER success: it must never fail a ballot
+				// that already counted.
+				try {
+					await supabase
+						.from("polls")
+						.update({ updated_at: new Date().toISOString() })
+						.eq("id", poll.id);
+				} catch {
+					/* liveness only — the vote already succeeded */
+				}
 				const [withResults] = await attachResults([poll], true);
 				// Emit poll.voted event for workforce consumption
 				emitEventAndBridge(EVENT_TYPES.REACTION_ADDED, {
@@ -422,6 +484,8 @@ export default async function handler(req, res) {
 						.status(403)
 						.json({ error: "Polls can only link to your own posts." });
 			}
+			// The one-poll-per-post rule lives in createPoll() below, so the
+			// worker and any agent share it. Map its outcome onto the wire.
 			const created = await createPoll({
 				title,
 				ptype,
@@ -431,8 +495,17 @@ export default async function handler(req, res) {
 				expires_at,
 				admin,
 			});
-			if (!created.ok) throw created.error;
-			return res.status(201).json(created.poll);
+			if (!created.ok) {
+				if (created.code === "POST_ALREADY_HAS_POLL") {
+					return res
+						.status(409)
+						.json({ error: created.error.message, code: created.code });
+				}
+				throw created.error;
+			}
+			// 200 (not 201) on a retry: nothing new was created, and the client
+			// must not learn otherwise.
+			return res.status(created.deduped ? 200 : 201).json(created.poll);
 		}
 
 		if (req.method === "PUT") {
