@@ -2,6 +2,9 @@
  * Generate native-shell artwork from public/favicon.svg (the Voice Box mark).
  *
  *   electron/icon.png      512px app icon (electron-builder)
+ *   electron/icon.icns     macOS icon (electron-builder mac target; built
+ *                          with sips + iconutil, so macOS runners only —
+ *                          other platforms log a skip, never fail)
  *   resources/icon.png    1024px source for `capacitor-assets generate`
  *   resources/splash.png  2732px source for `capacitor-assets generate`
  *
@@ -12,6 +15,9 @@
 import { mkdirSync } from "fs";
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";
+import { execFileSync } from "child_process";
+import { mkdtempSync, rmSync } from "fs";
+import { tmpdir } from "os";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const src = join(root, "public", "favicon.svg");
@@ -52,6 +58,42 @@ async function main() {
 		.toFile(join(root, "resources", "splash.png"));
 
 	console.log(`[icons] brand=${BRAND} — electron/icon.png, resources/icon.png, resources/splash.png ✓`);
+
+	// macOS .icns needs Apple's iconutil (macOS runners only). Every other
+	// platform logs a skip — the Windows/Android artifacts above are
+	// unaffected, and electron-builder only reads icon.icns for --mac.
+	if (process.platform !== "darwin") {
+		console.log("[icons] skipping icon.icns (requires macOS iconutil)");
+		return;
+	}
+	const iconset = mkdtempSync(join(tmpdir(), "vb-icon-"));
+	try {
+		for (const size of [16, 32, 128, 256, 512]) {
+			for (const scale of [1, 2]) {
+				const px = size * scale;
+				const name =
+					scale === 2 ? `icon_${size}x${size}@2x.png` : `icon_${size}x${size}.png`;
+				execFileSync("sips", [
+					"-z",
+					String(px),
+					String(px),
+					src,
+					"--out",
+					join(iconset, name),
+				]);
+			}
+		}
+		execFileSync("iconutil", [
+			"-c",
+			"icns",
+			iconset,
+			"-o",
+			join(root, "electron", "icon.icns"),
+		]);
+		console.log("[icons] electron/icon.icns ✓");
+	} finally {
+		rmSync(iconset, { recursive: true, force: true });
+	}
 }
 
 main().catch((err) => {

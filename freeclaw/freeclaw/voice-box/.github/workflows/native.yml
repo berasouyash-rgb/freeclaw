@@ -1,8 +1,8 @@
-# Native shells — Electron (Windows) installer + Android APK, built in CI.
+# Native shells — Electron (Windows + macOS) installers + Android APK, built in CI.
 # Local builds need disk + Android Studio; this machine has neither, so CI
 # is the supported path. Trigger manually or by publishing a release.
 # Repo variable VITE_API_BASE (e.g. https://voice-box-psi.vercel.app) is baked
-# into both shells as the API origin — set it before dispatching.
+# into every shell as the API origin — set it before dispatching.
 
 name: Native
 
@@ -53,6 +53,48 @@ jobs:
         with:
           name: voice-box-desktop-win-x64
           path: electron/dist/*.exe
+          if-no-files-found: error
+
+  # ── macOS desktop app (Electron DMG + ZIP, Apple Silicon + Intel) ──
+  # Unsigned (no Apple Developer certificate in CI): on first launch the
+  # user right-clicks the app → Open → Open. Signed/notarized builds need
+  # APPLE_ID + APPLE_APP_SPECIFIC_PASSWORD + CSC_LINK secrets wired into
+  # electron-builder's notarize step — add when the project enrolls.
+  macos:
+    name: Desktop app (macOS)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate icons (incl. icon.icns via iconutil)
+        run: node scripts/make-icons.mjs
+
+      - name: Build native web bundle (relative base for file://)
+        run: npm run build
+        env:
+          VB_NATIVE_ELECTRON: "1"
+
+      - name: Build DMG + ZIP (unsigned)
+        run: npx electron-builder --config electron-builder.yml --mac --publish never
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+
+      - name: Upload macOS artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: voice-box-desktop-mac
+          path: |
+            electron/dist/*.dmg
+            electron/dist/*.zip
           if-no-files-found: error
 
   # ── Android APK (Capacitor, debug-signed) ───────────────────────
