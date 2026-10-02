@@ -104,7 +104,7 @@ export async function sendEmail(
         to_name: params.to_name || "",
         subject: params.subject,
         message: params.message,
-        from_name: params.from_name || "Voice Box",
+        from_name: params.from_name || "Voice Flow",
         reply_to: params.reply_to || params.to_email,
       },
     );
@@ -126,7 +126,7 @@ export async function sendReportEmail(
   return sendEmail({
     to_email: params.to_email,
     to_name: params.to_name,
-    subject: `Voice Box: Report "${params.report_title}" — ${params.report_status}`,
+    subject: `Voice Flow: Report "${params.report_title}" — ${params.report_status}`,
     message: [
       `Your report has been updated.`,
       ``,
@@ -136,7 +136,7 @@ export async function sendReportEmail(
       ``,
       `View your report: ${params.report_url}`,
       ``,
-      `— Voice Box Team`,
+      `— Voice Flow Team`,
     ].join("\n"),
   });
 }
@@ -164,7 +164,7 @@ export async function sendAlertEmail(
       ``,
       params.alert_url ? `View details: ${params.alert_url}` : "",
       ``,
-      `— Voice Box System`,
+      `— Voice Flow System`,
     ]
       .filter(Boolean)
       .join("\n"),
@@ -179,7 +179,7 @@ export async function sendNotificationEmail(
 ): Promise<{ success: boolean; error?: string }> {
   return sendEmail({
     to_email: params.to_email,
-    subject: `Voice Box: ${params.notification_title}`,
+    subject: `Voice Flow: ${params.notification_title}`,
     message: [
       params.notification_title,
       ``,
@@ -187,7 +187,7 @@ export async function sendNotificationEmail(
       ``,
       params.notification_url ? `View: ${params.notification_url}` : "",
       ``,
-      `— Voice Box Team`,
+      `— Voice Flow Team`,
     ]
       .filter(Boolean)
       .join("\n"),

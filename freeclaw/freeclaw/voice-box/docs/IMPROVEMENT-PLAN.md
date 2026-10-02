@@ -1,4 +1,4 @@
-# VOICE BOX — CONTINUOUS ENTERPRISE IMPROVEMENT MASTER PLAN
+# VOICE FLOW — CONTINUOUS ENTERPRISE IMPROVEMENT MASTER PLAN
 
 > **Operation code:** STRYKER-001 (continuous loop, never final)
 > **Owner:** Engineering Lead (agent) · **Basis:** docs/ARCHITECTURE.md + live codebase audit

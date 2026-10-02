@@ -477,7 +477,7 @@ export default function CommandPalette() {
 					{typeFilter !== "All" && (
 						<span className="text-accent">{typeFilter}</span>
 					)}
-					<span className="ml-auto">Voice Box ⌘K</span>
+					<span className="ml-auto">Voice Flow ⌘K</span>
 				</div>
 			</div>
 		</div>

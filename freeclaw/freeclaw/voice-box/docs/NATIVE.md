@@ -1,4 +1,4 @@
-# Voice Box on desktop + mobile
+# Voice Flow on desktop + mobile
 
 One codebase, three shells. Behavior is identical everywhere — only the
 transport adapts (router type, API origin).
@@ -57,9 +57,32 @@ or the API is refusing the shell's origin. Check in order:
    `https://voice-box-psi.vercel.app` when it is missing, so an old broken build
    just needs reinstalling from a fixed artifact.
 2. The API allows the shell: Electron sends `Origin: null`, Capacitor sends
-   `capacitor://localhost` — both are allowlisted in `api/_auth.js cors()`.
+   `https://localhost` (v7 default scheme; legacy `capacitor://localhost` and
+   `ionic://localhost` stay allowlisted too) — all covered in `api/_auth.js cors()`.
 3. No action needed for cookies: the client sends `credentials: include` and
    the server mints `SameSite=None; Secure` cookies for these origins.
+
+## In-app updates (APK + EXE)
+
+Both shells check `GET /api/version` at most once a day and show an
+"Update detected — Update now / Later" dialog when a newer build exists
+(`src/lib/appUpdate.ts` + `UpdateDialog`, wired in `Layout`). Web browsers
+update on reload and never see it.
+
+To publish a release:
+
+1. Bump `version` in `package.json` (e.g. `2.1.0`) and build the artifacts
+   (CI **Native** workflow, or local `build-desktop-local.bat` / Gradle).
+2. Upload the `.apk` and `.exe` somewhere reachable over https (e.g. a
+   GitHub Release on the fork).
+3. Set four Vercel env vars on the production project and redeploy:
+   `LATEST_APK_VERSION` + `LATEST_APK_URL` (APK), `LATEST_EXE_VERSION` +
+   `LATEST_EXE_URL` (EXE). Optional `LATEST_APK_NOTES` / `LATEST_EXE_NOTES`
+   (≤500 chars, shown in the dialog).
+4. Unset (or leave unset) a platform to stop offering it — the client
+   treats a missing entry as up-to-date, never as an error.
+
+`Later` snoozes 24h per device. A failed check is silent by design.
 
 ## Honest limitations
 

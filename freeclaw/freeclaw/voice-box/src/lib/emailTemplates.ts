@@ -29,7 +29,7 @@ export const DEFAULT_TEMPLATES: EmailTemplate[] = [
     id: "post-solved",
     name: "Post Solved",
     description: "Sent when an admin marks a report as solved",
-    subject: 'Voice Box: Your report "{{post_title}}" has been solved!',
+    subject: 'Voice Flow: Your report "{{post_title}}" has been solved!',
     body: `Great news! Your report has been resolved.
 
 Title: {{post_title}}
@@ -40,7 +40,7 @@ Admin reply: {{admin_reply}}
 View your report: {{post_url}}
 
 Thank you for helping improve our community!
-— Voice Box Team`,
+— Voice Flow Team`,
     variables: ["post_title", "post_url", "admin_reply"],
     category: "notification",
   },
@@ -48,14 +48,14 @@ Thank you for helping improve our community!
     id: "poll-closed",
     name: "Poll Closed",
     description: "Sent when a poll expires or is closed by the creator",
-    subject: 'Voice Box: Your poll "{{poll_title}}" has closed',
+    subject: 'Voice Flow: Your poll "{{poll_title}}" has closed',
     body: `Your poll has closed and results are in!
 
 Poll: {{poll_title}}
 
 View results: {{poll_url}}
 
-— Voice Box Team`,
+— Voice Flow Team`,
     variables: ["poll_title", "poll_url"],
     category: "notification",
   },
@@ -63,7 +63,7 @@ View results: {{poll_url}}
     id: "alert-critical",
     name: "Critical Alert",
     description: "Sent to admins when a critical system alert fires",
-    subject: "[🔴 CRITICAL] Voice Box Alert: {{alert_title}}",
+    subject: "[🔴 CRITICAL] Voice Flow Alert: {{alert_title}}",
     body: `🔴 CRITICAL: {{alert_title}}
 
 {{alert_message}}
@@ -72,7 +72,7 @@ View results: {{poll_url}}
 View details: {{alert_url}}
 {{/alert_url}}
 
-— Voice Box System`,
+— Voice Flow System`,
     variables: ["alert_title", "alert_message", "alert_url"],
     category: "alert",
   },
@@ -80,7 +80,7 @@ View details: {{alert_url}}
     id: "alert-warning",
     name: "Warning Alert",
     description: "Sent to admins when a warning-level alert fires",
-    subject: "[🟡 WARNING] Voice Box Alert: {{alert_title}}",
+    subject: "[🟡 WARNING] Voice Flow Alert: {{alert_title}}",
     body: `🟡 WARNING: {{alert_title}}
 
 {{alert_message}}
@@ -89,7 +89,7 @@ View details: {{alert_url}}
 View details: {{alert_url}}
 {{/alert_url}}
 
-— Voice Box System`,
+— Voice Flow System`,
     variables: ["alert_title", "alert_message", "alert_url"],
     category: "alert",
   },
@@ -97,7 +97,7 @@ View details: {{alert_url}}
     id: "alert-info",
     name: "Info Alert",
     description: "Sent to admins for informational alerts",
-    subject: "[ℹ️ INFO] Voice Box Alert: {{alert_title}}",
+    subject: "[ℹ️ INFO] Voice Flow Alert: {{alert_title}}",
     body: `ℹ️ INFO: {{alert_title}}
 
 {{alert_message}}
@@ -106,7 +106,7 @@ View details: {{alert_url}}
 View details: {{alert_url}}
 {{/alert_url}}
 
-— Voice Box System`,
+— Voice Flow System`,
     variables: ["alert_title", "alert_message", "alert_url"],
     category: "alert",
   },
@@ -114,8 +114,8 @@ View details: {{alert_url}}
     id: "welcome",
     name: "Welcome Email",
     description: "Sent to new users when they first sign up",
-    subject: "Welcome to Voice Box! 🎉",
-    body: `Welcome to Voice Box!
+    subject: "Welcome to Voice Flow! 🎉",
+    body: `Welcome to Voice Flow!
 
 You're now part of a community that speaks up and gets things fixed.
 
@@ -127,7 +127,7 @@ Here's what you can do:
 
 Get started: {{app_url}}
 
-— Voice Box Team`,
+— Voice Flow Team`,
     variables: ["app_url"],
     category: "marketing",
   },

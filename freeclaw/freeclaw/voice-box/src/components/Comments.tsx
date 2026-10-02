@@ -555,7 +555,7 @@ export default memo(function Comments({
 						</div>
 					)}
 					<form
-						className="flex gap-2"
+						className="flex gap-2 min-w-0"
 						onSubmit={(e) => {
 							e.preventDefault();
 							submit();
@@ -563,7 +563,7 @@ export default memo(function Comments({
 					>
 						<input
 							id="comment-input"
-							className={`input flex-1 transition-all duration-200 ${(moderation?.flags ?? []).some((f) => f.severity === "critical" || f.severity === "high") ? "moderation-flag border-bad" : moderation && (moderation.flags ?? []).length === 0 && text.length > 5 ? "moderation-ok border-good" : ""}`}
+							className={`input flex-1 min-w-0 transition-all duration-200 ${(moderation?.flags ?? []).some((f) => f.severity === "critical" || f.severity === "high") ? "moderation-flag border-bad" : moderation && (moderation.flags ?? []).length === 0 && text.length > 5 ? "moderation-ok border-good" : ""}`}
 							placeholder={
 								asAdmin
 									? "Reply as Admin (official)…"

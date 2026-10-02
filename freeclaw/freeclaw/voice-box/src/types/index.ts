@@ -1,5 +1,5 @@
 /**
- * Shared domain types for Voice Box.
+ * Shared domain types for Voice Flow.
  * Source of truth for all frontend data shapes.
  */
 

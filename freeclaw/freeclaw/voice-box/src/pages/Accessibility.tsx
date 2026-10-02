@@ -1,5 +1,5 @@
-﻿import { Check, Ear, Eye, Keyboard, Mail, Monitor } from "lucide-react";
-import { Link } from "react-router";
+﻿import { ArrowLeft, Check, Ear, Eye, Keyboard, Mail, Monitor } from "lucide-react";
+import { Link, useNavigate } from "react-router";
 import FadeIn from "../components/FadeIn";
 
 const COMMITMENTS = [
@@ -55,17 +55,29 @@ const STANDARDS = [
 ];
 
 export default function Accessibility() {
+	const nav = useNavigate();
 	return (
 		<div className="min-h-screen bg-bg">
 			<section className="relative overflow-hidden">
 				<div className="absolute inset-0 bg-gradient-to-b from-accent/5 via-transparent to-transparent" />
 				<div className="relative max-w-3xl mx-auto px-6 pt-24 pb-16 md:pt-32 md:pb-20 text-center">
 					<FadeIn>
+						<button
+							type="button"
+							className="btn btn-ghost !px-3 mb-6"
+							onClick={() => nav(-1)}
+							aria-label="Go back"
+						>
+							<ArrowLeft size={15} /> Back
+						</button>
+						<p className="inline-flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-[0.18em] text-accent bg-accent/10 rounded-full px-3 py-1.5 mb-4">
+							WCAG 2.1 AA baseline
+						</p>
 						<h1 className="text-4xl md:text-5xl font-bold text-ink mb-6">
 							Accessibility
 						</h1>
 						<p className="text-lg text-ink2 max-w-xl mx-auto">
-							Voice Box is committed to ensuring digital accessibility for all
+							Voice Flow is committed to ensuring digital accessibility for all
 							users, including those with disabilities.
 						</p>
 					</FadeIn>
@@ -190,7 +202,7 @@ export default function Accessibility() {
 						Accessibility Feedback
 					</h2>
 					<p className="text-ink2 mb-6">
-						We welcome your feedback on the accessibility of Voice Box. Please
+						We welcome your feedback on the accessibility of Voice Flow. Please
 						let us know if you encounter any barriers.
 					</p>
 					<Link

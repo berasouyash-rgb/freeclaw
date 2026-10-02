@@ -6,11 +6,11 @@ product
 
 ## Users
 
-Students use Voice Box to report problems, share suggestions, ask questions, vote in polls, and communicate with school staff without exposing their identity. Staff and administrators use the same platform to moderate content, investigate reports, respond to the community, and operate the workforce and safety tooling.
+Students use Voice Flow to report problems, share suggestions, ask questions, vote in polls, and communicate with school staff without exposing their identity. Staff and administrators use the same platform to moderate content, investigate reports, respond to the community, and operate the workforce and safety tooling.
 
 ## Product Purpose
 
-Voice Box is an anonymous school-feedback and problem-solving platform. It exists to make it safe and easy for students to raise real concerns, help administrators understand and resolve them, and preserve a clear, trustworthy record of what happened. Success means a user can complete the task they arrived to do, understand the current state, recover from failure, and trust that the system has not silently lost or fabricated their work.
+Voice Flow is an anonymous school-feedback and problem-solving platform. It exists to make it safe and easy for students to raise real concerns, help administrators understand and resolve them, and preserve a clear, trustworthy record of what happened. Success means a user can complete the task they arrived to do, understand the current state, recover from failure, and trust that the system has not silently lost or fabricated their work.
 
 ## Brand Personality
 

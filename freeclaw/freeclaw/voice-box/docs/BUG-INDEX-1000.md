@@ -1,4 +1,4 @@
-# Voice Box — Technical Bug Index (1,000+ Compilation)
+# Voice Flow — Technical Bug Index (1,000+ Compilation)
 
 A categorized reference of technical bugs, errors, and glitches frequently encountered in
 software applications. QA validates against it; developers use it to sharpen debugging;

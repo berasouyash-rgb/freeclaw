@@ -3901,7 +3901,7 @@ async function builtinAgentRun(input) {
 	}
 	const paused = supervisor?.paused_workers || [];
 	const system =
-		`You are the Voice Box operations assistant. Answer the admin's question concisely, using these LIVE numbers; say "unknown" where the value is null rather than inventing.\n` +
+		`You are the Voice Flow operations assistant. Answer the admin's question concisely, using these LIVE numbers; say "unknown" where the value is null rather than inventing.\n` +
 		`Workforce executions (24h): ${health?.total_executions_24h ?? "unknown"} ` +
 		`(verified ok ${health?.verified_success_24h ?? "?"}, failed ${health?.verified_failure_24h ?? "?"}). ` +
 		`Paused workers: ${paused.length ? paused.join(", ") : "none"}. ` +

@@ -47,7 +47,7 @@ async function recipientEmail(authorId) {
  */
 export async function sendPostSolvedEmail({ postTitle, postId, authorId, adminReply }) {
   const postUrl = `https://voicebox.app/post/${postId}`;
-  const subject = `Voice Box: Your report "${(postTitle || "").slice(0, 60)}" has been solved!`;
+  const subject = `Voice Flow: Your report "${(postTitle || "").slice(0, 60)}" has been solved!`;
   const message = [
     `Great news! Your report has been resolved.`,
     ``,
@@ -57,7 +57,7 @@ export async function sendPostSolvedEmail({ postTitle, postId, authorId, adminRe
     `View your report: ${postUrl}`,
     ``,
     `Thank you for helping improve our community!`,
-    `— Voice Box Team`,
+    `— Voice Flow Team`,
   ]
     .filter(Boolean)
     .join("\n");
@@ -78,7 +78,7 @@ export async function sendPollClosedEmail({ pollTitle, pollId, authorId, postId 
   const pollUrl = postId
     ? `https://voicebox.app/post/${postId}`
     : `https://voicebox.app`;
-  const subject = `Voice Box: Your poll "${(pollTitle || "").slice(0, 60)}" has closed`;
+  const subject = `Voice Flow: Your poll "${(pollTitle || "").slice(0, 60)}" has closed`;
   const message = [
     `Your poll has closed and results are in!`,
     ``,
@@ -86,7 +86,7 @@ export async function sendPollClosedEmail({ pollTitle, pollId, authorId, postId 
     ``,
     `View results: ${pollUrl}`,
     ``,
-    `— Voice Box Team`,
+    `— Voice Flow Team`,
   ].join("\n");
 
   const to = await recipientEmail(authorId);
@@ -108,7 +108,7 @@ export async function sendAlertEmail({ title, message, severity, url }) {
         ? "🟡 WARNING"
         : "ℹ️ INFO";
 
-  const subject = `[${severityLabel}] Voice Box Alert: ${title}`;
+  const subject = `[${severityLabel}] Voice Flow Alert: ${title}`;
   const body = [
     `${severityLabel}: ${title}`,
     ``,
@@ -116,7 +116,7 @@ export async function sendAlertEmail({ title, message, severity, url }) {
     ``,
     url ? `View details: ${url}` : ``,
     ``,
-    `— Voice Box System`,
+    `— Voice Flow System`,
   ]
     .filter(Boolean)
     .join("\n");

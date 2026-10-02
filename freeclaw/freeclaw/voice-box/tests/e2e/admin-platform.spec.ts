@@ -77,11 +77,11 @@ test.describe("Admin Login Page", () => {
     }
   });
 
-  test("back to Voice Box link works", async ({ page }) => {
+  test("back to Voice Flow link works", async ({ page }) => {
     await page.goto("/admin");
     await page.waitForLoadState("domcontentloaded");
 
-    const backLink = page.locator('a:has-text("Back to Voice Box")').first();
+    const backLink = page.locator('a:has-text("Back to Voice Flow")').first();
     await expect(backLink).toBeVisible({ timeout: 10000 });
     await backLink.click();
     await page.waitForLoadState("networkidle");

@@ -73,7 +73,7 @@ export default function About() {
 							Every student deserves a voice.
 						</h1>
 						<p className="text-lg text-ink2 max-w-2xl mx-auto leading-relaxed">
-							Voice Box exists because too many student concerns go unheard. We
+							Voice Flow exists because too many student concerns go unheard. We
 							believe anonymous feedback, combined with intelligent AI, can
 							transform how schools listen and respond.
 						</p>

@@ -1,5 +1,5 @@
 /**
- * Local anonymous identity — the ONLY identifier Voice Box ever uses.
+ * Local anonymous identity — the ONLY identifier Voice Flow ever uses.
  * Generated in the browser, stored in localStorage, never linked to any personal data.
  *
  * Storage is best-effort. Every access is guarded so a blocked/cleared

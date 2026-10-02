@@ -1,7 +1,7 @@
-# Implementation Plan: Voice Box Master Spec
+# Implementation Plan: Voice Flow Master Spec
 
 ## Overview
-Fix existing Voice Box UX first, then harden feed/polls/admin/moderation reliability. AI stays behind the product. No prod writes, no commits, no browser automation. Every slice is verified by unit/API tests, typecheck, lint, build.
+Fix existing Voice Flow UX first, then harden feed/polls/admin/moderation reliability. AI stays behind the product. No prod writes, no commits, no browser automation. Every slice is verified by unit/API tests, typecheck, lint, build.
 
 ## Architecture Decisions
 - Record-first voice only: `src/pages/Submit.tsx` take is sole transcript source, server Whisper `api/_transcribe.js`, structurer `api/_assist.js:460`. No parallel live recognizer.

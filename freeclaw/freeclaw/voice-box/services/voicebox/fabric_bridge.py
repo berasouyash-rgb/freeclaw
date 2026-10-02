@@ -1,7 +1,7 @@
 """
-Voice Box ↔ NVIDIA NeMo Fabric bridge (consumer integration).
+Voice Flow ↔ NVIDIA NeMo Fabric bridge (consumer integration).
 
-Translates Voice Box workforce jobs into in-memory FabricConfig objects and
+Translates Voice Flow workforce jobs into in-memory FabricConfig objects and
 runs them through NeMo Fabric's typed Python SDK (public `nemo_fabric`
 symbols only — never `_native` or adapter internals).
 

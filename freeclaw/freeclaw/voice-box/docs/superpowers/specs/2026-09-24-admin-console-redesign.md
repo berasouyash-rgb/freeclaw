@@ -1,4 +1,4 @@
-# Voice Box Admin Console Redesign
+# Voice Flow Admin Console Redesign
 
 **Date:** 2026-09-24  
 **Status:** Approved design brief  

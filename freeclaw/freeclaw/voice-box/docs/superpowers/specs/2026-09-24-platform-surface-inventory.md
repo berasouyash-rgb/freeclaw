@@ -1,4 +1,4 @@
-# Voice Box Platform Surface Inventory
+# Voice Flow Platform Surface Inventory
 
 **Date:** 2026-09-24  
 **Related design:** `docs/superpowers/specs/2026-09-24-10k-smooth-platform-design.md`  

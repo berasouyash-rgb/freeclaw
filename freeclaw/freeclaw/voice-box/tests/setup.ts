@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════
-// Voice Box Test Setup
+// Voice Flow Test Setup
 // ═══════════════════════════════════════════════════════════════════
 // Configures global test utilities, mocks for browser APIs,
 // and custom vitest matchers for all test files.

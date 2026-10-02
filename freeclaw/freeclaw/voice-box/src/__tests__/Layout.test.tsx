@@ -53,7 +53,7 @@ describe("Layout — banned IDs", () => {
 	it("blocks browsing entirely for banned IDs", async () => {
 		mocks.accountStatus = { banned: true };
 		renderLayout();
-		expect(await screen.findByText("Banned from Voice Box")).toBeInTheDocument();
+		expect(await screen.findByText("Banned from Voice Flow")).toBeInTheDocument();
 		expect(
 			screen.queryByText("Feed content"),
 		).not.toBeInTheDocument();
@@ -66,7 +66,7 @@ describe("Layout — banned IDs", () => {
 	it("keeps browsing open for clean and suspended IDs", async () => {
 		renderLayout();
 		expect(await screen.findByText("Feed content")).toBeInTheDocument();
-		expect(screen.queryByText("Banned from Voice Box")).not.toBeInTheDocument();
+		expect(screen.queryByText("Banned from Voice Flow")).not.toBeInTheDocument();
 	});
 });
 

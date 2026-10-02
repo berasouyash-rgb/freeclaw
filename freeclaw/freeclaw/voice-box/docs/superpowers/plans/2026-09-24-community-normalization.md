@@ -560,7 +560,7 @@ Expected: FAIL because migrations `021` and `022` do not exist.
 
 - [ ] **Step 3: Run the duplicate-key gate before creating the unique index**
 
-Run this read-only query against the actual Voice Box project, not an unrelated Supabase project:
+Run this read-only query against the actual Voice Flow project, not an unrelated Supabase project:
 
 ```sql
 SELECT key, count(*) AS copies,
@@ -2784,7 +2784,7 @@ Add migrations 021 through 026 after the core ledger. State that 021 runs outsid
 
 - [ ] **Step 2: Document Data API exposure for the 2026 Supabase change**
 
-Because new public-schema tables/functions may not be automatically exposed beginning in late 2026, require the actual Voice Box project’s Data API settings to expose the required public functions. Verify service-role RPC calls and verify `anon` has no direct table/function privilege. Do not enable automatic exposure for every future table merely to make this route work.
+Because new public-schema tables/functions may not be automatically exposed beginning in late 2026, require the actual Voice Flow project’s Data API settings to expose the required public functions. Verify service-role RPC calls and verify `anon` has no direct table/function privilege. Do not enable automatic exposure for every future table merely to make this route work.
 
 - [ ] **Step 3: Document the activation gates**
 

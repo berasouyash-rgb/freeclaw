@@ -1,4 +1,4 @@
-# VOICE BOX — QA Bug Ledger
+# VOICE FLOW — QA Bug Ledger
 
 Machine-readable loop state: [`LOOP-STATE.json`](./LOOP-STATE.json) · Loop plan: [`.claude/plans/VOICEBOX-QA-LOOP.md`](../../.claude/plans/VOICEBOX-QA-LOOP.md)
 
@@ -1532,7 +1532,7 @@ dead mirror.
 **ROOT CAUSE:** no `win.icon` was set. electron-builder logged
 `default Electron icon is used  reason=application icon is not set`, so the
 shortcut, taskbar button and Add/Remove Programs entry all showed the stock
-Electron logo rather than Voice Box's.
+Electron logo rather than Voice Flow's.
 
 **FIX:** `win.icon: electron/icon.png` (the same asset `scripts/make-icons.mjs`
 already generates and CI already runs).
@@ -1946,7 +1946,7 @@ unzipped and inspected rather than trusting the build log:
 | Check | Result |
 |---|---|
 | `package` name | `app.voicebox` |
-| `application-label` | `Voice Box` |
+| `application-label` | `Voice Flow` |
 | min / target SDK | 23 / 35 |
 | `INTERNET` permission | present |
 | `assets/capacitor.config.json` | `appId: app.voicebox`, `webDir: dist` |

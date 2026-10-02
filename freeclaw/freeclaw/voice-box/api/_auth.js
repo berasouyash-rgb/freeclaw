@@ -1,4 +1,4 @@
-// Shared helpers for Voice Box API routes (underscore prefix = not exposed as a route)
+// Shared helpers for Voice Flow API routes (underscore prefix = not exposed as a route)
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import supabase from "./_db-client.js";
 import { recordPendingDelivery } from "./_notification-delivery.js";

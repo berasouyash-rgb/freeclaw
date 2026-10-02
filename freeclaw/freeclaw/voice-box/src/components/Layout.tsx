@@ -31,11 +31,17 @@ import { useApp } from "../contexts/AppContext";
 import { useFocusTrap } from "../hooks/useFocusTrap";
 import { prefetchRouteForPath } from "../lib/routeChunks";
 import { api } from "../lib/api";
+import {
+	checkForAppUpdate,
+	snoozeUpdate,
+	type AppUpdate,
+} from "../lib/appUpdate";
 import { lsGet, lsSet } from "../lib/identity";
 import { flushQueue, queuedCount } from "../lib/offline";
 import { timeAgo } from "../lib/utils";
 import CommandPalette from "./CommandPalette";
 import Tutorial from "./Tutorial";
+import UpdateDialog from "./UpdateDialog";
 import VoiceLogo from "./VoiceLogo";
 
 const NAV_CORE = [
@@ -147,6 +153,7 @@ export default function Layout() {
 	const [offline, setOffline] = useState(!navigator.onLine);
 	const [queued, setQueued] = useState(queuedCount());
 	const [showTop, setShowTop] = useState(false);
+	const [appUpdate, setAppUpdate] = useState<AppUpdate | null>(null);
 	const mobileDrawerRef = useRef<HTMLDivElement>(null);
 	useFocusTrap(mobileDrawerRef, { active: mobileOpen, onEscape: () => setMobileOpen(false) });
 	const moreSheetRef = useRef<HTMLDivElement>(null);
@@ -181,6 +188,18 @@ export default function Layout() {
 			window.removeEventListener("offline", goOffline);
 			clearInterval(iv);
 		};
+	}, []);
+
+	// Native-shell app update: ask /api/version at most daily (the checker
+	// enforces web-exclusion, daily cache, and snooze itself). Deferred a
+	// few seconds so the prompt never fights first paint.
+	useEffect(() => {
+		const t = setTimeout(() => {
+			void checkForAppUpdate().then((found) => {
+				if (found) setAppUpdate(found);
+			});
+		}, 4000);
+		return () => clearTimeout(t);
 	}, []);
 
 	useEffect(() => {
@@ -287,7 +306,7 @@ export default function Layout() {
 					<div className="text-4xl mb-3" aria-hidden>
 						🚫
 					</div>
-					<h1 className="font-display font-bold text-xl">Banned from Voice Box</h1>
+					<h1 className="font-display font-bold text-xl">Banned from Voice Flow</h1>
 					<p className="text-sm text-ink2 mt-2 leading-relaxed">
 						This anonymous ID was permanently banned for breaking community
 						rules. Browsing, posting, commenting, and voting are all
@@ -317,11 +336,11 @@ export default function Layout() {
 				<Link
 					to="/"
 					className="flex items-center gap-2.5 px-2 mb-8"
-					aria-label="Voice Box home"
+					aria-label="Voice Flow home"
 				>
 					<VoiceLogo size={36} className="shadow-lg shadow-accent/30 rounded-xl" />
 					<span className="font-display font-bold text-lg tracking-tight">
-						Voice Box
+						Voice Flow
 					</span>
 				</Link>
 				<div className="flex-1 min-h-0 overflow-y-auto" data-testid="sidebar-scroll">
@@ -390,7 +409,7 @@ export default function Layout() {
 					/>
 					<div className="absolute left-0 top-0 bottom-0 w-72 bg-surface p-5 pt-[max(1.25rem,env(safe-area-inset-top))] pb-[max(1.25rem,env(safe-area-inset-bottom))] mobile-drawer-enter flex flex-col">
 						<div className="flex items-center justify-between mb-6">
-							<span className="font-display font-bold text-lg">Voice Box</span>
+							<span className="font-display font-bold text-lg">Voice Flow</span>
 							<button
 								className="btn btn-ghost !p-2"
 								onClick={() => setMobileOpen(false)}
@@ -427,7 +446,7 @@ export default function Layout() {
 							className="lg:hidden flex items-center gap-2 font-display font-bold"
 						>
 							<VoiceLogo size={28} className="rounded-lg" />
-							Voice Box
+							Voice Flow
 						</Link>
 						{/* School logo + badge — visible on desktop next to the brand icon, on mobile next to the brand */}
 						<span className="hidden lg:inline-flex items-center gap-2 text-[10px] font-semibold px-2.5 py-1 rounded-lg bg-accent/10 text-accent border border-accent/15 ml-1">
@@ -664,7 +683,7 @@ export default function Layout() {
 					<Outlet />
 				</main>					{/* Mobile bottom nav — 6 tabs: Feed, Search, Submit, Inbox (with badge), Activity, Notifications */}
 					<						nav
-						className="vb-bottomnav lg:hidden fixed bottom-0 inset-x-0 z-40 border-t border-border flex pb-[env(safe-area-inset-bottom)]"
+						className="vb-bottomnav lg:hidden fixed bottom-0 inset-x-0 z-40 border-t border-border flex pb-[max(env(safe-area-inset-bottom),0.75rem)]"
 						style={{ background: "var(--vb-surface)" }}
 						aria-label="Mobile navigation"
 					>
@@ -778,6 +797,23 @@ export default function Layout() {
 				>
 					↑
 				</button>
+			)}
+
+			{/* Native-shell app update prompt (APK + EXE only — the checker
+			returns null on web). Update now opens the fresh installer;
+			Later snoozes for 24h. */}
+			{appUpdate && (
+				<UpdateDialog
+					update={appUpdate}
+					onUpdate={() => {
+						window.open(appUpdate.url, "_blank", "noopener");
+						setAppUpdate(null);
+					}}
+					onLater={() => {
+						snoozeUpdate();
+						setAppUpdate(null);
+					}}
+				/>
 			)}
 
 			{/* Toasts render app-wide via <ToastHost /> (mounted in App.tsx) —

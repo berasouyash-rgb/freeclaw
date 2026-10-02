@@ -11,8 +11,8 @@ import VoiceLogo from "../components/VoiceLogo";
 
 describe("VoiceLogo", () => {
   it("renders labelled with size and three sound arcs", () => {
-    const { container } = render(<VoiceLogo size={48} label="Voice Box" />);
-    const svg = screen.getByRole("img", { name: "Voice Box" });
+    const { container } = render(<VoiceLogo size={48} label="Voice Flow" />);
+    const svg = screen.getByRole("img", { name: "Voice Flow" });
     expect(svg).toBeInTheDocument();
     expect(svg.getAttribute("width")).toBe("48");
     expect(svg.getAttribute("height")).toBe("48");

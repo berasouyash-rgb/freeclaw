@@ -1,5 +1,5 @@
 /**
- * Device-local storage for Voice Box.
+ * Device-local storage for Voice Flow.
  *
  * One durable key/value store, three real backends:
  *
@@ -53,7 +53,7 @@ export interface NativeStore {
 	keys(): Promise<string[]>;
 }
 
-/** Reserved prefix for Voice Box user data. Nothing else is stored here. */
+/** Reserved prefix for Voice Flow user data. Nothing else is stored here. */
 const PREFIX = "vb:";
 
 /**
@@ -484,7 +484,7 @@ export function storeRemove(key: string): void {
 	lsRemove(key);
 }
 
-/** All keys under the Voice Box prefix. */
+/** All keys under the Voice Flow prefix. */
 export function storeKeys(): string[] {
 	if (deviceWritable()) {
 		const keys = new Set(

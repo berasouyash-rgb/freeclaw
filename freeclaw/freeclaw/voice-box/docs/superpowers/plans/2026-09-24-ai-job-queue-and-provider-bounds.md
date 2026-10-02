@@ -1860,7 +1860,7 @@ On a production-sized staging copy, run `EXPLAIN (ANALYZE, BUFFERS)` for the job
 
 - [ ] **Step 5: Apply 019 then 020 to dedicated staging**
 
-Use the documented SQL Editor workflow and record the Voice Box Supabase project ref before applying. Run the test SQL from both migrations afterward, inspect queue metrics, and verify `anon`/`authenticated` receive no table or function access.
+Use the documented SQL Editor workflow and record the Voice Flow Supabase project ref before applying. Run the test SQL from both migrations afterward, inspect queue metrics, and verify `anon`/`authenticated` receive no table or function access.
 
 - [ ] **Step 6: Run a staging end-to-end smoke**
 

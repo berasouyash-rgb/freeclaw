@@ -374,7 +374,7 @@ export default function EmailTemplates() {
                     value={testEmail}
                     onChange={(e) => setTestEmail(e.target.value)}
                     placeholder="admin@example.com"
-                    className="input flex-1 text-sm"
+                    className="input flex-1 min-w-0 text-sm"
                   />
                   <button
                     onClick={handleTestSend}

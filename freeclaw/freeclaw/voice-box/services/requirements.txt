@@ -1,4 +1,4 @@
-# Voice Box AI Workforce Runtime
+# Voice Flow AI Workforce Runtime
 # Core
 fastapi==0.115.0
 uvicorn[standard]==0.30.0

@@ -249,7 +249,7 @@ export function ErrorDisplay({
 }
 
 /**
- * The full Voice Box motive, told one line per beat. While the app works,
+ * The full Voice Flow motive, told one line per beat. While the app works,
  * the loader walks through the whole story so a wait is never wasted.
  */
 export const VB_MOTIVES: readonly string[] = [
@@ -287,7 +287,7 @@ interface LoadingSpinnerProps {
 /**
  * Premium motive loader for async operations — an ambient stage with
  * drifting brand orbs, a brand tile with animated voice bars in a conic
- * gradient ring with a soft halo, the Voice Box wordmark and tagline,
+ * gradient ring with a soft halo, the Voice Flow wordmark and tagline,
  * a shimmering status line, a rotating line that tells the full SaaS
  * motive, and chapter dots marking story progress. Pure CSS, static
  * under prefers-reduced-motion.
@@ -366,7 +366,7 @@ export function LoadingSpinner({
 					</svg>
 				</div>
 			</div>
-			<p className="vb-loading-wordmark">Voice Box</p>
+			<p className="vb-loading-wordmark">Voice Flow</p>
 			<p className="vb-loading-tagline">Your Voice Matters</p>
 			{text && (
 				<p className="vb-loading-label text-xs font-medium tracking-wide">

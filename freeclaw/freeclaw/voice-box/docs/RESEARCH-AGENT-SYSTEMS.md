@@ -1,6 +1,6 @@
 # Research: How Real Production Agent Systems Work
 
-Primary-source research into how OpenAI, Anthropic, and Google actually build autonomous/automated agent systems that do real-world work — gathered before designing Voice Box's autonomous workforce framework.
+Primary-source research into how OpenAI, Anthropic, and Google actually build autonomous/automated agent systems that do real-world work — gathered before designing Voice Flow's autonomous workforce framework.
 
 **Method:** every claim below is linked to the official docs, first-party engineering posts, or official SDK documentation it comes from. Anything not verified from a primary source is marked UNVERIFIED or omitted.
 
@@ -112,7 +112,7 @@ Primary-source research into how OpenAI, Anthropic, and Google actually build au
 
 ## 5. Cross-cutting production patterns
 
-| Pattern | Labs | Source | Voice Box application |
+| Pattern | Labs | Source | Voice Flow application |
 |---|---|---|---|
 | Predefined **workflow** (chaining w/ gates, routing, parallel, orchestrator-workers, evaluator-optimizer) before free-form agents | Anthropic | [Building effective agents](https://www.anthropic.com/engineering/building-effective-agents) | Each of the ~56 roles gets a fixed pipeline shape chosen from this catalog — not an ad-hoc loop |
 | Single loop: model ⇄ tools, **ground truth each step** | Anthropic/OpenAI/Google | [Building effective agents](https://www.anthropic.com/engineering/building-effective-agents) | One canonical engine; worker must re-read DB state via `verify()`, never self-report |
@@ -152,7 +152,7 @@ Primary-source research into how OpenAI, Anthropic, and Google actually build au
 
 ---
 
-## 7. Framework requirements checklist for Voice Box's autonomous workforce
+## 7. Framework requirements checklist for Voice Flow's autonomous workforce
 
 Every requirement grounded in a source above.
 
@@ -188,4 +188,4 @@ Every requirement grounded in a source above.
 
 ---
 
-*Next step: design the Voice Box full flow / foundation / framework directly against R1–R20, mapping each requirement onto concrete modules (Event Bus, Work Queue, Tool Registry, Policy/Permission, Executor, Verification, Evidence, Trace, Watchdog, Cost Governor, Eval Harness, Realtime UI).*
+*Next step: design the Voice Flow full flow / foundation / framework directly against R1–R20, mapping each requirement onto concrete modules (Event Bus, Work Queue, Tool Registry, Policy/Permission, Executor, Verification, Evidence, Trace, Watchdog, Cost Governor, Eval Harness, Realtime UI).*

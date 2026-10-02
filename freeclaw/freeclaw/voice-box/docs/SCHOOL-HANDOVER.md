@@ -1,6 +1,6 @@
 # School operator guide (handover)
 
-Who this is for: the 1–3 staff members who own Voice Box day to day
+Who this is for: the 1–3 staff members who own Voice Flow day to day
 (school counselor, IT coordinator, discipline head). No coding needed.
 
 ## 1. Roles

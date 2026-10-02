@@ -83,7 +83,7 @@ export default function Categories() {
 
 			<div className="flex gap-2 mb-4">
 				<input
-					className="input flex-1 !py-2 text-sm"
+					className="input flex-1 min-w-0 !py-2 text-sm"
 					placeholder="Category name…"
 					value={name}
 					onChange={(e) => setName(e.target.value)}

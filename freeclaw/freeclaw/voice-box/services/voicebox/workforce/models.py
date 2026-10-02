@@ -1,5 +1,5 @@
 """
-Pydantic contracts for the Voice Box AI Workforce.
+Pydantic contracts for the Voice Flow AI Workforce.
 
 Every entity in the system is defined here with strict typing.
 Reject malformed data at the boundary.

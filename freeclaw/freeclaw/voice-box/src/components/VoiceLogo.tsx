@@ -11,7 +11,7 @@ interface VoiceLogoProps {
 }
 
 /**
- * Voice Box logo mark — speaker figure with radiating sound arcs on the
+ * Voice Flow logo mark — speaker figure with radiating sound arcs on the
  * brand gradient tile. Original art for this codebase (purple speaker +
  * waves motif). Motion is opacity/scale only (GPU-cheap); pass
  * animated={false} for static contexts and users with reduced-motion

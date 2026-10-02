@@ -1,4 +1,4 @@
-/** Thin fetch wrapper for Voice Box API routes with offline queue for failed writes. */
+/** Thin fetch wrapper for Voice Flow API routes with offline queue for failed writes. */
 
 import { getAnonId } from "./identity";
 import { apiBase } from "./platform";

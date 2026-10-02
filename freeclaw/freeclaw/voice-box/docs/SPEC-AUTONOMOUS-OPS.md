@@ -1,4 +1,4 @@
-# VOICE BOX — AUTONOMOUS OPERATIONS SYSTEM
+# VOICE FLOW — AUTONOMOUS OPERATIONS SYSTEM
 # FULL IMPLEMENTATION SPECIFICATION
 
 > Normative specification (user-provided, 2026-09-23). This is the contract the implementation
@@ -10,11 +10,11 @@
 
 Act as the Principal Systems Architect, Autonomous Systems Engineer,
 AI Engineer, Backend Engineer, SRE, Security Engineer, Database Engineer,
-QA Engineer, Product Engineer and UX Engineer for Voice Box.
+QA Engineer, Product Engineer and UX Engineer for Voice Flow.
 
 Your job is NOT to add a collection of AI features.
 
-Your job is to transform Voice Box into a continuously operating,
+Your job is to transform Voice Flow into a continuously operating,
 autonomous software system that performs real work 24/7.
 
 Do not merely create agents, dashboards, cards, prompts, labels or
@@ -26,7 +26,7 @@ Build the actual execution system.
 ## 1. CORE DECISION
 ============================================================
 
-DO NOT implement Voice Box as:
+DO NOT implement Voice Flow as:
 
 "50 AI agents sitting in a dashboard."
 
@@ -139,7 +139,7 @@ Responsibilities:
 
 Architecture:
 
-Voice Box
+Voice Flow
     |
     v
 Event Bus
@@ -177,7 +177,7 @@ Continuous Monitoring
 ## 4. EVENT SYSTEM
 ============================================================
 
-Everything important in Voice Box must generate an event.
+Everything important in Voice Flow must generate an event.
 
 Implement events such as:
 
@@ -1631,7 +1631,7 @@ final state
 Use tracing throughout.
 
 Modern agent runtimes expose traces for model calls, tool calls,
-handoffs and guardrails; Voice Box should have equivalent end-to-end
+handoffs and guardrails; Voice Flow should have equivalent end-to-end
 observability.
 
 ============================================================
@@ -1777,7 +1777,7 @@ If these questions cannot be answered, do not implement the feature.
 ## 42. IMPLEMENTATION REQUIREMENT
 ============================================================
 
-Inspect the actual Voice Box repository before making architectural
+Inspect the actual Voice Flow repository before making architectural
 changes.
 
 Do not replace working systems unnecessarily.
@@ -1920,7 +1920,7 @@ Worker produces no meaningful work
 ## 46. ACCEPTANCE CRITERIA
 ============================================================
 
-Voice Box is NOT complete until:
+Voice Flow is NOT complete until:
 
 [ ] events are real
 [ ] queue is durable
@@ -1959,13 +1959,13 @@ Voice Box is NOT complete until:
 ## 47. FINAL ENGINEERING PRINCIPLE
 ============================================================
 
-The finished Voice Box should not feel like:
+The finished Voice Flow should not feel like:
 
 "Here are some AI features."
 
 It should feel like:
 
-"Voice Box is operating itself."
+"Voice Flow is operating itself."
 
 A user creates a post.
 

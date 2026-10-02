@@ -1,4 +1,4 @@
-# Voice Box 2.0 — Workforce-50 Master Plan
+# Voice Flow 2.0 — Workforce-50 Master Plan
 
 Status: **Building** — B1 (1–6) + B2 (7–12) + B3 (13–18) + B4 (19–24) delivered; latest gate: tsc ✅ eslint ✅ unit ✅ api ✅ pytest 150 ✅
 Branch: `initial-review-branch` · Repo root: `voice-box/`
@@ -13,7 +13,7 @@ Branch: `initial-review-branch` · Repo root: `voice-box/`
 
 ## 1. Contract (why this is not fake)
 
-Voice Box 2.0 is driven by **exactly 50 named Core AI Workers** (§22 of the spec). Every
+Voice Flow 2.0 is driven by **exactly 50 named Core AI Workers** (§22 of the spec). Every
 worker must, per run:
 
 1. Fire only on a **real trigger** (cron tick, deterministic event, or AI-class trigger).

@@ -1,5 +1,5 @@
 /**
- * Voice Box — Electron desktop shell (Windows).
+ * Voice Flow — Electron desktop shell (Windows).
  *
  * Loads the production web build (dist/index.html) over file:// with hash
  * routing (see src/App.tsx ShellRouter). All data flows to the hosted API
@@ -150,7 +150,7 @@ function createWindow() {
 		height: 800,
 		minWidth: 1024,
 		minHeight: 640,
-		title: "Voice Box",
+		title: "Voice Flow",
 		backgroundColor: "#f6f6f9",
 		autoHideMenuBar: true,
 		icon: iconPath(),
@@ -188,7 +188,7 @@ if (!gotLock) {
 	app.whenReady().then(() => {
 		mainWin = createWindow();
 		app.setAboutPanelOptions({
-			applicationName: "Voice Box",
+			applicationName: "Voice Flow",
 			applicationVersion: appVersion(),
 		});
 		app.on("activate", () => {

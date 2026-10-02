@@ -1,5 +1,5 @@
 /**
- * Voice Box — Electron preload bridge.
+ * Voice Flow — Electron preload bridge.
  *
  * Exposes exactly two things to the renderer:
  *

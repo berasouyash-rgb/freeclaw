@@ -1,4 +1,4 @@
-# Voice Box 2.0 — Safety & Moderation Specification
+# Voice Flow 2.0 — Safety & Moderation Specification
 
 Status: **Spec (briefed, not yet built).** This document captures the expanded safety /
 content-moderation system the product owner briefed, sourced from Ofcom / eSafety

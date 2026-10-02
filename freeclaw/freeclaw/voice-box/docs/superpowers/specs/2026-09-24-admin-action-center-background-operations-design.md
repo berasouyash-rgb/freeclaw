@@ -1,4 +1,4 @@
-# Voice Box Action Center and Background Operations Design
+# Voice Flow Action Center and Background Operations Design
 
 **Date:** 2026-09-24  
 **Status:** Approved conversation design; implementation gated on plan review  
@@ -26,7 +26,7 @@ The reported symptoms have identifiable causes in the current tree:
 
 ## CAPABILITY
 
-For an authenticated administrator, Voice Box provides a calm Action Center that shows what needs human attention, preserves the current view while background work continues, and lets the administrator explicitly obtain a newer snapshot without a loading loop. The same administrator can recover individual activity sections and content decisions without losing successful data. Background services retain their authoritative state and auditability without becoming a front-end control room.
+For an authenticated administrator, Voice Flow provides a calm Action Center that shows what needs human attention, preserves the current view while background work continues, and lets the administrator explicitly obtain a newer snapshot without a loading loop. The same administrator can recover individual activity sections and content decisions without losing successful data. Background services retain their authoritative state and auditability without becoming a front-end control room.
 
 ## Actors and surfaces
 

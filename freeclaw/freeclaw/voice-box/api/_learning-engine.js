@@ -284,7 +284,7 @@ export async function triggerReflection(
 		}
 
 		// Build LLM prompt
-		const systemPrompt = `You are a learning analyst for an AI agent system called Voice Box. Analyze agent performance data and generate actionable insights.
+		const systemPrompt = `You are a learning analyst for an AI agent system called Voice Flow. Analyze agent performance data and generate actionable insights.
 
 Agent ID: ${agentId}
 Division: ${division}

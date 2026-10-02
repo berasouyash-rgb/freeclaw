@@ -1,4 +1,4 @@
-# Voice Box Workforce Loop — Runbook
+# Voice Flow Workforce Loop — Runbook
 
 Pattern: `sequential` / Mode: `safe`
 Branch: `initial-review-branch` inside `voice-box/.git` (verify HEAD with
@@ -569,12 +569,12 @@ Score: 29 PASS, 2 PARTIAL (16, 23), 1 BLOCKED (22). Open work tracked as slices:
 
 ## "Server error loading / too many" — measured findings
 
-- `http://localhost:5174/` is **not Voice Box** — it is "Flour & Ledger — Bakery
+- `http://localhost:5174/` is **not Voice Flow** — it is "Flour & Ledger — Bakery
   Management" from `Downloads\agon-agent_1-46731b9d (1)` (IPv6-only bind;
-  `127.0.0.1:5174` refuses). It has no `/api/*`, so a Voice Box tab pointed at
+  `127.0.0.1:5174` refuses). It has no `/api/*`, so a Voice Flow tab pointed at
   5174 shows load/server errors.
-- RESOLVED: one clean `npm run dev` now serves Voice Box on **http://localhost:5173/**
-  (`host:true` → dual-stack; `/` 200 title "Voice Box — Anonymous School Feedback
+- RESOLVED: one clean `npm run dev` now serves Voice Flow on **http://localhost:5173/**
+  (`host:true` → dual-stack; `/` 200 title "Voice Flow — Anonymous School Feedback
   Platform", `/api/posts` 200 with 30 posts). Stale dev servers on 5175 (pid
   21604) and 5273 (pid 20520) were stopped; the bakery app on 5174 (pid 31604)
   was left untouched. `src/lib/excelXML.ts` and `src/pages/PostDetail.tsx` both

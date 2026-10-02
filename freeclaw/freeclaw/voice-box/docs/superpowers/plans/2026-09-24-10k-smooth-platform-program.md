@@ -1,8 +1,8 @@
-# Voice Box 10,000-User Full-Platform Program Implementation Plan
+# Voice Flow 10,000-User Full-Platform Program Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Make every existing Voice Box user/admin capability smooth, truthful, recoverable, and honestly prepared for 10,000 simultaneously active users without deleting automatic, manual, AI, or non-AI features.
+**Goal:** Make every existing Voice Flow user/admin capability smooth, truthful, recoverable, and honestly prepared for 10,000 simultaneously active users without deleting automatic, manual, AI, or non-AI features.
 
 **Architecture:** Keep the Vercel + Supabase monolith and its public API contracts. Classify every capability as `automatic`, `manual`, or `both`; use one bounded initial client load, authoritative local reconciliation, durable Supabase-backed jobs for expensive background work, and a single dependency-ordered migration ledger.
 

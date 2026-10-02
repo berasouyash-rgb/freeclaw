@@ -11,7 +11,7 @@ const PERSONA_KEY = "admin_persona";
 // ─── Default Persona ──────────────────────────────────────────────
 // Uses the enterprise admin system prompt as the default persona.
 const DEFAULT_PERSONA = {
-	name: "Voice Box Admin Agent",
+	name: "Voice Flow Admin Agent",
 	personality:
 		"Expert, decisive, and helpful. Speaks with authority and precision.",
 	expertise: [

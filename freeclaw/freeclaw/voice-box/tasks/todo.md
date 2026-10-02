@@ -1,4 +1,4 @@
-# Todo — Voice Box Master Spec (index of tasks/plan.md)
+# Todo — Voice Flow Master Spec (index of tasks/plan.md)
 
 - [x] Task 1: Button audit §25
 - [x] Task 2: Destructive actions §26

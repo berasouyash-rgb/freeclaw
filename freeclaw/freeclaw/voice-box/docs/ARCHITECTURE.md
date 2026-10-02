@@ -1,4 +1,4 @@
-﻿# Voice Box — Complete Architecture
+﻿# Voice Flow — Complete Architecture
 
 > **Version:** 1.0  
 > **Last updated:** 2026-07-29  
@@ -26,9 +26,9 @@
 
 ## 1. Overview
 
-**Voice Box** is an **anonymous school feedback platform** where students post problems/suggestions anonymously and staff/AI triage, moderate, and resolve them. It evolved from a simple anonymous complaints board into a sophisticated system with AI agents, enterprise observability, 50+ LLM provider integrations, and real-time messaging.
+**Voice Flow** is an **anonymous school feedback platform** where students post problems/suggestions anonymously and staff/AI triage, moderate, and resolve them. It evolved from a simple anonymous complaints board into a sophisticated system with AI agents, enterprise observability, 50+ LLM provider integrations, and real-time messaging.
 
-**Brand / Identity:** Voice Box — "Your Voice Matters" — low-barrier, anonymous participation with AI-assisted triage.
+**Brand / Identity:** Voice Flow — "Your Voice Matters" — low-barrier, anonymous participation with AI-assisted triage.
 ---
 ## 2. Tech Stack
 

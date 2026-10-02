@@ -1,4 +1,4 @@
-# Voice Box
+# Voice Flow
 
 Community problem-solving platform: posts, polls, suggestions, communities, AI assist, and an admin console — React 19 + Vite + TypeScript frontend, consolidated Vercel serverless API, optional FastAPI workforce runtime.
 

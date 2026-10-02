@@ -8,7 +8,7 @@
 import { test, expect } from "@playwright/test";
 
 const PUBLIC_PAGES = [
-  { path: "/", name: "Home", heading: /Voice Box|Community|Feed/i },
+  { path: "/", name: "Home", heading: /Voice Flow|Community|Feed/i },
   { path: "/about", name: "About", heading: /About/i },
   { path: "/contact", name: "Contact", heading: /Contact/i },
   { path: "/terms", name: "Terms", heading: /Terms|Conditions/i },

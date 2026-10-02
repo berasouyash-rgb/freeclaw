@@ -1,4 +1,4 @@
-# Voice Box — Platform Health Report: Performance, Reliability & Experience
+# Voice Flow — Platform Health Report: Performance, Reliability & Experience
 
 **Date:** 23 September 2026 · **Author:** engineering (automated analysis + verified fixes)
 **Audience:** school stakeholders, the developers who will implement the follow-ups,
@@ -12,7 +12,7 @@ and the users who deserve a seamless product.
 
 ## 1. Executive summary (~current state in one page)
 
-**Observation.** Voice Box is a real, working anonymous school-feedback platform
+**Observation.** Voice Flow is a real, working anonymous school-feedback platform
 (React 19 + Vite 7 + TypeScript frontend, Supabase backend, serverless `api/`
 functions). This cycle's verification battery is fully green: API suite 112 files /
 1256 tests passing, frontend suite 84 files / 1367 tests passing, typecheck 0 errors,
@@ -73,7 +73,7 @@ standard request after 8 seconds with the message "Request timed out — check y
 connection and retry." Two facts collided with that budget. First, serverless
 functions and the managed database go cold: a first request after idle routinely
 takes several seconds before any application code runs (this is standard
-serverless behavior, documented by Vercel and AWS alike — not a Voice Box bug).
+serverless behavior, documented by Vercel and AWS alike — not a Voice Flow bug).
 Second, the publish path is sequential and slow by design: pre-publish AI moderation
 (`src/pages/Submit.tsx`, `submit()`) then the database insert, each a separate
 round trip. Either leg could exceed 8 seconds on a cold start, so publishing —

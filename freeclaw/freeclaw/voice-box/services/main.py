@@ -1,5 +1,5 @@
 """
-Voice Box AI Workforce — FastAPI Application
+Voice Flow AI Workforce — FastAPI Application
 
 Exposes the workforce runtime as a REST API for:
 - Admin dashboard integration
@@ -108,7 +108,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="Voice Box AI Workforce",
+    title="Voice Flow AI Workforce",
     description="Production-grade autonomous AI operations workforce",
     version="1.0.0",
     lifespan=lifespan,

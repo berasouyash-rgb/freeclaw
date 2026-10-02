@@ -129,7 +129,7 @@ describe("LoadingSpinner", () => {
 		expect(screen.getByRole("status")).toBeInTheDocument();
 		expect(document.querySelector(".vb-loading-ring")).toBeInTheDocument();
 		expect(document.querySelector(".vb-loading-halo")).toBeInTheDocument();
-		expect(screen.getByText("Voice Box")).toBeInTheDocument();
+		expect(screen.getByText("Voice Flow")).toBeInTheDocument();
 		expect(screen.getByText("Your Voice Matters")).toBeInTheDocument();
 		expect(screen.getByText("Loading conversation…")).toBeInTheDocument();
 		// motive line is suppressed when opted out

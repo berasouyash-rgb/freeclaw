@@ -398,7 +398,7 @@ export default function Settings() {
 						<div className="space-y-6">
 							<Section
 								title="Display & Feel"
-								desc="Customize how Voice Box looks and feels — every option applies instantly"
+								desc="Customize how Voice Flow looks and feels — every option applies instantly"
 							/>
 
 							{/* Theme selector — real, applies immediately */}
@@ -735,7 +735,7 @@ export default function Settings() {
 									Anonymous by Design
 								</h3>
 								<p className="text-xs text-ink3 leading-relaxed">
-									Voice Box is built for anonymous participation. Here's what we
+									Voice Flow is built for anonymous participation. Here's what we
 									collect and don't collect:
 								</p>
 								<ul className="text-xs text-ink3 space-y-2">
@@ -787,7 +787,7 @@ export default function Settings() {
 									Open Source
 								</h3>
 								<p className="text-xs text-ink3 leading-relaxed">
-									Voice Box is open source. Review the code and current deployment
+									Voice Flow is open source. Review the code and current deployment
 									settings together, including the server-side contact and moderation
 									paths described above.
 								</p>

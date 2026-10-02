@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // ═══════════════════════════════════════════════════════════════════
-// LOAD TEST — mixed real-world behavior against a running Voice Box
+// LOAD TEST — mixed real-world behavior against a running Voice Flow
 // ═══════════════════════════════════════════════════════════════════
 // Pure Node (no dependencies). Simulates concurrent anonymous visitors:
 //

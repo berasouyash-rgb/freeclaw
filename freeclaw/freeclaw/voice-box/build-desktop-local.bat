@@ -60,5 +60,5 @@ if errorlevel 1 (
 echo.
 echo BUILD OK. Your installer is in: %CD%\electron\dist\
 dir /b electron\dist\*.exe
-echo Uninstall the old Voice Box first, then run the new installer.
+echo Uninstall the old Voice Flow first, then run the new installer.
 pause

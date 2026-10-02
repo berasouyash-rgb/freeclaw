@@ -1,4 +1,4 @@
-# Voice Box Platform — Comprehensive Quality & Performance Report
+# Voice Flow Platform — Comprehensive Quality & Performance Report
 
 **Date:** September 23, 2026 · **Branch:** `initial-review-branch` · **Auditor:** AI systems review (production-audit methodology, local evidence only)
 
@@ -90,7 +90,7 @@ These three findings matter beyond their individual fixes: they were all **silen
 
 **Observation.** B7 (37–43) covers Authorization Protection, Anonymous Identity Protection (the registry `anonymity` worker already exists and is verified), Data Exposure Protection, Search Repair, Broken Page, UI Repair, and Accessibility. B8 (44–50) covers Mobile QA, Release Guardian, Change Intelligence, Cost Optimization, Reliability, Workforce Auditor, and Workforce Orchestrator.
 
-**Opinion.** Anonymity is Voice Box's core product property, and the existing anonymity guardian + the security event surface are the right foundation. The highest-value B7 item is **Accessibility** — the platform serves students, and screen-reader/keyboard support is both an inclusion requirement and a legal expectation in education. The highest-value B8 item is **Release Guardian** — with CI green being the only launch gate today, a canary/verify step after deploys would catch regressions before users do.
+**Opinion.** Anonymity is Voice Flow's core product property, and the existing anonymity guardian + the security event surface are the right foundation. The highest-value B7 item is **Accessibility** — the platform serves students, and screen-reader/keyboard support is both an inclusion requirement and a legal expectation in education. The highest-value B8 item is **Release Guardian** — with CI green being the only launch gate today, a canary/verify step after deploys would catch regressions before users do.
 
 ### Issue 6 — Load/capacity targets are stated but not yet measured (P3)
 

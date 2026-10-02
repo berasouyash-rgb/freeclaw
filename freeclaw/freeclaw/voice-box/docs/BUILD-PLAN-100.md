@@ -1,4 +1,4 @@
-# Voice Box — Autonomous AI Workforce + Product Intelligence System
+# Voice Flow — Autonomous AI Workforce + Product Intelligence System
 # Living Build Plan (100-capability build)
 
 Status: **EXECUTING** · Baseline audit complete · Stack: React 19 + Vite 7 + TS + Supabase + serverless `api/` + vitest

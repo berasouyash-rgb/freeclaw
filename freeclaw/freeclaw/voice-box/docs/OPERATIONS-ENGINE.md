@@ -1,4 +1,4 @@
-# Voice Box Autonomous Operations Engine — Full Framework
+# Voice Flow Autonomous Operations Engine — Full Framework
 
 Status: **Design → Build** · Date: 2026-09-23
 Grounded in: [`RESEARCH-AGENT-SYSTEMS.md`](./RESEARCH-AGENT-SYSTEMS.md) (primary-source research, requirements R1–R20) ·
@@ -37,7 +37,7 @@ design, and the traceability matrix back to the lab-researched requirements R1�
 ## 1. Architecture layers (spec §1 — preserved)
 
 ```
-VOICE BOX (product: posts/comments/replies/polls/ideas/categories/search/notifications/admin)
+VOICE FLOW (product: posts/comments/replies/polls/ideas/categories/search/notifications/admin)
     ↓
 USER EXPERIENCE
     ↓
@@ -80,7 +80,7 @@ Existing engine surfaces (kept, not replaced — research R1: extend what works)
 ## 2. The domain map — 8 domains, 54 capabilities
 
 ```
-VOICE BOX AUTONOMOUS OPERATIONS ENGINE
+VOICE FLOW AUTONOMOUS OPERATIONS ENGINE
 ├── ORCHESTRATION   (6)  ← the engine itself; deterministic infrastructure + meta-workers
 ├── TRUST & SAFETY (10)
 ├── COMMUNITY       (6)

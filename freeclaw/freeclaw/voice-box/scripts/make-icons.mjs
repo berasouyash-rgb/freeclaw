@@ -1,5 +1,5 @@
 /**
- * Generate native-shell artwork from public/favicon.svg (the Voice Box mark).
+ * Generate native-shell artwork from public/favicon.svg (the Voice Flow mark).
  *
  *   electron/icon.png      512px app icon (electron-builder)
  *   electron/icon.icns     macOS icon (electron-builder mac target; built

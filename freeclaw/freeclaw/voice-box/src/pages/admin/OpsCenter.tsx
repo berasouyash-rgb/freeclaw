@@ -1100,7 +1100,7 @@ export default function OpsCenter() {
 					</label>
 					<input
 						id="ops-agent-input"
-						className="input flex-1"
+						className="input flex-1 min-w-0"
 						value={agentInput}
 						maxLength={2000}
 						placeholder="e.g. Summarize open high-priority reports"

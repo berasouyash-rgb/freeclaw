@@ -58,7 +58,7 @@ function showFatal(message: string) {
 	const title = document.createElement("h1");
 	title.style.cssText =
 		"font-size:17px;font-weight:700;margin:0 0 6px;color:#171724";
-	title.textContent = "Voice Box couldn't start";
+	title.textContent = "Voice Flow couldn't start";
 
 	const detail = document.createElement("p");
 	detail.style.cssText =

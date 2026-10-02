@@ -299,7 +299,7 @@ export default function Admin() {
 						to="/"
 						className="block text-center text-xs text-ink3 hover:text-accent mt-4 transition-colors"
 					>
-						← Back to Voice Box
+						← Back to Voice Flow
 					</Link>
 				</div>
 			</div>
@@ -341,14 +341,14 @@ export default function Admin() {
 				<Link
 					to="/"
 					className="flex items-center gap-2.5 px-2.5 mb-2"
-					aria-label="Voice Box home"
+					aria-label="Voice Flow home"
 				>
 					<span className="w-9 h-9 rounded-xl bg-accent grid place-items-center text-white shadow-md shadow-accent/25">
 						<Megaphone size={16} />
 					</span>
 					<div>
 						<span className="font-display font-bold text-[15px] block leading-none text-ink">
-							Voice Box
+							Voice Flow
 						</span>
 						<span className="text-[10px] text-ink3 mt-0.5 block font-medium">
 							Admin Console
@@ -400,7 +400,7 @@ export default function Admin() {
 					<div className="absolute left-0 top-0 bottom-0 w-72 max-w-[85vw] bg-surface p-4 pt-[max(1rem,env(safe-area-inset-top))] pb-[max(1.5rem,env(safe-area-inset-bottom))] overflow-y-auto vb-rise border-r border-border">
 						<div className="flex justify-between items-center mb-5">
 							<span className="font-display font-bold text-sm text-ink">
-								Voice Box Admin
+								Voice Flow Admin
 							</span>
 							<button
 								className="btn btn-ghost !p-2.5 !rounded-xl"

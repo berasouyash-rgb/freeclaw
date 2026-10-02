@@ -68,7 +68,7 @@ export default function Privacy() {
 				</span>
 				<h1 className="font-display font-bold text-2xl">Privacy comes first</h1>
 				<p className="text-sm text-ink3 mt-2 max-w-md mx-auto">
-					Voice Box was designed so that honest feedback is completely safe.
+					Voice Flow was designed so that honest feedback is completely safe.
 					Here's exactly how it works.
 				</p>
 			</div>

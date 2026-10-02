@@ -1,8 +1,8 @@
-# Voice Box Observability and Safe Load Validation Implementation Plan
+# Voice Flow Observability and Safe Load Validation Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:subagent-driven-development` (recommended) or `superpowers:executing-plans` to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add trustworthy normalized request telemetry, durable latency and amplification evidence, and a fail-closed HTTPS load-validation harness that can prove the highest verified Voice Box capacity without ever mutating production.
+**Goal:** Add trustworthy normalized request telemetry, durable latency and amplification evidence, and a fail-closed HTTPS load-validation harness that can prove the highest verified Voice Flow capacity without ever mutating production.
 
 **Architecture:** Keep the approved Vercel + Supabase stack. Create a request-local observability context that assigns one bounded request ID, normalizes route labels, and counts origin, Supabase, and business-write activity without a database write in GET or HEAD handlers. Emit one structured metric event per API request to Vercel Log Drain; an authenticated ingest endpoint turns those events into fixed histogram buckets in the existing `system_metrics` table through an additive atomic RPC. Replace the current load script with pure, testable safety, configuration, journey, metrics, Realtime, and report modules. The production path can issue only explicitly allowlisted static or CDN `HEAD` requests; staging writes and Realtime runs are separate, operator-approved ladders.
 

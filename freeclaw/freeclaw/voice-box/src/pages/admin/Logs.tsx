@@ -305,7 +305,7 @@ export default function Logs() {
 							};
 							const fmtLog = (d: string) => { const dt = new Date(d); if (Number.isNaN(dt.getTime())) return ""; return `${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,"0")}-${String(dt.getDate()).padStart(2,"0")} ${String(dt.getHours()).padStart(2,"0")}:${String(dt.getMinutes()).padStart(2,"0")}`; };
 							const lines: string[] = [];
-							lines.push(["Voice Box — Activity & Audit Log Export", `Generated: ${new Date().toLocaleString()}`, `Total: ${logs.length + agentActivities.length} events`].map(esc).join(","));
+							lines.push(["Voice Flow — Activity & Audit Log Export", `Generated: ${new Date().toLocaleString()}`, `Total: ${logs.length + agentActivities.length} events`].map(esc).join(","));
 							lines.push("");
 							lines.push(["Type","Actor","Action","Detail","Severity","Timestamp"].map(esc).join(","));
 							for (const l of logs) { lines.push(["audit", l.actor, l.action, l.detail, "", fmtLog(l.created_at)].map(esc).join(",")); }

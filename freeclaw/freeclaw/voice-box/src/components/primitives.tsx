@@ -1,6 +1,6 @@
 /**
  * Premium reusable UI primitives — shared across user and admin surfaces.
- * All components follow the Voice Box design tokens and respond to dark mode.
+ * All components follow the Voice Flow design tokens and respond to dark mode.
  */
 import {
 	Bell,

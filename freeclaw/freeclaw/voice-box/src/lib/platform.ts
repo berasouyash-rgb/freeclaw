@@ -1,5 +1,5 @@
 /**
- * Shell detection + native-shell configuration for Voice Box.
+ * Shell detection + native-shell configuration for Voice Flow.
  *
  * One codebase ships three ways:
  *   web     — Chrome/browser. Identity + activity stay in the browser's
@@ -134,9 +134,9 @@ export function apiBase(): string {
 export function storageWhere(): string {
 	switch (getPlatform()) {
 		case "desktop":
-			return "on this computer (inside the Voice Box desktop app)";
+			return "on this computer (inside the Voice Flow desktop app)";
 		case "mobile":
-			return "on this phone (inside the Voice Box app)";
+			return "on this phone (inside the Voice Flow app)";
 		default:
 			return "in this browser";
 	}

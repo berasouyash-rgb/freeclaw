@@ -1,5 +1,5 @@
 {
-  "_comment": "Voice Box platform map — route → page → APIs → tables → tests. Change-impact engine (slice 2 of the AI management harness): before changing a module, read its entry to see what else might break. The checker (scripts/check-platform-map.mjs, mirrored by tests/api/platform-map.test.ts) fails on BROKEN references and warns on unmapped modules. Curated by hand; verified against source 2026-09-27.",
+  "_comment": "Voice Flow platform map — route → page → APIs → tables → tests. Change-impact engine (slice 2 of the AI management harness): before changing a module, read its entry to see what else might break. The checker (scripts/check-platform-map.mjs, mirrored by tests/api/platform-map.test.ts) fails on BROKEN references and warns on unmapped modules. Curated by hand; verified against source 2026-09-27.",
   "flows": [
     {
       "route": "/",

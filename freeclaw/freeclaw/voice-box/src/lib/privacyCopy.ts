@@ -1,5 +1,5 @@
 export const NOTIFY_PRIVACY_COPY =
-	"If you turn on phone or email alerts, Voice Box stores the phone number or email address on the server to deliver the alerts you requested. Clear either field and save to overwrite the stored value.";
+	"If you turn on phone or email alerts, Voice Flow stores the phone number or email address on the server to deliver the alerts you requested. Clear either field and save to overwrite the stored value.";
 
 export const CONTACT_PRIVACY_COPY =
 	"The Contact form sends the name, email address, subject, and message you enter through the post moderation pipeline. Do not include information you do not want stored with the request.";

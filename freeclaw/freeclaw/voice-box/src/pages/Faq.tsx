@@ -3,7 +3,7 @@ import { useMemo, useState } from "react";
 
 const FAQS = [
 	{
-		q: "Is Voice Box really anonymous?",
+		q: "Is Voice Flow really anonymous?",
 		a: "Yes. There is no registration, and we never ask for names, emails, or phone numbers. We don\u2019t log IP addresses against posts or use tracking scripts. Your only identifier is a random ID generated in your own browser.",
 	},
 	{

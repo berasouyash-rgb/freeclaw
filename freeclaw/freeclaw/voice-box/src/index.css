@@ -550,7 +550,7 @@ h1,h2,h3,h4 { font-family: var(--font-display); letter-spacing: -0.01em; }
    is NOT affected — tokens revert outside this wrapper.
    ═══════════════════════════════════════════════════════════════ */
 .admin-shell {
-  /* Brand violet — the original Voice Box admin accent. The Google-blue
+  /* Brand violet — the original Voice Flow admin accent. The Google-blue
      experiment was reverted after feedback; the enterprise layout/radii/
      shadows remain, but the identity color is back to the brand purple. */
   --vb-accent: #5652d6;

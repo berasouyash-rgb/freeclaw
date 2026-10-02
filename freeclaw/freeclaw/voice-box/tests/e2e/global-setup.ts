@@ -7,7 +7,7 @@ import type { FullConfig } from "@playwright/test";
  * configured port. On a shared dev machine that can be an *unrelated* project —
  * this genuinely happened: :5173 was serving a different app, so the whole
  * suite silently passed/failed against it. A green run against the wrong app is
- * worse than a red one, so verify the served page really is Voice Box before
+ * worse than a red one, so verify the served page really is Voice Flow before
  * any test executes.
  */
 export default async function globalSetup(config: FullConfig) {
@@ -19,7 +19,7 @@ export default async function globalSetup(config: FullConfig) {
 		html = await res.text();
 	} catch (err) {
 		throw new Error(
-			`[e2e] could not reach ${baseURL} — is the Voice Box dev server running?\n` +
+			`[e2e] could not reach ${baseURL} — is the Voice Flow dev server running?\n` +
 				`  ${(err as Error).message}`,
 		);
 	}
@@ -31,12 +31,12 @@ export default async function globalSetup(config: FullConfig) {
 
 	if (!isVoiceBox) {
 		throw new Error(
-			`[e2e] ${baseURL} is NOT Voice Box — refusing to run the suite.\n` +
+			`[e2e] ${baseURL} is NOT Voice Flow — refusing to run the suite.\n` +
 				`  Found title: "${title}"\n` +
 				`  Another dev server is probably squatting on this port. Free it, or ` +
-				`point the suite at Voice Box with VB_PORT=<port> (or VB_BASE_URL=<url>).`,
+				`point the suite at Voice Flow with VB_PORT=<port> (or VB_BASE_URL=<url>).`,
 		);
 	}
 
-	console.log(`[e2e] verified Voice Box at ${baseURL} ("${title}")`);
+	console.log(`[e2e] verified Voice Flow at ${baseURL} ("${title}")`);
 }

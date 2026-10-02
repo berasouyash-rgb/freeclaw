@@ -1343,7 +1343,7 @@ async function spawnSubagents(message, maxAgents = 5) {
 async function analyzeWithLLM(agent, taskType, rawData, message) {
 	try {
 		const dataSummary = JSON.stringify(rawData).slice(0, 2000);
-		const systemPrompt = `You are ${agent.name}, a specialized AI agent analyzing real platform data for Voice Box. Your role: ${agent.description}. Provide actionable analysis as JSON with keys: analysis (string, 2-3 sentences), findings (array of strings), suggestions (array of objects with title, content, confidence 0-1, kind), severity (low|medium|high|critical). Only include suggestions for real actionable problems. Return valid JSON only.`;
+		const systemPrompt = `You are ${agent.name}, a specialized AI agent analyzing real platform data for Voice Flow. Your role: ${agent.description}. Provide actionable analysis as JSON with keys: analysis (string, 2-3 sentences), findings (array of strings), suggestions (array of objects with title, content, confidence 0-1, kind), severity (low|medium|high|critical). Only include suggestions for real actionable problems. Return valid JSON only.`;
 		const userPrompt = `Real platform data for "${taskType}":\n${dataSummary}\n\nOriginal task: "${message || "Run analysis"}"\n\nAnalyze this data. If you find problems (duplicates, security issues, overdue reports, harmful content, anomalies), create specific suggestions with titles and reasoning.`;
 		const llmResult = await callLLMChain(systemPrompt, userPrompt);
 		// Honest degraded signal: no provider key configured → the analysis is
@@ -4713,7 +4713,7 @@ async function processAgentTask(agent, message, task) {
 			};
 		}
 		// ── Meta / generic — use LLM for analysis ───────────────────
-		const metaSystem = `You are ${agent.name}, a specialized AI agent in the Voice Box platform. Your role: ${agent.description}. Capabilities: ${agent.capabilities.join(", ")}. Provide a brief status report as JSON with keys: status, findings (array), metrics (object).`;
+		const metaSystem = `You are ${agent.name}, a specialized AI agent in the Voice Flow platform. Your role: ${agent.description}. Capabilities: ${agent.capabilities.join(", ")}. Provide a brief status report as JSON with keys: status, findings (array), metrics (object).`;
 		const metaUser = `Task: "${message || "Run status check"}". Agent: ${agent.name}. Report status, findings, and metrics.`;
 		const llmResult = await callLLMChain(metaSystem, metaUser);
 		// Honest degraded signal — never report a fake engine or empty 'completed' when no key exists.

@@ -202,7 +202,7 @@ export default function ErrorTracking() {
 
 	const sendTestError = () => {
 		const err = new Error(
-			"Admin-triggered test error from Voice Box Error Tracking",
+			"Admin-triggered test error from Voice Flow Error Tracking",
 		);
 		// captureException() is a silent no-op when Sentry has no DSN —
 		// claiming success then would be a lie. Verify configuration first.

@@ -1,4 +1,4 @@
-# VOICE BOX — Autonomous QA + Repair Loop
+# VOICE FLOW — Autonomous QA + Repair Loop
 
 **Status:** ACTIVE · **Mode:** safe · **Pattern:** sequential servo
 **Repo:** `C:\Users\lenovo\freeclaw\freeclaw\freeclaw\voice-box` (branch `initial-review-branch`)
@@ -10,7 +10,7 @@
 
 The 4-condition gate (miss any one → don't build):
 
-| # | Condition | Voice Box |
+| # | Condition | Voice Flow |
 |---|-----------|-----------|
 | 1 | Task repeats | Yes — the surface is 25 routes / 21 admin tabs / 165 API endpoints; more bugs remain than one session can hold |
 | 2 | Verification automatable | Yes — deterministic suites: typecheck, eslint, 1311 API tests, 1397 frontend tests, build |

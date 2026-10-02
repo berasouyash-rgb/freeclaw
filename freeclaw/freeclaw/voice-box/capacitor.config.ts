@@ -1,5 +1,5 @@
 /**
- * Voice Box — Capacitor config (Android mobile app).
+ * Voice Flow — Capacitor config (Android mobile app).
  *
  * The same `dist/` web build ships inside the native WebView. Routing is
  * hash-based there (see src/App.tsx ShellRouter), so no server rewrites are
@@ -24,7 +24,7 @@ const config: {
 	};
 } = {
 	appId: "app.voicebox",
-	appName: "Voice Box",
+	appName: "Voice Flow",
 	webDir: "dist",
 	backgroundColor: "#f6f6f9",
 	android: {

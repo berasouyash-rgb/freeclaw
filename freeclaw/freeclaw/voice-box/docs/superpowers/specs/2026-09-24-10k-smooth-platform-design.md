@@ -1,4 +1,4 @@
-# Voice Box 10,000-User Smooth Platform Design
+# Voice Flow 10,000-User Smooth Platform Design
 
 **Date:** 2026-09-24  
 **Status:** Approved design  
@@ -6,7 +6,7 @@
 
 ## 1. Objective
 
-Make Voice Box smooth and predictable for 10,000 simultaneously active users on the existing Vercel + Supabase stack, while keeping every routed user and admin page functional.
+Make Voice Flow smooth and predictable for 10,000 simultaneously active users on the existing Vercel + Supabase stack, while keeping every routed user and admin page functional.
 
 “Fully improved” means exhaustive evidence-backed coverage of every routed page, every admin page, every button, form, modal, navigation path, keyboard interaction, and API-backed function. It does not mean rewriting every line or inventing a fixed number of changes. Each surface is inspected and tested for correctness, one-load behavior, loading/empty/error/success states, accessibility, responsive behavior, security, performance, and recovery. No known high-severity defect or unverified interactive control remains at completion.
 
@@ -517,7 +517,7 @@ Each implementation slice must:
 
 ## 17. Final Proof Standard
 
-Voice Box may be described as fully optimized and supporting 10,000 simultaneously active users only when:
+Voice Flow may be described as fully optimized and supporting 10,000 simultaneously active users only when:
 
 - every route, page, admin tab, interactive control, and API-backed function in the inventory has passing outcome-based evidence or an explicit documented exception;
 - all 17 admin tabs, including AI Coworker and Ops Center, remain reachable; automatic workers, manual controls, backend registries, reports, evaluations, and audit records remain covered;

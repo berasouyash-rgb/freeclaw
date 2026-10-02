@@ -1,6 +1,6 @@
 # Deploy to production (school handover)
 
-Takes an empty Supabase project + a Vercel account to a live Voice Box.
+Takes an empty Supabase project + a Vercel account to a live Voice Flow.
 Estimated time: 45–90 minutes. No code changes required at any step.
 
 ## 0. What you need

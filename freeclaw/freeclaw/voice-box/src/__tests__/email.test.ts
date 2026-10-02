@@ -78,7 +78,7 @@ describe("Email Service", () => {
           to_email: "user@example.com",
           subject: "Test Subject",
           message: "Test message",
-          from_name: "Voice Box",
+          from_name: "Voice Flow",
         }),
       );
     });

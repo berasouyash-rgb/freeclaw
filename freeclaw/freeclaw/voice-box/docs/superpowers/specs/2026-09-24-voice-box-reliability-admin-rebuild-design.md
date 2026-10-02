@@ -1,12 +1,12 @@
-# Voice Box Reliability-First Full-Platform Rebuild
+# Voice Flow Reliability-First Full-Platform Rebuild
 
 **Date:** 2026-09-24  
 **Status:** Approved design; implementation not started  
-**Scope:** Entire local Voice Box platform. No browser automation, deployment, commits, or secret changes.
+**Scope:** Entire local Voice Flow platform. No browser automation, deployment, commits, or secret changes.
 
 ## 1. Intent
 
-Voice Box should feel like one dependable platform rather than a collection of disconnected screens and agent experiments. Every existing user/admin route, control, worker, API action, report, audit surface, and manual operator capability remains in scope.
+Voice Flow should feel like one dependable platform rather than a collection of disconnected screens and agent experiments. Every existing user/admin route, control, worker, API action, report, audit surface, and manual operator capability remains in scope.
 
 The rebuild has four outcomes:
 

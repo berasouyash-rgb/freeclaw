@@ -1024,7 +1024,7 @@ API, DB, AUTH, PERF, A11Y, MOBILE, OPS. Check off with evidence, never by feel.
 
 ## FINAL SWEEP: SMALL, SHARP, OFTEN-MISSED
 941. [FIN] Favicon + PWA icons missing variants → full set.
-942. [FIN] Title tags per route ("Submit · Voice Box") → SEO + tab clarity.
+942. [FIN] Title tags per route ("Submit · Voice Flow") → SEO + tab clarity.
 943. [FIN] Meta descriptions per public route → sharing previews.
 944. [FIN] OG images for shared posts → generated cards.
 945. [FIN] 404 page helpful (search + home links) → audit.
