@@ -59,6 +59,76 @@ function isAdminEndpoint(path: string): boolean {
  *  a potentially changed API schema after a redeploy. */
 const QUEUE_TTL_MS = 24 * 60 * 60 * 1000;
 
+/**
+ * Server twin-scan window mirror (api/_posts.js IDEMPOTENCY_MS): the server
+ * dedupes a same-author/same-title/same-category repost within 90s of the
+ * original. A queued post-create OLDER than this that replays blindly can
+ * land as a twin — the exact duplicate-post bug the scan prevents for fast
+ * retries. Stale creates get a client-side twin check first instead.
+ */
+export const POST_TWIN_WINDOW_MS = 90_000;
+
+function normalizeForCompare(s: unknown): string {
+	return String(s ?? "")
+		.toLowerCase()
+		.replace(/[^a-z0-9\s]/g, "")
+		.replace(/\s+/g, " ")
+		.trim();
+}
+
+/** True when a queued action is a post-create (not an update, vote, or admin read). */
+function isPostCreate(a: QueuedAction): a is QueuedAction & { body: Record<string, unknown> } {
+	return (
+		a.method === "POST" &&
+		a.path === "/api/posts" &&
+		!!a.body &&
+		typeof a.body === "object" &&
+		typeof (a.body as Record<string, unknown>).title === "string"
+	);
+}
+
+/**
+ * Stale-create twin check: does the owner already have a live post with the
+ * same normalized title + category? Mirrors the server predicate
+ * (same author, same category, non-empty normalized title). Fail-open:
+ * any fetch/parse problem returns false so the write replays normally —
+ * a possible twin beats silently dropping the user's post.
+ */
+export async function isStalePostTwin(
+	a: QueuedAction,
+	ownerId: string,
+	fetchImpl: typeof fetch = fetch,
+): Promise<boolean> {
+	try {
+		const body = a.body as Record<string, unknown>;
+		const title = normalizeForCompare(body.title);
+		if (!title) return false;
+		const category =
+			typeof body.category === "string" && body.category ? body.category : "Other";
+		const res = await fetchImpl(
+			`${apiBase()}/api/posts?author=${encodeURIComponent(ownerId)}&viewer=${encodeURIComponent(ownerId)}`,
+			{ headers: { "x-anon-id": ownerId } },
+		);
+		if (!res.ok) return false;
+		const rows = (await res.json()) as Array<{
+			title?: unknown;
+			category?: unknown;
+			deleted?: unknown;
+			hidden?: unknown;
+		}>;
+		if (!Array.isArray(rows)) return false;
+		return rows.some(
+			(p) =>
+				!p.deleted &&
+				!p.hidden &&
+				(p.category || "Other") === category &&
+				normalizeForCompare(p.title) === title,
+		);
+	} catch {
+		return false;
+	}
+}
+
 export async function flushQueue(): Promise<number> {
 	let q = lsGet<QueuedAction[]>(KEY, []);
 	if (!q.length) return 0;
@@ -85,6 +155,26 @@ export async function flushQueue(): Promise<number> {
 	let flushed = 0;
 	const remaining: QueuedAction[] = [];
 	for (const a of q) {
+		// Stale post-create twin guard: the server dedupes reposts within
+		// 90s, but an offline queue can replay hours later. If the owner
+		// already has the post live, drop the replay and count it resolved
+		// (the content exists — sending it again would only twin).
+		if (
+			isPostCreate(a) &&
+			Date.now() - new Date(a.queuedAt).getTime() > POST_TWIN_WINDOW_MS &&
+			a.ownerId === currentOwnerId
+		) {
+			let twin = false;
+			try {
+				twin = await isStalePostTwin(a, currentOwnerId);
+			} catch {
+				twin = false;
+			}
+			if (twin) {
+				flushed++;
+				continue;
+			}
+		}
 		try {
 			const headers: Record<string, string> = {
 				"Content-Type": "application/json",
