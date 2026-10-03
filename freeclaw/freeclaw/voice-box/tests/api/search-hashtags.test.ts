@@ -16,6 +16,7 @@ const db = vi.hoisted(() => ({
 
 vi.mock("../../api/_auth.js", () => ({
 	cors: vi.fn(),
+	isAdmin: vi.fn().mockResolvedValue(false),
 }));
 
 vi.mock("../../api/_db-client.js", () => ({
@@ -25,8 +26,9 @@ vi.mock("../../api/_db-client.js", () => ({
 			const builder: Record<string, (...a: never[]) => unknown> = {};
 			builder.select = () => builder;
 			builder.eq = () => builder;
-			builder.or = ((s: string) => {
-				state.or.push(s);
+			builder.neq = () => builder;
+			builder.in = () => builder;
+			builder.or = ((s: string) => {				state.or.push(s);
 				return builder;
 			}) as (...a: never[]) => unknown;
 			builder.ilike = () => builder;

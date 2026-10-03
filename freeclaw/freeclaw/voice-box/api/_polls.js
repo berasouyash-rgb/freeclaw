@@ -128,7 +128,8 @@ export async function createPoll({
 
 // PostgREST unknown-column errors (pre-migration): require the column
 // NAME plus a column-ish signal so unrelated errors still throw loudly.
-function isMissingColumn(err, col) {
+// Exported for search, which needs the same pre-018 fallback on polls.hidden.
+export function isMissingColumn(err, col) {
 	const msg = String(err?.message || "");
 	const code = String(err?.code || "");
 	return msg.toLowerCase().includes(String(col).toLowerCase()) && /column|pgrst|exist|find|schema|cache/i.test(msg + " " + code);

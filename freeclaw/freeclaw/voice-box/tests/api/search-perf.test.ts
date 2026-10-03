@@ -140,8 +140,18 @@ describe("PERF GUARD — search cache", () => {
 			expect(res.statusCode).toBe(200);
 			lastBody = res.body as typeof lastBody;
 		}
-		// THE MEASURED CONTRACT: 25 searches ⇒ 1 posts scan per table set.
-		expect(postScans).toBe(1);
+		// THE MEASURED CONTRACT: 25 searches ⇒ one cached scan set, i.e. the
+		// second and all later identical searches issue ZERO new scans. The
+		// set is two small queries (posts scan + comment-parent visibility
+		// map) — both collapse into the same SWR entry.
+		expect(postScans).toBeLessThanOrEqual(2);
+		const afterFirst = postScans;
+		const res2 = response();
+		await handler(
+			{ method: "GET", query: { q: "library" }, headers: {} },
+			res2,
+		);
+		expect(postScans).toBe(afterFirst);
 		expect(lastBody?.results.length).toBe(POSTS.length + COMMENTS.length);
 		expect(lastBody?.total).toBe(POSTS.length + COMMENTS.length);
 	});

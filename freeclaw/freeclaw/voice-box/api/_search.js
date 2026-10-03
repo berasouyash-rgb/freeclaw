@@ -2,9 +2,10 @@
 // GET /api/search?q=keyword&type=all&status=all&category=all&priority=all
 
 import { isTestArtifact } from "./_artifact-filter.js";
-import { cors } from "./_auth.js";
+import { cors, isAdmin } from "./_auth.js";
 import supabase from "./_db-client.js";
 import { staleWhileRevalidate } from "./_cache.js";
+import { isMissingColumn } from "./_polls.js";
 
 /** Escape LIKE metacharacters to prevent pattern injection */
 function escapeLike(str) {
@@ -40,7 +41,9 @@ async function scanSearchRows(q, type, status, category, priority) {
 				"id, type, title, description, category, status, priority, author_id, created_at, tags, deleted, hidden",
 			)
 			.eq("deleted", false)
-			.eq("hidden", false);
+			.eq("hidden", false)
+			.neq("visibility", "private")
+			.neq("status", "pending_review");
 		if (status !== "all") query = query.eq("status", status);
 		if (category !== "all") query = query.eq("category", category);
 		if (priority !== "all") query = query.eq("priority", priority);
@@ -83,19 +86,50 @@ async function scanSearchRows(q, type, status, category, priority) {
 		}
 		query = query.order("created_at", { ascending: false }).limit(1000);
 		const { data: comments } = await query;
-		out.comments = comments;
-	}	// Search polls
+		out.comments = comments || [];
+		try {
+			const pids = [...new Set(out.comments.map((c) => c.post_id).filter(Boolean))].slice(0, 200);
+			if (pids.length) {
+				const { data: pmap } = await supabase
+					.from("posts")
+					.select("id,author_id,visibility,status,hidden,deleted")
+					.in("id", pids);
+				const byId = new Map((pmap || []).map((r) => [r.id, r]));
+				for (const c of out.comments) c._post = byId.get(c.post_id) || null;
+			}
+		} catch { /* visibility snapshot is best-effort */ }
+	}		// Search polls — blocked polls stay out. The hidden column lands with
+	// migration 018; before that the filter errors and we retry without it
+	// (nothing can be blocked yet, so nothing leaks).
 	if (type === "all" || type === "polls") {
-		let query = supabase
-			.from("polls")
-			.select("id, title, options, ptype, author_id, created_at, archived")
-			.eq("deleted", false);
-		if (q) {
-			query = query.ilike("title", `%${escapeLike(firstWord)}%`);
-		}
-		query = query.order("created_at", { ascending: false }).limit(1000);
-		const { data: polls } = await query;
-		out.polls = polls;
+	const runPolls = (withHidden) => {
+	let qq = supabase
+	.from("polls")
+	.select("id, title, options, ptype, author_id, created_at, archived")
+	.eq("deleted", false);
+	if (withHidden) qq = qq.eq("hidden", false);
+	if (q) {
+	qq = qq.ilike("title", `%${escapeLike(firstWord)}%`);
+	}
+	return qq.order("created_at", { ascending: false }).limit(1000);
+	};
+	try {
+	const first = await runPolls(true);
+	if (first.error && isMissingColumn(first.error, "hidden")) {
+	const second = await runPolls(false);
+	if (second.error) throw second.error;
+	out.polls = second.data;
+	} else {
+	if (first.error) throw first.error;
+	out.polls = first.data;
+	}
+	} catch (pollErr) {
+	try {
+	const { logger } = await import("./_observability.js");
+	logger.error("search", "polls_query_error", { error: pollErr.message });
+	} catch { /* non-fatal */ }
+	out.polls = [];
+	}
 	}
 
 	// Search users — match anon_id (exact or partial)
@@ -114,6 +148,26 @@ async function scanSearchRows(q, type, status, category, priority) {
 	}
 
 	return out;
+}
+
+/**
+ * Public-content boundary shared by search surfaces (mirrors GET /api/posts
+ * and the realtime contract): live rows are non-deleted, non-hidden, public
+ * (legacy NULL visibility counts as public), and never pending review.
+ * The row owner's own content is always visible to them.
+ */
+function postVisibleToViewer(p, viewer) {
+	if (!p || p.deleted) return false;
+	const live =
+		!p.hidden &&
+		(p.visibility === undefined || p.visibility === null || p.visibility === "public") &&
+		(p.status === undefined || p.status === null || p.status !== "pending_review");
+	if (live) return true;
+	return (
+		!!viewer &&
+		!!p.author_id &&
+		String(p.author_id).toLowerCase() === String(viewer).toLowerCase()
+	);
 }
 
 const searchSWR = staleWhileRevalidate(scanSearchRows, {
@@ -163,6 +217,35 @@ export default async function handler(req, res) {
 
 		// One cached scan serves this request (stale-while-revalidate at module scope)
 		const rows = await searchSWR(q, type, status, category, priority);
+
+		// Owner top-up: the shared scan above only carries public, reviewed
+		// posts — but a viewer must still find their OWN private or
+		// pending-review posts. One small targeted query (viewer-only path,
+		// never cached), merged with id dedupe before scoring.
+		if (viewer && (type === "all" || type === "posts")) {
+			try {
+				const { data: own } = await supabase
+					.from("posts")
+					.select("id, type, title, description, category, status, priority, author_id, created_at, tags, deleted, hidden")
+					.eq("author_id", viewer)
+					.order("created_at", { ascending: false })
+					.limit(50);
+				const seen = new Set((rows.posts || []).map((r) => r.id));
+				for (const o of own || []) {
+					if (o && o.id && !seen.has(o.id) && !o.deleted) {
+						seen.add(o.id);
+						rows.posts = [...(rows.posts || []), o];
+					}
+				}
+			} catch { /* owner top-up is best-effort */ }
+		}
+
+		// Comment parent gate: each scanned comment carries its post's
+		// visibility snapshot (_post, fetched once inside the shared scan).
+		// A comment never leaks when its post would not be visible.
+		if (rows.comments && rows.comments.length) {
+			rows.comments = rows.comments.filter((c) => postVisibleToViewer(c._post || null, viewer));
+		}
 
 		// Score posts — match if ANY search word appears in title, description, or tags
 		if (rows.posts) {
@@ -247,21 +330,30 @@ export default async function handler(req, res) {
 			});
 		}
 
-		// Users — match by anon_id (exact or partial)
+		// Users — exact anon_id match for everyone; partial enumeration and
+		// ban/suspension disclosure are admin-only (anon ids are bearer
+		// tokens for owner actions — partial search would aid impersonation).
+		let searchAdmin = false;
+		try {
+			searchAdmin = await isAdmin(req);
+		} catch { searchAdmin = false; }
 		if (rows.users) {
 			rows.users.forEach((u) => {
 				const exactMatch = q && u.anon_id && u.anon_id.toLowerCase() === q.toLowerCase();
 				const partialMatch = q && u.anon_id && u.anon_id.toLowerCase().includes(q.toLowerCase());
 				if (!exactMatch && !partialMatch && q) return;
+				if (!searchAdmin && !exactMatch) return;
 				results.push({
 					type: "user",
 					id: u.anon_id,
 					title: u.anon_id,
-					description: u.banned
-						? "Banned"
-						: u.suspended_until && new Date(u.suspended_until) > new Date()
-							? "Suspended"
-							: "Active",
+					description: searchAdmin
+						? u.banned
+							? "Banned"
+							: u.suspended_until && new Date(u.suspended_until) > new Date()
+								? "Suspended"
+								: "Active"
+						: "Member",
 					author_id: u.anon_id,
 					created_at: u.created_at,
 					relevance_score: exactMatch ? 200 : partialMatch ? 50 : 1,
