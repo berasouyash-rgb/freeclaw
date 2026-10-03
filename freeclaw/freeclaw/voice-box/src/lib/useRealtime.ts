@@ -258,20 +258,25 @@ export function useRealtime(
 		// attaches when the load resolves — one microtask later in tests,
 		// after paint in production. Unmounting first cancels the attach.
 		let cancelled = false;
-		void import("./supabase").then((m) => {
-			if (cancelled) return;
-			const entry = getOrCreate(liveKey, m.default);
-			entry.subscribers.set(id, {
-				// Fire through the ref: the callback identity changes every render,
-				// but this subscriber record is created once per [key, debounceMs].
-				// Reading cbRef.current at dispatch time means realtime events always
-				// invoke the LATEST closure instead of a stale first-render snapshot.
-				callback: (table, payload) => cbRef.current(table, payload),
-				debounceMs,
-				timer: null,
-				burstStartedAt: null,
-			});
-		});
+		void import("./supabase")
+			.then((m) => {
+				if (cancelled) return;
+				const entry = getOrCreate(liveKey, m.default);
+				entry.subscribers.set(id, {
+					// Fire through the ref: the callback identity changes every render,
+					// but this subscriber record is created once per [key, debounceMs].
+					// Reading cbRef.current at dispatch time means realtime events always
+					// invoke the LATEST closure instead of a stale first-render snapshot.
+					callback: (table, payload) => cbRef.current(table, payload),
+					debounceMs,
+					timer: null,
+					burstStartedAt: null,
+				});
+			})
+			// A failed chunk load must never surface as an unhandled rejection
+			// (or silently leave realtime detached): the page keeps its bounded
+			// snapshot until an explicit refresh, matching the lifecycle contract.
+			.catch(() => {});
 
 		return () => {
 			cancelled = true;

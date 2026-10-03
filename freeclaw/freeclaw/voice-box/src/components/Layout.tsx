@@ -1,6 +1,7 @@
 ﻿import {
 	Accessibility,
 	Activity,
+	ArrowDownToLine,
 	BarChart3,
 	Bell,
 	Bookmark,
@@ -90,6 +91,7 @@ const NAV_MORE = [
 		icon: Accessibility,
 		tour: "",
 	},
+	{ to: "/download", label: "Get the app", icon: ArrowDownToLine, tour: "" },
 ];
 /** Full nav (core + more) for anything that needs the complete list. */
 export const NAV_ALL = [...NAV_CORE, ...NAV_MORE];

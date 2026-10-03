@@ -589,13 +589,17 @@ export default function Home() {
 				return;
 			}
 
-			// ── New posts: quiet auto-merge (live feed). ──
-			// The silent path refreshes known rows in place and prepends
-			// genuinely new ids when the reader is near the top; scrolled
-			// down, newcomers park behind the pill instead, so the list
-			// never reorders under a finger. A reader with an active search
-			// keeps the badge — a live row must not clobber search results.
-			if (table === "posts" && evt === "INSERT") {
+			// ── New + updated posts: quiet auto-merge (live feed). ──
+			// The silent path refreshes known rows in place (so another
+			// device's Support/vote/edit lands on this screen by itself) and
+			// prepends genuinely new ids when the reader is near the top;
+			// scrolled down, newcomers park behind the pill instead, so the
+			// list never reorders under a finger. A reader with an active
+			// search keeps the badge — a live row must not clobber search
+			// results. DELETEs keep the badge path below (the silent merge
+			// never removes rows, so a deleted post needs an explicit
+			// refresh to leave the screen honestly).
+			if (table === "posts" && (evt === "INSERT" || evt === "UPDATE")) {
 				if (!query.trim()) {
 					void load({
 						silent: true,
@@ -717,8 +721,9 @@ export default function Home() {
 		return {
 			total: problemPosts.length,
 			solved: problemPosts.filter((p) => p.status === "solved").length,
-			active: problemPosts.filter((p) => !["solved", "archived"].includes(p.status))
-				.length,
+			active: problemPosts.filter((p) =>
+				["in_progress", "waiting"].includes(p.status),
+			).length,
 			week: cnt(problemPosts, now - 7 * DAY, now),
 			prevWeek: cnt(problemPosts, now - 14 * DAY, now - 7 * DAY),
 			solvedWeek: problemPosts.filter((p) =>
@@ -924,7 +929,7 @@ export default function Home() {
 						spark: stats.spark,
 					},
 					{
-						label: "In progress",
+						label: "Worked on",
 						value: stats.active,
 						icon: Activity,
 						color: "text-warn",

@@ -56,6 +56,12 @@ const STANDARDS = [
 
 export default function Accessibility() {
 	const nav = useNavigate();
+	// Deep links land here with no history to go back to — fall home
+	// instead of a dead button.
+	const goBack = () => {
+		if (window.history.length > 1) nav(-1);
+		else nav("/");
+	};
 	return (
 		<div className="min-h-screen bg-bg">
 			<section className="relative overflow-hidden">
@@ -65,7 +71,7 @@ export default function Accessibility() {
 						<button
 							type="button"
 							className="btn btn-ghost !px-3 mb-6"
-							onClick={() => nav(-1)}
+							onClick={goBack}
 							aria-label="Go back"
 						>
 							<ArrowLeft size={15} /> Back

@@ -250,7 +250,7 @@ describe("Home — default feed behavior", () => {
 		// student could not tell what "worked on" meant, and 29 open items
 		// read as 29 items somebody had picked up.
 		expect(screen.getByText("Reported")).toBeInTheDocument();
-		expect(screen.getByText("In progress")).toBeInTheDocument();
+		expect(screen.getByText("Worked on")).toBeInTheDocument();
 		expect(screen.queryByText(/Being worked on/i)).toBeNull();
 		expect(screen.queryByText(/Total reports/i)).toBeNull();
 	});

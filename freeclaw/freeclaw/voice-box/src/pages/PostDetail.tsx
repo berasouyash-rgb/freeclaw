@@ -33,7 +33,7 @@ import { buildCaseXls, downloadXls } from "../lib/excelXML";
 import { readAloud, speechOutputSupported, stopReading } from "../lib/speech";
 import { useRealtime } from "../lib/useRealtime";
 import { CAT_EMOJI, timeAgo } from "../lib/utils";
-import type { CommentData, PollData, PostData } from "../types";
+import type { CommentData, PollData, PostData, PostStatus } from "../types";
 
 /**
  * Canonical linked poll: a double-created question can leave several poll
@@ -51,6 +51,67 @@ export function pickCanonicalLinkedPoll(polls: PollData[]): PollData | null {
 			? p
 			: best;
 	});
+}
+
+/** Display name for a post status value. `waiting` is shown as Working on. */
+export function statusLabel(status: string): string {
+	if (status === "in_progress") return "In progress";
+	if (status === "waiting") return "Working on";
+	return status.charAt(0).toUpperCase() + status.slice(1);
+}
+
+const STATUS_CIRCLES: { value: string; label: string; dot: string }[] = [
+	{ value: "reported", label: "Reported", dot: "var(--vb-ink3)" },
+	{ value: "verified", label: "Verified", dot: "var(--vb-accent2)" },
+	{ value: "in_progress", label: "In progress", dot: "var(--vb-warn)" },
+	{ value: "waiting", label: "Working on", dot: "var(--vb-accent)" },
+	{ value: "solved", label: "Solved", dot: "var(--vb-good)" },
+];
+
+function AdminStatusCircles({
+	status,
+	busy,
+	onPick,
+}: {
+	status: string;
+	busy: boolean;
+	onPick: (status: PostStatus) => void;
+}) {
+	return (
+		<div className="mt-5 rounded-xl border border-border p-4">
+			<p className="text-[10px] font-bold uppercase tracking-wider text-ink3 mb-3 flex items-center gap-1.5">
+				<ShieldCheck size={11} /> Set status
+			</p>
+			<div className="flex flex-wrap gap-2" role="radiogroup" aria-label="Set post status">
+				{STATUS_CIRCLES.map(({ value, label, dot }) => {
+					const active = status === value;
+					return (
+						<button
+							key={value}
+							type="button"
+							role="radio"
+							aria-checked={active}
+							disabled={busy}
+							onClick={() => onPick(value as PostStatus)}
+							title={`Mark as ${label}`}
+							className={`inline-flex items-center gap-2 px-3 py-2 rounded-full text-xs font-semibold border transition-all disabled:opacity-40 ${
+								active
+									? "border-accent bg-accent-soft text-accent"
+									: "border-border text-ink2 hover:border-accent/50"
+							}`}
+						>
+							<span
+								className="w-2.5 h-2.5 rounded-full shrink-0"
+								style={{ background: dot }}
+								aria-hidden
+							/>
+							{label}
+						</button>
+					);
+				})}
+			</div>
+		</div>
+	);
 }
 
 export default function PostDetail() {
@@ -619,6 +680,29 @@ export default function PostDetail() {
 					<div className="mt-5">
 						<StatusTimeline post={p} />
 					</div>
+				)}
+
+				{/* Admin status picker — one-tap circles: Reported, Verified,
+				In progress, Working on (= waiting), Solved. Working on maps to
+				the existing `waiting` status so all five choices are distinct
+				values with no DB migration. */}
+				{hasAdminSession() && (
+					<AdminStatusCircles
+						status={p.status}
+						busy={busy !== null}
+						onPick={async (status) => {
+							if (busy || status === p.status) return;
+							setBusy("status");
+							try {
+								await api.put("/api/posts", { id: postId, status });
+								setPost((prev) => (prev ? { ...prev, status } : prev));
+								toast(`Status set to ${statusLabel(status)}`, "ok");
+							} catch (e: unknown) {
+								toast(e instanceof Error ? e.message : "Update failed", "err");
+							}
+							setBusy(null);
+						}}
+					/>
 				)}
 
 				{/* Action bar */}

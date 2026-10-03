@@ -62,9 +62,9 @@ or the API is refusing the shell's origin. Check in order:
 3. No action needed for cookies: the client sends `credentials: include` and
    the server mints `SameSite=None; Secure` cookies for these origins.
 
-## In-app updates (APK + EXE)
+## In-app updates (APK + EXE + DMG)
 
-Both shells check `GET /api/version` at most once a day and show an
+All three shells check `GET /api/version` at most once a day and show an
 "Update detected — Update now / Later" dialog when a newer build exists
 (`src/lib/appUpdate.ts` + `UpdateDialog`, wired in `Layout`). Web browsers
 update on reload and never see it.
@@ -73,16 +73,31 @@ To publish a release:
 
 1. Bump `version` in `package.json` (e.g. `2.1.0`) and build the artifacts
    (CI **Native** workflow, or local `build-desktop-local.bat` / Gradle).
-2. Upload the `.apk` and `.exe` somewhere reachable over https (e.g. a
+2. Upload the `.apk`, `.exe`, and `.dmg` somewhere reachable over https (e.g. a
    GitHub Release on the fork).
-3. Set four Vercel env vars on the production project and redeploy:
+3. Set six Vercel env vars on the production project and redeploy:
    `LATEST_APK_VERSION` + `LATEST_APK_URL` (APK), `LATEST_EXE_VERSION` +
-   `LATEST_EXE_URL` (EXE). Optional `LATEST_APK_NOTES` / `LATEST_EXE_NOTES`
+   `LATEST_EXE_URL` (EXE), `LATEST_MAC_VERSION` + `LATEST_MAC_URL` (DMG).
+   Optional `LATEST_APK_NOTES` / `LATEST_EXE_NOTES` / `LATEST_MAC_NOTES`
    (≤500 chars, shown in the dialog).
 4. Unset (or leave unset) a platform to stop offering it — the client
    treats a missing entry as up-to-date, never as an error.
 
 `Later` snoozes 24h per device. A failed check is silent by design.
+
+## How users get the app — /download (no auto-downloads)
+
+The site never starts a download on page load. Browsers increasingly block
+it, it burns mobile data without consent, and surprise binaries get flagged
+as suspicious. Instead:
+
+- The **Get the app** page (`/download`, in More nav) detects the visitor's
+  device and shows exactly one recommended button: Android → APK, Windows →
+  EXE, Mac → DMG. The other published builds list below.
+- Download starts only on tap (`<a download>`), straight from the
+  `/api/version` release feed — so the page never goes stale and shows an
+  honest empty state until the first release is published.
+- Existing installs never need the page: the in-app updater above handles them.
 
 ## Honest limitations
 

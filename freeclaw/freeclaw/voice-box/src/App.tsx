@@ -35,6 +35,7 @@ const Terms = retryLazy(() => import("./pages/Terms"));
 const StatusPage = retryLazy(() => import("./pages/StatusPage"));
 const Changelog = retryLazy(() => import("./pages/Changelog"));
 const Accessibility = retryLazy(() => import("./pages/Accessibility"));
+const Download = retryLazy(() => import("./pages/Download"));
 const Settings = retryLazy(() => import("./pages/Settings"));
 const Notifications = retryLazy(() => import("./pages/Notifications"));
 
@@ -96,6 +97,7 @@ const APP_ROUTES = [
 	{ path: "/chat", El: UserChat },
 	{ path: "/settings", El: Settings },
 	{ path: "/notifications", El: Notifications },
+	{ path: "/download", El: Download },
 ];
 
 /**

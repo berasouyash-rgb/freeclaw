@@ -13,7 +13,8 @@ import { hydrateStore } from "./lib/storage";
 // with a timeout ceiling so slow devices still get coverage within seconds.
 function initSentryIdle() {
 	const start = () => {
-		void initSentry();
+		// A failed SDK chunk load must never reject unhandled.
+		initSentry().catch(() => {});
 	};
 	if (typeof requestIdleCallback === "function") {
 		requestIdleCallback(start, { timeout: 4000 });

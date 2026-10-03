@@ -4,7 +4,6 @@ import {
 	Play,
 	Send,
 	ShieldCheck,
-	Sparkles,
 } from "lucide-react";
 import { memo, useCallback, useState } from "react";
 import { useApp } from "../contexts/AppContext";
@@ -30,7 +29,7 @@ function PostCardAdminBarInner({ post, onStatusChange }: PostCardAdminBarProps) 
 	} | null>(null);
 
 	const adminSet = useCallback(
-		async (patch: { status?: string; official?: boolean; hidden?: boolean }) => {
+		async (patch: { status?: string; hidden?: boolean }) => {
 			if (busy) return;
 			setBusy("admin");
 			try {
@@ -41,8 +40,6 @@ function PostCardAdminBarInner({ post, onStatusChange }: PostCardAdminBarProps) 
 					toast("Marked in progress", "ok");
 				else if (patch.status === "verified")
 					toast("Marked verified", "ok");
-				else if (patch.official !== undefined)
-					toast(patch.official ? "Marked official" : "Removed official", "ok");
 				else if (patch.hidden !== undefined)
 					toast(patch.hidden ? "Post hidden" : "Post unhidden", "ok");
 				if (patch.status && onStatusChange) onStatusChange(post.id, patch.status);
@@ -128,20 +125,8 @@ function PostCardAdminBarInner({ post, onStatusChange }: PostCardAdminBarProps) 
 						</button>
 					</>
 				)}
-				<button
-					type="button"
-					disabled={!!busy}
-					onClick={() => adminSet({ official: !post.official })}
-					title={post.official ? "Remove official badge" : "Mark as official"}
-					className={`inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold transition-colors disabled:opacity-40 ${
-						post.official
-							? "text-amber-400 bg-amber-500/15 border border-amber-500/30"
-							: "text-amber-400 bg-amber-500/5 border border-amber-500/20"
-					}`}
-				>
-					<Sparkles size={13} />
-					{post.official ? "Official" : "Mark official"}
-				</button>
+				{/* User-feed admin bar shows Verify (not Mark official) — official
+				badge control lives in PostDetail + admin PostsTable. */}
 				<button
 					type="button"
 					disabled={!!busy}

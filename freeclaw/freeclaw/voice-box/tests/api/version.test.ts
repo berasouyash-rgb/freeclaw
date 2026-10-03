@@ -1,7 +1,7 @@
-// App update feed — /api/version tells native shells (APK + EXE) where the
-// newest build lives. Sourced purely from release env vars so an unset
-// release simply advertises nothing (the client treats that as up-to-date).
-// Public info only: no auth, no user data, short shared cache.
+// App update feed — /api/version tells native shells (APK + EXE + DMG)
+// where the newest build lives. Sourced purely from release env vars so an
+// unset release simply advertises nothing (the client treats that as
+// up-to-date). Public info only: no auth, no user data, short shared cache.
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../../api/_db-client.js", () => ({
@@ -46,6 +46,8 @@ describe("GET /api/version", () => {
 		vi.stubEnv("LATEST_APK_NOTES", "Live feed fixes");
 		vi.stubEnv("LATEST_EXE_VERSION", "2.1.0");
 		vi.stubEnv("LATEST_EXE_URL", "https://example.com/app.exe");
+		vi.stubEnv("LATEST_MAC_VERSION", "2.1.0");
+		vi.stubEnv("LATEST_MAC_URL", "https://example.com/app.dmg");
 		const { default: handler } = await import("../../api/version.js");
 		const res = response();
 		await handler(REQ as never, res as never);
@@ -61,6 +63,10 @@ describe("GET /api/version", () => {
 				windows: {
 					version: "2.1.0",
 					url: "https://example.com/app.exe",
+				},
+				macos: {
+					version: "2.1.0",
+					url: "https://example.com/app.dmg",
 				},
 			},
 		});
