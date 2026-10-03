@@ -18,6 +18,30 @@ const COLUMNS = [
 	"archived",
 ];
 
+// Board display names that differ from the global STATUS_META labels:
+// "waiting" is the school's working state, shown everywhere else as
+// "Working on" (admin status circles, feed counter). The global meta keeps
+// the "Waiting" label for timelines and exports; the board translates.
+const BOARD_LABELS: Record<string, string> = {
+	waiting: "Working on",
+};
+
+function supportCount(p: PostData): number {
+	const r = p.reactions || {};
+	return (r.support || 0) + (r.upvote || 0);
+}
+
+/**
+ * Unanswered spotlight: reported posts nobody has picked up yet, most
+ * supported first. Real rows only — an empty list renders nothing.
+ */
+export function topUnanswered(posts: PostData[], limit = 3): PostData[] {
+	return posts
+		.filter((p) => p.status === "reported")
+		.sort((a, b) => supportCount(b) - supportCount(a))
+		.slice(0, Math.max(0, limit));
+}
+
 export default function SolvingBoard() {
 	const [posts, setPosts] = useState<PostData[]>([]);
 	const [loading, setLoading] = useState(true);
@@ -90,6 +114,28 @@ export default function SolvingBoard() {
 				refreshing={refreshing}
 			/>
 
+			{!loading && !error && topUnanswered(posts).length > 0 && (
+				<section aria-label="Unanswered issues needing attention" className="card p-4 mb-4 vb-rise">
+					<p className="text-[10px] font-bold uppercase tracking-wider text-warn mb-2">
+						Unanswered — needs attention
+					</p>
+					<div className="space-y-2">
+						{topUnanswered(posts).map((q) => (
+							<Link
+								key={q.id}
+								to={`/post/${q.id}`}
+								className="flex items-center gap-2 text-sm hover:text-accent transition-colors"
+							>
+								<span className="font-semibold truncate flex-1">{q.title}</span>
+								<span className="text-[11px] text-ink3 shrink-0">
+									{supportCount(q)} support · {timeAgo(q.updated_at || q.created_at)}
+								</span>
+							</Link>
+						))}
+					</div>
+				</section>
+			)}
+
 			{error && (
 				<div className="card p-6 text-center">
 					<p className="text-bad text-sm">{error}</p>
@@ -148,7 +194,7 @@ export default function SolvingBoard() {
 										aria-hidden
 									/>
 									<h2 className="font-display font-semibold text-sm">
-										{meta.label}
+										{BOARD_LABELS[col] ?? meta.label}
 									</h2>
 									<span className="chip !text-[10px] ml-auto">
 										{items.length}

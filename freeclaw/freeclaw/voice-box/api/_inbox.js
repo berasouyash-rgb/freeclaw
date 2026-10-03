@@ -634,10 +634,13 @@ async function proposeDraft(threadId, trigger) {
 // private — students can never self-publish public posts; public stays
 // admin-only via accept_draft. Identity = thread ownership (same gate
 // as message-history reads): banned/suspended callers are refused.
-async function acceptOwnDraft(threadId) {
+async function acceptOwnDraft(threadId, visibility) {
 	const gate = await checkUser(threadId);
 	if (!gate.ok) return { ok: false, error: gate.error };
-	return acceptDraft(threadId, "private", { owner: true });
+	// The student chooses private or public per post (default private).
+	// acceptDraft re-validates: anything but "public" stays private, and
+	// public drafts are held for review — never published directly.
+	return acceptDraft(threadId, visibility, { owner: true });
 }
 
 async function acceptDraft(threadId, visibility, opts) {
@@ -1416,10 +1419,11 @@ export default async function handler(req, res) {
 
 			// ── Owner accept: the student taps Accept in chat. Non-admin,
 			// gated by thread ownership inside acceptOwnDraft (same gate as
-			// message-history reads). Visibility is forced private there —
-			// students can never self-publish public posts.
+			// message-history reads). Visibility comes from the student's own
+			// choice on the draft card (default private); public drafts are held
+			// for review inside acceptDraft, never published directly.
 			if (!admin && b.action === "accept_own_draft") {
-				const result = await acceptOwnDraft(threadId);
+				const result = await acceptOwnDraft(threadId, b.visibility);
 				if (!result.ok) return res.status(403).json({ error: result.error, code: result.code });
 				return res.status(200).json({ ...result, server_ms: Date.now() - postStart });
 			}
@@ -2112,12 +2116,17 @@ export default async function handler(req, res) {
 			if (b.action === "mark_read") {
 				if (!b.thread_id)
 					return res.status(400).json({ error: "Missing thread_id" });
-				const senderToMark = admin && b.as === "admin" ? "user" : "admin";
+				// A user opening their inbox has read everything not from
+				// themselves — admin AND ai replies. Marking only "admin" left
+				// every AI reply unread forever, so the unread badge could never
+				// clear. (Admins marking as admin still mark only "user".)
+				const senderToMark = admin && b.as === "admin" ? "user" : null;
 				let markQ = supabase
 					.from("chat_messages")
 					.update({ read: true })
-					.eq("thread_id", b.thread_id)
-					.eq("sender", senderToMark);
+					.eq("thread_id", b.thread_id);
+				if (senderToMark) markQ = markQ.eq("sender", senderToMark);
+				else markQ = markQ.neq("sender", "user");
 				if (!admin) markQ = markQ.eq("thread_id", clean(b.thread_id, 40));
 				const { error: markErr } = await markQ;
 				if (markErr) throw markErr;

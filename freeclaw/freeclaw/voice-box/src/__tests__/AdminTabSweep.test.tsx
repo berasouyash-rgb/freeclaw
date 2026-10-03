@@ -69,6 +69,7 @@ const tabs: [string, () => Promise<{ default: unknown }>][] = [
 	["PostsTable", () => import("../pages/admin/PostsTable")],
 	["PollManager", () => import("../pages/admin/PollManager")],
 	["SlangLeaders", () => import("../pages/admin/SlangLeaders")],
+	["Communities", () => import("../pages/admin/Communities")],
 	["UserManager", () => import("../pages/admin/UserManager")],
 	["Categories", () => import("../pages/admin/Categories")],
 	["EmailTemplates", () => import("../pages/admin/EmailTemplates")],

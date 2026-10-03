@@ -11,6 +11,7 @@ import {
 	Table2,
 	Tag,
 	Users,
+	UsersRound,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 
@@ -22,6 +23,7 @@ export type AdminTabKey =
 	| "categories"
 	| "polls"
 	| "slang"
+	| "communities"
 	| "inbox"
 	| "errors"
 	| "logs"
@@ -65,6 +67,7 @@ export const ADMIN_TAB_GROUPS: AdminTabGroup[] = [
 			{ key: "categories", label: "Categories", icon: Tag },
 			{ key: "polls", label: "Polls", icon: Command },
 			{ key: "slang", label: "Slang", icon: AlertTriangle },
+			{ key: "communities", label: "Communities", icon: UsersRound },
 		],
 	},
 	{

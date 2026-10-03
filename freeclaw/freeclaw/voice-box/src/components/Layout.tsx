@@ -42,6 +42,7 @@ import { flushQueue, queuedCount } from "../lib/offline";
 import { timeAgo } from "../lib/utils";
 import CommandPalette from "./CommandPalette";
 import Tutorial from "./Tutorial";
+import InstallPrompt from "./InstallPrompt";
 import UpdateDialog from "./UpdateDialog";
 import VoiceLogo from "./VoiceLogo";
 
@@ -682,6 +683,7 @@ export default function Layout() {
 					role="main"
 					aria-label="Main content"
 				>
+					<InstallPrompt />
 					<Outlet />
 				</main>					{/* Mobile bottom nav — 6 tabs: Feed, Search, Submit, Inbox (with badge), Activity, Notifications */}
 					<						nav

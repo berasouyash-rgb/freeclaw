@@ -108,6 +108,19 @@ describe("Leaderboard — lists", () => {
 		renderPage();
 		expect(await screen.findByText("Nothing ranked yet")).toBeInTheDocument();
 	});
+
+	it("shows no AI activity tab — the board ranks community support only", async () => {
+		mocks.getSlow.mockResolvedValue({
+			...EMPTY,
+			ai_activity: [
+				{ kind: "execution", label: "agent", detail: "did a thing" },
+			],
+		});
+		renderPage();
+		await screen.findByText("Community Leaderboard");
+		expect(screen.queryByText(/AI activity/)).toBeNull();
+		expect(screen.queryByText("No AI activity yet")).toBeNull();
+	});
 });
 
 describe("Leaderboard — error state", () => {

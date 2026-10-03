@@ -1,11 +1,9 @@
 ﻿import {
 	ArrowUpRight,
 	BarChart3,
-	Bot,
 	Lightbulb,
 	Megaphone,
 	RefreshCcw,
-	Sparkles,
 	Trophy,
 	Users,
 } from "lucide-react";
@@ -124,9 +122,9 @@ export default function Leaderboard() {
 	const [data, setData] = useState<LeaderboardData | null>(null);
 	const [loading, setLoading] = useState(true);
 	const [error, setError] = useState("");
-	const [tab, setTab] = useState<
-		"all" | "problems" | "suggestions" | "polls" | "ai"
-	>("all");
+	const [tab, setTab] = useState<"all" | "problems" | "suggestions" | "polls">(
+		"all",
+	);
 
 	const load = useCallback(async (silent = false) => {
 		try {
@@ -185,8 +183,8 @@ export default function Leaderboard() {
 				</button>
 			</div>
 			<p className="text-sm text-ink3 mb-5">
-				Top problems, suggestions, and polls ranked by community support —
-				alongside the AI agents working behind the scenes.
+				Top problems, suggestions, and polls ranked by real community
+				support — every score links back to its supporters.
 			</p>
 
 			{/* Tabs */}
@@ -203,10 +201,6 @@ export default function Leaderboard() {
 							label: `💡 Suggestions (${data?.suggestions?.length || 0})`,
 						},
 						{ key: "polls", label: `📊 Polls (${data?.polls?.length || 0})` },
-						{
-							key: "ai",
-							label: `🤖 AI activity (${data?.ai_activity?.length || 0})`,
-						},
 					] as const
 				).map((t) => (
 					<button
@@ -242,60 +236,8 @@ export default function Leaderboard() {
 				</div>
 			)}
 
-			{/* ── AI activity tab ── */}
-			{!loading && tab === "ai" && (
-				<div className="space-y-2">
-					<div className="card p-4 border-l-4 border-l-purple-500 mb-3">
-						<p className="text-xs font-semibold flex items-center gap-2">
-							<Bot size={14} className="text-purple-400" /> AI agents are
-							working in real time
-						</p>
-						<p className="text-[11px] text-ink3 mt-1">
-							Every AI analysis, moderation pass, and learning record counts
-							toward keeping the school safer — automatically.
-						</p>
-					</div>
-					{(!data?.ai_activity || data.ai_activity.length === 0) && !error && (
-						<div className="card p-10 text-center">
-							<p className="text-3xl mb-2">🤖</p>
-							<p className="font-display font-semibold text-sm">
-								No AI activity yet
-							</p>
-							<p className="text-xs text-ink3 mt-1">
-								Agents become active once the platform processes content.
-							</p>
-						</div>
-					)}
-					{(data?.ai_activity || []).map((a, i) => (
-						<div
-							key={`${a.kind}-${a.label}-${a.at ?? i}`}
-							className="card p-3 flex items-center gap-3 vb-rise"
-						>
-							<span
-								className={`shrink-0 w-8 h-8 rounded-lg grid place-items-center ${a.kind === "learning" ? "text-purple-400 bg-purple-400/10" : "text-accent bg-accent/10"}`}
-							>
-								{a.kind === "learning" ? (
-									<Sparkles size={14} />
-								) : (
-									<Bot size={14} />
-								)}
-							</span>
-							<div className="min-w-0 flex-1">
-								<p className="text-xs font-semibold truncate">{a.label}</p>
-								<p className="text-[10px] text-ink3 line-clamp-2">{a.detail}</p>
-							</div>
-							{a.at && (
-								<span className="text-[9px] text-ink3 shrink-0">
-									{timeAgo(a.at)}
-								</span>
-							)}
-						</div>
-					))}
-				</div>
-			)}
-
 			{/* ── Ranked lists ── */}
-			{!loading && tab !== "ai" && (
+			{!loading && (
 				<div className="space-y-2.5">
 					{shown.length === 0 && !error && (
 						<div className="card p-10 text-center">
@@ -334,10 +276,10 @@ export default function Leaderboard() {
 			)}
 
 			{/* Footer note */}
-			{!loading && tab !== "ai" && (
+			{!loading && (
 				<p className="text-center text-[10px] text-ink3 mt-5 flex items-center justify-center gap-1.5">
-					<Users size={10} /> Every anonymous support counts · <Bot size={10} />{" "}
-					AI agents moderate automatically
+					<Users size={10} /> Every anonymous support counts — scores update
+					live as the community votes
 				</p>
 			)}
 		</div>

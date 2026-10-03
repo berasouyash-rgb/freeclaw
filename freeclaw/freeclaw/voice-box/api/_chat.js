@@ -215,15 +215,19 @@ export default async function handler(req, res) {
 					const gate = await checkUser(clean(b.thread_id, 40));
 					if (!gate.ok) return res.status(403).json({ error: gate.error });
 				}
-				// admin marks user messages read; user marks admin messages read
-				const senderToMark = admin && b.as === "admin" ? "user" : "admin";
+				// admin marks user messages read; a user opening their inbox has read
+				// everything not from themselves (admin AND ai) — marking only
+				// "admin" left every AI reply unread forever.
+				const senderToMark = admin && b.as === "admin" ? "user" : null;
 				// Unchecked, a failed mark-read answered ok:true while the
 				// messages stayed unread — the inbox looked handled and wasn't.
-				const { error: markErr } = await supabase
+				let markQuery = supabase
 					.from("chat_messages")
 					.update({ read: true })
-					.eq("thread_id", b.thread_id)
-					.eq("sender", senderToMark);
+					.eq("thread_id", b.thread_id);
+				if (senderToMark) markQuery = markQuery.eq("sender", senderToMark);
+				else markQuery = markQuery.neq("sender", "user");
+				const { error: markErr } = await markQuery;
 				if (markErr) throw markErr;
 				return res.status(200).json({ ok: true });
 			}

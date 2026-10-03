@@ -420,9 +420,10 @@ describe("accept_own_draft (student taps Accept in chat)", () => {
     return res;
   }
 
-  it("creates a private post even when public is requested (forced private)", async () => {
+  it("honors a public choice by holding the post for review, never publishing directly", async () => {
     await post({ action: "draft_post", thread_id: "thread-1" });
-    // Owner asks for public in a forged body — the server forces private.
+    // Owner chooses public — the server accepts the choice but holds the
+    // post for admin review instead of publishing it.
     authMocks.isAdmin.mockResolvedValue(false);
     const { default: handler } = await import("../../api/_inbox.js");
     const res = response();
@@ -439,8 +440,30 @@ describe("accept_own_draft (student taps Accept in chat)", () => {
     );
     expect(res.statusCode).toBe(200);
     const postRow = state.inserted.find((r) => r.table === "posts") as unknown as Record<string, unknown>;
-    expect(postRow.visibility).toBe("private");
+    expect(postRow.visibility).toBe("public");
+    expect(postRow.status).toBe("pending_review");
     expect(postRow.author_id).toBe("thread-1");
+  });
+
+  it("defaults to private when no visibility is chosen", async () => {
+    await post({ action: "draft_post", thread_id: "thread-1" });
+    authMocks.isAdmin.mockResolvedValue(false);
+    const { default: handler } = await import("../../api/_inbox.js");
+    const res = response();
+    const { checkUser } = await import("../../api/_auth.js");
+    (checkUser as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({ ok: true });
+    await handler(
+      {
+        method: "POST",
+        query: {},
+        headers: { "x-anon-id": "thread-1" },
+        body: { action: "accept_own_draft", thread_id: "thread-1" },
+      },
+      res,
+    );
+    expect(res.statusCode).toBe(200);
+    const postRow = state.inserted.find((r) => r.table === "posts") as unknown as Record<string, unknown>;
+    expect(postRow.visibility).toBe("private");
   });
 
   it("reports honest server latency on owner accepts", async () => {

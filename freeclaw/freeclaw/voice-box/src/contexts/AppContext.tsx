@@ -619,25 +619,33 @@ export function AppProvider({ children }: { children: ReactNode }) {
 						});
 					}
 				}
-				// unread admin chat messages → badge in nav + notification
+				// unread admin AND ai chat messages → badge in nav + notification.
+				// AI replies used to be invisible here (only "admin" counted), so a
+				// reply landing while the user was on another page never raised
+				// any signal — the inbox looked dead until reopened.
 				if (chat) {
-					const unreadAdmin = (chat.messages ?? []).filter(
-						(m) => m.sender === "admin" && !m.read,
-					).length;
-					setChatUnread(unreadAdmin);
+					const unreadIncoming = (chat.messages ?? []).filter(
+						(m) => m.sender !== "user" && !m.read,
+					);
+					setChatUnread(unreadIncoming.length);
 					const prevUnread =
 						typeof snapshot.__chatUnread === "number"
 							? snapshot.__chatUnread
 							: 0;
-					if (unreadAdmin > prevUnread) {
+					if (unreadIncoming.length > prevUnread) {
+						const hasAdmin = unreadIncoming.some(
+							(m) => m.sender === "admin",
+						);
 						pushNotif({
 							kind: "chat",
-							title: "✉️ New message from admin",
+							title: hasAdmin
+								? "✉️ New message from admin"
+								: "🤖 New reply in your inbox",
 							body: "Open your inbox to read it.",
 							link: "/chat",
 						});
 					}
-					nextSnap.__chatUnread = unreadAdmin;
+					nextSnap.__chatUnread = unreadIncoming.length;
 				}
 
 				// poll endings — voted ids joined against the full poll list for metadata

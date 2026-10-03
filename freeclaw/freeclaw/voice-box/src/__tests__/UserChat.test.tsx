@@ -985,7 +985,7 @@ describe("UserChat — in-chat draft card", () => {
 		await screen.findByTestId("draft-card");
 	}
 
-	it("shows the draft with private-only accept and dismiss", async () => {
+	it("shows the draft with a visibility choice and dismiss", async () => {
 		const user = userEvent.setup();
 		renderPage();
 		await waitFor(() => expect(screen.getByText("Hello! How can I help?")).toBeTruthy());
@@ -993,7 +993,9 @@ describe("UserChat — in-chat draft card", () => {
 
 		expect(screen.getByText("Broken lift in Block C")).toBeInTheDocument();
 		expect(screen.getByText("Facilities")).toBeInTheDocument();
-		expect(screen.getByText("Suggested post — private only")).toBeInTheDocument();
+		expect(screen.getByText("Suggested post — your call")).toBeInTheDocument();
+		// Private is the default.
+		expect(screen.getByRole("radio", { name: /private/i })).toHaveAttribute("aria-checked", "true");
 
 		await user.click(screen.getByRole("button", { name: "Dismiss" }));
 		expect(screen.queryByTestId("draft-card")).not.toBeInTheDocument();
@@ -1016,10 +1018,32 @@ describe("UserChat — in-chat draft card", () => {
 			expect(mocks.postInbox).toHaveBeenCalledWith("/api/inbox", {
 				thread_id: "anon-test",
 				action: "accept_own_draft",
+				visibility: "private",
 			});
 		});
 		expect(screen.queryByTestId("draft-card")).not.toBeInTheDocument();
 		expect(screen.getByText(/private post is live/)).toBeInTheDocument();
+	});
+
+	it("accept as public sends for review instead of publishing", async () => {
+		const user = userEvent.setup();
+		renderPage();
+		await waitFor(() => expect(screen.getByText("Hello! How can I help?")).toBeTruthy());
+		await sendWithDraft(user);
+
+		await user.click(screen.getByRole("radio", { name: /public/i }));
+		expect(screen.getByText(/reviewed by an admin before anyone sees them/)).toBeInTheDocument();
+		(mocks.postInbox as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({ ok: true, status: "pending_review" });
+		await user.click(screen.getByRole("button", { name: "Send for review" }));
+		await waitFor(() => {
+			expect(mocks.postInbox).toHaveBeenCalledWith("/api/inbox", {
+				thread_id: "anon-test",
+				action: "accept_own_draft",
+				visibility: "public",
+			});
+		});
+		expect(screen.queryByTestId("draft-card")).not.toBeInTheDocument();
+		expect(screen.getByText(/goes public once approved/)).toBeInTheDocument();
 	});
 });
 

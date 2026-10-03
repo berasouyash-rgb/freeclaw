@@ -162,11 +162,15 @@ export default async function handler(req, res) {
 			try {
 				for (let i = 0; i < ids.length; i += 100) {
 					const slice = ids.slice(i, i + 100);
+					// Mirror the feed's counting rule exactly: only non-deleted,
+					// non-hidden comments score. Hidden (moderated) comments must
+					// not inflate a post's rank.
 					const { data, error: cErr } = await supabase
 						.from("comments")
 						.select("post_id")
 						.in("post_id", slice)
-						.eq("deleted", false);
+						.eq("deleted", false)
+						.neq("hidden", true);
 					if (cErr) throw cErr;
 					(data || []).forEach((c) => {
 						counts[c.post_id] = (counts[c.post_id] || 0) + 1;

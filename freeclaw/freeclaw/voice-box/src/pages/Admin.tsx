@@ -47,6 +47,7 @@ const UserManager = retryLazy(() => import("./admin/UserManager"));
 const Categories = retryLazy(() => import("./admin/Categories"));
 const PollManager = retryLazy(() => import("./admin/PollManager"));
 const SlangLeaders = retryLazy(() => import("./admin/SlangLeaders"));
+const Communities = retryLazy(() => import("./admin/Communities"));
 // Communication
 const UnifiedInbox = retryLazy(() => import("./admin/UnifiedInbox"));
 const EmailTemplates = retryLazy(() => import("./admin/EmailTemplates"));
@@ -584,6 +585,11 @@ export default function Admin() {
 						{tab === "slang" && (
 							<ErrorBoundary key="slang">
 								<SlangLeaders />
+							</ErrorBoundary>
+						)}
+						{tab === "communities" && (
+							<ErrorBoundary key="communities">
+								<Communities />
 							</ErrorBoundary>
 						)}
 						{tab === "inbox" && (

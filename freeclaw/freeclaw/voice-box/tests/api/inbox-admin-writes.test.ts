@@ -43,6 +43,7 @@ type Chain = Record<string, unknown> & {
 
 function chainFor(table: string): Chain {
   const eqs: Array<[string, unknown]> = [];
+  const neqs: Array<[string, unknown]> = [];
   let inFilter: { col: string; vals: Array<unknown> } | null = null;
   let op: "select" | "insert" | "update" | "upsert" | "delete" = "select";
   let patch: Record<string, unknown> = {};
@@ -55,6 +56,7 @@ function chainFor(table: string): Chain {
         : [];
   const matches = (r: Record<string, unknown>) =>
     eqs.every(([c, v]) => r[c] === v) &&
+    neqs.every(([c, v]) => r[c] !== v) &&
     (!inFilter || inFilter.vals.includes(r[inFilter.col]));
 
   const self: Chain = {
@@ -138,6 +140,10 @@ function chainFor(table: string): Chain {
     },
     eq(col: string, val: unknown) {
       eqs.push([col, val]);
+      return self;
+    },
+    neq(col: string, val: unknown) {
+      neqs.push([col, val]);
       return self;
     },
     in(col: string, vals: Array<unknown>) {
@@ -445,5 +451,19 @@ describe("PUT /api/inbox — mark_read and set_status prove their writes", () =>
     });
     expect(r2.statusCode).toBe(200);
     expect(state.threads[0]?.status).toBe("closed");
+  });
+
+  it("mark_read as a user clears admin AND ai replies, never the user's own", async () => {
+    state.messages = [
+      { id: "m-ai", thread_id: "thread-1", sender: "ai", body: "hi", read: false },
+      { id: "m-admin", thread_id: "thread-1", sender: "admin", body: "yo", read: false },
+      { id: "m-user", thread_id: "thread-1", sender: "user", body: "me", read: false },
+    ];
+    const r = await put({ action: "mark_read", thread_id: "thread-1" });
+    expect(r.statusCode).toBe(200);
+    const byId = Object.fromEntries(state.messages.map((m) => [m.id, m]));
+    expect(byId["m-ai"]?.read).toBe(true);
+    expect(byId["m-admin"]?.read).toBe(true);
+    expect(byId["m-user"]?.read).toBe(false);
   });
 });

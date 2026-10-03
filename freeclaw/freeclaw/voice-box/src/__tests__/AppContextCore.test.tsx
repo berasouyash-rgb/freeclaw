@@ -728,6 +728,42 @@ describe("AppProvider — core behavior", () => {
 		const notifsAfter = screen.getByTestId("notifs").textContent ?? "";
 		expect(notifsAfter).toContain("solved");
 	});
+
+	it("raises the inbox badge and a notification for AI replies, not just admin ones", async () => {
+		let chatCalls = 0;
+		h.get.mockImplementation((url: string) => {
+			if (url.includes("/api/saved")) return Promise.resolve({ saved: [] });
+			if (url.includes("/api/posts")) return Promise.resolve([]);
+			if (url.includes("/api/chat")) {
+				chatCalls++;
+				return chatCalls === 1
+					? Promise.resolve({ messages: [] })
+					: Promise.resolve({
+							messages: [{ sender: "ai", read: false }],
+						});
+			}
+			return Promise.resolve({});
+		});
+
+		const user = userEvent.setup();
+		render(
+			<AppProvider>
+				<Probe />
+			</AppProvider>,
+		);
+		await waitFor(() => expect(chatCalls).toBeGreaterThanOrEqual(1));
+
+		await user.click(screen.getByRole("button", { name: "refresh" }));
+		await waitFor(
+			() => {
+				expect(screen.getByTestId("chat-unread")).toHaveTextContent("1");
+				expect(
+					screen.getByTestId("notifs").textContent ?? "",
+				).toContain("New reply in your inbox");
+			},
+			{ timeout: 3000 },
+		);
+	});
 });
 
 describe("AppProvider — edge paths", () => {

@@ -212,6 +212,7 @@ describe("_chat.js — thread actions must not report success on a failed write"
 					return self;
 				},
 				eq: () => self,
+				neq: () => self,
 				maybeSingle: () => self,
 				single: () => self,
 			};

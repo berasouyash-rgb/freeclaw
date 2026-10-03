@@ -113,16 +113,29 @@ export default function UserChat() {
 	const [aiBusy, setAiBusy] = useState(false);
 	const [triageNote, setTriageNote] = useState<string | null>(null);
 	// In-chat draft card: the AI proposed a post from an explicit request.
-	// Accept publishes it PRIVATELY (server forces private); Dismiss drops it.
+	// Accept publishes it with the student's own visibility choice (default
+	// private; public drafts are held for admin review first); Dismiss drops it.
 	const [pendingDraft, setPendingDraft] = useState<{ title: string; description: string; category: string } | null>(null);
+	const [draftVisibility, setDraftVisibility] = useState<"private" | "public">("private");
 	const [draftBusy, setDraftBusy] = useState(false);
 	const acceptDraftCard = async () => {
 		if (!pendingDraft || draftBusy) return;
 		setDraftBusy(true);
 		try {
-			await api.postInbox("/api/inbox", { thread_id: anonId, action: "accept_own_draft" });
+			const res = await api.postInbox<{ status?: string }>("/api/inbox", {
+				thread_id: anonId,
+				action: "accept_own_draft",
+				visibility: draftVisibility,
+			});
 			setPendingDraft(null);
-			setTriageNote("✅ Your private post is live — visible only to you and the admin team.");
+			setDraftVisibility("private");
+			setTriageNote(
+				res.status === "pending_review"
+					? "📋 Sent for admin review — it goes public once approved."
+					: draftVisibility === "public"
+						? "📋 Sent for admin review — it goes public once approved."
+						: "✅ Your private post is live — visible only to you and the admin team.",
+			);
 		} catch (e: unknown) {
 			toast(e instanceof Error ? e.message : "Could not publish — try again", "err");
 		} finally {
@@ -640,16 +653,40 @@ export default function UserChat() {
 				</div>
 			)}
 
-			{/* Draft card — Accept publishes PRIVATELY, Dismiss drops it */}
+			{/* Draft card — Accept publishes with your visibility choice, Dismiss drops it */}
 			{pendingDraft && (
 				<div className="card border-accent/30 p-3.5 mt-3" data-testid="draft-card" role="dialog" aria-label="Suggested post">
-					<p className="text-[10px] font-bold uppercase tracking-wider text-accent mb-1.5">Suggested post — private only</p>
+					<p className="text-[10px] font-bold uppercase tracking-wider text-accent mb-1.5">Suggested post — your call</p>
 					<p className="font-semibold text-sm leading-snug">{pendingDraft.title}</p>
 					<span className="chip !text-[10px] mt-1.5">{pendingDraft.category}</span>
 					<p className="text-xs text-ink2 leading-relaxed mt-1">{pendingDraft.description}</p>
+					<div className="flex gap-2 mt-3" role="radiogroup" aria-label="Post visibility">
+						{(["private", "public"] as const).map((v) => (
+							<button
+								key={v}
+								type="button"
+								role="radio"
+								aria-checked={draftVisibility === v}
+								disabled={draftBusy}
+								onClick={() => setDraftVisibility(v)}
+								className={`flex-1 px-3 py-2 rounded-lg text-xs font-semibold border transition-all disabled:opacity-40 ${
+									draftVisibility === v
+										? "border-accent bg-accent-soft text-accent"
+										: "border-border text-ink2"
+								}`}
+							>
+								{v === "private" ? "🔒 Private" : "🌍 Public"}
+							</button>
+						))}
+					</div>
+					{draftVisibility === "public" && (
+						<p className="text-[11px] text-ink3 mt-1.5">
+							Public posts are reviewed by an admin before anyone sees them.
+						</p>
+					)}
 					<div className="flex gap-2 mt-3">
-						<button type="button" disabled={draftBusy} onClick={() => void acceptDraftCard()} className="btn btn-primary !text-xs flex-1">Post privately</button>
-						<button type="button" disabled={draftBusy} onClick={() => setPendingDraft(null)} className="btn btn-ghost !text-xs">Dismiss</button>
+						<button type="button" disabled={draftBusy} onClick={() => void acceptDraftCard()} className="btn btn-primary !text-xs flex-1">{draftBusy ? "Posting…" : draftVisibility === "private" ? "Post privately" : "Send for review"}</button>
+						<button type="button" disabled={draftBusy} onClick={() => { setPendingDraft(null); setDraftVisibility("private"); }} className="btn btn-ghost !text-xs">Dismiss</button>
 					</div>
 				</div>
 			)}
