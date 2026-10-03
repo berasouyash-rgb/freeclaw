@@ -291,6 +291,9 @@ async function findSimilarComplaints(title, description, category) {
 		.from("posts")
 		.select("id, title, category, status, created_at")
 		.eq("deleted", false)
+		.eq("hidden", false)
+		.neq("visibility", "private")
+		.neq("status", "pending_review")
 		.neq("id", "")
 		.order("created_at", { ascending: false })
 		.limit(100);

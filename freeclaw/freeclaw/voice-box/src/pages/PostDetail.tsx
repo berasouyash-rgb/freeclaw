@@ -68,8 +68,95 @@ const STATUS_CIRCLES: { value: string; label: string; dot: string }[] = [
 	{ value: "solved", label: "Solved", dot: "var(--vb-good)" },
 ];
 
-function AdminStatusCircles({
-	status,
+/**
+ * Resolution evidence — "did the fix actually work?" answered from database
+ * rows (/api/resolution-evidence), never from a story. Renders only on
+ * solved posts: before/after complaint counts, the deterministic verdict,
+ * and links to still-open lookalikes when the fix may not have held.
+ */
+function ResolutionEvidence({ postId }: { postId: string }) {
+	const [data, setData] = useState<{
+		complaints_before: number;
+		complaints_after: number;
+		change_pct: number | null;
+		verdict: string;
+		related_open: { id: string; title: string; status: string }[];
+		comments_after: number;
+	} | null>(null);
+	useEffect(() => {
+		let live = true;
+		api
+			.get<{
+				complaints_before: number;
+				complaints_after: number;
+				change_pct: number | null;
+				verdict: string;
+				related_open: { id: string; title: string; status: string }[];
+				comments_after: number;
+			}>(`/api/resolution-evidence?post_id=${encodeURIComponent(postId)}`)
+			.then((d) => {
+				if (live) setData(d);
+			})
+			.catch(() => {
+				/* evidence is supplementary — the solved state stands without it */
+			});
+		return () => {
+			live = false;
+		};
+	}, [postId]);
+	if (!data) return null;
+	const verdictCopy =
+		data.verdict === "recurrence"
+			? "Possible recurrence detected"
+			: data.verdict === "watch"
+				? "Improving — still watching"
+				: "Resolution supported by current evidence";
+	const verdictColor =
+		data.verdict === "recurrence"
+			? "var(--vb-bad)"
+			: data.verdict === "watch"
+				? "var(--vb-warn)"
+				: "var(--vb-good)";
+	return (
+		<div
+			className="mt-4 rounded-xl p-4"
+			style={{ background: "var(--vb-accent-soft)", border: "1px solid rgba(86,82,214,0.2)" }}
+			aria-label="Resolution evidence"
+		>
+			<p className="text-[10px] font-bold uppercase tracking-wider text-accent mb-1.5 flex items-center gap-1.5">
+				<CheckCircle2 size={12} /> Resolution evidence
+			</p>
+			<p className="text-sm font-semibold" style={{ color: verdictColor }}>
+				{verdictCopy}
+			</p>
+			<p className="text-xs text-ink2 mt-1">
+				{data.complaints_before} similar complaint{data.complaints_before !== 1 ? "s" : ""} before
+				{" → "}
+				{data.complaints_after} after
+				{data.change_pct !== null && data.complaints_before > 0
+					? ` (↓${data.change_pct}%)`
+					: ""}
+				{data.comments_after > 0 && ` · ${data.comments_after} comment${data.comments_after !== 1 ? "s" : ""} since`}
+			</p>
+			{data.related_open.length > 0 && (
+				<div className="mt-2 space-y-1">
+					<p className="text-[11px] font-semibold text-ink2">Still open and similar:</p>
+					{data.related_open.map((r) => (
+						<Link
+							key={r.id}
+							to={`/post/${r.id}`}
+							className="block text-xs text-accent font-semibold hover:underline truncate"
+						>
+							{r.title}
+						</Link>
+					))}
+				</div>
+			)}
+		</div>
+	);
+}
+
+function AdminStatusCircles({	status,
 	busy,
 	onPick,
 }: {
@@ -681,6 +768,9 @@ export default function PostDetail() {
 						<StatusTimeline post={p} />
 					</div>
 				)}
+
+				{/* Resolution evidence — solved posts only, derived from real rows */}
+				{p.status === "solved" && <ResolutionEvidence postId={postId} />}
 
 				{/* Admin status picker — one-tap circles: Reported, Verified,
 				In progress, Working on (= waiting), Solved. Working on maps to

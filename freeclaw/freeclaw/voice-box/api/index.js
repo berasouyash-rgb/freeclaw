@@ -22,6 +22,7 @@ import agentsCron from "./_agents-cron.js";
 import ai from "./_ai.js";
 import aiChat from "./_ai-chat.js";
 import aiResolution from "./_ai-resolution.js";
+import resolutionEvidence from "./_resolution-evidence.js";
 import announcement from "./_announcement.js";
 import assist from "./_assist.js";
 import auditTrail from "./_audit-trail.js";
@@ -156,6 +157,7 @@ const routes = {
 	"meta-agent": protect(metaAgent, "meta-agent"),
 	"agent-team": protect(agentTeam, "agent-team"),
 	"ai-resolution": protect(aiResolution, "ai-resolution"),
+	"resolution-evidence": protect(resolutionEvidence, "resolution-evidence"),
 	duplicates: protect(duplicates, "duplicates"),
 	routing: protect(routing, "routing"),
 	search: protect(search, "search"),

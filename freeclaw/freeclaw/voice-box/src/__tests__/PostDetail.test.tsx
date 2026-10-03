@@ -225,6 +225,86 @@ describe("PostDetail — attach a poll", () => {
 	});
 });
 
+describe("PostDetail — resolution evidence", () => {
+	function solvedWith(evidence: unknown) {
+		mocks.get.mockImplementation((url: string) => {
+			if (url.includes("/api/resolution-evidence")) return Promise.resolve(evidence);
+			if (url.includes("/api/posts"))
+				return Promise.resolve({
+					post: { ...POST, status: "solved" },
+					counts: {},
+					mine: [],
+				});
+			if (url.includes("/api/follows")) return Promise.resolve({ follows: [], count: 0 });
+			if (url.includes("/api/polls")) return Promise.resolve([]);
+			return Promise.resolve({});
+		});
+	}
+
+	it("shows supported verdict with before/after counts on solved posts", async () => {
+		solvedWith({
+			complaints_before: 38,
+			complaints_after: 3,
+			change_pct: 92,
+			verdict: "supported",
+			related_open: [],
+			comments_after: 1,
+		});
+		render(<PostDetail />);
+		expect(
+			await screen.findByText("Resolution supported by current evidence"),
+		).toBeInTheDocument();
+		expect(screen.getByText(/38 similar complaints.*3 after/)).toBeInTheDocument();
+	});
+
+	it("warns with links on possible recurrence", async () => {
+		solvedWith({
+			complaints_before: 5,
+			complaints_after: 6,
+			change_pct: -20,
+			verdict: "recurrence",
+			related_open: [{ id: "p9", title: "Cooler broken again", status: "reported" }],
+			comments_after: 0,
+		});
+		render(<PostDetail />);
+		expect(await screen.findByText("Possible recurrence detected")).toBeInTheDocument();
+		expect(screen.getByRole("link", { name: "Cooler broken again" })).toHaveAttribute(
+			"href",
+			"/post/p9",
+		);
+	});
+
+	it("stays silent when evidence is unavailable", async () => {
+		mocks.get.mockImplementation((url: string) => {
+			if (url.includes("/api/resolution-evidence"))
+				return Promise.reject(new Error("down"));
+			if (url.includes("/api/posts"))
+				return Promise.resolve({
+					post: { ...POST, status: "solved" },
+					counts: {},
+					mine: [],
+				});
+			if (url.includes("/api/follows")) return Promise.resolve({ follows: [], count: 0 });
+			if (url.includes("/api/polls")) return Promise.resolve([]);
+			return Promise.resolve({});
+		});
+		render(<PostDetail />);
+		await screen.findByText("Broken projector in Room 204");
+		expect(screen.queryByLabelText("Resolution evidence")).toBeNull();
+	});
+
+	it("shows no evidence card on unsolved posts", async () => {
+		render(<PostDetail />);
+		await screen.findByText("Broken projector in Room 204");
+		expect(screen.queryByLabelText("Resolution evidence")).toBeNull();
+		expect(
+			mocks.get.mock.calls.some(([u]) =>
+				String(u).includes("/api/resolution-evidence"),
+			),
+		).toBe(false);
+	});
+});
+
 describe("PostDetail — follow button", () => {
 	it("renders a Follow button and follows the post on click", async () => {
 		mocks.post.mockResolvedValue({
