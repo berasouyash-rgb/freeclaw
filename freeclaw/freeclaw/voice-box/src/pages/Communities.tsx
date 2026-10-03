@@ -6,6 +6,7 @@ import {
 	EyeOff,
 	MessageSquare,
 	Plus,
+	RefreshCw,
 	Trash2,
 	Users,
 } from "lucide-react";
@@ -48,7 +49,9 @@ export default function Communities() {
 			const r = await api.get<{ communities: CommunityCard[] }>(
 				"/api/communities?action=list",
 			);
-			setCommunities(r.communities);
+			// A null payload must mean "empty", never the loading state:
+			// communities === null renders skeletons, so null would spin forever.
+			setCommunities(r.communities || []);
 			setError("");
 		} catch (e: unknown) {
 			setError(e instanceof Error ? e.message : "Failed to load communities");
@@ -57,13 +60,6 @@ export default function Communities() {
 
 	useEffect(() => {
 		void load();
-		const iv = setInterval(() => void load(), 30000);
-		const onVis = () => !document.hidden && void load();
-		document.addEventListener("visibilitychange", onVis);
-		return () => {
-			clearInterval(iv);
-			document.removeEventListener("visibilitychange", onVis);
-		};
 	}, []);
 
 	const adminOp = async (slug: string, op: "hide" | "unhide" | "delete") => {
@@ -144,12 +140,22 @@ export default function Communities() {
 						Groups with their own discussion feeds — create one or join the conversation.
 					</p>
 				</div>
-				<button
-					className="btn btn-primary !py-2 !px-4 !text-sm"
-					onClick={() => setCreateOpen(true)}
-				>
-					<Plus size={15} /> New community
-				</button>
+				<div className="flex items-center gap-2">
+					<button
+						className="btn btn-ghost !py-2 !px-3 !text-sm"
+						onClick={() => void load()}
+						aria-label="Refresh communities"
+						title="Refresh communities"
+					>
+						<RefreshCw size={15} /> Refresh
+					</button>
+					<button
+						className="btn btn-primary !py-2 !px-4 !text-sm"
+						onClick={() => setCreateOpen(true)}
+					>
+						<Plus size={15} /> New community
+					</button>
+				</div>
 			</div>
 
 			{error && (
@@ -159,7 +165,7 @@ export default function Communities() {
 			)}
 
 			{communities === null ? (
-				<div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
+				<div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
 					{[0, 1, 2].map((i) => (
 						<div key={i} className="card p-5 animate-pulse bg-surface2/60">
 							<div className="h-4 w-1/3 rounded bg-surface3 mb-3" />
@@ -182,7 +188,7 @@ export default function Communities() {
 					</button>
 				</div>
 			) : (
-				<div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
+				<div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
 					{communities.map((c) => (
 						<div key={c.slug} className="card p-5 flex flex-col hover:shadow-md transition-shadow">
 							<div className="flex items-start gap-3 mb-3">
@@ -190,6 +196,8 @@ export default function Communities() {
 									<img
 										src={c.photo}
 										alt={c.name}
+										loading="lazy"
+										decoding="async"
 										className="w-12 h-12 rounded-2xl object-cover flex-shrink-0 vb-avatar"
 									/>
 								) : (
@@ -228,6 +236,7 @@ export default function Communities() {
 									<>
 										<button
 											className="btn btn-ghost !text-xs !p-1.5"
+											disabled={busy === c.slug}
 											title={c.hidden ? "Unhide" : "Hide"}
 											onClick={() => adminOp(c.slug, c.hidden ? "unhide" : "hide")}
 										>
@@ -235,6 +244,7 @@ export default function Communities() {
 										</button>
 										<button
 											className="btn btn-ghost !text-xs !p-1.5 !text-bad"
+											disabled={busy === c.slug}
 											title="Delete community"
 											onClick={() => {
 												if (confirm(`Delete "${c.name}"? This removes all its discussions.`))

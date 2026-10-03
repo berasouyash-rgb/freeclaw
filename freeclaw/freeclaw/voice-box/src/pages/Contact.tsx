@@ -7,6 +7,8 @@ import {
 	Send,
 } from "lucide-react";
 import { useState } from "react";
+import { api } from "../lib/api";
+import { lsGet } from "../lib/identity";
 import FadeIn from "../components/FadeIn";
 
 export default function Contact() {
@@ -19,13 +21,37 @@ export default function Contact() {
 	const [submitted, setSubmitted] = useState(false);
 	const [sending, setSending] = useState(false);
 
+	const [error, setError] = useState("");
+
 	const handleSubmit = async (e: React.FormEvent) => {
 		e.preventDefault();
+		if (!form.message.trim()) return;
 		setSending(true);
-		// Simulate send
-		await new Promise((r) => setTimeout(r, 1000));
-		setSending(false);
-		setSubmitted(true);
+		setError("");
+		try {
+			// Submit as a suggestion post so it enters the real moderation + review pipeline
+			await api.post("/api/posts", {
+				type: "suggestion",
+				title: form.subject || "Contact form message",
+				description: [
+					form.name ? `From: ${form.name}` : null,
+					form.email ? `Email: ${form.email}` : null,
+					"",
+					form.message,
+				]
+					.filter(Boolean)
+					.join("\n"),
+				author_id: lsGet("vb:anonId", ""),
+				category: "general",
+			});
+			setSubmitted(true);
+		} catch (err: unknown) {
+			setError(
+				err instanceof Error ? err.message : "Failed to send message",
+			);
+		} finally {
+			setSending(false);
+		}
 	};
 
 	return (
@@ -46,7 +72,7 @@ export default function Contact() {
 			</section>
 
 			<section className="max-w-4xl mx-auto px-6 py-16">
-				<div className="grid md:grid-cols-3 gap-8">
+				<div className="grid grid-cols-1 md:grid-cols-3 gap-8">
 					{/* Contact Info */}
 					<FadeIn className="md:col-span-1 space-y-6">
 						<div className="card p-6">
@@ -99,7 +125,7 @@ export default function Contact() {
 										directly.
 									</span>
 								</div>
-								<div className="grid md:grid-cols-2 gap-4">
+								<div className="grid grid-cols-1 md:grid-cols-2 gap-4">
 									<div>
 										<label
 											className="block text-sm font-medium text-ink mb-1"
@@ -195,6 +221,9 @@ export default function Contact() {
 										</>
 									)}
 								</button>
+								{error && (
+									<p className="text-sm text-bad mt-2 text-center">{error}</p>
+								)}
 							</form>
 						)}
 					</FadeIn>

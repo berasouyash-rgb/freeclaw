@@ -24,6 +24,10 @@ const authMocks = {
 	clean: (s: unknown, max = 2000) => String(s ?? "").slice(0, max),
 	isAdmin: vi.fn().mockResolvedValue(false),
 	checkUser: vi.fn().mockResolvedValue({ ok: true, user: { id: "u1" } }),
+	rateLimited: vi.fn().mockResolvedValue(false),
+	rateLimitResponse: vi.fn((res) =>
+		res.status(429).json({ error: "Too many requests" }),
+	),
 };
 vi.mock("../../api/_auth.js", () => authMocks);
 vi.mock("../../api/_error.js", () => ({
@@ -134,7 +138,7 @@ describe("GET /api/reactions", () => {
 		);
 		expect(res.statusCode).toBe(200);
 		const body = res.body as Array<{ author_id: string; is_mine: boolean }>;
-		expect(body[0].author_id).toBe("anon-99…");
+		expect(body[0].author_id).toBe("anon-99...");
 		expect(body[0].is_mine).toBe(false);
 		expect(body[1].author_id).toBe("anon-2");
 		expect(body[1].is_mine).toBe(true);
@@ -185,7 +189,7 @@ describe("POST /api/reactions — counts error fallback", () => {
 			{
 				method: "POST",
 				query: {},
-				headers: {},
+				headers: { "x-anon-id": "anon-1" },
 				body: {
 					author_id: "anon-1",
 					target_id: "post-1",
@@ -206,7 +210,7 @@ describe("method routing", () => {
 	it("answers OPTIONS with 204", async () => {
 		const { default: handler } = await import("../../api/_reactions.js");
 		const res = response();
-		await handler({ method: "OPTIONS", query: {}, body: {}, headers: {} }, res);
+		await handler({ method: "OPTIONS", query: {}, body: {}, headers: { "x-anon-id": "anon-1" } }, res);
 		expect(res.statusCode).toBe(204);
 	});
 

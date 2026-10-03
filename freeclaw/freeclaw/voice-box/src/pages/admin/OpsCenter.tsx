@@ -17,22 +17,27 @@ import {
 	AlertTriangle,
 	ArrowUpRight,
 	BellRing,
+	Bot,
 	CalendarDays,
 	CheckCircle2,
 	Clock,
 	Cpu,
 	Database,
 	Gauge,
+	Loader2,
+	Newspaper,
+	Pause,
+	Play,
 	Radar,
 	RefreshCw,
+	Send,
 	Users,
 	Zap,
 } from "lucide-react";
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useApp } from "../../contexts/AppContext";
 import { api } from "../../lib/api";
-import { useRealtime } from "../../lib/useRealtime";
-import { useSmartPoll } from "../../lib/useSmartPoll";
+import { ConfirmDialog } from "../../components/ui";
 import { errorText } from "../../lib/utils";
 import {
 	agentName,
@@ -255,7 +260,7 @@ function VerificationChip({ status }: { status: string }) {
 
 function openWorkforce() {
 	window.dispatchEvent(
-		new CustomEvent("vb:admin-tab", { detail: "ai-operations" }),
+		new CustomEvent("vb:admin-tab", { detail: "ops-center" }),
 	);
 }
 function openReports() {
@@ -263,7 +268,7 @@ function openReports() {
 }
 function openSuggestions() {
 	window.dispatchEvent(
-		new CustomEvent("vb:admin-tab", { detail: "suggestions" }),
+		new CustomEvent("vb:admin-tab", { detail: "posts" }),
 	);
 }
 function openPolls() {
@@ -463,37 +468,274 @@ function OpsRowItem({ row }: { row: OpsRow }) {
 	);
 }
 
+// ─── Agent scorecard — HEALTH is not IMPACT ────────────────────────
+// "Agent healthy" only means the process ran. This panel reports the two
+// separately so an agent with thousands of executions and zero state changes
+// is visibly idle rather than looking productive.
+interface ScorecardAgent {
+	agent_id: string;
+	name: string;
+	division: string;
+	status: "active" | "retired";
+	verdict: "impactful" | "advisory-only" | "no-impact" | "failing";
+	impact: {
+		class: string;
+		behaviour_label: string | null;
+		state_changing: boolean;
+		disable_test: string;
+	};
+	health: {
+		runs: number;
+		failures: number;
+		failure_rate: number;
+		alive: boolean;
+	};
+}
+
+interface Scorecard {
+	summary: {
+		agents: number;
+		healthy: number;
+		no_real_impact: number;
+		state_changing_agents: number;
+		total_executions: number;
+		executions_without_state_change: number;
+		verdicts: Record<string, number>;
+	};
+	agents: ScorecardAgent[];
+	roster_audit?: {
+		agents_total: number;
+		agents_reaching_a_behaviour: number;
+		agents_retired: number;
+		behaviours_available: number;
+		behaviours_reachable: number;
+		behaviours_state_changing: number;
+		retired_agents: {
+			agent_id: string;
+			name: string;
+			division: string;
+			reason: string;
+		}[];
+	};
+}
+
+const VERDICT_STYLE: Record<string, { label: string; cls: string }> = {
+	impactful: { label: "CHANGES STATE", cls: "bg-good/12 text-good" },
+	"advisory-only": { label: "REPORTS ONLY", cls: "bg-warn/12 text-warn" },
+	"no-impact": { label: "NO IMPACT", cls: "bg-bad/12 text-bad" },
+	failing: { label: "FAILING", cls: "bg-bad/12 text-bad" },
+};
+
 // ═══════════════════════════════════════════════════════════════════
 export default function OpsCenter() {
 	const { toast } = useApp();
 	const [data, setData] = useState<OpsSummary | null>(null);
+	const [card, setCard] = useState<Scorecard | null>(null);
+	const [showRetired, setShowRetired] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 	const [patrolling, setPatrolling] = useState(false);
-	const lastRefreshRef = useRef(0);
+
+	// ── Automations: deterministic workers, visible + runnable ────
+	// Same registry the cron ticks. Each row shows the last cron result;
+	// Run executes the real check on demand and shows its output.
+	interface AutomationWorker {
+		id: string;
+		name: string;
+		description: string;
+		last: {
+			at?: string;
+			ok?: boolean;
+			deferred?: boolean;
+			degraded?: boolean;
+			summary?: string;
+		} | null;
+	}
+
+	const [automations, setAutomations] = useState<AutomationWorker[] | null>(null);
+	const [autoRunning, setAutoRunning] = useState<string | null>(null);
+	const [autoResult, setAutoResult] = useState<Record<string, string>>({});
+	const [autoError, setAutoError] = useState<string | null>(null);
+
+	const loadAutomations = useCallback(async () => {
+		try {
+			const r = await api.get<{
+				ok: boolean;
+				workers: AutomationWorker[];
+			}>("/api/workforce?action=automation-status");
+			if (r?.ok && Array.isArray(r.workers)) setAutomations(r.workers);
+		} catch {
+			/* automations panel stays in its empty state */
+		}
+	}, []);
+
+	const runAutomation = async (id: string) => {
+		if (autoRunning) return;
+		setAutoRunning(id);
+		try {
+			const r = await api.post<{
+				ok: boolean;
+				result?: { checked?: number };
+				last?: { summary?: string };
+				error?: string;
+				duration_ms?: number;
+			}>("/api/workforce", { action: "automation-run", worker: id });
+			if (r.ok) {
+				const summary =
+					r.last?.summary || `ran ok in ${r.duration_ms ?? "?"}ms`;
+				setAutoResult((m) => ({ ...m, [id]: summary }));
+				setAutoError(null);
+				toast(`Automation ran: ${summary}`, "ok");
+			} else {
+				const msg = r.error || "no details — please retry";
+				setAutoError(`Automation failed: ${msg}`);
+				toast(`Automation failed: ${msg}`, "err");
+			}
+			void loadAutomations();
+		} catch (e: unknown) {
+			const msg = errorText(e) || "no details — please retry";
+			setAutoError(`Automation failed: ${msg}`);
+			toast(`Automation failed: ${msg}`, "err");
+		} finally {
+			setAutoRunning(null);
+		}
+	};
+
+	// ── Ask the real agent (NeMo Fabric via the workforce proxy) ────
+	// States: idle → running → answered | failed. Input is preserved on
+	// failure (draft recovery) and cleared only on a real answer.
+	interface AgentAnswer {
+		status?: string;
+		response?: string;
+		error?: string;
+		unavailable?: boolean;
+		configured?: boolean;
+		disabled?: boolean;
+		backend?: string | null;
+		provider?: string | null;
+		model?: string | null;
+	}
+	interface BriefingItem {
+		label: string;
+		value: number | null;
+		detail: string;
+		source: string;
+	}
+	interface Briefing {
+		window: string;
+		generated_at: string;
+		items: BriefingItem[];
+		needs_attention: number;
+	}
+	const [agentInput, setAgentInput] = useState("");
+	const [agentBusy, setAgentBusy] = useState(false);
+	const [agentAnswer, setAgentAnswer] = useState<AgentAnswer | null>(null);
+	const [agentError, setAgentError] = useState<string | null>(null);
+	const [briefing, setBriefing] = useState<Briefing | null>(null);
+
+	const askAgent = async () => {
+		const input = agentInput.trim();
+		if (!input || agentBusy) return;
+		setAgentBusy(true);
+		setAgentError(null);
+		setAgentAnswer(null);
+		try {
+			const r = await api.postAgent<{
+				ok: boolean;
+				status?: string;
+				response?: string;
+				error?: string;
+				unavailable?: boolean;
+				configured?: boolean;
+				disabled?: boolean;
+				backend?: string | null;
+				provider?: string | null;
+				model?: string | null;
+			}>("/api/workforce", {
+				action: "ask-agent",
+				input: input.slice(0, 2000),
+			});
+			if (!r.ok) {
+				// Optional-backend verdict: not-configured is guidance, not
+				// an error — the built-in workforce needs no extra service.
+				if (r.configured === false || r.disabled === true) {
+					setAgentError(
+						"Live agent runs are optional and not configured here. Set WORKFORCE_BASE_URL to enable them — tasks, patrols and evaluations below already run on the built-in workforce.",
+					);
+				} else {
+					// Honest backend verdict (unreachable, failed) — keep the
+					// question so the admin can retry without retyping.
+					setAgentError(
+						r.error || "Agent backend unavailable — try again shortly.",
+					);
+				}
+				return;
+			}
+			if (r.status !== "succeeded") {
+				setAgentError(
+					`Agent run ${r.status || "failed"} — wait a moment and retry; your question is preserved below.`,
+				);
+				return;
+			}
+			setAgentAnswer({
+				status: r.status,
+				response: r.response,
+				backend: r.backend ?? null,
+				provider: r.provider ?? null,
+				model: r.model ?? null,
+			});
+			setAgentInput("");
+		} catch (e: unknown) {
+			setAgentError(e instanceof Error ? e.message : "Agent run failed");
+		} finally {
+			setAgentBusy(false);
+		}
+	};
 
 	const load = useCallback(async () => {
-		lastRefreshRef.current = Date.now();
 		try {
 			// getSlow (28s timeout) — ops-summary runs real DB scans + exact counts
 			// (~3.6s live); the default 8s api.get timeout trips into the hard
 			// "OPS DATA UNAVAILABLE" screen whenever the DB is briefly loaded.
-			const r = await api.getSlow<OpsSummary>(
-				"/api/workforce?action=ops-summary",
-			);
+			// The scorecard is informative, never load-bearing: a rejection OR a
+			// missing/throwing client must not blank the whole Ops Center.
+			const [r, sc] = await Promise.all([
+				api.getSlow<OpsSummary>("/api/workforce?action=ops-summary"),
+				(async (): Promise<Scorecard | null> => {
+					try {
+						return (
+							(await api.get<Scorecard>(
+								"/api/agent-executions?action=scorecard&limit=500",
+							)) ?? null
+						);
+					} catch {
+						return null;
+					}
+				})(),
+			]);
 			setData(r);
+			if (sc) setCard(sc);
 			setError(null);
+			void loadAutomations();
+			// Overnight briefing rides along fail-soft: it must never blank
+			// the Ops Center when its own queries stumble.
+			try {
+				const b = await api.get<Briefing>("/api/workforce?action=overnight-briefing");
+				if (b && Array.isArray(b.items)) setBriefing(b);
+			} catch {
+				/* briefing stays at last-known (or absent) */
+			}
 		} catch (e: unknown) {
 			setError(e instanceof Error ? e.message : "Ops data unavailable");
 		}
-	}, []);
+	}, [loadAutomations]);
 
-	const { forceRefresh } = useSmartPoll(load, { intervalMs: 20000 });
-
-	// Refresh on runtime events — but never more than once per 5s, so a burst
-	// of task/execution events can't hammer the endpoint on top of the poll.
-	useRealtime(["agent_tasks", "agent_executions", "workforce_config"], () => {
-		if (Date.now() - lastRefreshRef.current > 5000) void forceRefresh();
-	});
+	// One bounded initial load. Refreshing is explicit through the visible
+	// Retry/Refresh controls and after a user action; a quiet Ops page does not
+	// create recurring network work.
+	const forceRefresh = load;
+	useEffect(() => {
+		void load();
+	}, [load]);
 
 	const acknowledgeAlert = async (id: string) => {
 		try {
@@ -502,10 +744,40 @@ export default function OpsCenter() {
 			void forceRefresh();
 		} catch (e: unknown) {
 			toast(
-				`Acknowledge failed: ${e instanceof Error ? e.message : "unknown error"}`,
+				`Acknowledge failed: ${errorText(e) || "no details — please retry"}`,
 				"err",
 			);
 		}
+	};
+
+	// Workforce kill switch — the control the AI Failures page points at.
+	// Pause asks for confirmation (it stops patrols + scheduled work);
+	// resume also lifts any emergency GLOBAL STOP window server-side.
+	const [pauseBusy, setPauseBusy] = useState(false);
+	const [pauseAsk, setPauseAsk] = useState(false);
+	const setWorkforcePaused = async (pause: boolean) => {
+		if (pauseBusy) return;
+		setPauseBusy(true);
+		try {
+			const r = await api.post<{ ok?: boolean; error?: string }>(
+				"/api/workforce",
+				{ action: pause ? "pause" : "resume" },
+			);
+			if (r && r.ok === false) throw new Error(r.error || "failed");
+			toast(
+				pause
+					? "Workforce paused — patrols and scheduled work stop"
+					: "Workforce resumed",
+				pause ? "info" : "ok",
+			);
+			void forceRefresh();
+		} catch (e: unknown) {
+			toast(
+				`Failed to ${pause ? "pause" : "resume"}: ${errorText(e) || "no details — please retry"}`,
+				"err",
+			);
+		}
+		setPauseBusy(false);
 	};
 
 	const runPatrol = async () => {
@@ -530,7 +802,7 @@ export default function OpsCenter() {
 			}
 		} catch (e: unknown) {
 			toast(
-				`Patrol failed: ${e instanceof Error ? e.message : "unknown error"}`,
+				`Patrol failed: ${errorText(e) || "no details — please retry"}`,
 				"err",
 			);
 		} finally {
@@ -570,10 +842,13 @@ export default function OpsCenter() {
 	if (!data) {
 		return (
 			<div className="space-y-4 min-w-0">
+				{/* w-full + max-w so the placeholder never exceeds the card: a fixed
+				    w-96 (384px) is wider than a 375px phone, which made the whole
+				    page scroll sideways for the ~3.6s this endpoint takes. */}
 				<div className="card p-8 grid place-items-center gap-3">
-					<div className="skeleton w-64 h-6" />
-					<div className="skeleton w-96 h-3" />
-					<div className="skeleton w-72 h-3" />
+					<div className="skeleton w-full max-w-64 h-6" />
+					<div className="skeleton w-full max-w-96 h-3" />
+					<div className="skeleton w-full max-w-72 h-3" />
 				</div>
 			</div>
 		);
@@ -676,14 +951,14 @@ export default function OpsCenter() {
 				</div>
 			)}
 
-			<header className="flex flex-wrap items-center gap-3 justify-between">
+			<header className="flex flex-wrap items-center gap-3 justify-between vb-tab-enter">
 				<div className="flex items-center gap-3">
-					<span className="grid place-items-center w-10 h-10 rounded-xl bg-accent text-white shadow-lg shadow-accent/30">
-						<Radar size={20} />
+					<span className="grid place-items-center w-11 h-11 rounded-xl bg-accent text-white shadow-lg shadow-accent/30">
+						<Radar size={22} />
 					</span>
 					<div>
-						<h1 className="font-display font-bold text-lg leading-tight">
-							AI Operations
+						<h1 className="font-display font-bold text-xl leading-tight tracking-tight">
+							<span className="vb-gradient-text">AI Operations</span>
 						</h1>
 						<p className="text-[11px] text-ink3 flex items-center gap-1.5">
 							<span className="relative flex h-2 w-2">
@@ -733,11 +1008,153 @@ export default function OpsCenter() {
 						)}
 						{patrolling ? "Patrolling…" : "Run patrol"}
 					</button>
-					<button className="btn btn-primary" onClick={openWorkforce}>
+					{paused ? (
+						<button
+							type="button"
+							className="btn btn-primary"
+							onClick={() => void setWorkforcePaused(false)}
+							disabled={pauseBusy}
+						>
+							<Play size={14} /> Resume workforce
+						</button>
+					) : (
+						<button
+							type="button"
+							className="btn btn-ghost !text-warn"
+							onClick={() => setPauseAsk(true)}
+							disabled={pauseBusy}
+							title="Stop patrols and scheduled workforce runs"
+						>
+							<Pause size={14} /> Pause workforce
+						</button>
+					)}
+					<ConfirmDialog
+						open={pauseAsk}
+						onClose={() => setPauseAsk(false)}
+						onConfirm={async () => {
+							setPauseAsk(false);
+							await setWorkforcePaused(true);
+						}}
+						title="Pause workforce?"
+						message="Patrols and scheduled workforce runs stop until you resume. Already-running work finishes."
+						confirmLabel="Pause"
+						danger
+					/>
+					<button type="button" className="btn btn-primary" onClick={openWorkforce}>
 						Open workforce <ArrowUpRight size={14} />
 					</button>
 				</div>
 			</header>
+
+			{/* ── OVERNIGHT BRIEFING — what happened while you were away.
+			    Every number cites its source; unknown renders as —. ── */}
+			{briefing && (
+				<section className="card p-4" aria-label="Overnight briefing">
+					<div className="flex items-center gap-2 mb-3 flex-wrap">
+						<Newspaper size={15} className="text-accent" aria-hidden />
+						<h2 className="font-semibold text-sm">Overnight briefing</h2>
+						<span className="text-[11px] text-ink3">
+							last {briefing.window} ·{" "}
+							{new Date(briefing.generated_at).toLocaleTimeString()}
+						</span>
+						{briefing.needs_attention > 0 && (
+							<span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-400 border border-amber-500/25">
+								{briefing.needs_attention} need{briefing.needs_attention === 1 ? "s" : ""} attention
+							</span>
+						)}
+					</div>
+					<ul className="grid sm:grid-cols-2 lg:grid-cols-3 gap-2">
+						{briefing.items.map((it) => (
+							<li
+								key={it.label}
+								className="rounded-xl border border-border bg-surface2/60 p-3"
+							>
+								<p className="text-[10px] font-bold uppercase tracking-wider text-ink3">
+									{it.label}
+								</p>
+								<p className="font-display font-bold text-xl">
+									{typeof it.value === "number" ? it.value : "—"}
+								</p>
+								<p className="text-[11px] text-ink2 mt-0.5">{it.detail}</p>
+								<p className="text-[10px] text-ink3 mt-1">
+									source: {it.source}
+								</p>
+							</li>
+						))}
+					</ul>
+				</section>
+			)}
+
+			{/* ── ASK THE AGENT — one real question, one verified answer ── */}
+			<section className="card p-4" aria-label="Ask the agent">
+				<div className="flex items-center gap-2 mb-3">
+					<Bot size={15} className="text-accent" aria-hidden />
+					<h2 className="font-semibold text-sm">Ask the agent</h2>
+					<span className="text-[11px] text-ink3">
+						answered from live platform data, never invented
+					</span>
+				</div>
+				<div className="flex gap-2">
+					<label htmlFor="ops-agent-input" className="sr-only">
+						Ask the agent a question
+					</label>
+					<input
+						id="ops-agent-input"
+						className="input flex-1 min-w-0"
+						value={agentInput}
+						maxLength={2000}
+						placeholder="e.g. Summarize open high-priority reports"
+						disabled={agentBusy}
+						onChange={(e) => setAgentInput(e.target.value)}
+						onKeyDown={(e) => {
+							if (e.key === "Enter" && !e.shiftKey) {
+								e.preventDefault();
+								void askAgent();
+							}
+						}}
+					/>
+					<button
+						type="button"
+						className="btn btn-primary"
+						onClick={() => void askAgent()}
+						disabled={agentBusy || !agentInput.trim()}
+					>
+						{agentBusy ? (
+							<Loader2 size={14} className="animate-spin" />
+						) : (
+							<Send size={14} />
+						)}
+						{agentBusy ? "Working…" : "Ask"}
+					</button>
+				</div>
+				{agentBusy && (
+					<p className="text-xs text-ink3 mt-3" role="status">
+						Agent is working — this can take up to 45 seconds. The
+						question stays put; nothing else on this page is blocked.
+					</p>
+				)}
+				{agentError && (
+					<div className="mt-3 rounded-xl border border-bad/25 bg-bad/5 p-3" role="alert">
+						<p className="text-xs text-ink2">{agentError}</p>
+						<p className="text-[11px] text-ink3 mt-1">
+							Your question is preserved above — edit and retry.
+						</p>
+					</div>
+				)}
+				{agentAnswer?.response && (
+					<div className="mt-3 rounded-xl border border-border bg-surface2/60 p-3">
+						<p className="text-[11px] uppercase tracking-wide text-ink3 mb-1.5">
+							Agent answer · run {agentAnswer.status}
+							{agentAnswer.backend === "builtin" && " · built-in engine"}
+							{agentAnswer.backend && agentAnswer.backend !== "builtin" && ` · ${agentAnswer.backend}`}
+							{agentAnswer.model ? ` · ${agentAnswer.model}` : ""}
+						</p>
+						<p className="text-sm text-ink whitespace-pre-wrap">
+							{agentAnswer.response}
+						</p>
+					</div>
+				)}
+			</section>
 
 			{/* ── LIVE WORKFORCE — what agents are working on RIGHT NOW ── */}
 			{(() => {
@@ -813,6 +1230,78 @@ export default function OpsCenter() {
 				</Section>
 				);
 			})()}
+
+			{/* ── AUTOMATIONS — deterministic workers, visible + runnable ── */}
+			<Section
+				icon={<Cpu size={13} />}
+				title={`AUTOMATIONS · SELF-RUNNING${automations ? ` · ${automations.length}` : ""}`}
+				accent="bg-sky-500/10 text-sky-400"
+			>
+				{autoError && (
+					<div className="mb-2 rounded-lg border border-bad/25 bg-bad/5 px-3 py-2 text-xs text-ink2" role="alert">
+						{autoError}
+					</div>
+				)}
+				{automations === null ? (
+					<Empty text="AUTOMATION STATUS UNAVAILABLE — the registry could not be reached. Cron workers still run on schedule." />
+				) : (
+					<div className="space-y-1.5">
+						{automations.map((w) => {
+							const running = autoRunning === w.id;
+							const justRan = autoResult[w.id];
+							const last = w.last;
+							const stateChip = !last
+								? chip("NEVER RAN", "bg-ink3/10 text-ink3 border-ink3/20")
+								: last.deferred
+									? chip("DEFERRED", "bg-amber-500/10 text-amber-400 border-amber-500/25")
+									: last.degraded
+										? chip("STANDBY", "bg-amber-500/10 text-amber-400 border-amber-500/25")
+										: last.ok
+											? chip("HEALTHY", "bg-emerald-500/10 text-emerald-400 border-emerald-500/25")
+											: chip("FAILED", "bg-red-500/10 text-red-400 border-red-500/25");
+							return (
+								<div
+									key={w.id}
+									className="flex items-center gap-2.5 rounded-lg border border-border bg-bg/60 px-2.5 py-2"
+								>
+									<div className="min-w-0 flex-1">
+										<div className="flex items-center gap-2 flex-wrap">
+											<span className="text-[13px] font-semibold text-ink leading-snug">
+												{w.name}
+											</span>
+											{stateChip}
+										</div>
+										<div className="mt-0.5 text-[11px] text-ink3">
+											{w.description}
+										</div>
+										<div className="mt-0.5 text-[11px] text-ink3" aria-live="polite">
+											{justRan
+												? `Just ran: ${justRan}`
+												: last?.summary
+													? `Last run: ${last.summary}${last.at ? ` · ${timeAgo(last.at)}` : ""}`
+													: "No recorded run yet — runs on cron schedule."}
+										</div>
+									</div>
+									<button
+										type="button"
+										className="btn btn-ghost shrink-0"
+										onClick={() => void runAutomation(w.id)}
+										disabled={autoRunning !== null}
+										aria-label={`Run ${w.name} now`}
+									>
+										{running ? (
+											<RefreshCw size={14} className="animate-spin" />
+										) : (
+											<Zap size={14} />
+										)}
+										{running ? "Running…" : "Run"}
+									</button>
+								</div>
+							);
+						})}
+					</div>
+				)}
+			</Section>
 
 			{/* ── Admin alerts (persist until acknowledged) ─────────────── */}
 			<Section
@@ -1064,12 +1553,6 @@ export default function OpsCenter() {
 				>
 					{(() => {
 						const pulse = data.platform!.pulse!;
-						const prioColor = (p?: string) =>
-							p === "critical"
-								? "text-red-400"
-								: p === "high"
-									? "text-amber-400"
-									: "text-ink3";
 						return (
 							<div className="space-y-4">
 								{/* Emergency strip — only when something is actually critical/high */}
@@ -1086,12 +1569,9 @@ export default function OpsCenter() {
 													<div
 														key={p.id}
 														className="flex items-center gap-2 text-[11px]"
-													>
-														<span
-																className={`chip !text-[9px] ${prioColor(p.priority)}`}
-															>
-															{p.priority}
-															</span>
+													>																<span className="chip !text-[9px] !text-warn !border-warn/25">
+																	Open
+																</span>
 														<span className="truncate min-w-0">{p.title}</span>
 													</div>
 												))}
@@ -1385,11 +1865,160 @@ export default function OpsCenter() {
 										)}
 									</div>
 								</div>
-							);
-						})}
+							);										})}
 					</div>
 				)}
 			</Section>
+
+			{/* ── Roster reality — what the agents can actually DO ─────────
+			    Health and impact are reported side by side and never merged:
+			    an agent that ran 5,000 times without changing state is still
+			    labelled NO IMPACT rather than counted as productive work. */}
+			{card && card.roster_audit && (
+				<Section
+					icon={<Users size={13} />}
+					title="ROSTER REALITY"
+					accent="bg-accent/10 text-accent"
+				>
+					<p className="text-[11px] text-ink3 mb-3 leading-snug">
+						Agents are not separate workers — each one routes to a shared
+						behaviour branch. Only {""}
+						<span className="font-semibold text-ink2">
+							{card.roster_audit.behaviours_state_changing}
+						</span>{" "}
+						of {card.roster_audit.behaviours_available} behaviours change any
+						state; the rest read and report. "Healthy" below means the process
+						ran — it is not evidence of impact.
+					</p>
+
+					{/* The headline separation */}
+					<div className="grid grid-cols-2 lg:grid-cols-4 gap-2 mb-3">
+						{[
+							{
+								label: "Agents",
+								value: card.summary.agents,
+								sub: `${card.roster_audit.agents_reaching_a_behaviour} with a behaviour`,
+								cls: "text-ink2",
+							},
+							{
+								label: "Healthy",
+								value: card.summary.healthy,
+								sub: "process alive",
+								cls: "text-warn",
+							},
+							{
+								label: "State-changing",
+								value: card.summary.state_changing_agents,
+								sub: "can alter the platform",
+								cls: "text-good",
+							},
+							{
+								label: "No real impact",
+								value: card.summary.no_real_impact,
+								sub: "reports only, or retired",
+								cls: "text-bad",
+							},
+						].map(({ label, value, sub, cls }) => (
+							<div
+								key={label}
+								className="rounded-lg border border-border bg-bg/50 px-3 py-2"
+							>
+								<p className="text-[10px] font-bold uppercase tracking-wider text-ink3">
+									{label}
+								</p>
+								<p className={`font-display font-bold text-xl ${cls}`}>
+									{value}
+								</p>
+								<p className="text-[10px] text-ink3">{sub}</p>
+							</div>
+						))}
+					</div>
+
+					{/* Executions that changed nothing — the number that was being
+					    presented as productive volume by the old dashboard. */}
+					<p className="text-[11px] text-ink2 mb-3">
+						<span className="font-semibold">
+							{card.summary.executions_without_state_change.toLocaleString()}
+						</span>{" "}
+						<span className="text-ink3">
+							of {card.summary.total_executions.toLocaleString()} recorded
+							executions came from agents that cannot change state.
+						</span>
+					</p>
+
+					{/* Retired agents — flagged, with the reason, not silently hidden */}
+					{card.roster_audit.retired_agents.length > 0 && (
+						<div className="rounded-lg border border-bad/25 bg-bad/[0.04] p-3">
+							<button
+								className="flex w-full items-center justify-between text-left"
+								onClick={() => setShowRetired((s) => !s)}
+								aria-expanded={showRetired}
+							>
+								<span className="text-[11px] font-semibold text-bad">
+									{card.roster_audit.agents_retired} agents reach no behaviour —
+									skipped, not counted as work
+								</span>
+								<span className="text-[10px] text-ink3">
+									{showRetired ? "hide" : "show"}
+								</span>
+							</button>
+							{showRetired && (
+								<ul className="mt-2 space-y-1 max-h-56 overflow-y-auto">
+									{card.roster_audit.retired_agents.map((r) => (
+										<li key={r.agent_id} className="text-[11px]">
+											<span className="font-medium text-ink2">{r.name}</span>{" "}
+											<span className="text-ink3">
+												· {r.division} · {r.reason}
+											</span>
+										</li>
+									))}
+								</ul>
+							)}
+						</div>
+					)}
+
+					{/* Worst offenders first: most executions, least impact */}
+					<div className="mt-3 space-y-1">
+						{card.agents
+							.filter((a) => !a.impact.state_changing && a.health.runs > 0)
+							.sort((a, b) => b.health.runs - a.health.runs)
+							.slice(0, 8)
+							.map((a) => {
+								const style = VERDICT_STYLE[a.verdict] ??
+									VERDICT_STYLE["no-impact"] ?? {
+										label: "NO IMPACT",
+										cls: "bg-bad/12 text-bad",
+									};
+								return (
+									<div
+										key={a.agent_id}
+										className="flex items-center gap-2 rounded-lg px-2 py-1.5 hover:bg-surface2/60"
+										title={a.impact.disable_test}
+									>
+										<span
+											className={`text-[9px] font-bold px-1.5 py-0.5 rounded shrink-0 ${style.cls}`}
+										>
+											{style.label}
+										</span>
+										<span className="text-[11px] text-ink2 truncate flex-1">
+											{a.name}
+										</span>
+										<span className="text-[10px] text-ink3 shrink-0">
+											{a.impact.behaviour_label ?? "no behaviour"}
+										</span>
+										<span className="text-[10px] font-mono text-ink3 shrink-0">
+											{a.health.runs} runs
+										</span>
+									</div>
+								);
+							})}
+						{card.agents.filter((a) => !a.impact.state_changing && a.health.runs > 0)
+							.length === 0 && (
+							<Empty text="NO NON-STATE-CHANGING AGENTS HAVE RUN YET." />
+						)}
+					</div>
+				</Section>
+			)}
 		</div>
 	);
 }

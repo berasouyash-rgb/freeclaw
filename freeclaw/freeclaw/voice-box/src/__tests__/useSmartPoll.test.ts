@@ -157,6 +157,37 @@ describe("useSmartPoll", () => {
 		expect(result.current.isPolling).toBe(false);
 	});
 
+	it("coalesces a forceRefresh that lands while a fetch is in flight", async () => {
+		vi.useFakeTimers();
+		let resolveFetch: (v: string) => void = () => {};
+		const fetcher = vi.fn(
+			() =>
+				new Promise<string>((resolve) => {
+					resolveFetch = resolve;
+				}),
+		);
+		const { result } = renderHook(() =>
+			useSmartPoll(fetcher, { intervalMs: 1000, immediate: false }),
+		);
+
+		let first!: Promise<void>;
+		act(() => {
+			first = result.current.forceRefresh();
+		});
+		// Second call while the first fetch is pending: dropped, not doubled.
+		await act(async () => {
+			await result.current.forceRefresh();
+		});
+		expect(fetcher).toHaveBeenCalledTimes(1);
+
+		await act(async () => {
+			resolveFetch("ok");
+			await first;
+		});
+		expect(fetcher).toHaveBeenCalledTimes(1);
+		expect(result.current.isPolling).toBe(false);
+	});
+
 	it("surfaces errors thrown by the mount refresh", async () => {
 		vi.useFakeTimers();
 		const fetcher = vi.fn(() => Promise.reject(new Error("mount boom")));

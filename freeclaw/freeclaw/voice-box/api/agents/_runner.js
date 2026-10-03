@@ -419,44 +419,11 @@ function stopHeartbeat(executionId) {
 	}
 }
 
-/**
- * Recover executions stuck in 'running' with no heartbeat for too long.
- * Returns the number recovered. Called by the workforce recovery pass.
- */
-export async function recoverStaleExecutions(staleMs = 10 * 60 * 1000) {
-	const useTable = await hasExecutionsTable();
-	if (!useTable) return 0;
-	const cutoff = new Date(Date.now() - staleMs).toISOString();
-	const { data, error } = await supabase
-		.from("agent_executions")
-		.select("id, agent_id")
-		.eq("status", "running")
-		.lt("heartbeat_at", cutoff)
-		.limit(50);
-	if (error) {
-		console.warn("[Runner] recoverStaleExecutions error:", error.message);
-		return 0;
-	}
-	if (!data || data.length === 0) return 0;
-	const ids = data.map((r) => r.id);
-	await supabase
-		.from("agent_executions")
-		.update({
-			status: "failed",
-			error: "Stale execution — heartbeat expired",
-			completed_at: new Date().toISOString(),
-		})
-		.in("id", ids);
-	for (const r of data) {
-		await logActivity(
-			r.agent_id,
-			"execution_recovered",
-			{ execution_id: r.id, reason: "heartbeat expired" },
-			"warning",
-		).catch(() => {});
-	}
-	return ids.length;
-}
+// NOTE: stale-execution recovery lives in ONE place — `recoverStale()` in
+// `api/_workforce.js`, which is heartbeat-aware AND independently verifies
+// each transition by reading the row back. A second, unverified recovery
+// implementation here was dead code (never called) and contradicted the
+// verified one, so it was removed rather than left as a trap.
 
 export async function getDashboardStats() {
 	const useTable = await hasExecutionsTable();

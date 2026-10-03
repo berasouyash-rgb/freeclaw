@@ -7,17 +7,20 @@
 	Eye,
 	FileText,
 	MessageCircle,
-	PlayCircle,		Save,
+	PlayCircle,
+	RefreshCcw,		Save,
+		Scale,
 		Trash2,
 		UserCircle2,
 	} from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router";
 import { resetTutorial } from "../components/Tutorial";
 import { ConfirmDialog } from "../components/ui";
 import { useApp } from "../contexts/AppContext";
 import { api } from "../lib/api";	import { anonCreatedAt, lsGet } from "../lib/identity";
 import { downloadFile, safeStringify, timeAgo } from "../lib/utils";
+import { SERVER_PII_COPY } from "../lib/privacyCopy";
 import type {
 	CommentData,
 	PollData,
@@ -34,7 +37,127 @@ type Tab =
 	| "bookmarks"
 	| "drafts"
 	| "notifications"
-	| "viewed";
+	| "viewed"
+	| "appeals";
+
+interface AppealRow {
+	id: string;
+	surface: string;
+	title: string;
+	body: string;
+	status: string;
+	review_note?: string;
+	created_at: string;
+	published?: { kind: string; id: string };
+}
+
+type ActivitySection =
+	| "posts"
+	| "polls"
+	| "comments"
+	| "votes"
+	| "bookmarks"
+	| "appeals";
+
+type SectionStatus = "loading" | "ready" | "error";
+
+const ACTIVITY_SECTIONS: ActivitySection[] = [
+	"posts",
+	"polls",
+	"comments",
+	"votes",
+	"bookmarks",
+	"appeals",
+];
+
+function SectionBoundary({
+	status,
+	error,
+	hasData,
+	label,
+	lastUpdatedAt,
+	onRetry,
+	children,
+}: {
+	status: SectionStatus;
+	error?: string;
+	hasData: boolean;
+	label: string;
+	lastUpdatedAt?: number;
+	onRetry: () => void;
+	children: ReactNode;
+}) {
+	if (status === "loading" && !hasData) {
+		return (
+			<div className="space-y-3" aria-busy="true" aria-label={`Loading ${label}`}>
+				{[1, 2, 3].map((i) => (
+					<div key={i} className="skeleton h-20" />
+				))}
+			</div>
+		);
+	}
+
+	if (status === "error" && !hasData) {
+		return (
+			<div
+				role="alert"
+				className="card border-warn/30 bg-warn/[0.06] p-4 flex flex-col sm:flex-row sm:items-center gap-3"
+			>
+				<AlertTriangle size={18} className="text-warn shrink-0" />
+				<div className="min-w-0 flex-1">
+					<p className="text-sm font-semibold text-ink2">
+						Couldn&apos;t load {label}
+					</p>
+					<p className="text-xs text-ink3 mt-0.5">
+						Your last successful {label} are preserved. {error}
+					</p>
+				</div>
+				<button
+					type="button"
+					className="btn btn-soft !text-xs shrink-0"
+					onClick={onRetry}
+					aria-label={`Retry ${label}`}
+				>
+					<RefreshCcw size={13} /> Retry
+				</button>
+			</div>
+		);
+	}
+
+	return (
+		<>
+			{status === "error" && (
+				<div
+					role="status"
+					className="card border-warn/30 bg-warn/[0.06] p-3 mb-3 flex flex-wrap items-center justify-between gap-2"
+				>
+					<p className="text-xs text-ink2">
+						Showing the last successful {label}. {error}
+					</p>
+					<button
+						type="button"
+						className="btn btn-soft !text-xs"
+						onClick={onRetry}
+						aria-label={`Retry ${label}`}
+					>
+						<RefreshCcw size={12} /> Retry
+					</button>
+				</div>
+			)}
+			{status === "loading" && hasData && (
+				<p role="status" className="text-[11px] text-ink3 mb-2">
+					Refreshing {label.toLowerCase()}…
+				</p>
+			)}
+			{lastUpdatedAt && status === "ready" && (
+				<p className="text-[11px] text-ink3 mb-2">
+					Updated {timeAgo(new Date(lastUpdatedAt).toISOString())}
+				</p>
+			)}
+			{children}
+		</>
+	);
+}
 
 export default function MyActivity() {
 	const {
@@ -45,6 +168,7 @@ export default function MyActivity() {
 		notifications,
 		bookmarks,
 		recentlyViewed,
+		retireNotifsForLink,
 	} = useApp();
 	const nav = useNavigate();
 	const [tab, setTab] = useState<Tab>("posts");
@@ -54,46 +178,141 @@ export default function MyActivity() {
 	const [reactions, setReactions] = useState<ReactionEntry[]>([]);
 	const [pollVotes, setPollVotes] = useState<PollVote[]>([]);
 	const [bookmarkPosts, setBookmarkPosts] = useState<PostData[]>([]);
-	const [loading, setLoading] = useState(true);
+	const [appeals, setAppeals] = useState<AppealRow[]>([]);
+	const [sectionStatus, setSectionStatus] = useState<
+		Record<ActivitySection, SectionStatus>
+	>({
+		posts: "loading",
+		polls: "loading",
+		comments: "loading",
+		votes: "loading",
+		bookmarks: "loading",
+		appeals: "loading",
+	});
+	const [sectionErrors, setSectionErrors] = useState<
+		Partial<Record<ActivitySection, string>>
+	>({});
+	const [sectionUpdatedAt, setSectionUpdatedAt] = useState<
+		Partial<Record<ActivitySection, number>>
+	>({});
 	const [exporting, setExporting] = useState(false);
 	const [dialog, setDialog] = useState<{
 		kind: "deletePost" | "deletePoll";
 		payload?: string;
 	} | null>(null);
 
-	const load = useCallback(async () => {
-		setLoading(true);
-		try {
-			const [myPosts, myComments, myReactions, myVotes, allPolls] =
-				await Promise.all([
-					api.get<PostData[]>(`/api/posts?author=${anonId}&viewer=${anonId}`),
-					api.get<CommentData[]>(
-						`/api/comments?author=${anonId}&viewer=${anonId}`,
+	const errorMessage = (error: unknown, fallback: string) =>
+		error instanceof Error ? error.message : fallback;
+
+	const loadSection = useCallback(
+		async (section: ActivitySection, bookmarkIds: string[] = []) => {
+			setSectionStatus((current) => ({ ...current, [section]: "loading" }));
+			setSectionErrors((current) => {
+				const next = { ...current };
+				delete next[section];
+				return next;
+			});
+
+			try {
+				switch (section) {
+					case "posts": {
+						const result = await api.get<PostData[]>(
+							`/api/posts?author=${anonId}&viewer=${anonId}`,
+						);
+						setPosts(Array.isArray(result) ? result : []);
+						break;
+					}
+					case "comments": {
+						const result = await api.get<CommentData[]>(
+							`/api/comments?author=${anonId}&viewer=${anonId}`,
+						);
+						setComments(
+							(Array.isArray(result) ? result : []).filter((comment) => !comment.deleted),
+						);
+						break;
+					}
+					case "votes": {
+						const [reactionResult, voteResult] = await Promise.all([
+							api.get<ReactionEntry[]>(`/api/reactions?author=${anonId}`),
+							api.get<PollVote[]>(`/api/polls?voter=${anonId}`),
+						]);
+						setReactions(Array.isArray(reactionResult) ? reactionResult : []);
+						setPollVotes(Array.isArray(voteResult) ? voteResult : []);
+						break;
+					}
+					case "polls": {
+						const [pollResult, voteResult] = await Promise.all([
+							api.get<PollData[]>(`/api/polls?viewer=${anonId}`),
+							api.get<PollVote[]>(`/api/polls?voter=${anonId}`),
+						]);
+						setMyPolls(
+							(Array.isArray(pollResult) ? pollResult : []).filter(
+								(poll) => poll.is_mine && !poll.deleted,
+							),
+						);
+						setPollVotes(Array.isArray(voteResult) ? voteResult : []);
+						break;
+					}
+					case "bookmarks": {
+						if (!bookmarkIds.length) {
+							setBookmarkPosts([]);
+							break;
+						}
+						const result = await api.get<PostData[]>(
+							`/api/posts?ids=${bookmarkIds.join(",")}`,
+						);
+						setBookmarkPosts(Array.isArray(result) ? result : []);
+						break;
+					}
+					case "appeals": {
+						const result = await api.get<AppealRow[] | { items?: AppealRow[] }>(
+							`/api/appeals`,
+						);
+						setAppeals(
+							Array.isArray(result) ? result : (result.items ?? []),
+						);
+						break;
+					}
+				}
+				setSectionUpdatedAt((current) => ({
+					...current,
+					[section]: Date.now(),
+				}));
+				setSectionStatus((current) => ({ ...current, [section]: "ready" }));
+			} catch (error: unknown) {
+				setSectionStatus((current) => ({ ...current, [section]: "error" }));
+				setSectionErrors((current) => ({
+					...current,
+					[section]: errorMessage(
+						error,
+						`The ${section} service did not respond.`,
 					),
-					api.get<ReactionEntry[]>(`/api/reactions?author=${anonId}`),
-					api.get<PollVote[]>(`/api/polls?voter=${anonId}`),
-					api.get<PollData[]>(`/api/polls?viewer=${anonId}`),
-				]);
-			setPosts(myPosts);
-			setMyPolls(allPolls.filter((p) => p.is_mine && !p.deleted));
-			setComments(myComments.filter((c) => !c.deleted));
-			setReactions(myReactions);
-			setPollVotes(myVotes);
-			if (bookmarks.length) {
-				const bp = await api.get<PostData[]>(
-					`/api/posts?ids=${bookmarks.join(",")}`,
-				);
-				setBookmarkPosts(bp);
-			} else setBookmarkPosts([]);
-		} catch {
-			/* offline ok */
-		}
-		setLoading(false);
-	}, [anonId, bookmarks]);
+				}));
+			}
+		},
+		[anonId],
+	);
+
+	const loadAll = useCallback(async () => {
+		await Promise.all(
+			ACTIVITY_SECTIONS.filter((section) => section !== "bookmarks").map((section) =>
+				loadSection(section),
+			),
+		);
+	}, [loadSection]);
 
 	useEffect(() => {
-		load();
-	}, [load]);
+		void loadAll();
+	}, [loadAll]);
+
+	const bookmarkKey = bookmarks.join(",");
+
+	useEffect(() => {
+		void loadSection(
+			"bookmarks",
+			bookmarkKey ? bookmarkKey.split(",").filter(Boolean) : [],
+		);
+	}, [bookmarkKey, loadSection]);
 
 	const deletePoll = async (id: string) => {
 		try {
@@ -107,7 +326,7 @@ export default function MyActivity() {
 						author_id: anonId,
 						deleted: false,
 					});
-					load();
+					void loadSection("polls");
 					toast("Poll restored", "ok");
 				},
 			});
@@ -120,6 +339,9 @@ export default function MyActivity() {
 		try {
 			await api.put("/api/posts", { id, author_id: anonId, deleted: true });
 			setPosts((p) => p.filter((x) => x.id !== id));
+			// Retire its "live" notice too — otherwise notifications keep
+			// claiming posts that no longer exist.
+			retireNotifsForLink(`/post/${id}`);
 			toast("Deleted", "info", {
 				label: "Undo (30s)",
 				fn: async () => {
@@ -128,7 +350,7 @@ export default function MyActivity() {
 						author_id: anonId,
 						deleted: false,
 					});
-					load();
+					void loadSection("posts");
 					toast("Restored", "ok");
 				},
 			});
@@ -234,7 +456,42 @@ export default function MyActivity() {
 			icon: Eye,
 			count: recentlyViewed.length,
 		},
+		{
+			key: "appeals",
+			label: "My appeals",
+			icon: Scale,
+			count: appeals.length,
+		},
 	];
+
+	const sectionHasData = (section: ActivitySection) => {
+		switch (section) {
+			case "posts":
+				return posts.length > 0;
+			case "polls":
+				return myPolls.length > 0;
+			case "comments":
+				return comments.length > 0;
+			case "votes":
+				return reactions.length > 0 || pollVotes.length > 0;
+			case "bookmarks":
+				return bookmarkPosts.length > 0;
+			case "appeals":
+				return appeals.length > 0;
+		}
+	};
+
+	const hasAnyActivityData = ACTIVITY_SECTIONS.some(sectionHasData);
+	const sectionsRequiringData = ACTIVITY_SECTIONS.filter(
+		(section) => section !== "bookmarks" || bookmarks.length > 0,
+	);
+	const allSectionsUnavailable =
+		!hasAnyActivityData &&
+		sectionsRequiringData.every((section) => sectionStatus[section] === "error");
+
+	const retrySection = (section: ActivitySection) => {
+		void loadSection(section, section === "bookmarks" ? bookmarks : []);
+	};
 
 	return (
 		<div className="max-w-3xl mx-auto">
@@ -289,9 +546,7 @@ export default function MyActivity() {
 						</Link>
 					</div>
 				<p className="text-[11px] text-ink3 mt-3 flex items-start gap-1.5">
-					<AlertTriangle size={11} className="mt-0.5 shrink-0" /> Your ID lives
-					only in this browser. Voice Box never stores names, emails, phone
-					numbers, IPs, or device fingerprints.
+					<AlertTriangle size={11} className="mt-0.5 shrink-0" /> {SERVER_PII_COPY}
 				</p>
 			</div>
 
@@ -309,16 +564,41 @@ export default function MyActivity() {
 				))}
 			</div>
 
-			{loading && (
-				<div className="space-y-3">
-					{[1, 2, 3].map((i) => (
-						<div key={i} className="skeleton h-20" />
-					))}
+			{allSectionsUnavailable && (
+				<div
+					role="alert"
+					className="card border-warn/30 bg-warn/[0.06] p-4 mb-4 flex flex-col sm:flex-row sm:items-center gap-3"
+				>
+					<AlertTriangle size={18} className="text-warn shrink-0" />
+					<div className="min-w-0 flex-1">
+						<p className="text-sm font-semibold text-ink2">
+							Couldn&apos;t load your activity
+						</p>
+						<p className="text-xs text-ink3 mt-0.5">
+							Your posts may still be here — the last successful lists are preserved. Try again when the activity service responds.
+						</p>
+					</div>
+					<button
+						type="button"
+						className="btn btn-soft !text-xs shrink-0"
+						onClick={() => void loadAll()}
+						aria-label="Try again — retry posts and activity"
+					>
+						<RefreshCcw size={13} /> Try again
+					</button>
 				</div>
 			)}
 
-			{!loading && tab === "posts" && (
-				<div className="space-y-2.5">
+			{!allSectionsUnavailable && tab === "posts" && (
+				<SectionBoundary
+					status={sectionStatus.posts}
+					error={sectionErrors.posts}
+					hasData={sectionHasData("posts")}
+					label="posts"
+					lastUpdatedAt={sectionUpdatedAt.posts}
+					onRetry={() => retrySection("posts")}
+				>
+					<div className="space-y-2.5">
 					{posts.length === 0 && (
 						<Empty text="You haven't posted anything yet." />
 					)}
@@ -334,6 +614,11 @@ export default function MyActivity() {
 								<p className="text-xs text-ink3">
 									{p.type} · {p.category} · {p.status.replace("_", " ")} ·{" "}
 									{timeAgo(p.created_at)}
+									{p.hidden && (
+										<span className="ml-1 rounded-full bg-warn/15 px-1.5 py-0.5 font-semibold text-warn">
+											Hidden by moderators
+										</span>
+									)}
 								</p>
 							</div>
 							<button
@@ -345,11 +630,20 @@ export default function MyActivity() {
 							</button>
 						</div>
 					))}
-				</div>
+					</div>
+				</SectionBoundary>
 			)}
 
-			{!loading && tab === "polls" && (
-				<div className="space-y-2.5">
+			{!allSectionsUnavailable && tab === "polls" && (
+				<SectionBoundary
+					status={sectionStatus.polls}
+					error={sectionErrors.polls}
+					hasData={sectionHasData("polls")}
+					label="polls"
+					lastUpdatedAt={sectionUpdatedAt.polls}
+					onRetry={() => retrySection("polls")}
+				>
+					<div className="space-y-2.5">
 					{myPolls.length === 0 && (
 						<Empty text="You haven't created any polls yet." />
 					)}
@@ -378,11 +672,20 @@ export default function MyActivity() {
 							</button>
 						</div>
 					))}
-				</div>
+					</div>
+				</SectionBoundary>
 			)}
 
-			{!loading && tab === "comments" && (
-				<div className="space-y-2.5">
+			{!allSectionsUnavailable && tab === "comments" && (
+				<SectionBoundary
+					status={sectionStatus.comments}
+					error={sectionErrors.comments}
+					hasData={sectionHasData("comments")}
+					label="comments"
+					lastUpdatedAt={sectionUpdatedAt.comments}
+					onRetry={() => retrySection("comments")}
+				>
+					<div className="space-y-2.5">
 					{comments.length === 0 && <Empty text="No comments yet." />}
 					{comments.map((c) => (
 						<div key={c.id} className="card p-3.5">
@@ -400,11 +703,20 @@ export default function MyActivity() {
 							</div>
 						</div>
 					))}
-				</div>
+					</div>
+				</SectionBoundary>
 			)}
 
-			{!loading && tab === "votes" && (
-				<div className="space-y-2.5">
+			{!allSectionsUnavailable && tab === "votes" && (
+				<SectionBoundary
+					status={sectionStatus.votes}
+					error={sectionErrors.votes}
+					hasData={sectionHasData("votes")}
+					label="votes"
+					lastUpdatedAt={sectionUpdatedAt.votes}
+					onRetry={() => retrySection("votes")}
+				>
+					<div className="space-y-2.5">
 					{reactions.length + pollVotes.length === 0 && (
 						<Empty text="No votes or reactions yet." />
 					)}
@@ -430,11 +742,20 @@ export default function MyActivity() {
 							</span>
 						</div>
 					))}
-				</div>
+					</div>
+				</SectionBoundary>
 			)}
 
-			{!loading && tab === "bookmarks" && (
-				<div className="space-y-2.5">
+			{!allSectionsUnavailable && tab === "bookmarks" && (
+				<SectionBoundary
+					status={sectionStatus.bookmarks}
+					error={sectionErrors.bookmarks}
+					hasData={sectionHasData("bookmarks")}
+					label="bookmarks"
+					lastUpdatedAt={sectionUpdatedAt.bookmarks}
+					onRetry={() => retrySection("bookmarks")}
+				>
+					<div className="space-y-2.5">
 					{bookmarkPosts.length === 0 && (
 						<Empty text="No bookmarks yet — tap the bookmark icon on any post." />
 					)}
@@ -450,11 +771,11 @@ export default function MyActivity() {
 							</p>
 						</Link>
 					))}
-				</div>
+					</div>
+				</SectionBoundary>
 			)}
 
-			{!loading &&
-				tab === "drafts" &&
+			{tab === "drafts" &&
 				(draft?.title || draft?.desc ? (
 					<div className="card p-4">
 						<p className="font-semibold text-sm">
@@ -475,7 +796,7 @@ export default function MyActivity() {
 					<Empty text="No drafts. Drafts autosave while you write." />
 				))}
 
-			{!loading && tab === "notifications" && (
+			{tab === "notifications" && (
 				<div className="space-y-2">
 					{notifications.length === 0 && <Empty text="No notifications yet." />}
 					{notifications.map((n) => (
@@ -497,7 +818,7 @@ export default function MyActivity() {
 				</div>
 			)}
 
-			{!loading && tab === "viewed" && (
+			{tab === "viewed" && (
 				<div className="space-y-2">
 					{recentlyViewed.length === 0 && (
 						<Empty text="Nothing viewed recently." />
@@ -514,10 +835,54 @@ export default function MyActivity() {
 				</div>
 			)}
 
+			{!allSectionsUnavailable && tab === "appeals" && (
+				<SectionBoundary
+					status={sectionStatus.appeals}
+					error={sectionErrors.appeals}
+					hasData={sectionHasData("appeals")}
+					label="appeals"
+					lastUpdatedAt={sectionUpdatedAt.appeals}
+					onRetry={() => retrySection("appeals")}
+				>
+					<div className="space-y-2">
+					{appeals.length === 0 && (
+						<Empty text="No appeals yet. If safety blocks a post, comment, or poll, you can appeal for human review." />
+					)}
+					{appeals.map((a) => (
+						<div key={a.id} className="card p-3.5">
+							<p className="text-sm font-medium">
+								{a.title || a.body.slice(0, 60)}{" "}
+								<span className="text-xs text-ink3">({a.surface})</span>
+							</p>
+							<p className="text-xs text-ink3">
+								{a.status === "open" && "Under review — a moderator will decide."}
+								{a.status === "upheld" && "Reviewed — the block stands. Rephrase and resubmit."}
+								{a.status === "overturned" && "Approved — your content is live."}{" "}
+								· {timeAgo(a.created_at)}
+							</p>
+							{a.review_note && (
+								<p className="text-xs text-ink2">Moderator note: {a.review_note}</p>
+							)}
+							{a.status === "overturned" && a.published?.kind === "post" && (
+								<Link
+									to={`/post/${a.published.id}`}
+									className="text-xs text-accent font-semibold hover:underline"
+								>
+									View published post →
+								</Link>
+							)}
+						</div>
+					))}
+					</div>
+				</SectionBoundary>
+			)}
+
 			<ConfirmDialog
 				open={dialog?.kind === "deletePoll"}
 				onClose={() => setDialog(null)}
-				onConfirm={() => dialog?.payload && deletePoll(dialog.payload)}
+				onConfirm={() =>
+					dialog?.payload ? deletePoll(dialog.payload) : undefined
+				}
 				title="Delete this poll?"
 				message="Your poll and its results will be removed. You can undo within 30 seconds."
 				confirmLabel="Delete poll"
@@ -526,7 +891,9 @@ export default function MyActivity() {
 			<ConfirmDialog
 				open={dialog?.kind === "deletePost"}
 				onClose={() => setDialog(null)}
-				onConfirm={() => dialog?.payload && deletePost(dialog.payload)}
+				onConfirm={() =>
+					dialog?.payload ? deletePost(dialog.payload) : undefined
+				}
 				title="Delete this post?"
 				message="Your post will be removed from the feed. You can undo within 30 seconds using the toast at the bottom of the screen."
 				confirmLabel="Delete"

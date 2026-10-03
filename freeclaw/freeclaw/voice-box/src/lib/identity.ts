@@ -1,5 +1,5 @@
 /**
- * Local anonymous identity — the ONLY identifier Voice Box ever uses.
+ * Local anonymous identity — the ONLY identifier Voice Flow ever uses.
  * Generated in the browser, stored in localStorage, never linked to any personal data.
  *
  * Storage is best-effort. Every access is guarded so a blocked/cleared
@@ -10,30 +10,22 @@
  * and (via the cookie) across refreshes even on locked-down devices.
  */
 
+import { storeClear, storeGet, storeRemove, storeSet } from "./storage";
+
 const ID_KEY = "vb:anonId";
 const CREATED_KEY = "vb:anonCreated";
 
 // ---- best-effort storage adapter ---------------------------------------
-// Priority: localStorage → cookie (identity-critical only) → in-memory.
+// The durable store is picked by lib/storage.ts: the device's OWN storage in
+// the native shells (Capacitor Preferences on the phone, a userData file in
+// the desktop app), and localStorage on the web. Everything below is the
+// escalation ladder on top of it, in priority order:
+//
+//   device / localStorage → cookie (identity-critical only) → in-memory
+//
 // Non-critical JSON (queues, prefs) uses memory only so large values never
 // overflow a cookie's size limit.
 const mem = new Map<string, string>();
-
-/** Probe once whether localStorage is reachable. Uses getItem only — real
- *  blocked storage throws on getItem too, and the quota test mocks setItem
- *  without affecting this probe. */
-let storageBlocked: boolean | null = null;
-function isStorageBlocked(): boolean {
-	if (storageBlocked === null) {
-		try {
-			window.localStorage.getItem("__vb_probe__");
-			storageBlocked = false;
-		} catch {
-			storageBlocked = true;
-		}
-	}
-	return storageBlocked;
-}
 
 function cookieName(key: string): string {
 	// Cookie names cannot contain ':' (RFC 6265 separator) — normalize it away.
@@ -70,14 +62,8 @@ function deleteCookie(key: string) {
 
 /** Read with cookie fallback — identity-critical keys only. */
 function readItem(key: string): string | null {
-	if (!isStorageBlocked()) {
-		try {
-			const v = window.localStorage.getItem(key);
-			if (v !== null) return v;
-		} catch {
-			/* fall through */
-		}
-	}
+	const stored = storeGet(key);
+	if (stored !== null) return stored;
 	const c = readCookie(key);
 	if (c !== null) return c;
 	return mem.get(key) ?? null;
@@ -85,53 +71,27 @@ function readItem(key: string): string | null {
 
 /** Write with cookie fallback — identity-critical keys only. */
 function writeItem(key: string, value: string) {
-	if (!isStorageBlocked()) {
-		try {
-			window.localStorage.setItem(key, value);
-			return;
-		} catch {
-			/* fall through */
-		}
-	}
+	if (storeSet(key, value)) return;
 	writeCookie(key, value);
 	mem.set(key, value);
 }
 
 function removeItem(key: string) {
-	if (!isStorageBlocked()) {
-		try {
-			window.localStorage.removeItem(key);
-		} catch {
-			/* ignore */
-		}
-	}
+	storeRemove(key);
 	deleteCookie(key);
 	mem.delete(key);
 }
 
 /** Read WITHOUT cookie fallback — for non-critical JSON (queues, prefs). */
 function readMemItem(key: string): string | null {
-	if (!isStorageBlocked()) {
-		try {
-			const v = window.localStorage.getItem(key);
-			if (v !== null) return v;
-		} catch {
-			/* fall through */
-		}
-	}
+	const stored = storeGet(key);
+	if (stored !== null) return stored;
 	return mem.get(key) ?? null;
 }
 
 /** Write WITHOUT cookie fallback — for non-critical JSON (queues, prefs). */
 function writeMemItem(key: string, value: string) {
-	if (!isStorageBlocked()) {
-		try {
-			window.localStorage.setItem(key, value);
-			return;
-		} catch {
-			/* fall through */
-		}
-	}
+	if (storeSet(key, value)) return;
 	mem.set(key, value);
 }
 
@@ -174,21 +134,75 @@ export function resetAnonId(): string {
 	return id;
 }
 
+// ---------- cross-device identity linking -------------------------
+// Browser localStorage, the APK's native store, and the EXE's userData file
+// are separate silos BY OPERATING-SYSTEM DESIGN — no code can silently share
+// one ID between Chrome and the app on the same phone. The honest bridge is
+// explicit and user-driven: device A shows a short link code, the student
+// types it into device B, and B adopts A's identity (same posts, same votes,
+// same ownership). Anyone holding the code owns the identity, so it is
+// shown only on explicit tap with a warning, never rendered by default.
+const LINK_PREFIX = "VF";
+
+function linkChecksum(payload: string): string {
+	let h = 0;
+	for (let i = 0; i < payload.length; i++) {
+		h = (h * 31 + payload.charCodeAt(i)) % 1296;
+	}
+	return h.toString(36).toUpperCase().padStart(2, "0");
+}
+
+/** Short typeable code for the given identity (defaults to this device). */
+export function createLinkCode(id: string = getAnonId()): string | null {
+	const m = /^anon_([a-z0-9]+)$/.exec(id.toLowerCase());
+	if (!m) return null;
+	const payload = m[1]!.toUpperCase();
+	const groups: string[] = [];
+	for (let i = 0; i < payload.length; i += 4) {
+		groups.push(payload.slice(i, i + 4));
+	}
+	return `${LINK_PREFIX}-${groups.join("-")}-${linkChecksum(payload)}`;
+}
+
+/** Parse a link code back to an anon id, or null when malformed/mistyped. */
+export function parseLinkCode(code: string): string | null {
+	const clean = String(code || "")
+		.toUpperCase()
+		.replace(/[^A-Z0-9]/g, "");
+	if (!clean.startsWith(LINK_PREFIX) || clean.length < LINK_PREFIX.length + 3) {
+		return null;
+	}
+	const rest = clean.slice(LINK_PREFIX.length);
+	if (rest.length < 3) return null;
+	const payload = rest.slice(0, -2).toLowerCase();
+	const check = rest.slice(-2);
+	if (!/^[a-z0-9]+$/.test(payload) || payload.length > 32) return null;
+	if (linkChecksum(payload.toUpperCase()) !== check.toUpperCase()) return null;
+	return `anon_${payload}`;
+}
+
+/**
+ * Adopt another device's identity (from a verified link code). Returns the
+ * adopted id, or null when the code is invalid (nothing changes). The old
+ * local id is abandoned: its published content stays up, but this device
+ * stops owning it — the confirm UI must say so before calling this.
+ */
+export function adoptIdentity(code: string): string | null {
+	const id = parseLinkCode(code);
+	if (!id) return null;
+	writeItem(ID_KEY, id);
+	return id;
+}
+
 export function anonCreatedAt(): string {
 	return readItem(CREATED_KEY) || new Date().toISOString();
 }
 
 export function clearAllLocalData() {
-	if (!isStorageBlocked()) {
-		try {
-			const keys = Object.keys(window.localStorage).filter((k) =>
-				k.startsWith("vb:"),
-			);
-			keys.forEach((k) => window.localStorage.removeItem(k));
-		} catch {
-			/* ignore */
-		}
-	}
+	// Clears the durable store as well — on the native shells that is the
+	// device's own storage, not just the WebView's localStorage, so "reset my
+	// data" is actually complete there.
+	storeClear("vb:");
 	// Sweep cookie fallback too (cookie names are vb_* after normalization).
 	try {
 		document.cookie.split("; ").forEach((c) => {
@@ -203,13 +217,29 @@ export function clearAllLocalData() {
 }
 
 // ---------- typed localStorage helpers ----------
+const corruptWarned = new Set<string>();
 export function lsGet<T>(key: string, fallback: T): T {
 	try {
 		const raw = readMemItem(key);
 		if (!raw) return fallback;
 		const parsed: unknown = JSON.parse(raw);
 		return parsed as T;
-	} catch {
+	} catch (err) {
+		// Corrupt JSON previously meant a silent reset to defaults (e.g. the
+		// dashboard layout vanishing). Back the raw value up and warn once so
+		// the reset is explainable instead of mysterious.
+		try {
+			writeMemItem(`vb:corrupt:${key}`, String(readMemItem(key) ?? "").slice(0, 2000));
+		} catch {
+			/* backup is best-effort */
+		}
+		if (!corruptWarned.has(key)) {
+			corruptWarned.add(key);
+			console.warn("[identity] corrupt stored value, restored defaults", {
+				key,
+				error: err instanceof Error ? err.message : String(err),
+			});
+		}
 		return fallback;
 	}
 }
@@ -217,8 +247,11 @@ export function lsGet<T>(key: string, fallback: T): T {
 export function lsSet<T>(key: string, value: T) {
 	try {
 		writeMemItem(key, JSON.stringify(value));
-	} catch {
-		/* storage full — ignore */
+	} catch (err) {
+		console.warn("[identity] persist failed (storage full or blocked)", {
+			key,
+			error: err instanceof Error ? err.message : String(err),
+		});
 	}
 }
 

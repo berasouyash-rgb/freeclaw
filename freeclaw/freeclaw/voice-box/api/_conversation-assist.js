@@ -13,6 +13,7 @@ import {
 } from "./_auth.js";
 import supabase from "./_db-client.js";
 import { callLLMChain } from "./_providers.js";
+import { analyzeContext, makeEmotionLexicon } from "./_context-classify.js";
 
 const EMOTIONAL_KEYWORDS = {
 	distressed: [
@@ -54,13 +55,25 @@ const EMOTIONAL_KEYWORDS = {
 	],
 };
 
-function detectEmotion(text) {
-	const lower = text.toLowerCase();
-	for (const [emotion, keywords] of Object.entries(EMOTIONAL_KEYWORDS)) {
-		if (keywords.some((kw) => lower.includes(kw))) return emotion;
-	}
-	return null;
-}
+// Boundary-matched, not substring-matched. `lower.includes("alone")` used to
+// fire on "along" ("let's go along with it" → flagged sad), and the categories
+// here were a second, incompatible vocabulary that no consumer understood.
+// Both problems are solved by reusing the shared lexicon + contextual engine:
+// these lists are now one signal, and the canonical severity drives routing.
+const EMOTION_LEXICON = makeEmotionLexicon(EMOTIONAL_KEYWORDS, {
+	levelByCategory: {
+		distressed: "critical",
+		angry: "high",
+		anxious: "moderate",
+		sad: "moderate",
+	},
+	emotionByCategory: {
+		distressed: "critical_distress",
+		angry: "anger",
+		anxious: "anxious",
+		sad: "sad",
+	},
+});
 
 function withTimeout(promise, ms) {
 	return Promise.race([
@@ -71,27 +84,33 @@ function withTimeout(promise, ms) {
 	]);
 }
 
-function getEmotionMeta(emotion) {
-	switch (emotion) {
-		case "distressed":
+/** Routing keyed on the canonical severity, so one vocabulary decides both the
+ *  UI label and the escalation. Harassment and threats now reach an admin
+ *  instead of being labelled LOW and dropped. */
+function getEmotionMeta(level) {
+	switch (level) {
+		case "critical":
 			return {
 				priority: "immediate",
 				escalate: true,
 				flags: ["emotional_distress", "requires_immediate_attention"],
 			};
-		case "angry":
+		case "high":
 			return {
 				priority: "high",
-				escalate: false,
-				flags: ["emotional_elevated"],
+				escalate: true,
+				flags: ["emotional_elevated", "requires_immediate_attention"],
 			};
-		case "anxious":
-		case "sad":
+		case "moderate":
 			return { priority: "medium", escalate: false, flags: ["emotional_mild"] };
+		case "mild":
+			return { priority: "low", escalate: false, flags: ["emotional_mild"] };
 		default:
 			return { priority: "low", escalate: false, flags: ["auto_reply"] };
 	}
 }
+
+export { EMOTION_LEXICON };
 
 export default async function handler(req, res) {
 	cors(res, req);
@@ -139,8 +158,15 @@ export default async function handler(req, res) {
 			}
 
 			const message = clean(b.message, 2000);
-			const emotion = detectEmotion(message);
-			const meta = getEmotionMeta(emotion);
+			// Contextual: understands a named target, quoted/reported abuse and
+			// Hinglish, instead of only counting keyword hits.
+			const decision = await analyzeContext(message, {
+				lexicon: EMOTION_LEXICON,
+				taskKey: "conversation_assist.emotion",
+			});
+			const level = decision.severity;
+			const emotion = decision.classification;
+			const meta = getEmotionMeta(level);
 
 			// Check if admin is online (had activity in last 10 minutes)
 			let adminOnline = false;
@@ -168,7 +194,7 @@ export default async function handler(req, res) {
 			let provider = "none";
 			if (shouldReply) {
 				const systemPrompt =
-					emotion === "distressed"
+					level === "critical"
 						? "You are a trained school counselor. A student is in crisis. Respond with empathy, validate their feelings, and provide crisis resources. Keep under 100 words. Never dismiss their pain."
 						: "You are a helpful school support assistant. Be empathetic, supportive, and professional. Keep replies under 100 words. Never dismiss concerns.";
 
@@ -196,6 +222,8 @@ export default async function handler(req, res) {
 					value: {
 						last_message: message.slice(0, 200),
 						emotion,
+						level,
+						categories: decision.categories,
 						auto_reply_sent: shouldReply && !!finalReply,
 						reply: finalReply,
 						admin_online: adminOnline,
@@ -219,7 +247,10 @@ export default async function handler(req, res) {
 				notifs.unshift({
 					id: `notif_${Date.now().toString(36)}`,
 					type: "escalation",
-					title: `⚠️ Urgent: Student emotional distress detected`,
+					title:
+						level === "critical"
+							? "⚠️ Urgent: possible crisis — immediate attention needed"
+							: `⚠️ Escalated: ${emotion} — needs review`,
 					body: `Thread ${threadId}: Student message requires immediate attention (content truncated for privacy)`,
 					post_id: null,
 					thread_id: threadId,
@@ -243,15 +274,15 @@ export default async function handler(req, res) {
 			// Audit trail: truncate message to avoid logging full PII
 			const auditSnippet =
 				message.slice(0, 40).replace(/[^\w\s]/g, "") +
-				(message.length > 40 ? "..." : "");
-			await auditLog(
+				(message.length > 40 ? "..." : "");			await auditLog(
 				"system",
 				"conversation_assist",
-				`Processed message in thread ${threadId}: emotion=${emotion || "none"}, auto_reply=${shouldReply && !!finalReply}, snippet="${auditSnippet}"`,
+				`Processed message in thread ${threadId}: level=${level}, emotion=${emotion || "none"}, auto_reply=${shouldReply && !!finalReply}, snippet="${auditSnippet}"`,
 			);
 
 			return res.status(200).json({
 				emotion,
+				level,
 				auto_reply: finalReply,
 				admin_online: adminOnline,
 				priority: meta.priority,

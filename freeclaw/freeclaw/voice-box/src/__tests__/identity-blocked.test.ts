@@ -4,7 +4,7 @@
 // Regression tests for the "whole website full of errors" bug: on devices
 // where localStorage throws (Safari Private Browsing, in-app browsers,
 // school MDM policies, storage partitioning) the old identity module
-// crashed at mount ("Couldn't start Voice Box"). These tests prove the
+// crashed at mount ("Couldn't start Voice Flow"). These tests prove the
 // rewritten module NEVER throws and keeps identity consistent via the
 // cookie + in-memory fallback layers.
 // ═══════════════════════════════════════════════════════════════════

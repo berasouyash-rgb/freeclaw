@@ -3,14 +3,16 @@ import {
 	BarChart3,
 	CheckCircle2,
 	Clock,
+	Lock,
 	RotateCcw,
+	ShieldCheck,
 	Sparkles,
 	Trash2,
 } from "lucide-react";
-import { memo, useEffect, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { useApp } from "../contexts/AppContext";
-import { api } from "../lib/api";
-import { timeAgo } from "../lib/utils";
+import { api, hasAdminSession } from "../lib/api";
+import { errorText } from "../lib/utils";
 import type { PollData } from "../types";
 import { ConfirmDialog } from "./ui";
 
@@ -58,13 +60,34 @@ const PollCard = memo(function PollCard({
 			});
 			onDeleted?.();
 		} catch (e: unknown) {
-			toast(e instanceof Error ? e.message : "Failed to delete poll", "err");
+			toast(errorText(e) || "Failed to delete poll", "err");
 		}
 	};
 	const expired = p.expires_at && new Date(p.expires_at) < new Date();
 	const closed = expired || p.archived;
 	const total = p.total_votes || 0;
 	const showResults = (voted && !changingVote) || closed;
+
+	// Countdown — minute precision on a 30s tick. A per-card 1s timer
+	// re-rendered every visible poll every second; minute granularity is all
+	// this display needs, and poll closure itself is enforced server-side.
+	const [now, setNow] = useState(() => Date.now());
+	useEffect(() => {
+		if (!p.expires_at || expired) return;
+		const id = setInterval(() => setNow(Date.now()), 30000);
+		return () => clearInterval(id);
+	}, [p.expires_at, expired]);
+	const countdown = useMemo(() => {
+		if (!p.expires_at) return null;
+		const diff = +new Date(p.expires_at) - now;
+		if (diff <= 0) return null;
+		const d = Math.floor(diff / 86400000);
+		const h = Math.floor((diff % 86400000) / 3600000);
+		const m = Math.floor((diff % 3600000) / 60000);
+		if (d > 0) return `${d}d ${h}h`;
+		if (h > 0) return `${h}h ${m}m`;
+		return `${m}m`;
+	}, [p.expires_at, now]);
 
 	// Feed "liked" state sync — the card is memoized and often reused without a
 	// remount (route reuse, realtime refetch, PostDetail fetch cycles), so the
@@ -87,28 +110,39 @@ const PollCard = memo(function PollCard({
 
 	// 2. The same poll's myVote arriving late (first fetch) or changing via
 	//    realtime (another tab's vote) flips the card into the voted state.
+	//    Also handles myVote going from voted → empty (admin removed vote,
+	//    or the 'no vote' confirmation arrived late from the server).
 	//    Never clobbers a vote change the user is still mid-making.
 	useEffect(() => {
 		if (changingVote) return;
 		const hasVote = (myVote || []).length > 0;
+		setVoted(hasVote);
 		if (hasVote) {
-			setVoted(true);
 			setSelected(myVote || []);
 		}
 	}, [myVote, changingVote]);
 
-	// Poll-close notification — tell the author their poll has closed (once).
+	// Poll-close notification — tell the author their poll has closed ONCE
+	// per browser, not on every visit to a page containing the expired poll.
 	const notifiedClose = useRef(false);
 	useEffect(() => {
 		if (closed && isOwner && !notifiedClose.current) {
 			notifiedClose.current = true;
+			// Session-level dedupe: the ref above only survives this mount.
+			const dedupeKey = `vb:pollclosed:${p.id}`;
+			try {
+				if (sessionStorage.getItem(dedupeKey)) return;
+				sessionStorage.setItem(dedupeKey, "1");
+			} catch {
+				/* storage unavailable — ref guard still prevents same-mount spam */
+			}
 			api
 				.post("/api/polls", {
 					action: "closed",
 					poll_id: p.id,
 					author_id: anonId,
 				})
-				.catch(() => {});
+				.catch((err: unknown) => { console.error("[fetch] background refresh failed", { error: err instanceof Error ? err.message : String(err) }); });
 		}
 	}, [closed, isOwner, p.id, anonId]);
 
@@ -124,6 +158,10 @@ const PollCard = memo(function PollCard({
 		else setSelected((s) => (s.includes(i) ? [] : [i])); // tap again to deselect in single-choice
 	};
 
+	// Synchronous re-entrancy guard: `busy` is async state, so two taps in
+	// one frame would otherwise fire two vote requests for one intention.
+	// The server upserts per author, but one action must mean one request.
+	const voteBusyRef = useRef(false);
 	const vote = async () => {
 		// Vote / Submit-new-vote buttons are disabled while nothing is selected,
 		// so this guard is unreachable through the UI — kept as defense-in-depth.
@@ -133,6 +171,8 @@ const PollCard = memo(function PollCard({
 			return;
 		}
 		/* v8 ignore stop -- @preserve */
+		if (voteBusyRef.current) return;
+		voteBusyRef.current = true;
 		setBusy(true);
 		try {
 			const res = await api.post<PollData>("/api/polls", {
@@ -155,6 +195,7 @@ const PollCard = memo(function PollCard({
 			toast(e instanceof Error ? e.message : "Failed to record vote", "err");
 		}
 		setBusy(false);
+		voteBusyRef.current = false;
 	};
 
 	const startChangeVote = () => {
@@ -181,13 +222,15 @@ const PollCard = memo(function PollCard({
 					)}
 					{expired && !p.archived && (
 						<span className="chip !text-warn">
-							<Clock size={11} /> Ended
+							<Clock size={11} /> Ended{p.expires_at ? (() => {
+								const daysLeft = Math.max(0, Math.ceil((7 * 86400000 - (Date.now() - new Date(p.expires_at).getTime())) / 86400000));
+								return daysLeft > 0 ? ` · results ${daysLeft}d` : '';
+							})() : ''}
 						</span>
 					)}
-					{p.expires_at && !expired && (
+					{p.expires_at && !expired && countdown && (
 						<span className="chip">
-							<Clock size={11} /> ends{" "}
-							{timeAgo(p.expires_at).replace(" ago", "")}
+							<Clock size={11} /> ends in {countdown}
 						</span>
 					)}
 				</div>
@@ -212,6 +255,7 @@ const PollCard = memo(function PollCard({
 							key={i}
 							onClick={() => toggle(i)}
 							disabled={closed && !changingVote}
+							title={closed && !changingVote ? "Voting is closed" : undefined}
 							role={p.ptype === "multi" ? "checkbox" : "radio"}
 							aria-checked={isMine}
 							className={`relative w-full text-left rounded-xl border overflow-hidden transition-all ${isMine && (!showResults || changingVote) ? "border-accent bg-accent-soft" : "border-border hover:border-accent/50"} ${closed && !changingVote ? "cursor-default" : ""}`}
@@ -248,15 +292,28 @@ const PollCard = memo(function PollCard({
 					);
 				})}
 			</div>
+			{showResults && !changingVote && total === 0 && (
+				<p className="mt-1 text-xs text-ink3" role="status">
+					No votes yet — be the first.
+				</p>
+			)}
 			<div className="flex items-center justify-between mt-3">
-				<span className="text-xs text-ink3">
-					{total} vote{total !== 1 ? "s" : ""} ·{" "}
-					{p.ptype === "multi"
-						? "multiple choice"
-						: p.ptype === "yesno"
-							? "yes / no"
-							: "single choice"}
-				</span>
+				<div className="flex items-center gap-2">
+					<span className="text-xs text-ink3">
+						{total} vote{total !== 1 ? "s" : ""} ·{" "}
+						{p.ptype === "multi"
+							? "multiple choice"
+							: p.ptype === "yesno"
+								? "yes / no"
+								: "single choice"}
+					</span>
+					{!closed && !voted && (
+						<span className="text-[10px] text-ink3 italic">Not voted yet</span>
+					)}
+					{!closed && voted && !changingVote && (
+						<span className="text-[10px] text-accent font-medium">You voted</span>
+					)}
+				</div>
 				<div className="flex items-center gap-1.5">
 					{isOwner && (
 						<button
@@ -273,6 +330,9 @@ const PollCard = memo(function PollCard({
 							className="btn btn-primary !py-1.5 !px-4 !text-xs"
 							onClick={vote}
 							disabled={busy || !selected.length}
+							title={
+								selected.length ? "Submit your vote" : "Select an option first to vote"
+							}
 						>
 							{busy ? "Voting…" : "Vote"}
 						</button>
@@ -303,6 +363,11 @@ const PollCard = memo(function PollCard({
 								className="btn btn-primary !py-1.5 !px-4 !text-xs"
 								onClick={vote}
 								disabled={busy || !selected.length}
+								title={
+									selected.length
+										? "Submit your new vote"
+										: "Select an option first to submit"
+								}
 							>
 								{busy ? "Updating…" : "Submit new vote"}
 							</button>
@@ -310,6 +375,86 @@ const PollCard = memo(function PollCard({
 					)}
 				</div>
 			</div>
+			{/* Admin controls — archive, stop voting, delete */}
+			{hasAdminSession() && (
+				<div className="flex items-center gap-1.5 mt-3 pt-3 border-t border-border">
+					<span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-[0.16em] text-accent mr-1">
+						<ShieldCheck size={12} aria-hidden /> Admin
+					</span>
+					{!p.archived && !expired && (
+						<button
+							type="button"
+							disabled={busy}
+							onClick={async () => {
+								setBusy(true);
+								try {
+									await api.put("/api/polls", { id: p.id, archived: true });
+									toast("Poll archived", "ok");
+									onVoted?.();
+								} catch (e: unknown) {
+									toast(e instanceof Error ? e.message : "Failed", "err");
+								}
+								setBusy(false);
+							}}
+						className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[11px] font-semibold text-warn bg-warn/10 border border-warn/25 transition-colors disabled:opacity-40"
+						>
+							<Archive size={12} /> Archive
+						</button>
+					)}
+					{p.archived && (
+						<button
+							type="button"
+							disabled={busy}
+							onClick={async () => {
+								setBusy(true);
+								try {
+									await api.put("/api/polls", { id: p.id, archived: false });
+									toast("Poll restored", "ok");
+									onVoted?.();
+								} catch (e: unknown) {
+									toast(e instanceof Error ? e.message : "Failed", "err");
+								}
+								setBusy(false);
+							}}
+						className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[11px] font-semibold text-good bg-good/10 border border-good/25 transition-colors disabled:opacity-40"
+						>
+							<Lock size={12} /> Restore
+						</button>
+					)}
+					{!expired && (
+						<button
+							type="button"
+							disabled={busy}
+							onClick={async () => {
+								setBusy(true);
+								try {
+									await api.put("/api/polls", {
+										id: p.id,
+										expires_at: new Date().toISOString(),
+									});
+									toast("Voting stopped", "ok");
+									onVoted?.();
+								} catch (e: unknown) {
+									toast(e instanceof Error ? e.message : "Failed", "err");
+								}
+								setBusy(false);
+							}}
+						className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[11px] font-semibold text-blue-400 bg-blue-500/10 border border-blue-500/25 transition-colors disabled:opacity-40"
+						>
+							<Lock size={12} /> Stop voting
+						</button>
+					)}
+					<button
+						type="button"
+						disabled={busy}
+						onClick={() => setShowDelete(true)}
+						className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[11px] font-semibold text-red-400 bg-red-500/10 border border-red-500/25 transition-colors disabled:opacity-40"
+					>
+						<Trash2 size={12} /> Delete
+					</button>
+				</div>
+			)}
+
 			{/* AI insight on results */}
 			{showResults && total > 0 && <PollInsight poll={p} />}
 
@@ -328,8 +473,10 @@ const PollCard = memo(function PollCard({
 
 export default PollCard;
 
-/** One-line AI insight, fetched lazily on demand */
-function PollInsight({ poll }: { poll: PollData }) {
+/** One-line AI insight, fetched lazily on demand — memoized to avoid
+    re-fetching the AI endpoint on every parent render (the feed polls
+    on realtime events). */
+const PollInsight = memo(function PollInsight({ poll }: { poll: PollData }) {
 	const [insight, setInsight] = useState<string | null>(null);
 	const [loading, setLoading] = useState(false);
 
@@ -376,4 +523,4 @@ function PollInsight({ poll }: { poll: PollData }) {
 			{loading ? "Analyzing results…" : "Get AI insight on results"}
 		</button>
 	);
-}
+});

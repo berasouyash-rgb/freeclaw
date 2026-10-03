@@ -88,24 +88,11 @@ export default async function handler(req, res) {
 			}
 		}
 
-		// FALLBACK: All storage buckets failed — return data URL so the image still works
-		console.warn("All storage buckets failed — falling back to data URL");
-		const dataUrl = `data:${contentType || "image/png"};base64,${fileBase64}`;
-		return res.status(200).json({ url: dataUrl, storage: "fallback-data-url" });
+		// FIX #14: Storage unavailable — reject instead of data-URL fallback (blows up DB storage)
+		console.error("All storage buckets failed — rejecting upload (no data-URL fallback)");
+		return res.status(503).json({ error: "Image storage is temporarily unavailable. Please try again shortly.", code: "STORAGE_UNAVAILABLE" });
 	} catch (err) {
 		console.error("upload API error:", err);
-		// Last-resort fallback: return data URL
-		try {
-			const { fileBase64: fb64, contentType: ct } = req.body || {};
-			if (fb64) {
-				const dataUrl = `data:${ct || "image/png"};base64,${fb64}`;
-				return res
-					.status(200)
-					.json({ url: dataUrl, storage: "fallback-data-url" });
-			}
-		} catch {
-			console.error("[upload] Last-resort data URL fallback also failed");
-		}
 		return sanitizeError(res, err, "upload");
 	}
 }

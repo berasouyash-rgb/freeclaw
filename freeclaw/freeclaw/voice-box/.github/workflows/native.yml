@@ -1,0 +1,146 @@
+# Native shells — Electron (Windows + macOS) installers + Android APK, built in CI.
+# Local builds need disk + Android Studio; this machine has neither, so CI
+# is the supported path. Trigger manually or by publishing a release.
+# Repo variable VITE_API_BASE (e.g. https://voice-box-psi.vercel.app) is baked
+# into every shell as the API origin — set it before dispatching.
+
+name: Native
+
+on:
+  workflow_dispatch:
+  release:
+    types: [published]
+
+concurrency:
+  group: native-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  VITE_API_BASE: ${{ vars.VITE_API_BASE }}
+  VITE_SUPABASE_URL: ${{ vars.VITE_SUPABASE_URL }}
+  VITE_SUPABASE_ANON_KEY: ${{ vars.VITE_SUPABASE_ANON_KEY }}
+
+jobs:
+  # ── Windows desktop installer (Electron + NSIS, per-user) ──────
+  desktop:
+    name: Desktop installer (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate icons
+        run: node scripts/make-icons.mjs
+
+      - name: Build native web bundle (relative base for file://)
+        run: npm run build
+        env:
+          VB_NATIVE_ELECTRON: "1"
+
+      - name: Build NSIS installer
+        run: npx electron-builder --config electron-builder.yml --win --publish never
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: voice-box-desktop-win-x64
+          path: electron/dist/*.exe
+          if-no-files-found: error
+
+  # ── macOS desktop app (Electron DMG + ZIP, Apple Silicon + Intel) ──
+  # Unsigned (no Apple Developer certificate in CI): on first launch the
+  # user right-clicks the app → Open → Open. Signed/notarized builds need
+  # APPLE_ID + APPLE_APP_SPECIFIC_PASSWORD + CSC_LINK secrets wired into
+  # electron-builder's notarize step — add when the project enrolls.
+  macos:
+    name: Desktop app (macOS)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate icons (incl. icon.icns via iconutil)
+        run: node scripts/make-icons.mjs
+
+      - name: Build native web bundle (relative base for file://)
+        run: npm run build
+        env:
+          VB_NATIVE_ELECTRON: "1"
+
+      - name: Build DMG + ZIP (unsigned)
+        run: npx electron-builder --config electron-builder.yml --mac --publish never
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+
+      - name: Upload macOS artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: voice-box-desktop-mac
+          path: |
+            electron/dist/*.dmg
+            electron/dist/*.zip
+          if-no-files-found: error
+
+  # ── Android APK (Capacitor, debug-signed) ───────────────────────
+  android:
+    name: Android APK (debug)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: package-lock.json
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: "temurin"
+          java-version: "17"
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate icons
+        run: node scripts/make-icons.mjs
+
+      - name: Build web bundle
+        run: npm run build
+
+      - name: Add + sync native project
+        run: |
+          npx cap add android
+          npx capacitor-assets generate --iconBackgroundColor '#5652d6' --splashBackgroundColor '#f6f6f9'
+          npx cap sync android
+
+      - name: Build debug APK
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: voice-box-android-debug
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error

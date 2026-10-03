@@ -2,21 +2,30 @@
 // Reports — combined classic Report queue + Content Review + Approvals
 // ═══════════════════════════════════════════════════════════════════
 // Covers:
-//   • renders the five live stat cards (open / AI review / pre-publish /
-//     approvals / resolved) from REAL API data
+//   • renders the three desk sections (reports / review /
+//     approvals — resolved merged into Reports) from REAL API data
 //   • lists open reports with moderate-author actions
 //   • lists blocked approval tasks with WHY + Approve/Reject wiring
 //   • lists pre-publish review items with Publish/Private/Reject/Ban
 //   • escalate-report / escalate-post buttons call the real command
+//   • "Unlock comment" renders only for actually-hidden comments (a lazy
+//     /api/comments?all=1 index); deleted rows show "Removed", missing rows
+//     show "Target not found", visible rows show no button at all
+//   • unlock unhides via PUT /api/comments and re-read-verifies;
+//     a still-hidden row reports honestly instead of claiming ok
 //   • AI review tab lists flagged posts (search + filter present)
 //   • empty states are truthful (no fabricated rows)
 // ═══════════════════════════════════════════════════════════════════
 
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import Reports from "../pages/admin/Reports";
 
 // ── Mocks ──────────────────────────────────────────────────────────
+const realtimeState = vi.hoisted(() => ({
+	callback: null as null | ((table: string, payload: unknown) => void),
+}));
+const mockToast = vi.hoisted(() => vi.fn());
 vi.mock("../lib/api", () => ({
 	api: {
 		post: vi.fn(),
@@ -28,11 +37,15 @@ vi.mock("../lib/api", () => ({
 }));
 
 vi.mock("../contexts/AppContext", () => ({
-	useApp: () => ({ toast: vi.fn() }),
+	useApp: () => ({ toast: mockToast }),
 }));
 
 vi.mock("../lib/useRealtime", () => ({
-	useRealtime: () => undefined,
+	useRealtime: vi.fn(
+		(_tables: string[], callback: (table: string, payload: unknown) => void) => {
+			realtimeState.callback = callback;
+		},
+	),
 }));
 
 // PostPreviewCard is heavy — stub it so pre-publish items render lightly
@@ -94,9 +107,29 @@ const FLAGGED_POST = {
 	created_at: new Date().toISOString(),
 };
 
+const APPEAL = {
+	id: "apl_1",
+	surface: "post",
+	author_id: "anon_9",
+	title: "Canteen appeal",
+	body: "The canteen food sucks",
+	reason: "honest food complaint",
+	flags: ["profanity"],
+	status: "open",
+	created_at: new Date().toISOString(),
+};
+
 function seedData(
 	overrides: Partial<
-		Record<"approvals" | "reviewQueue" | "reports" | "posts", unknown[]>
+		Record<
+			| "approvals"
+			| "reviewQueue"
+			| "reports"
+			| "posts"
+			| "appeals"
+			| "comments",
+			unknown[]
+		>
 	> = {},
 ) {
 	// URL-routing mock — robust to call order, no cross-test Once-queue leaks.
@@ -107,7 +140,10 @@ function seedData(
 		if (path.startsWith("/api/reports")) return overrides.reports ?? [REPORT];
 		if (path.startsWith("/api/pre-review"))
 			return { items: overrides.reviewQueue ?? [REVIEW_ITEM] };
-		if (path.startsWith("/api/comments")) return [];
+		if (path.startsWith("/api/appeals"))
+			return { items: overrides.appeals ?? [] };
+		if (path.startsWith("/api/comments"))
+			return overrides.comments ?? [];
 		return [];
 	});
 	mockedGetSlow.mockResolvedValue(overrides.posts ?? [FLAGGED_POST]); // /api/posts?all=1
@@ -115,20 +151,36 @@ function seedData(
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	realtimeState.callback = null;
 });
 
 describe("Reports (combined queue + content review + approvals)", () => {
-	it("renders live stats for all desk sections (pre-publish merged into AI Review)", async () => {
+	it("renders live stats for all desk sections (pre-publish merged into Review)", async () => {
 		seedData();
 		render(<Reports />);
 
 		await waitFor(() => {
-			expect(screen.getByText("Report queue")).toBeInTheDocument();
-			expect(screen.getByText("Open")).toBeInTheDocument();
-			expect(screen.getByText("AI Review")).toBeInTheDocument();
-			expect(screen.getByText("Approvals")).toBeInTheDocument();
-			expect(screen.getByText("Resolved")).toBeInTheDocument();
+			expect(screen.getByText(/Report Queue/i)).toBeInTheDocument();
+			// "Reports" appears in both stat cards and tab buttons — use getAllByText
+			expect(screen.getAllByText("Reports").length).toBeGreaterThanOrEqual(1);
+			// Tab labels appear in both stat cards and tab buttons — use getAllByText
+			expect(screen.getAllByText("Review").length).toBeGreaterThanOrEqual(1);
+			expect(screen.getAllByText("Approvals").length).toBeGreaterThanOrEqual(1);
 		});
+	});
+
+	it("marks realtime changes without refetching the report desk", async () => {
+		seedData();
+		render(<Reports />);
+		await waitFor(() => expect(screen.getByText(/Harassment/)).toBeInTheDocument());
+		const callsBeforeEvent = mockedGet.mock.calls.length;
+
+		act(() => {
+			realtimeState.callback?.("reports", { eventType: "INSERT" });
+		});
+
+		expect(await screen.findByText(/1 new update available/i)).toBeInTheDocument();
+		expect(mockedGet.mock.calls).toHaveLength(callsBeforeEvent);
 	});
 
 	it("lists open reports with the report reason and escalation wiring", async () => {
@@ -162,6 +214,196 @@ describe("Reports (combined queue + content review + approvals)", () => {
 				id: 42,
 				status: "resolved",
 			});
+		});
+	});
+
+	it("unlocks a blocked comment through the unhide endpoint and verifies", async () => {
+		const commentReport = {
+			...REPORT,
+			target_id: "c_1",
+			target_type: "comment",
+			reason: "Spammy comment",
+		};
+		// Index read (mount): the comment is hidden, so Unlock renders.
+		// Verify read (after PUT): it is unhidden, so the unlock claims ok.
+		seedData({
+			reports: [commentReport],
+			comments: [{ id: "c_1", hidden: true }],
+		});
+		render(<Reports />);
+
+		await waitFor(() =>
+			expect(screen.getByText(/Spammy comment/)).toBeInTheDocument(),
+		);
+		// Flush passive effects FIRST: the index fetch must dispatch while
+		// the first mock (hidden) is still installed. Without this, the
+		// text wait can win the race, the re-mock below lands first, and
+		// the index resolves unhidden so no button ever renders.
+		await act(async () => {});
+		expect(
+			screen.getByRole("button", { name: "Unlock comment c_1" }),
+		).toBeInTheDocument();
+
+		seedData({
+			reports: [commentReport],
+			comments: [{ id: "c_1", hidden: false }],
+		});
+		fireEvent.click(
+			await screen.findByRole("button", { name: "Unlock comment c_1" }),
+		);
+		await waitFor(() => {
+			expect(mockedPut).toHaveBeenCalledWith("/api/comments", {
+				id: "c_1",
+				hidden: false,
+			});
+		});
+		await waitFor(() => {
+			expect(mockToast).toHaveBeenCalledWith(
+				"Comment unlocked — visible to everyone again",
+				"ok",
+			);
+		});
+	});
+
+	it("colors each target type distinctly and links to its valid page", async () => {
+		seedData({
+			reports: [
+				{ ...REPORT, id: 51, target_id: "post_x", target_type: "post", reason: "Bad post" },
+				{ ...REPORT, id: 52, target_id: "c_9", target_type: "comment", reason: "Bad comment" },
+				{ ...REPORT, id: 53, target_id: "poll_9", target_type: "poll", reason: "Bad poll" },
+			],
+			comments: [{ id: "c_9", hidden: false, post_id: "post_parent_9" }],
+		});
+		render(<Reports />);
+		await waitFor(() => expect(screen.getByText(/Bad post/)).toBeInTheDocument());
+		// Post chip links straight to the complaint detail page.
+		expect(screen.getByRole("link", { name: "Open reported post post_x" })).toHaveAttribute("href", "/post/post_x");
+		// Comment chip links to the parent post, never to the bare comment id.
+		// (findBy: the chip needs the comments fetch, which lands after the
+		// reports fetch — a sync getBy races it under parallel-suite load.)
+		expect(await screen.findByRole("link", { name: "Open parent post of comment c_9" })).toHaveAttribute("href", "/post/post_parent_9");
+		// Poll chip links to polls; each type carries its own color.
+		expect(screen.getByRole("link", { name: "Open polls" })).toHaveAttribute("href", "/polls");
+		const postChip = screen.getByRole("link", { name: "Open reported post post_x" });
+		const commentChip = screen.getByRole("link", { name: "Open parent post of comment c_9" });
+		expect(postChip.getAttribute("style")).not.toBe(commentChip.getAttribute("style"));
+	});
+
+	it("shows Removed — never Unlock — for a deleted comment", async () => {
+		seedData({
+			reports: [
+				{
+					...REPORT,
+					target_id: "c_del",
+					target_type: "comment",
+					reason: "Gone comment",
+				},
+			],
+			comments: [{ id: "c_del", hidden: false, deleted: true }],
+		});
+		render(<Reports />);
+
+		await waitFor(() =>
+			expect(screen.getByText(/Gone comment/)).toBeInTheDocument(),
+		);
+		expect(await screen.findByText("Removed")).toBeInTheDocument();
+		expect(
+			screen.queryByRole("button", { name: "Unlock comment c_del" }),
+		).toBeNull();
+	});
+
+	it("shows Target not found — never Unlock — for a missing comment", async () => {
+		seedData({
+			reports: [
+				{
+					...REPORT,
+					target_id: "c_gone",
+					target_type: "comment",
+					reason: "Vanished comment",
+				},
+			],
+			comments: [{ id: "c_other", hidden: true }],
+		});
+		render(<Reports />);
+
+		await waitFor(() =>
+			expect(screen.getByText(/Vanished comment/)).toBeInTheDocument(),
+		);
+		expect(await screen.findByText("Target not found")).toBeInTheDocument();
+		expect(
+			screen.queryByRole("button", { name: "Unlock comment c_gone" }),
+		).toBeNull();
+	});
+
+	it("offers no Unlock for a comment that is already visible", async () => {
+		// A second, still-hidden report proves the index actually ran —
+		// otherwise the absence below would prove nothing.
+		seedData({
+			reports: [
+				{
+					...REPORT,
+					target_id: "c_vis",
+					target_type: "comment",
+					reason: "Visible comment",
+				},
+				{
+					...REPORT,
+					id: 43,
+					target_id: "c_hid",
+					target_type: "comment",
+					reason: "Hidden comment",
+				},
+			],
+			comments: [
+				{ id: "c_vis", hidden: false },
+				{ id: "c_hid", hidden: true },
+			],
+		});
+		render(<Reports />);
+
+		await waitFor(() =>
+			expect(screen.getByText(/Visible comment/)).toBeInTheDocument(),
+		);
+		// The hidden sibling's button proves the index loaded…
+		expect(
+			await screen.findByRole("button", { name: "Unlock comment c_hid" }),
+		).toBeInTheDocument();
+		// …while the visible comment gets no button.
+		expect(
+			screen.queryByRole("button", { name: "Unlock comment c_vis" }),
+		).toBeNull();
+	});
+
+	it("reports honestly when the comment stays hidden after unlock", async () => {
+		const commentReport = {
+			...REPORT,
+			target_id: "c_9",
+			target_type: "comment",
+			reason: "Abusive comment",
+		};
+		seedData({ reports: [commentReport] });
+		mockedGet.mockImplementation(async (path: string) => {
+			if (path.startsWith("/api/reports")) return [commentReport];
+			if (path.startsWith("/api/pre-review")) return { items: [REVIEW_ITEM] };
+			if (path.startsWith("/api/appeals")) return { items: [] };
+			if (path.startsWith("/api/comments"))
+				return [{ id: "c_9", hidden: true }];
+			return [];
+		});
+		render(<Reports />);
+
+		await waitFor(() =>
+			expect(screen.getByText(/Abusive comment/)).toBeInTheDocument(),
+		);
+
+		fireEvent.click(
+			await screen.findByRole("button", { name: "Unlock comment c_9" }),
+		);
+		await waitFor(() => {
+			expect(mockToast).toHaveBeenCalledWith(
+				"Unlock failed — the comment is still hidden",
+				"err",
+			);
 		});
 	});
 
@@ -210,12 +452,12 @@ describe("Reports (combined queue + content review + approvals)", () => {
 		});
 	});
 
-	it("lists pre-publish review items with publish action (merged into AI Review)", async () => {
+	it("lists pre-publish review items with publish action (merged into Review)", async () => {
 		seedData();
 		render(<Reports />);
 
-		// Pre-publish items live inside the AI Review (content review) tab
-		fireEvent.click(screen.getByRole("button", { name: /^AI Review/ }));
+		// Pre-publish items live inside the Review (content review) tab
+		fireEvent.click(screen.getByRole("button", { name: /^Review/ }));
 		await waitFor(() =>
 			expect(screen.getByText(REVIEW_ITEM.title)).toBeInTheDocument(),
 		);
@@ -232,11 +474,32 @@ describe("Reports (combined queue + content review + approvals)", () => {
 		});
 	});
 
-	it("lists AI-reviewed posts with search and escalate-post wiring", async () => {
+	it("says rejected (not rejectd) when a review item is rejected", async () => {
+		mockToast.mockClear();
 		seedData();
 		render(<Reports />);
 
-		fireEvent.click(screen.getByRole("button", { name: /^AI Review/ }));
+		fireEvent.click(screen.getByRole("button", { name: /^Review/ }));
+		await waitFor(() =>
+			expect(screen.getByText(REVIEW_ITEM.title)).toBeInTheDocument(),
+		);
+		fireEvent.click(
+			screen.getByRole("button", { name: `Reject review ${REVIEW_ITEM.key}` }),
+		);
+		await waitFor(() => {
+			expect(mockedPost).toHaveBeenCalledWith("/api/pre-review", {
+				key: REVIEW_ITEM.key,
+				action: "reject",
+			});
+		});
+		expect(mockToast).toHaveBeenCalledWith("Review rejected", "ok");
+	});
+
+	it("lists worker-reviewed posts with search and escalate-post wiring", async () => {
+		seedData();
+		render(<Reports />);
+
+		fireEvent.click(screen.getByRole("button", { name: /^Review/ }));
 		await waitFor(() =>
 			expect(screen.getByText(FLAGGED_POST.title)).toBeInTheDocument(),
 		);
@@ -259,16 +522,16 @@ describe("Reports (combined queue + content review + approvals)", () => {
 	});
 
 	it("shows truthful empty states when nothing is waiting", async () => {
-		seedData({ approvals: [], reviewQueue: [], reports: [], posts: [] });
+		seedData({ approvals: [], reviewQueue: [], reports: [], posts: [], appeals: [] });
 		render(<Reports />);
 
 		await waitFor(() => {
 			expect(
-				screen.getByText("Queue is clear — no open reports."),
+				screen.getByText("No reports yet."),
 			).toBeInTheDocument();
 		});
 
-		fireEvent.click(screen.getByRole("button", { name: /^AI Review/ }));
+		fireEvent.click(screen.getByRole("button", { name: /^Review/ }));
 		await waitFor(() => {
 			expect(
 				screen.getByText("No flagged or pending posts right now"),
@@ -282,4 +545,156 @@ describe("Reports (combined queue + content review + approvals)", () => {
 			).toBeInTheDocument();
 		});
 	});
+
+	it("lists open appeals with the author's case and uphold/overturn wiring", async () => {
+		seedData({ appeals: [APPEAL] });
+		render(<Reports />);
+
+		fireEvent.click(screen.getByRole("button", { name: /^Review/ }));
+		await waitFor(() => {
+			expect(screen.getByText("Canteen appeal")).toBeInTheDocument();
+		});
+		expect(screen.getByText(/honest food complaint/)).toBeInTheDocument();
+
+		fireEvent.click(screen.getByRole("button", { name: "Uphold block" }));
+		await waitFor(() => {
+			expect(mockedPut).toHaveBeenCalledWith("/api/appeals", {
+				id: "apl_1",
+				decision: "uphold",
+				note: "",
+			});
+		});
+	});
+
+	it("overturns an appeal through the real endpoint", async () => {
+		seedData({ appeals: [APPEAL] });
+		render(<Reports />);
+
+		fireEvent.click(screen.getByRole("button", { name: /^Review/ }));
+		await waitFor(() => {
+			expect(screen.getByText("Canteen appeal")).toBeInTheDocument();
+		});
+
+		fireEvent.click(screen.getByRole("button", { name: /Overturn & publish/ }));
+		await waitFor(() => {
+			expect(mockedPut).toHaveBeenCalledWith("/api/appeals", {
+				id: "apl_1",
+				decision: "overturn",
+				note: "",
+			});
+		});
+	});
+
+	// ── Workforce evidence (the AI's real work, not a status field) ──────
+	it("renders what the workforce did per report, with its audit evidence", async () => {
+		seedData({
+			reports: [
+				{
+					...REPORT,
+					status: "resolved",
+					worker_action: {
+						worker: "report-disposition",
+						action: "report_dispositioned",
+						disposition: "enforced",
+						enforced: true,
+						evidence: "public + violating (harassment)",
+						target: "post:post_x",
+						at: new Date().toISOString(),
+					},
+				},
+			],
+		});
+		render(<Reports />);
+
+		await waitFor(() => {
+			expect(screen.getByText(/Auto-dispositioned/)).toBeInTheDocument();
+			expect(screen.getByText(/Violation removed/)).toBeInTheDocument();
+			expect(
+				screen.getByText(/public \+ violating \(harassment\)/),
+			).toBeInTheDocument();
+			expect(
+				screen.getByText(/removal re-read verified/),
+			).toBeInTheDocument();
+		});
+	});
+
+	it("shows the workforce ledger counts derived from joined evidence", async () => {
+		seedData({
+			reports: [
+				{
+					...REPORT,
+					status: "resolved",
+					worker_action: {
+						worker: "report-disposition",
+						action: "report_dispositioned",
+						disposition: "already_handled",
+						enforced: false,
+						evidence: "target already non-public",
+						target: "post:post_x",
+						at: new Date().toISOString(),
+					},
+				},
+			],
+		});
+		render(<Reports />);
+
+		await waitFor(() => {
+			expect(screen.getByText(/Worker ledger/)).toBeInTheDocument();
+			expect(screen.getByText(/dispositioned by AI/)).toBeInTheDocument();
+		});
+	});
+
+	it("does not invent AI evidence for a report no worker touched", async () => {
+		seedData({ reports: [{ ...REPORT, status: "resolved" }] });
+		render(<Reports />);
+
+		await waitFor(() =>
+			expect(screen.getByText(/Report Queue/i)).toBeInTheDocument(),
+		);
+		expect(screen.queryByText(/Auto-dispositioned/)).not.toBeInTheDocument();
+		expect(screen.queryByText(/Violation removed/)).not.toBeInTheDocument();
+	});
+});
+
+describe("Reports — community targets, reporter context, related content", () => {
+  it("links community reports to the community page (never a dead chip)", async () => {
+    seedData({
+      reports: [
+        { ...REPORT, id: 60, target_id: "club::p1", target_type: "community_post", reason: "Spam commune" },
+      ],
+    });
+    render(<Reports />);
+    const chip = await screen.findByText("Community");
+    const link = chip.closest("a");
+    expect(link).toBeTruthy();
+    expect(link!.getAttribute("href")).toBe("/communities/club");
+  });
+
+  it("shows reporter reliability and the related post in the opened detail", async () => {
+    seedData({
+      reports: [
+        { ...REPORT, id: 61, reason: "Harassment here" },
+        { ...REPORT, id: 62, status: "resolved", reason: "Old upheld report" },
+      ],
+    });
+    // Related-post preview resolves through the real single-post fetch.
+    mockedGet.mockImplementation(async (path: string) => {
+      if (path.startsWith("/api/posts?id=")) return { post: FLAGGED_POST };
+      if (path.startsWith("/api/reports"))
+        return [
+          { ...REPORT, id: 61, reason: "Harassment here" },
+          { ...REPORT, id: 62, status: "resolved", reason: "Old upheld report" },
+        ];
+      if (path.startsWith("/api/comments")) return [];
+      return [];
+    });
+    render(<Reports />);
+    fireEvent.click(await screen.findByText(/Harassment here/));
+    // Reporter context derives from loaded rows: 2 filed, 1 upheld.
+    expect(await screen.findByText(/2 reports filed/)).toBeInTheDocument();
+    expect(screen.getByText(/1 upheld/)).toBeInTheDocument();
+    // Related content previews the reported post.
+    expect(screen.getByText("RELATED CONTENT")).toBeInTheDocument();
+    expect(screen.getByText("Flagged title")).toBeInTheDocument();
+  });
 });

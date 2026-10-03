@@ -64,6 +64,7 @@ function chainFor(table: string) {
 		delete(): unknown;
 		insert(): unknown;
 		update(): unknown;
+		maybeSingle(): Promise<unknown>;
 		then(cb: (v: unknown) => void): Promise<unknown>;
 	} = {
 		op: null,
@@ -85,6 +86,10 @@ function chainFor(table: string) {
 		update() {
 			this.op = "update";
 			return this;
+		},
+		maybeSingle() {
+			// Fire-and-forget side paths (event bridge settings lookup).
+			return Promise.resolve({ data: null, error: null });
 		},
 		then(onResolve: (v: unknown) => void) {
 			if (this.op === "delete") onResolve({ data: deleteResult, error: null });
@@ -124,7 +129,7 @@ describe("POST /api/reactions — optimized toggle contract", () => {
 		const { default: handler } = await import("../../api/_reactions.js");
 		const res = response();
 		await handler(
-			{ method: "POST", query: {}, body: body(), headers: {} },
+			{ method: "POST", query: {}, body: body(), headers: { "x-anon-id": "anon-1" } },
 			res,
 		);
 
@@ -135,15 +140,46 @@ describe("POST /api/reactions — optimized toggle contract", () => {
 			mine: ["support"],
 		});
 
-		// reactions roundtrips = delete + insert + counts (NO pre-SELECT)
-		const ops = from.mock.results.map(
-			(r) => (r.value as { op: string | null }).op,
+		// reactions roundtrips = delete + insert + counts (NO pre-SELECT).
+		// Scoped to the reactions table: fire-and-forget side paths (event
+		// bridge settings lookup, posts bumps) hit other tables and must not
+		// pollute this contract.
+		const ops = from.mock.calls.map(
+			(args, i) =>
+				`${args[0]}:${(from.mock.results[i].value as { op: string | null }).op}`,
 		);
-		expect(ops.filter((o) => o === "delete").length).toBe(1);
-		expect(ops.filter((o) => o === "insert").length).toBe(1);
-		expect(ops.filter((o) => o === "counts").length).toBe(1);
+		const reactionsOps = ops
+			.filter((o) => o.startsWith("reactions:"))
+			.map((o) => o.split(":")[1]);
+		expect(reactionsOps.filter((o) => o === "delete").length).toBe(1);
+		expect(reactionsOps.filter((o) => o === "insert").length).toBe(1);
+		expect(reactionsOps.filter((o) => o === "counts").length).toBe(1);
 		// posts updated_at bump ran in parallel (Promise.all)
-		expect(ops).toContain("update");
+		expect(ops).toContain("posts:update");
+	});
+
+	it("accepts the suggestion downvote alias as a disagree vote", async () => {
+		deleteResult = [];
+		reactionsData = [{ kind: "disagree", author_id: "anon-1" }];
+
+		const { default: handler } = await import("../../api/_reactions.js");
+		const res = response();
+		await handler(
+			{
+				method: "POST",
+				query: {},
+				body: { ...body(), kind: "downvote" },
+				headers: { "x-anon-id": "anon-1" },
+			},
+			res,
+		);
+
+		expect(res.statusCode).toBe(200);
+		expect(res.body).toEqual({
+			toggled: true,
+			counts: { disagree: 1 },
+			mine: ["disagree"],
+		});
 	});
 
 	it("toggle OFF: DELETE removes the existing row → no INSERT", async () => {
@@ -153,19 +189,23 @@ describe("POST /api/reactions — optimized toggle contract", () => {
 		const { default: handler } = await import("../../api/_reactions.js");
 		const res = response();
 		await handler(
-			{ method: "POST", query: {}, body: body(), headers: {} },
+			{ method: "POST", query: {}, body: body(), headers: { "x-anon-id": "anon-1" } },
 			res,
 		);
 
 		expect(res.statusCode).toBe(200);
 		expect(res.body).toEqual({ toggled: false, counts: {}, mine: [] });
-		// delete + counts only — no INSERT, no pre-SELECT
-		const ops = from.mock.results.map(
-			(r) => (r.value as { op: string | null }).op,
+		// delete + counts only — no INSERT, no pre-SELECT (reactions table only)
+		const ops = from.mock.calls.map(
+			(args, i) =>
+				`${args[0]}:${(from.mock.results[i].value as { op: string | null }).op}`,
 		);
-		expect(ops.filter((o) => o === "delete").length).toBe(1);
-		expect(ops).not.toContain("insert");
-		expect(ops.filter((o) => o === "counts").length).toBe(1);
+		const reactionsOps = ops
+			.filter((o) => o.startsWith("reactions:"))
+			.map((o) => o.split(":")[1]);
+		expect(reactionsOps.filter((o) => o === "delete").length).toBe(1);
+		expect(reactionsOps).not.toContain("insert");
+		expect(reactionsOps.filter((o) => o === "counts").length).toBe(1);
 	});
 
 	it("counts aggregate ALL authors; mine filters to the caller only", async () => {
@@ -179,7 +219,7 @@ describe("POST /api/reactions — optimized toggle contract", () => {
 		const { default: handler } = await import("../../api/_reactions.js");
 		const res = response();
 		await handler(
-			{ method: "POST", query: {}, body: body(), headers: {} },
+			{ method: "POST", query: {}, body: body(), headers: { "x-anon-id": "anon-1" } },
 			res,
 		);
 
@@ -199,7 +239,7 @@ describe("POST /api/reactions — optimized toggle contract", () => {
 				method: "POST",
 				query: {},
 				body: { ...body(), kind: "nonsense" },
-				headers: {},
+				headers: { "x-anon-id": "anon-1" },
 			},
 			res,
 		);
@@ -219,7 +259,7 @@ describe("POST /api/reactions — optimized toggle contract", () => {
 		const { default: handler } = await import("../../api/_reactions.js");
 		const res = response();
 		await handler(
-			{ method: "POST", query: {}, body: body(), headers: {} },
+			{ method: "POST", query: {}, body: body(), headers: { "x-anon-id": "anon-1" } },
 			res,
 		);
 
@@ -237,7 +277,7 @@ describe("POST /api/reactions — optimized toggle contract", () => {
 			{
 				method: "POST",
 				query: {},
-				headers: {},
+				headers: { "x-anon-id": "anon-1" },
 				body: {
 					author_id: "anon-1",
 					target_id: "sug-1",
@@ -254,5 +294,20 @@ describe("POST /api/reactions — optimized toggle contract", () => {
 			counts: { upvote: 1 },
 			mine: ["upvote"],
 		});
+	});
+
+	it("rate-limits toggle floods → 429 before any DB roundtrip", async () => {
+		const { rateLimited } = await import("../../api/_auth.js");
+		(rateLimited as ReturnType<typeof vi.fn>).mockResolvedValueOnce(true);
+
+		const { default: handler } = await import("../../api/_reactions.js");
+		const res = response();
+		await handler(
+			{ method: "POST", query: {}, body: body(), headers: { "x-anon-id": "anon-1" } },
+			res,
+		);
+
+		expect(res.statusCode).toBe(429);
+		expect(from).not.toHaveBeenCalled();
 	});
 });

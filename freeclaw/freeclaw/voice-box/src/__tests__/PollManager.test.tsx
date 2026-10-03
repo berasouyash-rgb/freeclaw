@@ -88,7 +88,7 @@ describe("PollManager — load states", () => {
 			() => new Promise(() => {}), // never resolves
 		);
 		renderPage();
-		expect(screen.getByText("Poll manager")).toBeInTheDocument();
+		expect(screen.getByText(/Poll Manager/i)).toBeInTheDocument();
 		expect(document.querySelectorAll(".skeleton").length).toBeGreaterThan(0);
 	});
 
@@ -323,7 +323,7 @@ describe("PollManager — archive/restore and delete", () => {
 
 		await user.click(within(dialog).getByRole("button", { name: "Delete poll" }));
 		await waitFor(() => {
-			expect(mocks.del).toHaveBeenCalledWith("/api/polls", { id: "p1" });
+			expect(mocks.del).toHaveBeenCalledWith("/api/polls?id=p1", { id: "p1" });
 		});
 		expect(mocks.toast).toHaveBeenCalledWith("Deleted", "ok");
 	});

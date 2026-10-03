@@ -4,7 +4,7 @@ const isAdmin = vi.fn();
 const getToolSchemasForRole = vi.fn();
 vi.mock("../../api/_auth.js", () => ({ cors: vi.fn(), isAdmin }));
 vi.mock("../../api/_error.js", () => ({ sanitizeError: vi.fn() }));
-vi.mock("../../api/_tool-registry.js", () => ({
+vi.mock("../../api/_agent-tool-registry.js", () => ({
 	getToolSchemasForRole,
 	executeTool: vi.fn(),
 	executeTools: vi.fn(),

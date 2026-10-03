@@ -12,6 +12,7 @@
 import { auditLog, cors, isAdmin } from "./_auth.js";
 import supabase from "./_db-client.js";
 import { sanitizeError } from "./_error.js";
+import { logger } from "./_observability.js";
 import { buildPersonaSystemPrompt, loadPersona } from "./_persona.js";
 import { callLLMChain, callProviderStream } from "./_providers.js";
 import { detectPromptInjection } from "./_security.js";
@@ -20,7 +21,7 @@ import {
 	buildToolSystemPrompt,
 	getToolsForRole,
 	executeTool as registryExecuteTool,
-} from "./_tool-registry.js";
+} from "./_agent-tool-registry.js";
 
 // ─── Constants ────────────────────────────────────────────────────
 const MAX_TOOL_ITERATIONS = 5;
@@ -210,12 +211,10 @@ class ThinkStreamParser {
 const _runStartTimes = new Map(); // runId → Date
 
 function log(runId, category, msg) {
-	const ts = new Date().toISOString().slice(11, 23); // HH:MM:SS.mmm
-	console.log(`[AI-CHAT][${ts}][${runId}][${category}] ${msg}`);
+	logger.info("ai-chat", msg, { run_id: runId, category });
 }
 function logError(runId, category, msg) {
-	const ts = new Date().toISOString().slice(11, 23);
-	console.error(`[AI-CHAT][${ts}][${runId}][${category}] ${msg}`);
+	logger.error("ai-chat", msg, { run_id: runId, category });
 }
 function startRunTimer(runId) {
 	_runStartTimes.set(runId, Date.now());
@@ -824,6 +823,23 @@ export async function cancelRun(runId) {
 	markCancelled(runId);
 }
 
+/** Bounds for admin chat input (prompt-bomb protection). Exported for tests. */
+export const CHAT_INPUT_LIMITS = { maxMessages: 50, maxMessageChars: 4000 };
+
+/**
+ * Clamp raw chat input before it touches the DB or LLM context:
+ * last N turns only, last message capped to M chars. Pure — safe to unit test.
+ */
+export function normalizeChatInput(body) {
+	const messages = ((body && body.messages) || []).slice(
+		-CHAT_INPUT_LIMITS.maxMessages,
+	);
+	const userMessage = (
+		messages[messages.length - 1]?.content || ""
+	).slice(0, CHAT_INPUT_LIMITS.maxMessageChars);
+	return { messages, userMessage };
+}
+
 // ─── Main Handler ─────────────────────────────────────────────────
 export default async function handler(req, res) {
 	cors(res, req);
@@ -874,7 +890,11 @@ export default async function handler(req, res) {
 		}
 
 		// ── Chat: process messages ───────────────────────────────────
-		const messages = body.messages || [];
+		// Caps: history bomb (huge messages array) and prompt bomb (megabyte
+		// userMessage) would otherwise land raw in the DB row below and in
+		// LLM context. 50 turns / 4000 chars is generous for admin chat.
+		// (Bounds live in normalizeChatInput — unit-tested, pure.)
+		const { messages, userMessage } = normalizeChatInput(body);
 		runId =
 			body.run_id ||
 			`chat-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -886,7 +906,6 @@ export default async function handler(req, res) {
 			return res.status(400).json({ error: "No messages provided" });
 
 		const systemPrompt = await buildSystemPrompt();
-		const userMessage = messages[messages.length - 1]?.content || "";
 		if (!userMessage) return res.status(400).json({ error: "Empty message" });
 
 		// Security: Detect prompt injection attempts (log but don't block — school platform)

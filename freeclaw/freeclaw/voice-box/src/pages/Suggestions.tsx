@@ -5,13 +5,16 @@
 	Lightbulb,
 	MessageCircle,
 	PlusCircle,
+	RefreshCw,
 	ShieldCheck,
 	Sparkles,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router";
-import { Segmented } from "../components/ui";
+import UpdateNotice from "../components/admin/UpdateNotice";
 import { useApp } from "../contexts/AppContext";
+import { useUpdateSignal } from "../hooks/useUpdateSignal";
+import { Segmented } from "../components/ui";
 import { api } from "../lib/api";
 import { useRealtime } from "../lib/useRealtime";
 import { STATUS_META, timeAgo, trendingScore } from "../lib/utils";
@@ -23,25 +26,36 @@ export default function Suggestions() {
 	const [mine, setMine] = useState<Record<string, string[]>>({});
 	const [loading, setLoading] = useState(true);
 	const [error, setError] = useState("");
-	const [sort, setSort] = useState<"top" | "trending" | "new">("top");
-	const [statusF, setStatusF] = useState<"all" | "open" | "accepted">("all");
-	const [busy, setBusy] = useState<string | null>(null);
+	const [sort, setSort] = useState<"top" | "trending" | "new">("new");
+	const [statusF, setStatusF] = useState<"all" | "accepted">("all");	const [busy, setBusy] = useState<string | null>(null);
+	const knownIdsRef = useRef(new Set<string>());
 
-	const load = useCallback(async () => {
+	const load = useCallback(async (silent = false) => {
 		try {
 			setError("");
+			const fetchFn = silent ? api.getSlowFresh : api.getSlow;
+			// In silent (realtime) mode both reads bypass the 5s GET cache: the
+			// database has already changed, and a cached reactions response
+			// re-serves the counts from before the change.
 			const [data, reactions] = await Promise.all([
-				api.getSlow<PostData[]>("/api/posts?type=suggestion"),
-				api.get<ReactionEntry[]>(`/api/reactions?author=${anonId}`),
-			]);
-			setItems(data);
+				fetchFn<PostData[]>("/api/posts?type=suggestion"),
+				silent
+					? api.getFresh<ReactionEntry[]>(`/api/reactions?author=${anonId}`)
+					: api.get<ReactionEntry[]>(`/api/reactions?author=${anonId}`),
+		]);
+			// Null-safe: a 200 with no rows must render empty, never throw
+			// inside the try (which would surface as a cryptic TypeError).
+			const rows = data || [];
+			setItems(rows);
 			const map: Record<string, string[]> = {};
-			reactions.forEach((r) => {
+			(reactions || []).forEach((r) => {
 				map[r.target_id] = [...(map[r.target_id] || []), r.kind];
-			});
+		});
 			setMine(map);
+			knownIdsRef.current = new Set(rows.map((s) => s.id));
 		} catch (e: unknown) {
-			setError(e instanceof Error ? e.message : "Failed to load suggestions");
+			if (!silent)
+				setError(e instanceof Error ? e.message : "Failed to load suggestions");
 		}
 		setLoading(false);
 	}, [anonId]);
@@ -50,14 +64,27 @@ export default function Suggestions() {
 		load();
 	}, [load]);
 
-	// Real-time: auto-refresh when posts or reactions change in Supabase
-	useRealtime(
-		["posts", "reactions"],
-		useCallback(() => {
-			load();
-		}, [load]),
-		1500,
-	);
+	// Freshness signal, not a refetch: the old wiring reloaded the whole
+	// suggestion list on every posts event (and re-pulled the reaction map
+	// on every reaction event), so steady activity rebuilt the page under
+	// the reader's finger. Realtime now only raises a badge; Refresh or the
+	// update notice pulls one fresh snapshot. Own votes stay instant via
+	// the optimistic flip in vote().
+	const { updatesAvailable, markUpdatesAvailable, clearUpdates } =
+		useUpdateSignal();
+	const [refreshing, setRefreshing] = useState(false);
+
+	const handleRefresh = useCallback(async () => {
+		setRefreshing(true);
+		try {
+			await load(true);
+			clearUpdates();
+		} finally {
+			setRefreshing(false);
+		}
+	}, [load, clearUpdates]);
+
+	useRealtime(["posts", "reactions"], markUpdatesAvailable, 1_000);
 
 	const vote = async (id: string) => {
 		if (busy) return;
@@ -113,8 +140,6 @@ export default function Suggestions() {
 
 	const sorted = useMemo(() => {
 		let list = [...items];
-		if (statusF === "open")
-			list = list.filter((s) => !["solved", "archived"].includes(s.status));
 		if (statusF === "accepted")
 			list = list.filter((s) =>
 				["in_progress", "waiting", "solved"].includes(s.status),
@@ -140,6 +165,22 @@ export default function Suggestions() {
 				Improvement ideas ranked by the community. Top suggestions get official
 				replies.
 			</p>
+			<div className="mb-4">
+				<button
+					className="btn btn-soft !py-1.5 !px-3 text-xs flex items-center gap-1.5"
+					onClick={() => void handleRefresh()}
+					disabled={refreshing}
+					aria-label="Refresh suggestions"
+				>
+					<RefreshCw size={13} className={refreshing ? "animate-spin" : ""} />
+					{refreshing ? "Refreshing…" : "Refresh"}
+				</button>
+				<UpdateNotice
+					count={updatesAvailable}
+					onViewUpdates={() => void handleRefresh()}
+					refreshing={refreshing}
+				/>
+			</div>
 
 			<div className="mb-4 flex flex-wrap items-center gap-2">
 				<Segmented<"top" | "trending" | "new">
@@ -152,12 +193,11 @@ export default function Suggestions() {
 					]}
 				/>
 				<div className="ml-auto">
-					<Segmented<"all" | "open" | "accepted">
+					<Segmented<"all" | "accepted">
 						value={statusF}
 						onChange={setStatusF}
 						options={[
 							{ value: "all", label: "All" },
-							{ value: "open", label: "Open" },
 							{ value: "accepted", label: "✓ Accepted" },
 						]}
 					/>
@@ -169,9 +209,10 @@ export default function Suggestions() {
 					<p className="text-bad text-sm">{error}</p>
 					<button
 						className="btn btn-soft mt-3"
+						// Silent retry: keep the error card honest without
+						// blanking to skeletons first.
 						onClick={() => {
-							setLoading(true);
-							load();
+							load(true);
 						}}
 					>
 						Retry
@@ -260,14 +301,18 @@ export default function Suggestions() {
 									<p className="text-xs mt-0.5">{s.admin_reply}</p>
 								</div>
 							)}
-							<div className="flex items-center gap-3 mt-2 text-xs text-ink3">
+							{/* min-w-0 lets the row shrink on a 320px phone: category + status
+							    chips plus a timestamp used to push the card 10px past the
+							    viewport instead of wrapping. */}
+							<div className="flex items-center gap-3 mt-2 text-xs text-ink3 min-w-0 flex-wrap">
 								<span className="chip !text-[10px]">{s.category}</span>
 								{/* Status — clearly visible, incl. Solved */}
 								<span
 									className="chip !text-[10px] font-bold"
 									style={{
 										color: STATUS_META[s.status]?.color,
-										borderColor: `${STATUS_META[s.status]?.color}44`,
+										// color-mix, not `${color}44`: the palette values are CSS variables now
+										borderColor: `color-mix(in srgb, ${STATUS_META[s.status]?.color} 27%, transparent)`,
 									}}
 								>
 									{s.status === "solved" && <CheckCircle2 size={10} />}{" "}
@@ -293,7 +338,7 @@ export default function Suggestions() {
 										fill={bookmarks.includes(s.id) ? "currentColor" : "none"}
 									/>
 								</button>
-								<span className="ml-auto">{timeAgo(s.created_at)}</span>
+								<span className="ml-auto whitespace-nowrap">{timeAgo(s.created_at)}</span>
 							</div>
 						</div>
 					</article>

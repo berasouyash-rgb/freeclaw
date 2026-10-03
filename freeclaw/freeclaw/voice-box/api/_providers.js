@@ -3,6 +3,7 @@
 // is_default provider goes FIRST in chain, then priority order.
 
 import { auditLog, cors, isAdmin } from "./_auth.js";
+import { logger } from "./_observability.js";
 import supabase from "./_db-client.js";
 import { sanitizeError } from "./_error.js";
 import { maskPII } from "./_moderation.js";
@@ -113,15 +114,18 @@ const PROVIDER_DEFS = {
 		// cap (not the default) is what governs.
 		timeout: 30000,
 		// Ultra is a REASONING model — enable thinking so every agent call
-		// gets real analysis (measured: 6.8s @ budget 4096, 10.7s @ 8192).
-		// 16k output budget matches the NIM reference client config.
+		// gets real analysis. 16k output budget matches the NIM reference
+		// client config. Do NOT add reasoning_budget: the runner rejects it
+		// with "thinking_token_budget is not yet supported by the V2 model
+		// runner" (HTTP 400) on EVERY call — measured live, this single field
+		// broke the default provider outright, while enable_thinking alone
+		// answered in ~1.1s.
 		buildBody: (model, messages) => ({
 			model,
 			max_tokens: 16384,
 			temperature: 1,
 			top_p: 0.95,
 			chat_template_kwargs: { enable_thinking: true },
-			reasoning_budget: 4096,
 			messages,
 		}),
 	},
@@ -663,6 +667,7 @@ async function getProviders() {
 
 async function saveProviders(providers) {
 	_providersCache = { at: 0, value: null }; // invalidate cache first
+	invalidateChainCache();
 	invalidateLLMStatus(); // LLM availability may change now — never serve a stale degraded/fine verdict
 	const { data } = await supabase
 		.from("settings")
@@ -710,8 +715,11 @@ export async function hasUsableLLM() {
 		return _llmStatusCache.usable;
 	try {
 		const chain = await buildChain();
-		const nimUsable = NIM_FALLBACK_CHAIN.some((p) => p.key && p.baseUrl);
-		_llmStatusCache = { at: now, usable: chain.length > 0 || nimUsable };
+		const nimUsable = getNimFallbackChain().some((p) => p.key && p.baseUrl);
+		// Also check self-hosted providers via env vars (ollama, lmstudio)
+		const ollamaUsable = !!process.env.OLLAMA_HOST;
+		const lmstudioUsable = !!process.env.LMSTUDIO_HOST;
+		_llmStatusCache = { at: now, usable: chain.length > 0 || nimUsable || ollamaUsable || lmstudioUsable };
 	} catch {
 		_llmStatusCache = { at: now, usable: false };
 	}
@@ -736,8 +744,8 @@ function isOnCooldown(id) {
 	const until = _cooldowns.get(id);
 	return !!until && until > Date.now();
 }
-function markCooldown(id) {
-	_cooldowns.set(id, Date.now() + COOLDOWN_MS);
+function markCooldown(id, ms = COOLDOWN_MS) {
+	_cooldowns.set(id, Date.now() + ms);
 }
 function clearCooldown(id) {
 	_cooldowns.delete(id);
@@ -755,8 +763,16 @@ export async function getDefaultProviderId() {
 	return sorted[0]?.[0] || null;
 }
 
+// FIX #19: Cache provider chain 60s to avoid DB hit per LLM call
+let _chainCache = null;
+let _chainExpiry = 0;
+const CHAIN_TTL_MS = 60_000;
+export function invalidateChainCache() { _chainCache = null; _chainExpiry = 0; }
+
 // ─── Build failover chain ─────────────────────────────────────────
 export async function buildChain() {
+	const now = Date.now();
+	if (_chainCache && _chainExpiry > now) return _chainCache;
 	const db = await getProviders();
 	const chain = [];
 	let defaultId = null;
@@ -796,6 +812,8 @@ export async function buildChain() {
 		const key = process.env[def.envKey];
 		if (key) chain.push({ id, ...def, key, model: def.defaultModel });
 	}
+	_chainCache = chain;
+	_chainExpiry = Date.now() + CHAIN_TTL_MS;
 	return chain;
 }
 
@@ -827,6 +845,11 @@ export async function getProviderConfig(id) {
 // NIM requests so bursts serialize instead of saturating the shared worker.
 const NIM_MAX_CONCURRENCY = 1; // Free-tier NIM worker handles ~1 inference at a time. >1 saturates it: ultra times out (30s) and every call degrades to the llama fallback. Patrols run agents sequentially anyway, so serializing costs nothing and each ultra call gets the whole worker (measured 2.5–10s solo).
 const NIM_MAX_QUEUE = 8; // beyond this, new calls fail fast instead of queueing
+// Interactive (user-waiting) calls get their own, larger queue and jump ahead
+// of background agent work. Without this the workforce's patrol backlog filled
+// the queue and real users were told "worker saturated" — voice drafts and the
+// inbox fell back to heuristics while agents consumed the shared worker.
+const NIM_HIGH_QUEUE_MAX = 24;
 let nimActive = 0;
 const nimQueue = [];
 function isNimProvider(provider) {
@@ -837,29 +860,45 @@ function isNimProvider(provider) {
 	);
 }
 const NIM_QUEUE_WAIT_MS = 20000; // max time a call may park waiting for a slot
-function acquireNimSlot() {
+function acquireNimSlot(priority = "low") {
 	if (nimActive < NIM_MAX_CONCURRENCY) {
 		nimActive++;
 		return Promise.resolve(true);
 	}
+	const high = priority === "high";
 	// Overload guard: deep queue = worker congestion. Fail fast (caller skips)
 	// rather than parking a request indefinitely — preserves the fail-fast
-	// behavior the whole redesign targets.
-	if (nimQueue.length >= NIM_MAX_QUEUE) return Promise.resolve(false);
+	// behavior the whole redesign targets. Interactive calls may queue past the
+	// background cap so a person waiting on a draft is never refused because a
+	// patrol filled the backlog.
+	if (
+		high
+			? nimQueue.length >= NIM_HIGH_QUEUE_MAX
+			: nimQueue.length >= NIM_MAX_QUEUE
+	)
+		return Promise.resolve(false);
 	return new Promise((resolve) => {
-		const entry = () => resolve(true);
+		let settled = false;
+		const finish = (ok) => {
+			if (settled) return;
+			settled = true;
+			resolve(ok);
+		};
 		// A queued call must never wait forever (e.g. a streaming chat holding
 		// the single slot while a patrol needs it) — bail out after a bounded
 		// wait so the caller's failover chain can move on.
 		const timer = setTimeout(() => {
 			const i = nimQueue.indexOf(entry);
 			if (i >= 0) nimQueue.splice(i, 1);
-			resolve(false);
+			finish(false);
 		}, NIM_QUEUE_WAIT_MS);
-		nimQueue.push(() => {
+		const entry = () => {
 			clearTimeout(timer);
-			entry();
-		});
+			finish(true);
+		};
+		// High priority jumps ahead of already-queued background work.
+		if (high) nimQueue.unshift(entry);
+		else nimQueue.push(entry);
 	});
 }
 function releaseNimSlot() {
@@ -871,10 +910,10 @@ function releaseNimSlot() {
 	}
 }
 
-async function callProvider(provider, messages, timeoutMs) {
+async function callProvider(provider, messages, timeoutMs, priority = "low") {
 	const nimSlot = isNimProvider(provider);
 	if (nimSlot) {
-		const ok = await acquireNimSlot();
+		const ok = await acquireNimSlot(priority);
 		if (!ok)
 			return {
 				ok: false,
@@ -989,94 +1028,13 @@ async function callProviderInner(provider, messages, timeoutMs) {
 // ─── Hardcoded NIM fallback chain ────────────────────────────────
 // Used when DB-stored provider chain is empty (no keys configured).
 // These keys are user-provided and specific to this deployment.
-const NIM_FALLBACK_CHAIN = [
-	// Tier 1: Llama 3.1 8B -- always-available, ultra-fast congestion escape hatch
-	{
-		id: "nvidia-llama-8b",
-		name: "Llama 3.1 8B Fast",
-		defaultModel: "meta/llama-3.1-8b-instruct",
-		baseUrl: "https://integrate.api.nvidia.com/v1/chat/completions",
-		model: "meta/llama-3.1-8b-instruct",
-		key: process.env.NVIDIA_API_KEY || "",
-		buildHeaders: (key) => ({
-			Authorization: `Bearer ${key}`,
-			"Content-Type": "application/json",
-		}),
-		buildBody: (model, messages) => ({
-			model,
-			max_tokens: 4096,
-			temperature: 0.2,
-			messages,
-		}),
-		parseResponse: (data) => data?.choices?.[0]?.message?.content,
-		timeout: 12000,
-	},
-	// Tier 2: Nemotron Nano 30B -- very fast emergency fallback
-	{
-		id: "nvidia-nemotron-nano",
-		name: "NVIDIA Nemotron Nano 30B",
-		defaultModel: "nvidia/nemotron-3-nano-30b-a3b",
-		baseUrl: "https://integrate.api.nvidia.com/v1/chat/completions",
-		model: "nvidia/nemotron-3-nano-30b-a3b",
-		key: process.env.NVIDIA_API_KEY || "",
-		buildHeaders: (key) => ({
-			Authorization: `Bearer ${key}`,
-			"Content-Type": "application/json",
-		}),
-		buildBody: (model, messages) => ({
-			model,
-			max_tokens: 2048,
-			temperature: 0.2,
-			messages,
-		}),
-		parseResponse: (data) => data?.choices?.[0]?.message?.content,
-		timeout: 12000,
-	},
-	// Tier 3: Llama 3.3 Nemotron Super 49B -- high quality, fast when its worker is free
-	{
-		id: "nvidia-nemotron-super-49b",
-		name: "NVIDIA Llama 3.3 Nemotron Super 49B",
-		defaultModel: "nvidia/llama-3.3-nemotron-super-49b-v1.5",
-		baseUrl: "https://integrate.api.nvidia.com/v1/chat/completions",
-		model: "nvidia/llama-3.3-nemotron-super-49b-v1.5",
-		key: process.env.NVIDIA_API_KEY || "",
-		buildHeaders: (key) => ({
-			Authorization: `Bearer ${key}`,
-			"Content-Type": "application/json",
-		}),
-		buildBody: (model, messages) => ({
-			model,
-			max_tokens: 4096,
-			temperature: 0.3,
-			top_p: 0.9,
-			messages,
-		}),
-		parseResponse: (data) => data?.choices?.[0]?.message?.content,
-		timeout: 8000,
-	},
-	// Tier 4: Nemotron 3 Ultra 550B -- flagship quality, often congested on free tier
-	{
-		id: "nvidia-nemotron-ultra",
-		name: "NVIDIA Nemotron 3 Ultra 550B",
-		defaultModel: "nvidia/nemotron-3-ultra-550b-a55b",
-		baseUrl: "https://integrate.api.nvidia.com/v1/chat/completions",
-		model: "nvidia/nemotron-3-ultra-550b-a55b",
-		key: process.env.NVIDIA_API_KEY || "",
-		buildHeaders: (key) => ({
-			Authorization: `Bearer ${key}`,
-			"Content-Type": "application/json",
-		}),
-		buildBody: (model, messages) => ({
-			model,
-			max_tokens: 4096,
-			temperature: 0.3,
-			top_p: 0.9,
-			messages,
-		}),
-		parseResponse: (data) => data?.choices?.[0]?.message?.content,
-		timeout: 9000,
-	},
-	// Tier 5: Nemotron 3 Super 120B -- strong reasoning, may need higher access tier (kept last)
+// Keys are read at RUNTIME via getNimFallbackChain() so tests can set env vars.
+function getNimFallbackChain() {
+	return [
+	// Tier 1: Nemotron 3 Super 120B — measured live 2026-09-26 as the
+	// fastest responder on this key (200 in ~2.5s). Leads the serial chain
+	// AND the hedge lane. (The old "needs higher access tier" note was
+	// wrong for this deployment — it answers fine here.)
 	{
 		id: "nvidia-nemotron-super",
 		name: "NVIDIA Nemotron 3 Super 120B",
@@ -1098,10 +1056,198 @@ const NIM_FALLBACK_CHAIN = [
 		parseResponse: (data) => data?.choices?.[0]?.message?.content,
 		timeout: 8000,
 	},
+		// Tier 2: Nemotron 3 Nano Omni 30B — 503 ResourceExhausted under
+		// congestion on the 2026-09-26 probe, but it fails FAST (~0.4s), so
+		// trying it here costs almost nothing and it still wins when the
+		// tier is quiet. (Nemotron 3.5 Lightning 30B answered in ~9.7s with
+		// a reasoning dump — too slow and chatty for this lane; llama-3.1-8b
+		// went end-of-life 2026-08-26 and now 410s.)
+		{
+			id: "nvidia-nemotron-omni",
+			name: "NVIDIA Nemotron 3 Nano Omni 30B",
+			defaultModel: "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
+			baseUrl: "https://integrate.api.nvidia.com/v1/chat/completions",
+			model: "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
+			key: process.env.NVIDIA_API_KEY || "",
+			buildHeaders: (key) => ({
+				Authorization: `Bearer ${key}`,
+				"Content-Type": "application/json",
+			}),
+			buildBody: (model, messages) => ({
+				model,
+				max_tokens: 2048,
+				temperature: 0.2,
+				messages,
+			}),
+			parseResponse: (data) => data?.choices?.[0]?.message?.content,
+			// Short so a congested tier fails over fast instead of stalling the
+			// whole chain — the chain is sequential, not hedged.
+			timeout: 4000,
+		},
+		// Tier 3: Nemotron 3 Ultra 550B -- measured live 2026-09-26 answering in ~4s on this key. Second in the chain and the hedge.
+	{
+		id: "nvidia-nemotron-ultra",
+		name: "NVIDIA Nemotron 3 Ultra 550B",
+		defaultModel: "nvidia/nemotron-3-ultra-550b-a55b",
+		baseUrl: "https://integrate.api.nvidia.com/v1/chat/completions",
+		model: "nvidia/nemotron-3-ultra-550b-a55b",
+		key: process.env.NVIDIA_API_KEY || "",
+		buildHeaders: (key) => ({
+			Authorization: `Bearer ${key}`,
+			"Content-Type": "application/json",
+		}),
+		buildBody: (model, messages) => ({
+			model,
+			max_tokens: 4096,
+			temperature: 0.3,
+			top_p: 0.9,
+			messages,
+		}),
+		parseResponse: (data) => data?.choices?.[0]?.message?.content,
+		timeout: 9000,
+	},
+	// Tier 4 (LAST): GPT-OSS 20B -- hung past 20s on the 2026-09-26 probe, so it sits last: its full-timeout hang is only affordable when every live tier already failed. In the HEDGE it is harmless (a hanging racer just loses).
+	{
+		id: "nvidia-gpt-oss-20b",
+		name: "GPT-OSS 20B",			defaultModel: "openai/gpt-oss-20b",
+			baseUrl: "https://integrate.api.nvidia.com/v1/chat/completions",
+			model: "openai/gpt-oss-20b",
+			key: process.env.NVIDIA_API_KEY || "",
+			buildHeaders: (key) => ({
+				Authorization: `Bearer ${key}`,
+				"Content-Type": "application/json",
+			}),
+			buildBody: (model, messages) => ({
+				model,
+				max_tokens: 2048,
+				temperature: 0.2,
+				messages,
+			}),
+			parseResponse: (data) => data?.choices?.[0]?.message?.content,
+			timeout: 5000,
+		},
+];
+	}
+
+	// ─── Direct fast NVIDIA lane ───────────────────────────────────
+// Models that can answer small structured JSON tasks, in hedging order.
+// Live probe 2026-09-26 on this key: super-120B answers in ~2.5s, ultra-550B
+// in ~4s, nano-omni-30B 503s (ResourceExhausted), gpt-oss-20B hangs past 20s,
+// nano-3-30B 404s (retired — removed from this file entirely). Racing the
+// live tiers — each starting a little later — turns a stall into whichever
+// tier answers first, typically 1-4s. A hanging racer just loses, so gpt-oss
+// keeps the last slot; nano-omni is out (fast-failing adds no wins).
+const NVIDIA_FAST_MODELS = [
+	"nvidia/nemotron-3-super-120b-a12b",
+	"nvidia/nemotron-3-ultra-550b-a55b",
+	"openai/gpt-oss-20b",
 ];
 
-// ─── Failover chain call ─────────────────────────────────────────
-export async function callLLMChain(system, user, extraMessages = []) {
+/** One bounded attempt against a single NVIDIA model. Rejects on any failure. */
+function nvidiaFastOnce(key, model, system, user, timeoutMs) {
+	const ctrl = new AbortController();
+	const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+	return fetch("https://integrate.api.nvidia.com/v1/chat/completions", {
+		method: "POST",
+		headers: {
+			Authorization: `Bearer ${key}`,
+			"Content-Type": "application/json",
+		},
+		body: JSON.stringify({
+			model,
+			max_tokens: 512,
+			temperature: 0.2,
+			messages: [
+				{ role: "system", content: system },
+				{ role: "user", content: user },
+			],
+		}),
+		signal: ctrl.signal,
+	})
+		.then(async (res) => {
+			if (!res.ok) throw new Error(`http ${res.status}`);
+			const data = await res.json().catch(() => null);
+			const text = data?.choices?.[0]?.message?.content;
+			if (!text) throw new Error("empty response");
+			return text;
+		})
+		.finally(() => clearTimeout(timer));
+}
+
+/**
+ * Fast NVIDIA lane with hedging. Starts the first model immediately and the
+ * next ones after short delays; the first valid response wins and the losers
+ * abort harmlessly. NEVER throws — returns null when the key is missing, the
+ * lane is cooling down, or every model fails within the budget, so callers
+ * can fall back to the chain or a local path.
+ *
+ * The budget is hard-capped (7s) so a congested endpoint can never stall a
+ * user request for the caller's full timeout — previously a hung model burned
+ * 12s on this lane plus 8s on the chain before any fallback appeared.
+ */
+export async function callNvidiaFast(system, user, timeoutMs = 12000) {
+	const key = process.env.NVIDIA_API_KEY || "";
+	if (!key) return null;
+	const lane = "nvidia-fast";
+	if (isOnCooldown(lane)) return null;
+
+	const budget = Math.max(3000, Math.min(timeoutMs, 7000));
+	const stagger = [0, 900, 2000];
+
+	const attempts = NVIDIA_FAST_MODELS.map((model, i) => {
+		const start = () => {
+			const slice = Math.max(2500, budget - stagger[i] + 500);
+			return nvidiaFastOnce(key, model, system, user, slice).then(
+				(text) => ({ provider: lane, model, text }),
+				() => null,
+			);
+		};
+		return new Promise((resolve) => {
+			if (stagger[i] === 0) resolve(start());
+			else setTimeout(() => resolve(start()), stagger[i]);
+		});
+	});
+
+	const winner = await new Promise((resolve) => {
+		let settled = false;
+		let done = 0;
+		const timer = setTimeout(() => {
+			if (settled) return;
+			settled = true;
+			resolve(null);
+		}, budget + 800);
+		for (const p of attempts) {
+			p.then((r) => {
+				done++;
+				if (settled) return;
+				if (r) {
+					settled = true;
+					clearTimeout(timer);
+					resolve(r);
+				} else if (done === attempts.length) {
+					settled = true;
+					clearTimeout(timer);
+					resolve(null);
+				}
+			});
+		}
+	});
+
+	// Brief cool-down after a total failure: while NIM is fully congested every
+	// caller degrades to the instant local path instead of re-waiting 7s each.
+	// Short (15s) because the endpoint recovers quickly and we do not want to
+	// starve real AI answers for a whole minute.
+	if (!winner) markCooldown(lane, 15000);
+	return winner;
+}
+
+	// ─── Failover chain call ─────────────────────────────────────────
+export async function callLLMChain(
+	system,
+	user,
+	extraMessages = [],
+	priority = "low",
+) {
 	const messages = [
 		{ role: "system", content: system },
 		...extraMessages,
@@ -1118,11 +1264,19 @@ export async function callLLMChain(system, user, extraMessages = []) {
 		};
 	}
 
-	// 1. Try DB-configured providers first (skip recently-failed ones)
+	// 1. Try DB-configured providers first.
+	//    ONLY fresh (not-cooling-down) providers are attempted. The old
+	//    `freshChain.length > 0 ? freshChain : chain` fallback re-walked the
+	//    ENTIRE dead list the moment every provider was cooling down, so a
+	//    single upstream outage turned every caller into a full serial timeout
+	//    sweep — a cron tick with dozens of agents never finished inside the
+	//    60s function limit and was killed mid-run. Cooldowns are time-based
+	//    (COOLDOWN_MS), so recovery still happens automatically on the first
+	//    call after they expire; fast-failing here loses nothing but the storm.
 	const chain = await buildChain();
 	const freshChain = chain.filter((p) => !isOnCooldown(p.id));
-	for (const provider of freshChain.length > 0 ? freshChain : chain) {
-		const result = await callProvider(provider, messages);
+	for (const provider of freshChain) {
+		const result = await callProvider(provider, messages, undefined, priority);
 		if (result.ok) {
 			clearCooldown(provider.id);
 			return {
@@ -1137,16 +1291,14 @@ export async function callLLMChain(system, user, extraMessages = []) {
 
 	// 2. Hardcoded NIM fallback (skip recently-failed ones)
 	if (chain.length === 0) {
-		console.log("[LLM] No DB providers configured — using NIM fallback chain");
+		logger.info("llm", "No DB providers configured — using NIM fallback chain");
 	}
-	const freshNim = NIM_FALLBACK_CHAIN.filter((p) => !isOnCooldown(p.id));
-	for (const provider of freshNim.length > 0 ? freshNim : NIM_FALLBACK_CHAIN) {
-		const result = await callProvider(provider, messages);
+	const freshNim = getNimFallbackChain().filter((p) => !isOnCooldown(p.id));
+	for (const provider of freshNim) {
+		const result = await callProvider(provider, messages, undefined, priority);
 		if (result.ok) {
 			clearCooldown(provider.id);
-			console.log(
-				`[LLM] NIM fallback ${provider.id} succeeded (${provider.model})`,
-			);
+			logger.info("llm", `NIM fallback succeeded`, { provider: provider.id, model: provider.model });
 			return {
 				provider: provider.id,
 				model: provider.model,
@@ -1157,9 +1309,19 @@ export async function callLLMChain(system, user, extraMessages = []) {
 		console.warn(`[LLM] NIM fallback ${provider.id} failed:`, result.error);
 	}
 
-	console.error(
-		"[LLM] ALL providers failed — returning null (built-in fallback will be used)",
-	);
+	// Distinguish the two very different outcomes so operators can tell a
+	// fleet-wide outage (expected during congestion: fast-fail, not pageable)
+	// from "we actually tried every fresh provider and all of them failed".
+	if (chain.length + getNimFallbackChain().length > 0 && freshChain.length === 0 && freshNim.length === 0) {
+		logger.warn(
+			"llm",
+			"All providers cooling down after failures — fast-failing to built-in fallback",
+		);
+	} else {
+		console.error(
+			"[LLM] ALL providers failed — returning null (built-in fallback will be used)",
+		);
+	}
 	return null;
 }
 
@@ -1189,7 +1351,7 @@ export async function callProviderStream(
 		// Build chain: DB providers first, then NIM fallback
 		const dbChain = await buildChain();
 		for (const p of dbChain) providers.push(p);
-		for (const p of NIM_FALLBACK_CHAIN) providers.push(p);
+		for (const p of getNimFallbackChain()) providers.push(p);
 
 		// Skip recently-failed providers so we don't re-hang on them
 		const candidates = providers.filter((p) => !isOnCooldown(p.id));
@@ -1277,9 +1439,7 @@ export async function callProviderStream(
 				if (fullText) {
 					clearCooldown(provider.id);
 					if (onDone) onDone();
-					console.log(
-						`[LLM-STREAM] ${provider.id} succeeded (${fullText.length} chars)`,
-					);
+					logger.info("llm", `Stream succeeded`, { provider: provider.id, chars: fullText.length });
 					return {
 						ok: true,
 						text: fullText,
@@ -1328,17 +1488,26 @@ export default async function handler(req, res) {
 		}
 
 		if (req.method === "GET" && action === "list") {
+			// FIX #7: Provider config (incl. masked keys) is admin-only — was public
+			if (!(await isAdmin(req))) return res.status(403).json({ error: "Admin only" });
 			const db = await getProviders();
 			const filterCategory = req.query.category || null;
 			const filterEnabledOnly =
 				req.query.enabled_only === "true" || req.query.enabled_only === "1";
-			const result = {};
-			for (const [id, def] of Object.entries(PROVIDER_DEFS)) {
+			// FIX #35: Pagination/filtering to avoid ~15KB payload — support limit/offset/category/enabled_only
+			const hasPagination = req.query.limit !== undefined || req.query.offset !== undefined;
+			const limit = Math.min(parseInt(req.query.limit) || 50, 50);
+			const offset = Math.max(parseInt(req.query.offset) || 0, 0);
+			const entries = Object.entries(PROVIDER_DEFS).filter(([id, def]) => {
 				const cfg = db[id] || {};
-				// FIX-L3: filter by category if provided
-				if (filterCategory && def.category !== filterCategory) continue;
-				// FIX-L3: filter to enabled-only if requested
-				if (filterEnabledOnly && !cfg.enabled) continue;
+				if (filterCategory && def.category !== filterCategory) return false;
+				if (filterEnabledOnly && !cfg.enabled) return false;
+				return true;
+			});
+			const paged = hasPagination ? entries.slice(offset, offset + limit) : entries;
+			const result = {};
+			for (const [id, def] of paged) {
+				const cfg = db[id] || {};
 				result[id] = {
 					id,
 					name: def.name,
@@ -1359,6 +1528,7 @@ export default async function handler(req, res) {
 					category: def.category || "other",
 				};
 			}
+			if (hasPagination) return res.status(200).json({ providers: result, total: entries.length, limit, offset });
 			return res.status(200).json(result);
 		}
 
@@ -1385,7 +1555,8 @@ export default async function handler(req, res) {
 		}
 
 		if (action === "update_provider") {
-			const { provider: pid, config } = b;
+			const { provider: pid } = b;
+			const config = b.config || {};
 			if (!pid || !PROVIDER_DEFS[pid])
 				return res.status(400).json({ error: "Invalid provider" });
 			const db = await getProviders();

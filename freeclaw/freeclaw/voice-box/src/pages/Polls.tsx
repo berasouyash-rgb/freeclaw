@@ -1,12 +1,60 @@
-﻿import { PlusCircle } from "lucide-react";
+﻿import { PlusCircle, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router";
 import PollCard from "../components/PollCard";
 import { Segmented } from "../components/ui";
 import { useApp } from "../contexts/AppContext";
 import { api } from "../lib/api";
-import { useRealtime } from "../lib/useRealtime";
 import type { PollData, PollVote } from "../types";
+
+/**
+ * Collapse exact-duplicate poll rows (double-submit / retry creating two DB
+ * rows with the same question + options). Keeps the canonical row — highest
+ * vote total, oldest first on ties — so the list never shows the same
+ * question twice with split results (e.g. "2 votes" above "1 vote").
+ */
+export function normalizePollQuestion(text: unknown): string {
+	return String(text ?? "")
+		.toLowerCase()
+		.replace(/[^\p{L}\p{N}]+/gu, " ")
+		.trim();
+}
+
+export function collapseDuplicatePolls(polls: PollData[]): PollData[] {
+	const byId = new Map<string, PollData>();
+	for (const p of polls) {
+		if (!p || !p.id || byId.has(p.id)) continue;
+		byId.set(p.id, p);
+	}
+	const groups = new Map<string, PollData[]>();
+	for (const p of byId.values()) {
+		const opts = Array.isArray(p.options)
+			? p.options.map((o) => normalizePollQuestion(o)).join("\u0000")
+			: "";
+		const key = `${normalizePollQuestion(p.title)}\u0001${opts}`;
+		const g = groups.get(key);
+		if (g) g.push(p);
+		else groups.set(key, [p]);
+	}
+	const out: PollData[] = [];
+	for (const g of groups.values()) {
+		const first = g[0] as PollData;
+		if (g.length === 1) {
+			out.push(first);
+			continue;
+		}
+		let best: PollData = first;
+		for (const p of g.slice(1)) {
+			const v = p.total_votes ?? 0;
+			const bv = best.total_votes ?? 0;
+			if (v !== bv ? v > bv : String(p.created_at || "") < String(best.created_at || "")) {
+				best = p;
+			}
+		}
+		out.push(best);
+	}
+	return out;
+}
 
 export default function Polls() {
 	const { anonId } = useApp();
@@ -16,49 +64,77 @@ export default function Polls() {
 	const [error, setError] = useState("");
 	const [tab, setTab] = useState<"active" | "ended">("active");
 
-	const load = useCallback(async () => {
-		try {
-			setError("");
-			const [data, myVotes] = await Promise.all([
-				api.get<PollData[]>(`/api/polls?viewer=${anonId}`),
-				api.get<PollVote[]>(`/api/polls?voter=${anonId}`),
-			]);
-			setPolls(data.filter((p) => !p.deleted));
-			const map: Record<string, number[]> = {};
-			myVotes.forEach((v) => {
-				map[v.poll_id] = v.choices;
-			});
-			setVotes(map);
-		} catch (e: unknown) {
-			setError(e instanceof Error ? e.message : "Failed to load polls");
-		}
-		setLoading(false);
-	}, [anonId]);
+	const load = useCallback(
+		async (opts?: { fresh?: boolean }) => {
+			try {
+				setError("");
+				// fresh bypasses the 5s GET cache — required for realtime-triggered
+				// reloads, where the DB has already changed and a cached read shows
+				// pre-vote results.
+				const fetcher = opts?.fresh ? api.getFresh : api.get;
+				const [data, myVotes] = await Promise.all([
+					fetcher<PollData[]>(`/api/polls?viewer=${anonId}`),
+					fetcher<PollVote[]>(`/api/polls?voter=${anonId}`),
+				]);
+				setPolls(collapseDuplicatePolls((data || []).filter((p) => !p.deleted)));
+				const map: Record<string, number[]> = {};
+				myVotes.forEach((v) => {
+					map[v.poll_id] = v.choices;
+				});
+				setVotes(map);
+			} catch (e: unknown) {
+				setError(e instanceof Error ? e.message : "Failed to load polls");
+			}
+			setLoading(false);
+		},
+		[anonId],
+	);
 
 	useEffect(() => {
 		load();
 	}, [load]);
 
-	// 🔴 poll results update live as votes come in
-	useRealtime(["polls", "poll_votes"], () => load());
+	// Poll results are reconciled after this user's vote/delete action or via
+	// the explicit Refresh control. Do not refetch the entire list for every
+	// unrelated vote event elsewhere in the product.
+
+	// Poll results are reconciled after this user's vote/delete action or via
+	// the explicit Refresh control. Do not refetch the entire list for every
+	// unrelated vote event elsewhere in the product.
 
 	const isEnded = (p: PollData) =>
 		p.archived || (p.expires_at && new Date(p.expires_at) < new Date());
-	const shown = polls.filter((p) =>
-		tab === "ended" ? isEnded(p) : !isEnded(p),
-	);
+	// Ended polls stay permanently readable in the "Ended & archived" tab.
+	// They used to disappear entirely 7 days after expiry, which quietly
+	// deleted the community's voting history and made old polls unreachable.
+	const shown = polls.filter((p) => (tab === "ended" ? isEnded(p) : !isEnded(p)));
 
 	return (
 		<div className="max-w-3xl mx-auto">
 			<div className="flex items-center justify-between mb-1">
 				<h1 className="font-display font-bold text-2xl">Polls</h1>
-				<Link to="/submit?type=poll" className="btn btn-primary !py-2">
-					<PlusCircle size={15} /> New poll
-				</Link>
+				<div className="flex items-center gap-2">
+					<button
+						type="button"
+						className="btn btn-ghost !py-2"
+						onClick={() => {
+							setLoading(true);
+							void load({ fresh: true });
+						}}
+						disabled={loading}
+						aria-label="Refresh polls"
+					>
+						<RefreshCw size={14} /> Refresh
+					</button>
+					<Link to="/submit?type=poll" className="btn btn-primary !py-2">
+						<PlusCircle size={15} /> New poll
+					</Link>
+				</div>
 			</div>
 			<p className="text-sm text-ink3 mb-5">
-				Vote anonymously. Results update live — change your vote anytime while a
-				poll is open.
+				Vote anonymously. Your vote updates the results immediately; use Refresh
+				to check for changes from other people. Every poll stays readable after it
+				closes.
 			</p>
 
 			<div className="mb-4">
@@ -85,7 +161,7 @@ export default function Polls() {
 						className="btn btn-soft mt-3"
 						onClick={() => {
 							setLoading(true);
-							load();
+							void load({ fresh: true });
 						}}
 					>
 						Retry
@@ -120,8 +196,8 @@ export default function Polls() {
 						<PollCard
 							poll={p}
 							myVote={votes[p.id]}
-							onVoted={load}
-							onDeleted={load}
+							onVoted={() => void load({ fresh: true })}
+							onDeleted={() => void load({ fresh: true })}
 						/>
 						{p.post_id && (
 							<Link

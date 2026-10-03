@@ -91,6 +91,10 @@ export default defineConfig(async ({ mode }): Promise<UserConfig> => {
 		plugins,
 		envPrefix: ["VITE_", "NEXT_PUBLIC_"],
 		define: processEnvDefines,
+		// Native Electron shell loads over file:// where absolute "/assets"
+		// URLs break — relative base only for that build. Web and Capacitor
+		// (custom scheme with origin) keep absolute paths.
+		base: process.env.VB_NATIVE_ELECTRON ? "./" : "/",
 		css: {
 			// Lightning CSS transpiles modern color syntax (color-mix, oklab/oklch)
 			// into plain rgba() fallbacks so older Android WebViews render correctly.
@@ -99,9 +103,21 @@ export default defineConfig(async ({ mode }): Promise<UserConfig> => {
 				targets: { chrome: 87 << 16, safari: 14 << 16, firefox: 78 << 16 },
 			},
 		},
+		// Dev-server bind — fix for net::ERR_TIMED_OUT on localhost.
+		// Vite's default "localhost" host resolves to ::1 (IPv6) only on this
+		// machine, so connections to 127.0.0.1 are silently dropped and the
+		// browser eventually times out. host:true listens on all interfaces
+		// (IPv4 + IPv6). strictPort makes a second `npm run dev` fail loudly
+		// instead of silently drifting to :5174 and piling up stale servers
+		// (five were observed running simultaneously, eating ~2 GB RAM).
+		server: {
+			host: "127.0.0.1",
+			port: 5173,
+			strictPort: true,
+		},
 		build: {
 			cssMinify: "lightningcss" as const,
-			target: "es2018",
+			target: "es2020",
 			cssTarget: "chrome87",
 			// Source maps needed for Sentry (but only uploaded in production)
 			sourcemap: mode === "production",
@@ -111,9 +127,9 @@ export default defineConfig(async ({ mode }): Promise<UserConfig> => {
 						react: ["react", "react-dom", "react-router"],
 						supabase: ["@supabase/supabase-js"],
 						icons: ["lucide-react"],
-						// Animation libs are used by the cinematic preloader — isolated so
-						// they load in parallel and can be cached independently from app code.
-						animation: ["framer-motion", "gsap"],
+						// framer-motion powers UI motion components (animated-list, animated
+						// counters, magnetic buttons) — isolated so it caches independently.
+						animation: ["framer-motion"],
 					},
 					compact: true,
 				},

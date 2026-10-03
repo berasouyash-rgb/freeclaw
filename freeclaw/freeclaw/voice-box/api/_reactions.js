@@ -1,9 +1,10 @@
 // Reaction toggles — positive-only voting (Support on problems, Upvote on ideas).
 // One vote per anonymous browser per item; tapping again removes it.
 
-import { checkUser, clean, cors, isAdmin } from "./_auth.js";
+import { checkUser, clean, cors, isAdmin, rateLimited, rateLimitResponse } from "./_auth.js";
 import supabase from "./_db-client.js";
 import { sanitizeError } from "./_error.js";
+import { EVENT_TYPES, emitEventAndBridge } from "./_events.js";
 
 // Normalize legacy/synonym kinds from older cached clients so nobody
 // ever gets an "invalid reaction" error.
@@ -14,6 +15,8 @@ const NORMALIZE = {
 	urgent: "support",
 	disagree: "disagree",
 	dislike: "disagree",
+	downvote: "disagree",
+	down: "disagree",
 	unsupport: "disagree",
 	unsupported: "disagree",
 	upvote: "upvote",
@@ -46,7 +49,7 @@ export default async function handler(req, res) {
 					...r,
 					is_mine,
 					author_id:
-						admin || is_mine ? r.author_id : r.author_id.slice(0, 9) + "…",
+						admin || is_mine ? r.author_id : r.author_id.slice(0, 9) + "...",
 				};
 			});
 			// Viewer-scoped data (per-?author rows with is_mine) must never be served
@@ -58,7 +61,12 @@ export default async function handler(req, res) {
 
 		if (req.method === "POST") {
 			const b = req.body || {};
-			const author_id = clean(b.author_id, 40);
+			// P0 SECURITY FIX: Derive author_id from x-anon-id header, NOT from client body
+			const headerId = clean(req.headers["x-anon-id"] || "", 40);
+			const admin = await isAdmin(req);
+			const author_id = headerId || (admin ? "ADMIN" : "");
+			if (!author_id)
+				return res.status(403).json({ error: "Missing session identity (x-anon-id header)" });
 			const kind = NORMALIZE[b.kind] || null;
 			const target_id = clean(b.target_id, 60);
 			const target_type = ["post", "comment", "suggestion"].includes(
@@ -70,6 +78,16 @@ export default async function handler(req, res) {
 				return res.status(400).json({ error: "Invalid reaction" });
 			const gate = await checkUser(author_id);
 			if (!gate.ok) return res.status(403).json({ error: gate.error });
+			// Toggle floods (scripted tapping) each cost a delete + insert +
+			// counts + a parent touch that fans out to realtime badges on every
+			// client. 30 toggles per 10s is far beyond human tapping.
+			if (await rateLimited("reactions", author_id, 10, 30)) {
+				return rateLimitResponse(
+					res,
+					10,
+					"Too many reactions — please wait a moment.",
+				);
+			}
 
 			// Toggle in one shot: DELETE returns the removed row if it existed.
 			// If nothing was removed we insert (toggle ON). This avoids the extra
@@ -111,9 +129,39 @@ export default async function handler(req, res) {
 					counts[r.kind] = (counts[r.kind] || 0) + 1;
 					if (r.author_id === author_id) mine.push(r.kind);
 				});
+				// Real-time priority recalculation based on support count
+				if (target_type === "post" || target_type === "suggestion") {
+					const supportCount = counts["support"] || 0;
+					const concernCount = counts["concern"] || 0;
+					let newPriority = "medium";
+					if (supportCount >= 20 || concernCount >= 15) newPriority = "critical";
+					else if (supportCount >= 10 || concernCount >= 8) newPriority = "high";
+					else if (supportCount < 3 && concernCount < 3) newPriority = "low";
+					try {
+						supabase
+							.from("posts")
+							.update({ priority: newPriority })
+							.eq("id", target_id)
+							.then(
+								({ error }) => { if (error) console.error("[reactions] priority recalc failed", { target_id, error: error.message }); },
+								(err) => console.error("[reactions] priority recalc failed", { target_id, error: err?.message || String(err) }),
+							);
+					} catch (err) {
+						console.error("[reactions] priority recalc threw", { target_id, error: err?.message || String(err) });
+					}
+				}
 			} catch (countErr) {
 				console.error("reactions count query error:", countErr);
 				// Still return success — the toggle itself worked
+			}
+			// Emit event for workforce consumption (fire-and-forget)
+			if (toggled) {
+				emitEventAndBridge(EVENT_TYPES.REACTION_ADDED, {
+					target_id,
+					target_type,
+					kind,
+					author_id,
+				}).catch(() => {});
 			}
 			return res.status(200).json({ toggled, counts, mine });
 		}

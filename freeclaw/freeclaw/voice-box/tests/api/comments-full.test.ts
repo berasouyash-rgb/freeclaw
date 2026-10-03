@@ -47,6 +47,7 @@ vi.mock("../../api/_error.js", () => ({
 }));
 vi.mock("../../api/_events.js", () => ({
 	emitEvent: vi.fn(() => Promise.resolve()),
+	emitEventAndBridge: vi.fn(() => Promise.resolve()),
 	EVENT_TYPES: {},
 }));
 vi.mock("../../api/_moderation.js", () => ({
@@ -55,7 +56,35 @@ vi.mock("../../api/_moderation.js", () => ({
 		requiresReview: false,
 		flags: [],
 	})),
+	recordSafetyRepost: vi.fn(async () => false),
+	checkSafetyRepost: vi.fn(async () => ({ blocked: false })),
 }));
+
+// Route verdicts come from the unified safety pipeline, not inline
+// Route verdicts come from the unified safety pipeline: mock the seam (default ALLOW) and override per test.
+const pipelineMocks = vi.hoisted(() => ({
+	evaluateContent: vi.fn(() => ({
+		action: "ALLOW",
+		classification: "clean",
+		confidence: "high",
+		policy: null,
+		reasons: [],
+		trace: [],
+		flags: [],
+		language: "en",
+		blocked: false,
+		needsReview: false,
+	})),
+}));
+// `evaluateContentAsync` is the contextual-aware wrapper the route now calls.
+// It delegates to the same mock so this file keeps asserting ROUTE behaviour
+// rather than the contextual layer's classification.
+pipelineMocks.evaluateContentAsync = vi.fn(async (...args) => pipelineMocks.evaluateContent(...args));
+// `evaluateContentDeep` is the model-backed wrapper the write path now calls.
+// Same delegation: model behaviour is pinned in deep-moderation.test.ts with
+// mocked providers, not here.
+pipelineMocks.evaluateContentDeep = vi.fn(async (...args) => pipelineMocks.evaluateContent(...args));
+vi.mock("../../api/_safety-pipeline.js", () => pipelineMocks);
 
 function response() {
 	const res = { statusCode: 200, body: undefined as unknown };
@@ -79,6 +108,7 @@ interface Chain {
 	eq: () => Chain;
 	in: () => Chain;
 	lt: () => Chain;
+	gte: () => Chain;
 	order: () => Chain;
 	limit: () => Chain;
 	maybeSingle: () => Chain;
@@ -104,6 +134,9 @@ function chainFor(table: string): Chain {
 			return this;
 		},
 		lt() {
+			return this;
+		},
+		gte() {
 			return this;
 		},
 		order() {
@@ -204,7 +237,7 @@ describe("GET /api/comments", () => {
 		);
 		expect(res.statusCode).toBe(200);
 		const body = res.body as Array<{ author_id: string; is_mine: boolean }>;
-		expect(body[0].author_id).toBe("anon-99…");
+		expect(body[0].author_id).toBe("anon-99...");
 		expect(body[0].is_mine).toBe(false);
 		expect(body[1].author_id).toBe("anon-2");
 		expect(body[1].is_mine).toBe(true);
@@ -330,7 +363,7 @@ describe("POST /api/comments", () => {
 				method: "POST",
 				query: {},
 				body: { post_id: "p1", body: "hello there", author_id: "anon-2" },
-				headers: {},
+				headers: { "x-anon-id": "anon-2" },
 			},
 			res,
 		);
@@ -348,7 +381,7 @@ describe("POST /api/comments", () => {
 				method: "POST",
 				query: {},
 				body: { post_id: "p1", body: "hello there", author_id: "anon-2" },
-				headers: {},
+				headers: { "x-anon-id": "anon-2" },
 			},
 			res,
 		);
@@ -363,7 +396,7 @@ describe("POST /api/comments", () => {
 				method: "POST",
 				query: {},
 				body: { post_id: "p1", body: "x", author_id: "anon-2" },
-				headers: {},
+				headers: { "x-anon-id": "anon-2" },
 			},
 			res,
 		);
@@ -371,10 +404,20 @@ describe("POST /api/comments", () => {
 	});
 
 	it("blocks PII in comment bodies", async () => {
-		const { serverModerate } = await import("../../api/_moderation.js");
-		(serverModerate as ReturnType<typeof vi.fn>).mockReturnValueOnce({
-			blocked: true,
+		pipelineMocks.evaluateContent.mockReturnValueOnce({
+			action: "BLOCK_ACTION",
+			classification: "privacy",
+			confidence: "high",
+			policy: "pipeline-test",
+			reasons: ["test"],
+			trace: [],
 			flags: [{ type: "privacy" }],
+			language: "en",
+			blocked: true,
+			needsReview: true,
+			message:
+				"Personal information detected (address, phone, or email). This is an anonymous platform — please remove personal details.",
+			code: "PII_BLOCKED",
 		});
 		const { default: handler } = await import("../../api/_comments.js");
 		const res = response();
@@ -387,7 +430,7 @@ describe("POST /api/comments", () => {
 					body: "call me at 555-0100",
 					author_id: "anon-2",
 				},
-				headers: {},
+				headers: { "x-anon-id": "anon-2" },
 			},
 			res,
 		);
@@ -401,10 +444,19 @@ describe("POST /api/comments", () => {
 	});
 
 	it("blocks content that violates safety guidelines", async () => {
-		const { serverModerate } = await import("../../api/_moderation.js");
-		(serverModerate as ReturnType<typeof vi.fn>).mockReturnValueOnce({
-			blocked: true,
+		pipelineMocks.evaluateContent.mockReturnValueOnce({
+			action: "BLOCK_ACTION",
+			classification: "harassment",
+			confidence: "high",
+			policy: "pipeline-test",
+			reasons: ["test"],
+			trace: [],
 			flags: [{ type: "harassment" }],
+			language: "en",
+			blocked: true,
+			needsReview: true,
+			message: "This comment violates our safety guidelines and cannot be posted.",
+			code: "CONTENT_BLOCKED",
 		});
 		const { default: handler } = await import("../../api/_comments.js");
 		const res = response();
@@ -413,7 +465,7 @@ describe("POST /api/comments", () => {
 				method: "POST",
 				query: {},
 				body: { post_id: "p1", body: "a nasty message", author_id: "anon-2" },
-				headers: {},
+				headers: { "x-anon-id": "anon-2" },
 			},
 			res,
 		);
@@ -430,7 +482,7 @@ describe("POST /api/comments", () => {
 				method: "POST",
 				query: {},
 				body: { post_id: "p1", body: "hello there", author_id: "anon-2" },
-				headers: {},
+				headers: { "x-anon-id": "anon-2" },
 			},
 			res,
 		);
@@ -441,7 +493,7 @@ describe("POST /api/comments", () => {
 	it("creates a comment, ensures the user, bumps post activity and emits an event", async () => {
 		state.singleRow = { id: "p1", locked: false };
 		const { default: handler } = await import("../../api/_comments.js");
-		const { emitEvent, EVENT_TYPES } = await import("../../api/_events.js");
+		const { emitEventAndBridge, EVENT_TYPES } = await import("../../api/_events.js");
 		const res = response();
 		await handler(
 			{
@@ -453,7 +505,7 @@ describe("POST /api/comments", () => {
 					body: "hello there",
 					author_id: "anon-2",
 				},
-				headers: {},
+				headers: { "x-anon-id": "anon-2" },
 			},
 			res,
 		);
@@ -465,7 +517,7 @@ describe("POST /api/comments", () => {
 		expect(row.parent_id).toBe("c0");
 		expect(authMocks.ensureUser).toHaveBeenCalledWith("anon-2");
 		expect(state.lastUpdate).toMatchObject({ updated_at: expect.any(String) });
-		expect(emitEvent).toHaveBeenCalledWith(
+		expect(emitEventAndBridge).toHaveBeenCalledWith(
 			EVENT_TYPES.COMMENT_CREATED,
 			expect.objectContaining({ post_id: "p1" }),
 		);
@@ -474,7 +526,6 @@ describe("POST /api/comments", () => {
 
 	it("supports admin messages that bypass user gates and moderation", async () => {
 		const { isAdmin, checkUser } = await import("../../api/_auth.js");
-		const { serverModerate } = await import("../../api/_moderation.js");
 		(isAdmin as ReturnType<typeof vi.fn>).mockResolvedValueOnce(true);
 		const { default: handler } = await import("../../api/_comments.js");
 		const res = response();
@@ -492,7 +543,7 @@ describe("POST /api/comments", () => {
 		expect(row.author_id).toBe("ADMIN");
 		expect(row.is_admin).toBe(true);
 		expect(checkUser).not.toHaveBeenCalled();
-		expect(serverModerate).not.toHaveBeenCalled();
+		expect(pipelineMocks.evaluateContent).not.toHaveBeenCalled();
 	});
 });
 
@@ -506,7 +557,7 @@ describe("PUT /api/comments", () => {
 				method: "PUT",
 				query: {},
 				body: { id: "nope", body: "edit", author_id: "anon-2" },
-				headers: {},
+				headers: { "x-anon-id": "anon-2" },
 			},
 			res,
 		);
@@ -538,7 +589,7 @@ describe("PUT /api/comments", () => {
 				method: "PUT",
 				query: {},
 				body: { id: "c1", body: "edit", author_id: "anon-9" },
-				headers: {},
+				headers: { "x-anon-id": "anon-9" },
 			},
 			res,
 		);
@@ -548,14 +599,13 @@ describe("PUT /api/comments", () => {
 	it("lets the owner edit their comment (marks edited, re-moderates)", async () => {
 		state.singleRow = makeComment({ author_id: "anon-2" });
 		const { default: handler } = await import("../../api/_comments.js");
-		const { serverModerate } = await import("../../api/_moderation.js");
 		const res = response();
 		await handler(
 			{
 				method: "PUT",
 				query: {},
 				body: { id: "c1", body: "my updated comment", author_id: "anon-2" },
-				headers: {},
+				headers: { "x-anon-id": "anon-2" },
 			},
 			res,
 		);
@@ -564,16 +614,26 @@ describe("PUT /api/comments", () => {
 			body: "my updated comment",
 			edited: true,
 		});
-		expect(serverModerate).toHaveBeenCalled();
+		expect(pipelineMocks.evaluateContent).toHaveBeenCalled();
 		expect(authMocks.auditLog).not.toHaveBeenCalled();
 	});
 
 	it("blocks PII introduced through an edit", async () => {
 		state.singleRow = makeComment({ author_id: "anon-2" });
-		const { serverModerate } = await import("../../api/_moderation.js");
-		(serverModerate as ReturnType<typeof vi.fn>).mockReturnValueOnce({
-			blocked: true,
+		pipelineMocks.evaluateContent.mockReturnValueOnce({
+			action: "BLOCK_ACTION",
+			classification: "privacy",
+			confidence: "high",
+			policy: "pipeline-test",
+			reasons: ["test"],
+			trace: [],
 			flags: [{ type: "privacy" }],
+			language: "en",
+			blocked: true,
+			needsReview: true,
+			message:
+				"Personal information detected in your edit (address, phone, or email). This is an anonymous platform — please remove personal details.",
+			code: "PII_BLOCKED",
 		});
 		const { default: handler } = await import("../../api/_comments.js");
 		const res = response();
@@ -586,7 +646,7 @@ describe("PUT /api/comments", () => {
 					body: "my address is 1 Main St",
 					author_id: "anon-2",
 				},
-				headers: {},
+				headers: { "x-anon-id": "anon-2" },
 			},
 			res,
 		);
@@ -603,7 +663,7 @@ describe("PUT /api/comments", () => {
 				method: "PUT",
 				query: {},
 				body: { id: "c1", deleted: true, author_id: "anon-2" },
-				headers: {},
+				headers: { "x-anon-id": "anon-2" },
 			},
 			res,
 		);

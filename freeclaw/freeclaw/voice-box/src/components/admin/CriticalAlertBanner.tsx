@@ -138,7 +138,7 @@ export function CriticalAlertBanner({
 						className="btn btn-ghost !text-red-200 !text-xs"
 						onClick={onOpenWorkforce}
 					>
-						Open console <ArrowUpRight size={12} />
+						View work <ArrowUpRight size={12} />
 					</button>
 				</div>
 			</div>

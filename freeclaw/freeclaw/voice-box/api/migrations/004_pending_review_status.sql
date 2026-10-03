@@ -1,4 +1,4 @@
--- Voice Box — Add pending_review to posts status constraint
+-- Voice Flow — Add pending_review to posts status constraint
 -- ----------------------------------------------------------------------------
 -- The app routes AI-moderated / flagged submissions through a review hold:
 -- api/_posts.js POST sets status = 'pending_review' when needsReview is true or

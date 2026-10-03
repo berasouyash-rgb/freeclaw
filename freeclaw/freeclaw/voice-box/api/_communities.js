@@ -21,6 +21,7 @@
 import { clean, cors, isAdmin } from "./_auth.js";
 import supabase from "./_db-client.js";
 import { sanitizeError } from "./_error.js";
+import { evaluateContent } from "./_safety-pipeline.js";
 
 const MAX_COMMUNITIES_PER_USER = 5;
 const MAX_MEMBERS = 500;
@@ -277,6 +278,34 @@ export default async function handler(req, res) {
 			if (cooldown > 0)
 				return res.status(429).json({ error: `Please wait ${cooldown}s between messages` });
 
+			// School-safe gate — same unified pipeline as comments/posts.
+			// Runs on the raw text (plus poll question/options when present)
+			// so tricks and obfuscation face detection, not just the wordlist.
+			// Surfaces without a human review queue block outright.
+			{
+				const pollQuestion =
+					b.poll && typeof b.poll === "object"
+						? clean(b.poll.question, 80).trim()
+						: "";
+				const pollOptions =
+					b.poll && typeof b.poll === "object" && Array.isArray(b.poll.options)
+						? b.poll.options
+								.map((o) => clean(o, 40).trim())
+								.filter((o) => o.length > 0)
+								.slice(0, MAX_POLL_OPTIONS)
+						: [];
+				const decision = evaluateContent(
+					[text, pollQuestion, ...pollOptions].filter(Boolean).join("\n"),
+					"direct",
+				);
+				if (decision.blocked) {
+					return res.status(403).json({
+						error: decision.message,
+						code: decision.code,
+					});
+				}
+			}
+
 			// Optional attached poll: { question, options: string[2..4] }
 			let poll = null;
 			if (b.poll && typeof b.poll === "object") {
@@ -323,6 +352,15 @@ export default async function handler(req, res) {
 			const text = clean(b.text, 400).trim();
 			if (!anonId) return res.status(400).json({ error: "anon_id required" });
 			if (!text) return res.status(400).json({ error: "Comment cannot be empty" });
+			{
+				const decision = evaluateContent(text, "direct");
+				if (decision.blocked) {
+					return res.status(403).json({
+						error: decision.message,
+						code: decision.code,
+					});
+				}
+			}
 			const c = await getCommunity(slug);
 			if (!c || c.hidden) return res.status(404).json({ error: "Community not found" });
 			const posts = (c.posts || []).slice();
@@ -494,6 +532,6 @@ export default async function handler(req, res) {
 		return res.status(400).json({ error: "Unknown action" });
 	} catch (err) {
 		console.error("[communities] error:", err.message);
-		return res.status(500).json({ error: sanitizeError(err) || "Internal error" });
+		return sanitizeError(res, err, "communities");
 	}
 }

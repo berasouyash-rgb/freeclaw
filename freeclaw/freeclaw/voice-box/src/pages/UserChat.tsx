@@ -7,6 +7,9 @@ import {
 	MessageSquare,
 	Send,
 	ShieldCheck,
+	Trash2,
+	Volume2,
+	VolumeX,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
@@ -15,17 +18,27 @@ import {
 	VB_FULL_CYCLE_MS,
 } from "../components/ErrorBoundary";
 import TypingIndicator from "../components/TypingIndicator";
+import Typewriter from "../components/Typewriter";
+import { ConfirmDialog } from "../components/ui";
+import UpdateNotice from "../components/admin/UpdateNotice";
 import { useApp } from "../contexts/AppContext";
+import { useUpdateSignal } from "../hooks/useUpdateSignal";
 import { api } from "../lib/api";
 import { useRealtime } from "../lib/useRealtime";
 import { fmtDate, sanitize } from "../lib/utils";
 import { lsGet, lsSet } from "../lib/identity";
+import {
+	readAloud,
+	speechOutputSupported,
+	stopReading,
+} from "../lib/speech";
 import type { ChatMessage } from "../types";
 
 interface InboxResponse {
 	messages: ChatMessage[];
 	thread: { thread_id: string; status: string };
 	state?: { agent?: string };
+	title?: string;
 }
 
 // Merge server messages into the local list WITHOUT producing duplicates.
@@ -80,10 +93,16 @@ export default function UserChat() {
 		thread_id: string;
 		status: string;
 	} | null>(null);
+	const [chatTitle, setChatTitle] = useState<string | null>(null);
+	const [confirmDelete, setConfirmDelete] = useState(false);
+	const [deleting, setDeleting] = useState(false);
 	const [text, setText] = useState("");
 	const [loading, setLoading] = useState(true);
 	const [busy, setBusy] = useState(false);
 	const [typing, setTyping] = useState(false);
+	// Typewriter reveal + voice read-back for the freshly arrived AI reply.
+	const [streamId, setStreamId] = useState<string | number | null>(null);
+	const [readBack, setReadBack] = useState<boolean>(() => lsGet<boolean>("vb:readaloud", true));
 	const [agentLabel, setAgentLabel] = useState<string | null>(null);
 	// AI-mode: user-controllable auto-replies. The server gates generation
 	// authoritatively; this cached copy just renders the switch instantly
@@ -92,16 +111,56 @@ export default function UserChat() {
 		lsGet<boolean>("vb:aichat", true),
 	);
 	const [aiBusy, setAiBusy] = useState(false);
+	const [triageNote, setTriageNote] = useState<string | null>(null);
+	// In-chat draft card: the AI proposed a post from an explicit request.
+	// Accept publishes it with the student's own visibility choice (default
+	// private; public drafts are held for admin review first); Dismiss drops it.
+	const [pendingDraft, setPendingDraft] = useState<{ title: string; description: string; category: string } | null>(null);
+	const [draftVisibility, setDraftVisibility] = useState<"private" | "public">("private");
+	const [draftBusy, setDraftBusy] = useState(false);
+	const acceptDraftCard = async () => {
+		if (!pendingDraft || draftBusy) return;
+		setDraftBusy(true);
+		try {
+			const res = await api.postInbox<{ status?: string }>("/api/inbox", {
+				thread_id: anonId,
+				action: "accept_own_draft",
+				visibility: draftVisibility,
+			});
+			setPendingDraft(null);
+			setDraftVisibility("private");
+			setTriageNote(
+				res.status === "pending_review"
+					? "📋 Sent for admin review — it goes public once approved."
+					: draftVisibility === "public"
+						? "📋 Sent for admin review — it goes public once approved."
+						: "✅ Your private post is live — visible only to you and the admin team.",
+			);
+		} catch (e: unknown) {
+			toast(e instanceof Error ? e.message : "Could not publish — try again", "err");
+		} finally {
+			setDraftBusy(false);
+		}
+	};
+	const [readingId, setReadingId] = useState<string | number | null>(null);
 	const bottomRef = useRef<HTMLDivElement>(null);
 	const fileRef = useRef<HTMLInputElement>(null);
 	const sendingRef = useRef(false);
 
-	// ── Initial-loader minimum display time ─────────────────────────
-	// The motive loader tells a 5-line story over VB_FULL_CYCLE_MS. If the
-	// inbox answers instantly, the spinner used to vanish before the story
-	// was told. Hold it until the full cycle has had time to play (shorter
-	// for reduced-motion users).
-	const MIN_LOADER_MS = prefersReducedMotion() ? 1200 : VB_FULL_CYCLE_MS;
+	// ── Initial-loader floor ─────────────────────────────────────────
+	// The loader must reflect REAL loading, not a decorative countdown.
+	//
+	// It used to be VB_FULL_CYCLE_MS — 3200ms x 5 motives = 16 SECONDS held
+	// unconditionally, even when the inbox answered in 50ms. That is the
+	// "cover the problem with a loading spinner" antipattern: it converts a
+	// fast response into a slow one and hides real latency behind a splash.
+	// A genuine load failure looked identical to a slow network.
+	//
+	// What is actually justified is a tiny anti-flicker floor: a loader that
+	// appears for 30ms and vanishes reads as a rendering glitch. 250ms is
+	// enough. Reduced-motion users get none at all — there is no animation to
+	// protect, and a longer floor for them was simply backwards.
+	const MIN_LOADER_MS = prefersReducedMotion() ? 0 : 250;
 	const mountTimeRef = useRef(Date.now());
 	const loaderTimerRef = useRef<number | null>(null);
 	const mountedRef = useRef(true);
@@ -135,6 +194,7 @@ export default function UserChat() {
 			// Deduplicate by message id + replace optimistic bubbles on server confirm
 			setMessages((prev: ChatMessage[]) => mergeMessages(prev, newMsgs));
 			setThread(data.thread);
+			setChatTitle(data.title ?? null);
 			if (data.state?.agent) {
 				setAgentLabel(
 					data.state.agent === "emotional"
@@ -156,13 +216,17 @@ export default function UserChat() {
 			// so a locally-assigned variable would still be empty here).
 			return newMsgs;
 		} catch {
-			// Fallback to old chat API
+			// Fallback to old chat API — merge, don't replace, so an
+			// optimistic bubble from an in-flight send is never wiped.
 			try {
 				const data = await api.get<InboxResponse>(
 					`/api/chat?thread_id=${anonId}`,
 				);
-				setMessages(data.messages);
+				setMessages((prev: ChatMessage[]) =>
+					mergeMessages(prev, data.messages || []),
+				);
 				setThread(data.thread);
+			setChatTitle(data.title ?? null);
 				await api.put("/api/chat", {
 					action: "mark_read",
 					thread_id: anonId,
@@ -206,9 +270,41 @@ export default function UserChat() {
 		setAiBusy(false);
 	};
 
-	// Realtime subscription (with built-in fallback polling in useRealtime)
-	// handles both live updates AND silent-channel recovery — no raw setInterval needed.
-	useRealtime(["chat_messages"], () => load(), 500);
+	// Freshness signal, not a refetch: the old wiring reloaded the WHOLE
+	// thread on every matching event, so a lively conversation (or a slow AI
+	// reply landing in pieces) fired a burst of full refetches that competed
+	// with actual message delivery — the thread visibly rebuilt over and
+	// over. Realtime now only raises a badge; the reader pulls the thread
+	// with the update notice. Own messages stay instant (optimistic bubble
+	// in send()), and the send path still refreshes after its own write.
+	//
+	// SCALE: chat_messages is a global table, but this page owns exactly one
+	// thread (the current user's anon id). Without filtering on the changed
+	// thread_id, one message from any user would raise a badge on every open
+	// conversation — the same fan-out the old refetch had, just cheaper.
+	const { updatesAvailable, markUpdatesAvailable, clearUpdates } =
+		useUpdateSignal();
+
+	const handleThreadUpdate = useCallback(async () => {
+		await load();
+		clearUpdates();
+	}, [load, clearUpdates]);
+
+	useRealtime(
+		["chat_messages"],
+		(_table, payload) => {
+			const next = payload?.new as { thread_id?: string } | undefined;
+			const prev = payload?.old as { thread_id?: string } | undefined;
+			const changedThreadId =
+				payload?.eventType === "DELETE" ? prev?.thread_id : next?.thread_id;
+			// POLL/VISIBLE events intentionally carry no row payload. They are
+			// recovery signals, so raise the badge when the thread id is
+			// unavailable rather than fetching blindly.
+			if (changedThreadId && changedThreadId !== anonId) return;
+			markUpdatesAvailable();
+		},
+		1000,
+	);
 
 	useEffect(() => {
 		bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -243,6 +339,9 @@ export default function UserChat() {
 				message?: ChatMessage;
 				auto_reply?: ChatMessage;
 				emotion?: { level?: string };
+				triage?: { reported?: boolean; urgency?: string; private?: boolean };
+				draft_proposed?: boolean;
+				draft?: { title: string; description: string; category: string; private: boolean } | null;
 			}>("/api/inbox", {
 				thread_id: anonId,
 				sender: "user",
@@ -273,7 +372,38 @@ export default function UserChat() {
 				);
 			}
 
-			// Then sync with server to catch anything we missed
+			// TYPEWRITER-STREAM-ARM: reveal + voice the fresh reply only.
+		if (result.auto_reply && (result.auto_reply as ChatMessage).id !== undefined) {
+			const freshId = (result.auto_reply as ChatMessage).id as string | number;
+			setStreamId(freshId);
+			if (readBack && speechOutputSupported && (result.auto_reply as ChatMessage).body) {
+				readAloud((result.auto_reply as ChatMessage).body || "");
+			}
+		}
+		// Surface instant triage: the inbox files real reports, not chat.
+		setTriageNote(null);
+		if (result.triage?.reported) {
+			setTriageNote(
+				result.triage.urgency === "urgent"
+					? "🚨 Marked urgent — filed as a private report and the admin team was notified immediately."
+					: result.triage.private
+						? "🔒 Filed as a private report — it stays between you and the admin team, never public."
+						: "📋 Filed as a report — the admin team will review it shortly.",
+			);
+		}
+		if (result.draft && result.draft.title) setPendingDraft({
+			title: result.draft.title,
+			description: result.draft.description,
+			category: result.draft.category,
+		});
+		if (result.draft_proposed) {
+			setTriageNote((prev) =>
+				(prev ? prev + " " : "") +
+				"✏️ I drafted a post from what you asked to share — an admin reviews it before anything is published.",
+			);
+		}
+
+		// Then sync with server to catch anything we missed
 			await load();
 		} catch (e: unknown) {
 			// NOTE: We do NOT re-post to /api/chat here — the inbox endpoint already
@@ -283,8 +413,13 @@ export default function UserChat() {
 			const errMsg = e instanceof Error ? e.message : "Send failed";
 			// Sync with the server so a late AI reply (or the confirmed copy of the
 			// user's message) replaces the optimistic bubble.
-			await load();
-			if (errMsg.includes("timed out") || errMsg.includes("network")) {
+			const synced = (await load()) || [];
+			if (!synced.some((m) => m.body === body && m.sender === "user")) {
+				// The message provably did NOT land server-side — restore the
+				// draft instead of eating the user's words.
+				setText(body);
+			}
+			if (/offline|taking too long|timed out|network|failed to fetch/i.test(errMsg)) {
 				toast("Message sent — AI is still composing a reply.", "info");
 			} else {
 				toast(errMsg, "err");
@@ -313,6 +448,42 @@ export default function UserChat() {
 		reader.readAsDataURL(f);
 	};
 
+	// ── Voice ────────────────────────────────────────────────
+
+
+	useEffect(
+		() => () => {
+			stopReading();
+		},
+		[],
+	);
+	const toggleRead = (m: ChatMessage) => {
+		if (readingId === m.id) {
+			stopReading();
+			setReadingId(null);
+			return;
+		}
+		stopReading();
+		setReadingId(m.id ?? null);
+		readAloud(m.body || "", () => setReadingId(null));
+	};
+
+	const deleteConversation = async () => {
+		if (deleting) return;
+		setDeleting(true);
+		setConfirmDelete(false);
+		try {
+			await api.post("/api/inbox", { action: "delete_thread", thread_id: anonId });
+			setMessages([]);
+			setThread(null);
+			setChatTitle(null);
+			setChatUnread(0);
+			toast("Conversation deleted", "ok");
+		} catch (e: unknown) {
+			toast(e instanceof Error ? e.message : "Could not delete — try again", "err");
+		}
+		setDeleting(false);
+	};
 	return (
 		<div className="max-w-3xl mx-auto px-4 py-6 vb-page-enter flex flex-col h-[calc(100vh-9.5rem)] lg:h-[calc(100vh-8rem)]">
 			{/* Header — same treatment as Community insights */}
@@ -354,7 +525,13 @@ export default function UserChat() {
 					)}
 					<span className="hidden sm:inline">AI {aiEnabled ? "ON" : "OFF"}</span>
 				</button>
+				<button type="button" onClick={() => setConfirmDelete(true)} disabled={deleting} title="Delete conversation" aria-label="Delete conversation" className="shrink-0 inline-flex items-center rounded-full border border-border px-2.5 py-1.5 text-ink3 hover:text-bad hover:border-bad/40 disabled:opacity-50">
+					<Trash2 size={12} />
+				</button>
 			</div>
+			{chatTitle && (
+				<p className="text-xs text-ink2 truncate mt-2" data-testid="chat-title">{chatTitle}</p>
+			)}
 
 			{/* Agent indicator banner */}
 			{agentLabel && (
@@ -369,11 +546,19 @@ export default function UserChat() {
 				</div>
 			)}
 
+			<UpdateNotice
+				count={updatesAvailable}
+				onViewUpdates={() => void handleThreadUpdate()}
+			/>
+
 			<div className="card flex-1 overflow-y-auto p-4 space-y-3">
 				{loading && (
 					<LoadingSpinner
 						text="Opening your anonymous inbox…"
-						durationMs={MIN_LOADER_MS}
+						// The SPLASH length is the full story, so a genuinely slow
+						// load still gets the animation. It is not a gate: the
+						// component unmounts the moment data lands.
+						durationMs={VB_FULL_CYCLE_MS}
 					/>
 				)}
 				{!loading && messages.length === 0 && (
@@ -422,7 +607,25 @@ export default function UserChat() {
 									className="rounded-lg mb-1.5 max-h-48"
 								/>
 							)}
-							{m.body && <p className="prose-desc">{m.body}</p>}
+							{m.body && (m.sender === "ai" && m.id === streamId ? (
+							<p className="prose-desc">
+								<Typewriter text={m.body} label="AI reply" />
+							</p>
+						) : (
+							<p className="prose-desc">{m.body}</p>
+						))}
+							{(m.sender === "ai" || m.sender === "admin") && m.body && speechOutputSupported && (
+								<button
+									type="button"
+									onClick={() => toggleRead(m)}
+									aria-label={readingId === m.id ? "Stop reading aloud" : "Read aloud (device voice)"}
+									title={readingId === m.id ? "Stop" : "Listen (device voice)"}
+									className="mt-1 inline-flex items-center gap-1 text-[10px] font-bold text-accent/70 hover:text-accent"
+								>
+									{readingId === m.id ? <VolumeX size={11} /> : <Volume2 size={11} />}
+									{readingId === m.id ? "Stop" : "Listen"}
+								</button>
+							)}
 							<p
 								className={`text-[9px] mt-1 ${m.sender === "user" ? "text-white/60" : "text-ink3"}`}
 							>
@@ -443,7 +646,52 @@ export default function UserChat() {
 				<div ref={bottomRef} />
 			</div>
 
-			<div className="flex gap-2 mt-3">
+			{/* Triage confirmation — the inbox files reports, not chat */}
+			{triageNote && (
+				<div className="flex items-center gap-2 px-3 py-2 rounded-xl bg-accent/10 border border-accent/20 text-xs text-accent mt-3 animate-in slide-in-from-top-1" role="status">
+					<span className="font-medium">{triageNote}</span>
+				</div>
+			)}
+
+			{/* Draft card — Accept publishes with your visibility choice, Dismiss drops it */}
+			{pendingDraft && (
+				<div className="card border-accent/30 p-3.5 mt-3" data-testid="draft-card" role="dialog" aria-label="Suggested post">
+					<p className="text-[10px] font-bold uppercase tracking-wider text-accent mb-1.5">Suggested post — your call</p>
+					<p className="font-semibold text-sm leading-snug">{pendingDraft.title}</p>
+					<span className="chip !text-[10px] mt-1.5">{pendingDraft.category}</span>
+					<p className="text-xs text-ink2 leading-relaxed mt-1">{pendingDraft.description}</p>
+					<div className="flex gap-2 mt-3" role="radiogroup" aria-label="Post visibility">
+						{(["private", "public"] as const).map((v) => (
+							<button
+								key={v}
+								type="button"
+								role="radio"
+								aria-checked={draftVisibility === v}
+								disabled={draftBusy}
+								onClick={() => setDraftVisibility(v)}
+								className={`flex-1 px-3 py-2 rounded-lg text-xs font-semibold border transition-all disabled:opacity-40 ${
+									draftVisibility === v
+										? "border-accent bg-accent-soft text-accent"
+										: "border-border text-ink2"
+								}`}
+							>
+								{v === "private" ? "🔒 Private" : "🌍 Public"}
+							</button>
+						))}
+					</div>
+					{draftVisibility === "public" && (
+						<p className="text-[11px] text-ink3 mt-1.5">
+							Public posts are reviewed by an admin before anyone sees them.
+						</p>
+					)}
+					<div className="flex gap-2 mt-3">
+						<button type="button" disabled={draftBusy} onClick={() => void acceptDraftCard()} className="btn btn-primary !text-xs flex-1">{draftBusy ? "Posting…" : draftVisibility === "private" ? "Post privately" : "Send for review"}</button>
+						<button type="button" disabled={draftBusy} onClick={() => { setPendingDraft(null); setDraftVisibility("private"); }} className="btn btn-ghost !text-xs">Dismiss</button>
+					</div>
+				</div>
+			)}
+
+	<div className="flex gap-2 mt-3">
 				<button
 					className="btn btn-ghost !px-3"
 					onClick={() => fileRef.current?.click()}
@@ -482,6 +730,18 @@ export default function UserChat() {
 					)}
 				</button>
 			</div>
+		<p className="mt-1.5 text-[10px] text-ink3">Replies can be read back in your device voice.</p>
+			{/* READBACK-TOGGLE */}
+			<button type="button" onClick={() => { const next = !readBack; setReadBack(next); lsSet("vb:readaloud", next); if (!next) stopReading(); }} aria-pressed={readBack} aria-label="Read AI replies aloud" title="Hear AI replies in your device voice" className="mt-1 text-[10px] font-bold text-accent/70 hover:text-accent">🔊 Read aloud: {readBack ? "on" : "off"}</button>
+	<ConfirmDialog
+		open={confirmDelete}
+		onClose={() => setConfirmDelete(false)}
+		onConfirm={() => void deleteConversation()}
+		title="Delete conversation?"
+		message="Your messages and this conversation will be permanently removed. This cannot be undone."
+		confirmLabel="Delete"
+		danger
+	/>
 		</div>
 	);
 }

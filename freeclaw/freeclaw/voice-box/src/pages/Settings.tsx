@@ -29,14 +29,33 @@ import { useEffect, useRef, useState } from "react";
 import { resetTutorial } from "../components/Tutorial";
 import { ConfirmDialog } from "../components/ui";
 import { useApp } from "../contexts/AppContext";
+import {
+	browserNotifyPermission,
+	requestBrowserNotifyPermission,
+	showBrowserNotification,
+} from "../lib/browserNotify";
 import { api } from "../lib/api";
-import { getDisplayName } from "../lib/identity";
+import { sendNotificationEmail } from "../lib/email";
+import {
+	adoptIdentity,
+	createLinkCode,
+	getDisplayName,
+	parseLinkCode,
+	resetAnonId,
+} from "../lib/identity";
+import {
+	INFRASTRUCTURE_COPY,
+	LOCAL_PROFILE_COPY,
+	NOTIFY_PRIVACY_COPY,
+	RETENTION_COPY,
+} from "../lib/privacyCopy";
 
 interface NotifyChannelPrefs {
 	phone: string;
 	email: string;
 	sms_enabled: boolean;
 	email_enabled: boolean;
+	browser_enabled: boolean;
 	status_updates: boolean;
 }
 
@@ -48,6 +67,7 @@ export default function Settings() {
 	const {
 		anonId,
 		toast,
+		refreshIdentity,
 		setDisplayName: persistDisplayName,
 		theme,
 		setTheme,
@@ -64,7 +84,13 @@ export default function Settings() {
 	const [avatarDraft, setAvatarDraft] = useState(profile.avatar || "");
 	const [bioDraft, setBioDraft] = useState(profile.bio || "");
 	const [photoDraft, setPhotoDraft] = useState(profile.photo || "");
-	const [dialog, setDialog] = useState<"resetTutorial" | null>(null);
+	const [dialog, setDialog] = useState<"resetTutorial" | "resetIdentity" | "adoptIdentity" | null>(null);
+
+	// Identity linking: one ID across this student's browser, APK, and EXE.
+	// Storage silos are OS-segregated, so linking is explicit and typed.
+	const [linkRevealed, setLinkRevealed] = useState(false);
+	const [linkInput, setLinkInput] = useState("");
+	const [linkError, setLinkError] = useState("");
 	const photoRef = useRef<HTMLInputElement | null>(null);
 
 	// Notification preferences (stored in localStorage)
@@ -106,10 +132,13 @@ export default function Settings() {
 		email: "",
 		sms_enabled: false,
 		email_enabled: false,
+		browser_enabled: true,
 		status_updates: true,
 	});
 	const [channelSaving, setChannelSaving] = useState(false);
 	const channelLoaded = useRef(false);
+	/** Last email persisted on the server — detects added/changed addresses. */
+	const lastSavedEmail = useRef("");
 
 	useEffect(() => {
 		if (channelLoaded.current) return;
@@ -121,8 +150,15 @@ export default function Settings() {
 					phone: p.phone || "",
 					email: p.email || "",
 					sms_enabled: p.sms_enabled !== false,
+					browser_enabled: p.browser_enabled !== false,
 					status_updates: p.status_updates !== false,
 					email_enabled: p.email_enabled !== false,
+				}),
+			)
+			.then(() =>
+				setChannelPrefs((cur) => {
+					lastSavedEmail.current = cur.email || "";
+					return cur;
 				}),
 			)
 			.catch(() => {
@@ -133,6 +169,7 @@ export default function Settings() {
 	const saveChannelPrefs = async () => {
 		setChannelSaving(true);
 		try {
+			const prevEmail = lastSavedEmail.current;
 			const saved = await api.post<NotifyChannelPrefs>(
 				"/api/notify-prefs",
 				{
@@ -140,6 +177,7 @@ export default function Settings() {
 					phone: channelPrefs.phone,
 					email: channelPrefs.email,
 					sms_enabled: channelPrefs.sms_enabled,
+					browser_enabled: channelPrefs.browser_enabled,
 					status_updates: channelPrefs.status_updates !== false,
 					email_enabled: channelPrefs.email_enabled,
 				},
@@ -148,15 +186,47 @@ export default function Settings() {
 				phone: saved.phone || "",
 				email: saved.email || "",
 				sms_enabled: saved.sms_enabled !== false,
+				browser_enabled: saved.browser_enabled !== false,
 				status_updates: saved.status_updates !== false,
 				email_enabled: saved.email_enabled !== false,
 			});
+			try {
+				localStorage.setItem(
+					"vb:browser-notify",
+					JSON.stringify({ enabled: saved.browser_enabled !== false }),
+				);
+			} catch {
+				/* local mirror is best-effort */
+			}
+			lastSavedEmail.current = saved.email || "";
 			toast(
 				saved.phone || saved.email
 					? "Alert channels saved — you'll get SMS/email on updates"
 					: "Alert channels cleared",
 				"ok",
 			);
+			// Free welcome email the moment an email is added (or changed) with
+			// alerts on — proves delivery works and confirms the address.
+			// Best-effort: a failed send never blocks the saved prefs.
+			if (
+				saved.email &&
+				saved.email_enabled !== false &&
+				saved.email.trim().toLowerCase() !== prevEmail.trim().toLowerCase()
+			) {
+				sendNotificationEmail({
+					to_email: saved.email.trim(),
+					notification_title: "Email alerts are on",
+					notification_body:
+						"You'll now get an email when a post you follow is solved or updated by the team. You can switch this off anytime in Settings → Notifications.",
+					notification_url: "https://voicebox.app/activity",
+				})
+					.then((r) => {
+						if (r.success) toast("Welcome email sent — check your inbox", "ok");
+					})
+					.catch(() => {
+						/* welcome send is best-effort — prefs are already saved */
+					});
+			}
 		} catch (e: unknown) {
 			const msg =
 				e instanceof Error ? e.message : "Could not save alert channels";
@@ -288,9 +358,7 @@ export default function Settings() {
 									Phone & email alerts
 								</p>
 								<p className="text-xs text-ink3 mb-3">
-									Get an SMS or email when a post you follow is solved or
-									updated by the team. Numbers/emails are stored on the
-									server only to deliver these alerts.
+									{NOTIFY_PRIVACY_COPY}
 								</p>
 								<div className="space-y-3">
 									<label className="block">
@@ -336,6 +404,15 @@ export default function Settings() {
 										}
 									/>
 									<ToggleRow
+										label="Browser notifications"
+										desc="On-device alerts on this phone or PC \u2014 no phone number needed"
+										checked={channelPrefs.browser_enabled}
+										onChange={(v) =>
+											setChannelPrefs({ ...channelPrefs, browser_enabled: v })
+										}
+									/>
+									{channelPrefs.browser_enabled && <BrowserNotifyPrimer toast={toast} />}
+									<ToggleRow
 										label="Status-change notifications"
 										desc="In-app alerts when a followed post moves to verified, in progress, solved — or gets an admin reply"
 										checked={channelPrefs.status_updates !== false}
@@ -360,7 +437,7 @@ export default function Settings() {
 						<div className="space-y-6">
 							<Section
 								title="Display & Feel"
-								desc="Customize how Voice Box looks and feels — every option applies instantly"
+								desc="Customize how Voice Flow looks and feels — every option applies instantly"
 							/>
 
 							{/* Theme selector — real, applies immediately */}
@@ -499,6 +576,54 @@ export default function Settings() {
 									information is collected.
 								</p>
 							</div>
+
+							{/* Identity linking — one ID on every device. Showing the code is
+explicit (anyone holding it owns this identity); adopting swaps
+this device to the other identity after confirmation. */}
+<div className="p-4 rounded-xl border border-border bg-surface2/50">
+							<div className="flex items-center gap-2 mb-2">
+								<Shield size={14} className="text-accent" />
+								<span className="text-sm font-medium text-ink">
+									Use the same ID on another device
+								</span>
+							</div>
+							<p className="text-xs text-ink3 mb-2">
+								Your browser, the Android app, and the Windows app each keep a separate ID. To unite them, show the code here and type it on the other device.
+							</p>
+							{!linkRevealed ? (
+								<button type="button" className="btn btn-ghost !py-2 !px-4 !text-xs" onClick={() => setLinkRevealed(true)}>
+									Show my link code
+								</button>
+							) : (
+								<div className="rounded-lg bg-bg border border-warn/30 px-3 py-2.5">
+									<p className="font-mono text-sm font-bold tracking-wider text-ink break-all" aria-label="Your identity link code">
+										{createLinkCode(anonId) ?? "Unavailable"}
+									</p>
+									<p className="text-[11px] text-warn mt-1">Anyone with this code owns your posts and votes. Share it only with yourself.</p>
+								</div>
+							)}
+							<div className="flex gap-2 mt-2">
+								<input value={linkInput} onChange={(e) => { setLinkInput(e.target.value); setLinkError(""); }} placeholder="Type a link code, e.g. VF-AB12-CD34-EF" maxLength={40} className="input !py-2 !text-sm flex-1 font-mono" aria-label="Identity link code" />
+								<button type="button" className="btn btn-soft !py-2 !px-4 !text-xs" onClick={() => { const parsed = parseLinkCode(linkInput); if (!parsed) { setLinkError("That code doesn't look right — check each character and try again."); return; } if (parsed === anonId) { setLinkError("That's already this device's ID."); return; } setLinkError(""); setDialog("adoptIdentity"); }}>
+									Link this device
+								</button>
+							</div>
+							{linkError && <p className="text-[11px] text-bad mt-1.5" role="alert">{linkError}</p>}
+</div>
+
+{/* Session recovery: an expired or cleared session cannot
+								be restored server-side (doing so would let anyone
+								claim any ID), so the way back is a fresh ID. Old
+								posts stay published; this device simply stops
+								owning them. */}
+							<ActionRow
+								icon={RotateCcw}
+								label="Start fresh with a new ID"
+								desc="If this device was ever signed out by an expired session, get a working identity again"
+								action="Start fresh"
+								onClick={() => setDialog("resetIdentity")}
+								variant="warning"
+							/>
 
 							{/* Display name — keep the anonymous ID, but sound like you */}
 							<div className="p-4 rounded-xl border border-border bg-surface2/50">
@@ -641,8 +766,8 @@ export default function Settings() {
 							/>
 							<ActionRow
 								icon={Download}
-								label="Export your data"
-								desc="Download all your posts, comments, and votes as JSON"
+								label="Export on-device settings"
+								desc="Download the settings and activity stored in this browser as JSON"
 								action="Export"
 								onClick={() => {
 									const data = {
@@ -683,7 +808,7 @@ export default function Settings() {
 									Anonymous by Design
 								</h3>
 								<p className="text-xs text-ink3 leading-relaxed">
-									Voice Box is built for anonymous participation. Here's what we
+									Voice Flow is built for anonymous participation. Here's what we
 									collect and don't collect:
 								</p>
 								<ul className="text-xs text-ink3 space-y-2">
@@ -693,9 +818,8 @@ export default function Settings() {
 											className="text-good mt-0.5 flex-shrink-0"
 										/>
 										<span>
-											<strong className="text-ink">Collected:</strong> Posts,
-											comments, votes, and reactions (linked to anonymous ID
-											only)
+											<strong className="text-ink">Public content:</strong> Posts,
+											comments, votes, and reactions are linked to an anonymous ID.
 										</span>
 									</li>
 									<li className="flex items-start gap-2">
@@ -703,32 +827,21 @@ export default function Settings() {
 											size={12}
 											className="text-good mt-0.5 flex-shrink-0"
 										/>
-										<span>
-											<strong className="text-ink">Not collected:</strong>{" "}
-											Names, emails, IP addresses, device fingerprints, browsing
-											history
-										</span>
+										<span>{NOTIFY_PRIVACY_COPY}</span>
 									</li>
 									<li className="flex items-start gap-2">
 										<Check
 											size={12}
 											className="text-good mt-0.5 flex-shrink-0"
 										/>
-										<span>
-											<strong className="text-ink">No tracking:</strong> No
-											analytics, no third-party cookies, no advertising scripts
-										</span>
+										<span>{LOCAL_PROFILE_COPY}</span>
 									</li>
 									<li className="flex items-start gap-2">
 										<Check
 											size={12}
 											className="text-good mt-0.5 flex-shrink-0"
 										/>
-										<span>
-											<strong className="text-ink">Your data:</strong> Your
-											avatar, profile photo, bio, and display name are stored
-											only in your browser and never sent to the server.
-										</span>
+										<span>{INFRASTRUCTURE_COPY}</span>
 									</li>
 								</ul>
 							</div>
@@ -738,10 +851,7 @@ export default function Settings() {
 									Data Retention
 								</h3>
 								<p className="text-xs text-ink3 leading-relaxed">
-									Posts and comments are retained indefinitely unless you delete
-									them. Anonymous IDs are stored in your browser's localStorage
-									and never leave your device. Server-side data contains no
-									personally identifiable information.
+									{RETENTION_COPY}
 								</p>
 							</div>
 
@@ -750,9 +860,9 @@ export default function Settings() {
 									Open Source
 								</h3>
 								<p className="text-xs text-ink3 leading-relaxed">
-									Voice Box is open source. You can audit the code to verify our
-									privacy claims. No hidden telemetry, no sneaky data
-									collection.
+									Voice Flow is open source. Review the code and current deployment
+									settings together, including the server-side contact and moderation
+									paths described above.
 								</p>
 							</div>
 						</div>
@@ -768,6 +878,43 @@ export default function Settings() {
 					message="The onboarding tutorial will show again on your next page visit."
 					confirmLabel="Reset"
 					onConfirm={handleResetTutorial}
+					onClose={() => setDialog(null)}
+				/>
+			)}
+			{dialog === "adoptIdentity" && (
+	<ConfirmDialog
+		open
+		title="Link this device to another ID?"
+		message="This device will adopt the linked identity — its posts, votes, and ownership move here. This device's current ID is abandoned (its published content stays up, but unmanaged). This cannot be undone from here."
+		confirmLabel="Link devices"
+		onConfirm={() => {
+			const adopted = adoptIdentity(linkInput);
+			if (!adopted) {
+				setLinkError("That code doesn't look right — check each character and try again.");
+				setDialog(null);
+				return;
+			}
+			setLinkInput("");
+			setLinkRevealed(false);
+			setDialog(null);
+			refreshIdentity();
+			toast("Devices linked — one ID everywhere now", "ok");
+		}}
+		onClose={() => setDialog(null)}
+	/>
+)}
+{dialog === "resetIdentity" && (
+				<ConfirmDialog
+					open
+					title="Start fresh with a new ID?"
+					message="This device gets a brand-new anonymous identity. Your previously published posts stay up, but this device will no longer own or manage them."
+					confirmLabel="Start fresh"
+					onConfirm={() => {
+						resetAnonId();
+						refreshIdentity();
+						setDialog(null);
+						toast("Fresh anonymous ID ready", "ok");
+					}}
 					onClose={() => setDialog(null)}
 				/>
 			)}
@@ -854,6 +1001,79 @@ function ActionRow({
 				className={`btn !text-xs !px-3 !py-1.5 flex-shrink-0 transition-all ${colors[variant]}`}
 			>
 				{action}
+			</button>
+		</div>
+	);
+}
+
+/**
+ * Permission-first primer for on-device browser notifications. Explains
+ * what the user gets (and how to undo) BEFORE the browser prompt appears —
+ * the prompt itself offers no context and can only be asked once with full
+ * effect. Includes a test ping so delivery is proven, not assumed.
+ */
+function BrowserNotifyPrimer({ toast }: { toast: (msg: string, kind: "ok" | "err" | "info") => void }) {
+	const [busy, setBusy] = useState(false);
+	const [state, setState] = useState(() => browserNotifyPermission());
+	if (state === "unsupported") {
+		return (
+			<p className="text-[11px] text-ink3 mt-1.5">
+				This browser can’t show device notifications — in-app alerts, SMS and email still work.
+			</p>
+		);
+	}
+	if (state === "denied") {
+		return (
+			<p className="text-[11px] text-ink3 mt-1.5">
+				Notifications are blocked for this site. Re-enable them in your browser’s site settings to get device alerts.
+			</p>
+		);
+	}
+	if (state === "granted") {
+		return (
+			<button
+				type="button"
+				disabled={busy}
+				onClick={() => {
+					const shown = showBrowserNotification({
+						title: "Voice Flow notifications work",
+						body: "You’ll get one like this when something you follow changes.",
+						tag: "voice-flow-test",
+					});
+					toast(shown ? "Test notification sent" : "Could not show a notification", shown ? "ok" : "err");
+				}}
+				className="btn btn-ghost !text-xs !py-1.5 mt-1.5"
+			>
+				Send a test notification
+			</button>
+		);
+	}
+	return (
+		<div className="rounded-xl border border-border p-3 mt-1.5">
+			<p className="text-[11px] text-ink2 leading-relaxed">
+				Allow notification access and this device will ping you the moment a followed post is solved, updated, or replied to — even when Voice Flow isn’t open in front of you. Turn it off anytime here or in your browser settings.
+			</p>
+			<button
+				type="button"
+				disabled={busy}
+				onClick={async () => {
+					setBusy(true);
+					const next = await requestBrowserNotifyPermission();
+					setState(next);
+					setBusy(false);
+					if (next === "granted") {
+						showBrowserNotification({
+							title: "Voice Flow notifications on",
+							body: "You’ll get one like this when something you follow changes.",
+							tag: "voice-flow-test",
+						});
+					} else if (next === "denied") {
+						toast("Notifications blocked — re-enable them in site settings anytime", "info");
+					}
+				}}
+				className="btn btn-primary !text-xs !py-1.5 mt-2"
+			>
+				{busy ? "Waiting for browser…" : "Enable device notifications"}
 			</button>
 		</div>
 	);

@@ -1,5 +1,6 @@
-// AI Pre-Publish Agent — Mandatory content gate for ALL user submissions.
-// Every complaint, suggestion, poll, comment, and reply goes through this BEFORE publishing.
+// AI Pre-Publish Agent — advisory content gate for user submissions.
+// Every complaint, suggestion, poll, comment, and reply can use this BEFORE
+// publishing; /api/posts remains the authoritative deterministic safety gate.
 // Uses NVIDIA Nemotron 3 Ultra 550B for real AI content moderation.
 //
 // POST /api/pre-publish
@@ -21,7 +22,7 @@ import { maskPII } from "./_moderation.js";
 // ─── NVIDIA NIM API ──────────────────────────────────────────────
 const NVIDIA_API_KEY = process.env.NVIDIA_API_KEY || "";
 const NVIDIA_API_URL = "https://integrate.api.nvidia.com/v1/chat/completions";
-const NVIDIA_MODEL = "meta/llama-3.1-8b-instruct";
+const NVIDIA_MODEL = "openai/gpt-oss-20b";
 
 async function callNvidiaLLM(systemPrompt, userPrompt, maxTokens = 2000) {
 	// ── Outbound PII redaction (defense-in-depth) ────────────────────────
@@ -37,10 +38,11 @@ async function callNvidiaLLM(systemPrompt, userPrompt, maxTokens = 2000) {
 		? `${maskedPrompt}\n\n[SYSTEM NOTE: [EMAIL], [PHONE], [ADDRESS], and [PINCODE] placeholders above replace personal information found in this submission. Flag it: set personal_info_detected: true, risk_score: 80, decision: "high_risk", and list it in privacy_issues.]`
 		: maskedPrompt;
 
-	// Try direct NVIDIA call first — 6s timeout for fast response
+	// Try direct NVIDIA call first — 7s timeout for high-latency regions
+	// (measured ~1.5s typical; fits inside the caller's 10s race).
 	if (NVIDIA_API_KEY) {
 		const controller = new AbortController();
-		const timeout = setTimeout(() => controller.abort(), 4000);
+		const timeout = setTimeout(() => controller.abort(), 7000);
 
 		try {
 			const response = await fetch(NVIDIA_API_URL, {
@@ -139,6 +141,7 @@ ACTUAL VIOLATIONS (the POST AUTHOR is doing it):
 - "Buy my merch at coolstuff.com" → SPAM. UNSAFE.
 - "I'll post your nudes" → BLACKMAIL/EXPLICIT. UNSAFE.
 - "All [racial group] are terrible" → HATE SPEECH. UNSAFE.
+- "I want to kill myself, I'm going to end it" → FIRST-PERSON SELF-HARM. UNSAFE (hold for review — never publish a suicidal crisis post unreviewed).
 
 SLANG THAT IS NOT ABUSE (when used as opinions or casual speech):
 - "no cap" = no lie/truth → SAFE
@@ -204,6 +207,7 @@ Return ONLY this JSON (no other text, no markdown fences):
   "doxxing_detected": true/false,
   "blackmail_detected": true/false,
   "explicit_detected": true/false,
+  "self_harm_detected": true/false,
   "spam_detected": true/false,
   "privacy_issues": ["specific issues found"],
   "safety_issues": ["specific issues found"],
@@ -225,6 +229,7 @@ SCORING RULES:
 - Doxxing someone's personal info → risk >= 80, doxxing_detected = true, decision = "high_risk"
 - POST AUTHOR blackmails → risk >= 75, blackmail_detected = true, decision = "high_risk"
 - Explicit/sexual content in POST → risk >= 70, explicit_detected = true, decision = "high_risk"
+- POST AUTHOR expresses first-person self-harm/suicidal intent → risk >= 75, self_harm_detected = true, decision = "high_risk" (reports like "a kid told me to kill myself" stay SAFE with risk 0)
 - Spam in POST → risk >= 45, spam_detected = true, decision = "revision"
 - Gibberish/too short → risk >= 25, decision = "revision"
 
@@ -385,7 +390,7 @@ function emergencyRegex(text) {
 		"street|st|stree|strret|sreet|stre|avenue|avenu|avnue|ave|road|rd|roed|boulevard|blvd|ln|dr|ct|pl|colony|nagar|howrag|howrah|bally";
 	if (
 		new RegExp(
-			"\\b\\d{1,5}\\s+[a-zA-Z\\s]+\\b(?:" + STREET_TYPES_AFTER + ")\\b",
+			"\\b\\d{1,5}[\\s,/\\-]*[a-zA-Z\\s]+\\b(?:" + STREET_TYPES_AFTER + ")\\b",
 			"i",
 		).test(text)
 	) {
@@ -437,6 +442,24 @@ function emergencyRegex(text) {
 		}
 	}
 
+	// First-person self-harm — ONLY when the author describes THEIR OWN intent.
+	// Victim reports ("a kid told me to kill myself", "my friend said she wants
+	// to die") must stay safe: the reporting-word guard mirrors the threats
+	// block above and the prompt's pinned example at L118.
+	if (
+		/\b(kill myself|killing myself|end my (?:life|story)|i want to die|i don'?t want to (?:live|be here|wake up)|take my (?:own )?life|suicid\w*|hurt myself|cut myself)\b/i.test(
+			text,
+		) &&
+		!/\b(told|tells|says?|said|claims?|claimed|mentioned|reports?|reported|describes?|described|witnessed?|saw|heard|kid|friend|student|teacher)\b/i.test(
+			text,
+		) &&
+		!isDescribingOthers &&
+		!isReporting
+	) {
+		safetyIssues.push("SELF-HARM");
+		riskScore += 60;
+	}
+
 	// Direct abuse — only if POST AUTHOR is being abusive (not reporting)
 	if (
 		/\b(idiot|loser|ugly|fat|disgusting|pathetic|worthless|trash|moron|dumb|no one likes you|everyone hates you|you suck|shut up)\b/i.test(
@@ -486,7 +509,12 @@ function emergencyRegex(text) {
 	}
 
 	// Explicit content — only if POST AUTHOR is sharing it
-	if (/\b(nude|naked|sex tape|porn|xxx|onlyfans|explicit)\b/i.test(text)) {
+	if (
+		/\b(?:nudes?|naked|porn|pornographic|xxx|onlyfans|only\s*fans|sex\s*tapes?|hookups?|sexy|sugar\s*dadd(?:y|ies)|sugar\s*bab(?:y|ies)|explicit)\b/i.test(
+			text,
+		) ||
+		/\bnaked\s+(?:pics?|photos?|videos?|selfies?|pictures?)\b/i.test(text)
+	) {
 		safetyIssues.push("EXPLICIT CONTENT");
 		riskScore += 50;
 	}
@@ -498,9 +526,22 @@ function emergencyRegex(text) {
 	}
 
 	riskScore = Math.min(100, riskScore);
+	// Decision forcing — the score alone under-calls these categories:
+	// PII always queues (the AI path floors PII at 80 for the same reason),
+	// the severe safety categories are never merely "revision", and any
+	// other safety issue floors at revision (never silently "safe").
 	let decision = "safe";
-	if (riskScore >= 70) decision = "high_risk";
-	else if (riskScore >= 30) decision = "revision";
+	if (
+		riskScore >= 70 ||
+		privacyIssues.length > 0 ||
+		safetyIssues.some((i) =>
+			/THREAT|HATE|BLACKMAIL|SELF-HARM/.test(i),
+		)
+	) {
+		decision = "high_risk";
+	} else if (riskScore >= 30 || safetyIssues.length > 0) {
+		decision = "revision";
+	}
 
 	return {
 		riskScore,
@@ -521,9 +562,14 @@ function emergencyRegex(text) {
 		threats_detected: safetyIssues.some((i) => i.includes("THREAT")),
 		bullying_detected: safetyIssues.some((i) => i.includes("BULLY")),
 		hate_speech_detected: safetyIssues.some((i) => i.includes("HATE")),
-		doxxing_detected: false,
+		// Name + address in the same post is doxxing (same issue the AI path
+		// forces to high_risk) — never a silent "false" anymore.
+		doxxing_detected: privacyIssues.some((i) =>
+			i.includes("Personal name with address"),
+		),
 		blackmail_detected: safetyIssues.some((i) => i.includes("BLACKMAIL")),
 		explicit_detected: safetyIssues.some((i) => i.includes("EXPLICIT")),
+		self_harm_detected: safetyIssues.some((i) => i.includes("SELF-HARM")),
 		spam_detected: false,
 		suggested_priority:
 			riskScore >= 70 ? "critical" : riskScore >= 40 ? "high" : "medium",
@@ -609,6 +655,7 @@ async function runChecks(
 	if (aiResult.doxxing_detected) allSafety.push("⚠️ DOXXING DETECTED");
 	if (aiResult.blackmail_detected) allSafety.push("⚠️ BLACKMAIL DETECTED");
 	if (aiResult.explicit_detected) allSafety.push("⚠️ EXPLICIT CONTENT DETECTED");
+	if (aiResult.self_harm_detected) allSafety.push("⚠️ SELF-HARM DETECTED");
 
 	const allSpam = [...(aiResult.spam_issues || [])];
 	if (aiResult.spam_detected) allSpam.push("Spam detected by AI");
@@ -625,10 +672,15 @@ async function runChecks(
 		riskScore >= 70 ||
 		aiResult.threats_detected ||
 		aiResult.hate_speech_detected ||
-		aiResult.doxxing_detected
+		aiResult.doxxing_detected ||
+		aiResult.blackmail_detected ||
+		aiResult.explicit_detected ||
+		aiResult.self_harm_detected
 	) {
+		// Severity floor: these categories are never below high_risk no matter
+		// what decision the LLM returned (the LLM can downgrade, we can't let it).
 		decision = "high_risk";
-	} else if (riskScore >= 30 || !spamDB.pass) {
+	} else if (riskScore >= 30 || !spamDB.pass || aiResult.bullying_detected) {
 		decision = "revision";
 	}
 

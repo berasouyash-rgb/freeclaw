@@ -29,7 +29,10 @@ const key = import.meta.env.VITE_SUPABASE_ANON_KEY;
 export const supabase: SupabaseClient | null =
 	isValidHttpUrl(url) && key
 		? createClient(url, key, {
-				realtime: { params: { eventsPerSecond: 5 } },
+				// 10 events/sec (Supabase default ceiling): bursts of votes/chat
+				// messages used to get silently dropped at 5, which read as
+				// "live votes don't count". Shared channels keep total load flat.
+				realtime: { params: { eventsPerSecond: 10 } },
 				auth: {
 					persistSession: false,
 					autoRefreshToken: false,
@@ -38,8 +41,8 @@ export const supabase: SupabaseClient | null =
 		: null;
 
 if (!supabase) {
-	console.error(
-		"CRITICAL: Missing or invalid VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY — realtime disabled, polling fallback active.",
+	console.warn(
+		"[VoiceBox] Missing or invalid VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY — realtime disabled, polling fallback active.",
 	);
 }
 

@@ -1,4 +1,4 @@
--- Voice Box — Reports moderation table + users_meta strike columns
+-- Voice Flow — Reports moderation table + users_meta strike columns
 -- ----------------------------------------------------------------------------
 -- The app's report flow (api/_reports.js) inserts into a `reports` table and
 -- auto-enforces community strikes on `users_meta`. No migration in this repo

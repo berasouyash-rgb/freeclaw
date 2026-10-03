@@ -124,6 +124,14 @@ function chainFor(table: string): Chain {
 		update(patch: unknown) {
 			this.op = "update";
 			state[`${table}:lastUpdate`] = patch;
+			// Real update().select().single() returns the UPDATED row —
+			// merge the patch so downstream status checks see it.
+			if (state[`${table}:singleRow`]) {
+				state[`${table}:singleRow`] = {
+					...(state[`${table}:singleRow`] as Record<string, unknown>),
+					...(patch as Record<string, unknown>),
+				};
+			}
 			return this;
 		},
 		insert(row: unknown) {
@@ -218,7 +226,7 @@ describe("POST /api/reports", () => {
 	it("inserts the report and auto-strikes the target author once", async () => {
 		seedPostTarget();
 		const res = response();
-		await handler({ method: "POST", body: { ...REPORT }, headers: {} }, res);
+		await handler({ method: "POST", body: { ...REPORT }, headers: { "x-anon-id": "anon_reporter" } }, res);
 
 		expect(res.statusCode).toBe(201);
 		expect(res.body.target_id).toBe("p1");
@@ -238,7 +246,7 @@ describe("POST /api/reports", () => {
 	it("400s when target_id is missing", async () => {
 		const res = response();
 		await handler(
-			{ method: "POST", body: { ...REPORT, target_id: "" }, headers: {} },
+			{ method: "POST", body: { ...REPORT, target_id: "" }, headers: { "x-anon-id": "anon_reporter" } },
 			res,
 		);
 		expect(res.statusCode).toBe(400);
@@ -252,7 +260,7 @@ describe("POST /api/reports", () => {
 			error: "This anonymous ID has been permanently banned.",
 		});
 		const res = response();
-		await handler({ method: "POST", body: { ...REPORT }, headers: {} }, res);
+		await handler({ method: "POST", body: { ...REPORT }, headers: { "x-anon-id": "anon_reporter" } }, res);
 		expect(res.statusCode).toBe(403);
 		expect(state["reports:lastInsert"]).toBeUndefined();
 	});
@@ -260,7 +268,7 @@ describe("POST /api/reports", () => {
 	it("429s when rate limited (max 10 reports / 5 min)", async () => {
 		authMocks.rateLimited.mockResolvedValue(true);
 		const res = response();
-		await handler({ method: "POST", body: { ...REPORT }, headers: {} }, res);
+		await handler({ method: "POST", body: { ...REPORT }, headers: { "x-anon-id": "anon_reporter" } }, res);
 		expect(res.statusCode).toBe(429);
 	});
 
@@ -271,7 +279,7 @@ describe("POST /api/reports", () => {
 			{
 				method: "POST",
 				body: { ...REPORT, target_type: "garbage" },
-				headers: {},
+				headers: { "x-anon-id": "anon_reporter" },
 			},
 			res,
 		);
@@ -282,7 +290,7 @@ describe("POST /api/reports", () => {
 		// pre-publish fallback id ('anonymous') and admin are not strikable
 		state["posts:singleRow"] = { id: "p1", author_id: "anonymous", title: "x" };
 		const res = response();
-		await handler({ method: "POST", body: { ...REPORT }, headers: {} }, res);
+		await handler({ method: "POST", body: { ...REPORT }, headers: { "x-anon-id": "anon_reporter" } }, res);
 		expect(res.body.enforcement).toEqual({ strike_applied: false, strikes: 0 });
 		expect(state["users_meta:lastUpdate"]).toBeUndefined();
 	});
@@ -294,7 +302,7 @@ describe("POST /api/reports", () => {
 			title: "self",
 		};
 		const res = response();
-		await handler({ method: "POST", body: { ...REPORT }, headers: {} }, res);
+		await handler({ method: "POST", body: { ...REPORT }, headers: { "x-anon-id": "anon_reporter" } }, res);
 		expect(res.body.enforcement.strike_applied).toBe(false);
 		expect(state["users_meta:lastUpdate"]).toBeUndefined();
 	});
@@ -308,7 +316,7 @@ describe("POST /api/reports", () => {
 		state["reports:recent"] = [{ id: "r-old" }, { id: "r-new" }]; // this insert + a prior one
 		state["users_meta:preWarnings"] = { warnings: [] };
 		const res = response();
-		await handler({ method: "POST", body: { ...REPORT }, headers: {} }, res);
+		await handler({ method: "POST", body: { ...REPORT }, headers: { "x-anon-id": "anon_reporter" } }, res);
 		expect(res.body.enforcement).toEqual({ strike_applied: false, strikes: 0 });
 		expect(state["users_meta:lastUpdate"]).toBeUndefined();
 	});
@@ -330,7 +338,7 @@ describe("POST /api/reports", () => {
 			],
 		};
 		const res = response();
-		await handler({ method: "POST", body: { ...REPORT }, headers: {} }, res);
+		await handler({ method: "POST", body: { ...REPORT }, headers: { "x-anon-id": "anon_reporter" } }, res);
 		expect(res.body.enforcement).toEqual({ strike_applied: false, strikes: 0 });
 		expect(state["users_meta:lastUpdate"]).toBeUndefined();
 	});
@@ -354,7 +362,7 @@ describe("POST /api/reports", () => {
 		};
 		state["settings:row"] = { value: { notifications: [] } };
 		const res = response();
-		await handler({ method: "POST", body: { ...REPORT }, headers: {} }, res);
+		await handler({ method: "POST", body: { ...REPORT }, headers: { "x-anon-id": "anon_reporter" } }, res);
 		expect(res.body.enforcement).toEqual({ strike_applied: true, strikes: 3 });
 		expect(
 			(state["users_meta:lastUpdate"] as { suspended_until?: string })
@@ -389,7 +397,7 @@ describe("POST /api/reports", () => {
 		};
 		state["settings:row"] = { value: { notifications: [] } };
 		const res = response();
-		await handler({ method: "POST", body: { ...REPORT }, headers: {} }, res);
+		await handler({ method: "POST", body: { ...REPORT }, headers: { "x-anon-id": "anon_reporter" } }, res);
 		expect(res.body.enforcement).toEqual({ strike_applied: true, strikes: 6 });
 		expect(state["users_meta:lastUpdate"]).toMatchObject({ banned: true });
 		expect(authMocks.notifyUser).toHaveBeenCalledWith(
@@ -419,7 +427,7 @@ describe("POST /api/reports", () => {
 			{
 				method: "POST",
 				body: { ...REPORT, target_id: "c1", target_type: "comment" },
-				headers: {},
+				headers: { "x-anon-id": "anon_reporter" },
 			},
 			res,
 		);
@@ -515,6 +523,146 @@ describe("GET /api/reports (admin)", () => {
 	});
 });
 
+describe("GET /api/reports — workforce evidence join", () => {
+	const reportRow = (id: string, status = "resolved") => ({
+		id,
+		target_type: "post",
+		target_id: "p1",
+		reason: "Harassment",
+		status,
+	});
+
+	it("attaches the worker's audit evidence to the report it acted on", async () => {
+		authMocks.isAdmin.mockResolvedValue(true);
+		state["reports:list"] = [reportRow("r1")];
+		state["posts:list"] = [{ id: "p1", author_id: "anon_target" }];
+		state["activity_logs:list"] = [
+			{
+				actor: "worker:report-disposition",
+				action: "report_dispositioned",
+				created_at: "2026-09-22T10:00:00.000Z",
+				detail: JSON.stringify({
+					report_id: "r1",
+					target: "post:p1",
+					disposition: "enforced",
+					enforced: true,
+					evidence: "public + violating (harassment)",
+				}),
+			},
+		];
+		const res = response();
+		await handler({ method: "GET", query: {}, headers: {} }, res);
+
+		expect(res.statusCode).toBe(200);
+		expect(res.body[0].worker_action).toMatchObject({
+			worker: "report-disposition",
+			disposition: "enforced",
+			enforced: true,
+			evidence: "public + violating (harassment)",
+			target: "post:p1",
+		});
+	});
+
+	it("surfaces the false-resolution correction from worker #13", async () => {
+		authMocks.isAdmin.mockResolvedValue(true);
+		state["reports:list"] = [reportRow("r2", "open")];
+		state["activity_logs:list"] = [
+			{
+				actor: "worker:resolution-verification",
+				action: "false_resolution_reopened",
+				created_at: "2026-09-22T11:00:00.000Z",
+				detail: JSON.stringify({
+					report_id: "r2",
+					target: "post:p1",
+					flags: ["harassment", "threat"],
+					enforced: true,
+				}),
+			},
+		];
+		const res = response();
+		await handler({ method: "GET", query: {}, headers: {} }, res);
+
+		expect(res.body[0].worker_action).toMatchObject({
+			worker: "resolution-verification",
+			action: "false_resolution_reopened",
+			enforced: true,
+			evidence: "harassment, threat",
+		});
+	});
+
+	it("never fabricates evidence for a report no worker acted on", async () => {
+		authMocks.isAdmin.mockResolvedValue(true);
+		state["reports:list"] = [reportRow("r1"), reportRow("r9")];
+		state["activity_logs:list"] = [
+			{
+				actor: "worker:report-disposition",
+				action: "report_dispositioned",
+				created_at: "2026-09-22T10:00:00.000Z",
+				detail: JSON.stringify({
+					report_id: "r1",
+					disposition: "no_violation",
+					enforced: false,
+				}),
+			},
+		];
+		const res = response();
+		await handler({ method: "GET", query: {}, headers: {} }, res);
+
+		expect(res.body[0].worker_action).toBeTruthy();
+		expect(res.body[1].worker_action).toBeUndefined();
+	});
+
+	it("keeps the newest decision when a report was acted on twice", async () => {
+		authMocks.isAdmin.mockResolvedValue(true);
+		state["reports:list"] = [reportRow("r1")];
+		// activity_logs is read newest-first, matching the real query's order.
+		state["activity_logs:list"] = [
+			{
+				actor: "worker:report-disposition",
+				action: "report_dispositioned",
+				created_at: "2026-09-22T12:00:00.000Z",
+				detail: JSON.stringify({
+					report_id: "r1",
+					disposition: "already_handled",
+					enforced: false,
+				}),
+			},
+			{
+				actor: "worker:report-disposition",
+				action: "report_dispositioned",
+				created_at: "2026-09-22T09:00:00.000Z",
+				detail: JSON.stringify({
+					report_id: "r1",
+					disposition: "enforced",
+					enforced: true,
+				}),
+			},
+		];
+		const res = response();
+		await handler({ method: "GET", query: {}, headers: {} }, res);
+
+		expect(res.body[0].worker_action.disposition).toBe("already_handled");
+	});
+
+	it("skips a malformed audit row instead of failing the queue", async () => {
+		authMocks.isAdmin.mockResolvedValue(true);
+		state["reports:list"] = [reportRow("r1")];
+		state["activity_logs:list"] = [
+			{
+				actor: "worker:report-disposition",
+				action: "report_dispositioned",
+				created_at: "2026-09-22T10:00:00.000Z",
+				detail: "{not json",
+			},
+		];
+		const res = response();
+		await handler({ method: "GET", query: {}, headers: {} }, res);
+
+		expect(res.statusCode).toBe(200);
+		expect(res.body[0].worker_action).toBeUndefined();
+	});
+});
+
 describe("PUT /api/reports (admin resolve)", () => {
 	it("403s without admin", async () => {
 		const res = response();
@@ -527,7 +675,14 @@ describe("PUT /api/reports (admin resolve)", () => {
 
 	it("marks a report resolved and audits the action", async () => {
 		authMocks.isAdmin.mockResolvedValue(true);
-		state["reports:singleRow"] = { id: "r1", status: "resolved" };
+		state["reports:singleRow"] = {
+			id: "r1",
+			target_type: "post",
+			target_id: "p-gone",
+			reason: "Spam",
+			status: "open",
+		};
+		state["posts:singleRow"] = null; // target already removed
 		const res = response();
 		await handler(
 			{ method: "PUT", body: { id: "r1", status: "resolved" }, headers: {} },
@@ -535,11 +690,85 @@ describe("PUT /api/reports (admin resolve)", () => {
 		);
 		expect(res.statusCode).toBe(200);
 		expect(state["reports:lastUpdate"]).toEqual({ status: "resolved" });
+		expect(res.body.verification).toMatchObject({
+			verified: true,
+			target_state: "gone",
+		});
 		expect(authMocks.auditLog).toHaveBeenCalledWith(
 			"admin",
 			"resolve_report",
-			"r1",
+			expect.stringContaining("verified=true"),
 		);
+	});
+
+	it("hides a still-live violating comment on resolve (verification enforces)", async () => {
+		authMocks.isAdmin.mockResolvedValue(true);
+		state["reports:singleRow"] = {
+			id: "r2",
+			target_type: "comment",
+			target_id: "c-evil",
+			reason: "abuse",
+			status: "open",
+		};
+		state["comments:singleRow"] = {
+			id: "c-evil",
+			body: "You are an idiot, shut up",
+			hidden: false,
+			deleted: false,
+		};
+		const res = response();
+		await handler(
+			{ method: "PUT", body: { id: "r2", status: "resolved" }, headers: {} },
+			res,
+		);
+		expect(res.statusCode).toBe(200);
+		expect(state["comments:lastUpdate"]).toEqual({ hidden: true });
+		expect(res.body.verification).toMatchObject({
+			verified: true,
+			target_state: "hidden",
+			action_taken: "hidden",
+		});
+	});
+
+	it("resolves as reviewed when the live target is clean (no fake enforcement)", async () => {
+		authMocks.isAdmin.mockResolvedValue(true);
+		state["reports:singleRow"] = {
+			id: "r3",
+			target_type: "post",
+			target_id: "p-clean",
+			reason: "disagreement",
+			status: "open",
+		};
+		state["posts:singleRow"] = {
+			id: "p-clean",
+			title: "Water cooler broken",
+			description: "Near Block B, please fix",
+			hidden: false,
+			deleted: false,
+		};
+		const res = response();
+		await handler(
+			{ method: "PUT", body: { id: "r3", status: "resolved" }, headers: {} },
+			res,
+		);
+		expect(res.statusCode).toBe(200);
+		expect(state["posts:lastUpdate"]).toBeUndefined();
+		expect(res.body.verification).toMatchObject({
+			verified: true,
+			target_state: "live",
+			action_taken: "none",
+		});
+	});
+
+	it("404s on an unknown report instead of resolving blindly", async () => {
+		authMocks.isAdmin.mockResolvedValue(true);
+		state["reports:singleRow"] = null;
+		const res = response();
+		await handler(
+			{ method: "PUT", body: { id: "r-nope", status: "resolved" }, headers: {} },
+			res,
+		);
+		expect(res.statusCode).toBe(404);
 	});
 });
 

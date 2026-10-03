@@ -3,7 +3,7 @@
 // ═══════════════════════════════════════════════════════════════════
 // Complements polls-filter.test.ts (artifact filter) and poll-close.test.ts
 // (close notifications) with: GET shapes (voter, id, post_id, admin view,
-// orphan cleanup, masking) and the POST vote / POST create / PUT / DELETE
+// side-effect-free reads, masking) and the POST vote / POST create / PUT / DELETE
 // surface (auth gate, rate limit, validation, moderation, ownership,
 // ADMIN-spoof protection, admin patches, hard delete).
 // ═══════════════════════════════════════════════════════════════════
@@ -18,10 +18,19 @@ const state = {
 	existingVote: null as unknown,
 	lastInsert: null as unknown,
 	lastUpdate: null as unknown,
+	// Every update() with its target table. `lastUpdate` alone cannot tell a
+	// poll_votes write apart from the liveness touch on the parent poll row
+	// (which also calls update() on "polls"), so a vote assertion has to
+	// name the table it expected.
+	updateCalls: [] as Array<{ table: string; patch: unknown }>,
 	// Error-injection switches for the vote write-failure regression tests.
 	probeError: null as unknown,
 	writeError: null as unknown,
 	resultsError: null as unknown,
+	// Per-table delete failures + call log for the DELETE regression
+	// contracts (loud failure, wipe ordering).
+	deleteErrors: {} as Record<string, Error | undefined>,
+	deleteCalls: [] as Array<{ table: string; filters: Array<[string, unknown]> }>,
 };
 
 const from = vi.fn();
@@ -57,6 +66,26 @@ vi.mock("../../api/_moderation.js", () => ({
 	})),
 }));
 
+// Route verdicts come from the unified safety pipeline: mock the seam
+// (default ALLOW) and override per test.
+const pipelineMocks = vi.hoisted(() => ({
+	evaluateContent: vi.fn(() => ({
+		action: "ALLOW",
+		classification: "clean",
+		confidence: "high",
+		policy: null,
+		reasons: [],
+		trace: [],
+		flags: [],
+		language: "en",
+		blocked: false,
+		needsReview: false,
+	})),
+	messageFor: vi.fn((_surface: string, code: string) => `${code} message`),
+	evaluateContentDeep: vi.fn(async (...args: unknown[]) => (pipelineMocks.evaluateContent as (...a: unknown[]) => unknown)(...args)),
+}));
+vi.mock("../../api/_safety-pipeline.js", () => pipelineMocks);
+
 function response() {
 	const res = { statusCode: 200, body: undefined as unknown };
 	return Object.assign(res, {
@@ -77,8 +106,8 @@ interface Chain {
 	op: string;
 	selCol: string;
 	select: (col?: unknown, opts?: unknown) => Chain;
-	eq: () => Chain;
-	in: () => Chain;
+	eq: (col?: unknown, val?: unknown) => Chain;
+	in: (col?: unknown, values?: unknown) => Chain;
 	order: () => Chain;
 	limit: () => Chain;
 	maybeSingle: () => Chain;
@@ -93,14 +122,20 @@ function chainFor(table: string): Chain {
 	const chain = {
 		op: "select",
 		selCol: "",
+		filters: [] as Array<[string, unknown]>,
+		inFilters: [] as Array<[string, unknown[]]>,
 		select(col?: unknown) {
 			this.selCol = String(col ?? "");
 			return this;
 		},
-		eq() {
+		eq(col?: unknown, val?: unknown) {
+			if (typeof col === "string") this.filters.push([col, val]);
 			return this;
 		},
-		in() {
+		in(col?: unknown, values?: unknown) {
+			if (typeof col === "string" && Array.isArray(values)) {
+				this.inFilters.push([col, values]);
+			}
 			return this;
 		},
 		order() {
@@ -119,6 +154,7 @@ function chainFor(table: string): Chain {
 		update(patch: unknown) {
 			this.op = "update";
 			state.lastUpdate = patch;
+			state.updateCalls.push({ table, patch });
 			return this;
 		},
 		insert(row: unknown) {
@@ -161,7 +197,33 @@ function chainFor(table: string): Chain {
 				return;
 			}
 			if (this.op === "delete") {
-				fn({ data: null, error: null });
+				// Record every delete so tests can assert wipe ORDERING (votes
+				// must not be erased before the parent row is proven gone).
+				state.deleteCalls.push({
+					table,
+					filters: [...this.filters],
+				});
+				const delErr = state.deleteErrors[table];
+				if (delErr) {
+					fn({ data: null, error: delErr });
+					return;
+				}
+				// Simulate PostgREST delete().select(): honor eq() filters so a
+				// delete resolves the rows it removed — the handler proves the
+				// delete landed (0 rows => 404). Rows are NOT mutated, matching
+				// the posts mock (keeps seeded fixtures stable across tests).
+				const rows =
+					table === "polls"
+						? state.polls
+						: table === "poll_votes"
+							? state.poll_votes
+							: state.posts;
+				const matched = rows.filter((r) =>
+					this.filters.every(
+						([col, val]) => (r as Record<string, unknown>)?.[col] === val,
+					),
+				);
+				fn({ data: matched, error: null });
 				return;
 			}
 			// Post-write results read (attachResults strict) — select('poll_id,choices').
@@ -180,7 +242,14 @@ function chainFor(table: string): Chain {
 					: table === "poll_votes"
 						? state.poll_votes
 						: state.posts;
-			fn({ data: rows, error: null });
+			const filteredRows = rows.filter((row) => {
+				const record = row as Record<string, unknown>;
+				return (
+					this.filters.every(([key, value]) => record[key] === value) &&
+					this.inFilters.every(([key, values]) => values.includes(record[key] as never))
+				);
+			});
+			fn({ data: filteredRows, error: null });
 		},
 	};
 	return chain;
@@ -197,6 +266,9 @@ function makePoll(over: Record<string, unknown> = {}) {
 		expires_at: null,
 		deleted: false,
 		archived: false,
+		// Migration 018 adds polls.hidden. Public listings filter on it, so a
+		// fixture without the column would (correctly) be filtered out.
+		hidden: false,
 		created_at: "2026-07-15T00:00:00Z",
 		...over,
 	};
@@ -210,12 +282,15 @@ beforeEach(() => {
 		poll_votes: [],
 		posts: [],
 		singleRow: null,
+		updateCalls: [],
 		existingVote: null,
 		lastInsert: null,
 		lastUpdate: null,
 		probeError: null,
 		writeError: null,
 		resultsError: null,
+		deleteErrors: {},
+		deleteCalls: [],
 	});
 	from.mockImplementation((table: string) => chainFor(table));
 });
@@ -223,17 +298,61 @@ beforeEach(() => {
 describe("GET /api/polls", () => {
 	it("returns the voter poll_votes rows when ?voter= is set", async () => {
 		state.poll_votes = [
-			{ poll_id: "poll-1", choices: [0] },
-			{ poll_id: "poll-2", choices: [1, 2] },
+			{ poll_id: "poll-1", choices: [0], author_id: "anon-2" },
+			{ poll_id: "poll-2", choices: [1, 2], author_id: "anon-2" },
 		];
 		const { default: handler } = await import("../../api/_polls.js");
 		const res = response();
 		await handler(
-			{ method: "GET", query: { voter: "anon-2" }, body: {}, headers: {} },
+			{ method: "GET", query: { voter: "anon-2" }, body: {}, headers: { "x-anon-id": "anon-1" } },
 			res,
 		);
 		expect(res.statusCode).toBe(200);
 		expect(res.body).toEqual(state.poll_votes);
+	});
+
+	it("does not archive stale polls during a public GET", async () => {
+		state.polls = [
+			makePoll({
+				id: "poll-stale",
+				expires_at: "2020-01-01T00:00:00.000Z",
+				archived: false,
+			}),
+		];
+		state.poll_votes = [];
+		state.posts = [];
+		const { default: handler } = await import("../../api/_polls.js");
+		const res = response();
+		await handler({ method: "GET", query: {}, body: {}, headers: {} }, res);
+		expect(res.statusCode).toBe(200);
+		expect(state.lastUpdate).toBeNull();
+		expect(state.polls[0]?.archived).toBe(false);
+	});
+
+	it("returns only the requested poll ids for a bounded batch", async () => {
+		state.polls = [
+			makePoll({ id: "poll-1" }),
+			makePoll({ id: "poll-2" }),
+			makePoll({ id: "poll-3" }),
+		];
+		state.poll_votes = [];
+		state.posts = [];
+		const { default: handler } = await import("../../api/_polls.js");
+		const res = response();
+		await handler(
+			{
+				method: "GET",
+				query: { ids: "poll-1,poll-2" },
+				body: {},
+				headers: { "x-anon-id": "anon-1" },
+			},
+			res,
+		);
+		expect(res.statusCode).toBe(200);
+		expect((res.body as Array<{ id: string }>).map((p) => p.id)).toEqual([
+			"poll-1",
+			"poll-2",
+		]);
 	});
 
 	it("unmasks author_id and sets is_mine when the viewer owns the poll", async () => {
@@ -243,7 +362,7 @@ describe("GET /api/polls", () => {
 		const { default: handler } = await import("../../api/_polls.js");
 		const res = response();
 		await handler(
-			{ method: "GET", query: { viewer: "anon-7" }, body: {}, headers: {} },
+			{ method: "GET", query: { viewer: "anon-7" }, body: {}, headers: { "x-anon-id": "anon-1" } },
 			res,
 		);
 		expect(res.statusCode).toBe(200);
@@ -258,7 +377,7 @@ describe("GET /api/polls", () => {
 		state.posts = [];
 		const { default: handler } = await import("../../api/_polls.js");
 		const res = response();
-		await handler({ method: "GET", query: {}, body: {}, headers: {} }, res);
+		await handler({ method: "GET", query: {}, body: {}, headers: { "x-anon-id": "anon-1" } }, res);
 		expect(res.statusCode).toBe(200);
 		const [p] = res.body as Array<{ author_id: string }>;
 		expect(p.author_id).toBe("anon-99...");
@@ -270,13 +389,13 @@ describe("GET /api/polls", () => {
 		state.posts = [];
 		const { default: handler } = await import("../../api/_polls.js");
 		const res = response();
-		await handler({ method: "GET", query: {}, body: {}, headers: {} }, res);
+		await handler({ method: "GET", query: {}, body: {}, headers: { "x-anon-id": "anon-1" } }, res);
 		expect(res.statusCode).toBe(200);
 		const [p] = res.body as Array<{ author_id: string }>;
 		expect(p.author_id).toBe("ADMIN");
 	});
 
-	it("cleans orphaned post_id references in background and in-memory", async () => {
+	it("does not mutate orphaned post_id references during a public GET", async () => {
 		state.polls = [
 			makePoll({
 				id: "poll-orphan",
@@ -288,11 +407,11 @@ describe("GET /api/polls", () => {
 		state.posts = []; // linked post does not exist → orphan
 		const { default: handler } = await import("../../api/_polls.js");
 		const res = response();
-		await handler({ method: "GET", query: {}, body: {}, headers: {} }, res);
+		await handler({ method: "GET", query: {}, body: {}, headers: { "x-anon-id": "anon-1" } }, res);
 		expect(res.statusCode).toBe(200);
 		const [p] = res.body as Array<{ post_id: string | null }>;
-		expect(p.post_id).toBeNull();
-		expect(state.lastUpdate).toEqual({ post_id: null });
+		expect(p.post_id).toBe("post-gone");
+		expect(state.lastUpdate).toBeNull();
 	});
 
 	it("keeps post_id intact when the linked post still exists", async () => {
@@ -303,7 +422,7 @@ describe("GET /api/polls", () => {
 		state.posts = [{ id: "post-1" }];
 		const { default: handler } = await import("../../api/_polls.js");
 		const res = response();
-		await handler({ method: "GET", query: {}, body: {}, headers: {} }, res);
+		await handler({ method: "GET", query: {}, body: {}, headers: { "x-anon-id": "anon-1" } }, res);
 		expect(res.statusCode).toBe(200);
 		const [p] = res.body as Array<{ post_id: string | null }>;
 		expect(p.post_id).toBe("post-1");
@@ -320,7 +439,7 @@ describe("GET /api/polls", () => {
 		(isAdmin as ReturnType<typeof vi.fn>).mockResolvedValueOnce(true);
 		const { default: handler } = await import("../../api/_polls.js");
 		const res = response();
-		await handler({ method: "GET", query: {}, body: {}, headers: {} }, res);
+		await handler({ method: "GET", query: {}, body: {}, headers: { "x-anon-id": "anon-1" } }, res);
 		expect(res.statusCode).toBe(200);
 		const [p] = res.body as Array<{ deleted: boolean }>;
 		expect(p.deleted).toBe(true);
@@ -346,7 +465,7 @@ describe("POST /api/polls { action: vote }", () => {
 					choices: [0],
 					author_id: "anon-2",
 				},
-				headers: {},
+				headers: { "x-anon-id": "anon-2" },
 			},
 			res,
 		);
@@ -367,7 +486,7 @@ describe("POST /api/polls { action: vote }", () => {
 					choices: [0],
 					author_id: "anon-2",
 				},
-				headers: {},
+				headers: { "x-anon-id": "anon-2" },
 			},
 			res,
 		);
@@ -388,7 +507,7 @@ describe("POST /api/polls { action: vote }", () => {
 					choices: [0],
 					author_id: "anon-2",
 				},
-				headers: {},
+				headers: { "x-anon-id": "anon-2" },
 			},
 			res,
 		);
@@ -409,7 +528,7 @@ describe("POST /api/polls { action: vote }", () => {
 					choices: [0],
 					author_id: "anon-2",
 				},
-				headers: {},
+				headers: { "x-anon-id": "anon-2" },
 			},
 			res,
 		);
@@ -431,7 +550,7 @@ describe("POST /api/polls { action: vote }", () => {
 					choices: [0],
 					author_id: "anon-2",
 				},
-				headers: {},
+				headers: { "x-anon-id": "anon-2" },
 			},
 			res,
 		);
@@ -453,7 +572,7 @@ describe("POST /api/polls { action: vote }", () => {
 					choices: [],
 					author_id: "anon-2",
 				},
-				headers: {},
+				headers: { "x-anon-id": "anon-2" },
 			},
 			res,
 		);
@@ -475,7 +594,7 @@ describe("POST /api/polls { action: vote }", () => {
 					choices: [0, 1],
 					author_id: "anon-2",
 				},
-				headers: {},
+				headers: { "x-anon-id": "anon-2" },
 			},
 			res,
 		);
@@ -498,7 +617,7 @@ describe("POST /api/polls { action: vote }", () => {
 					choices: [0],
 					author_id: "anon-2",
 				},
-				headers: {},
+				headers: { "x-anon-id": "anon-2" },
 			},
 			res,
 		);
@@ -527,12 +646,22 @@ describe("POST /api/polls { action: vote }", () => {
 					choices: [0],
 					author_id: "anon-2",
 				},
-				headers: {},
+				headers: { "x-anon-id": "anon-2" },
 			},
 			res,
 		);
 		expect(res.statusCode).toBe(200);
-		expect(state.lastUpdate).toEqual({ choices: [0] });
+		// The BALLOT write must have been an update of the existing vote row,
+		// not an insert of a second one. Assert on the poll_votes update
+		// specifically: the handler also touches the parent polls row for
+		// realtime liveness, which is a separate, intentional write.
+		expect(state.updateCalls).toContainEqual({
+			table: "poll_votes",
+			patch: { choices: [0] },
+		});
+		expect(
+			state.updateCalls.filter((u) => u.table === "poll_votes"),
+		).toHaveLength(1);
 		expect(state.lastInsert).toBeNull();
 	});
 
@@ -558,7 +687,7 @@ describe("POST /api/polls { action: vote }", () => {
 						choices: [0],
 						author_id: "anon-2",
 					},
-					headers: {},
+					headers: { "x-anon-id": "anon-2" },
 				},
 				res,
 			),
@@ -583,7 +712,7 @@ describe("POST /api/polls { action: vote }", () => {
 						choices: [0],
 						author_id: "anon-2",
 					},
-					headers: {},
+					headers: { "x-anon-id": "anon-2" },
 				},
 				res,
 			),
@@ -608,7 +737,7 @@ describe("POST /api/polls { action: vote }", () => {
 						choices: [0],
 						author_id: "anon-2",
 					},
-					headers: {},
+					headers: { "x-anon-id": "anon-2" },
 				},
 				res,
 			),
@@ -633,7 +762,7 @@ describe("POST /api/polls { action: vote }", () => {
 						choices: [0],
 						author_id: "anon-2",
 					},
-					headers: {},
+					headers: { "x-anon-id": "anon-2" },
 				},
 				res,
 			),
@@ -651,7 +780,7 @@ describe("POST /api/polls — create", () => {
 				method: "POST",
 				query: {},
 				body: { title: "Should the library open longer?", author_id: "anon-2" },
-				headers: {},
+				headers: { "x-anon-id": "anon-2" },
 			},
 			res,
 		);
@@ -674,7 +803,7 @@ describe("POST /api/polls — create", () => {
 				method: "POST",
 				query: {},
 				body: { title: "Should we change the schedule?", author_id: "anon-2" },
-				headers: {},
+				headers: { "x-anon-id": "anon-2" },
 			},
 			res,
 		);
@@ -689,7 +818,7 @@ describe("POST /api/polls — create", () => {
 				method: "POST",
 				query: {},
 				body: { title: "Ques", author_id: "anon-2" },
-				headers: {},
+				headers: { "x-anon-id": "anon-2" },
 			},
 			res,
 		);
@@ -710,7 +839,7 @@ describe("POST /api/polls — create", () => {
 					options: ["Only one"],
 					author_id: "anon-2",
 				},
-				headers: {},
+				headers: { "x-anon-id": "anon-2" },
 			},
 			res,
 		);
@@ -719,10 +848,18 @@ describe("POST /api/polls — create", () => {
 	});
 
 	it("blocks PII in poll questions", async () => {
-		const { serverModerate } = await import("../../api/_moderation.js");
-		(serverModerate as ReturnType<typeof vi.fn>).mockReturnValueOnce({
-			blocked: true,
+		pipelineMocks.evaluateContent.mockReturnValueOnce({
+			action: "BLOCK_ACTION",
+			classification: "privacy",
+			confidence: "high",
+			policy: "pipeline-test",
+			reasons: ["test"],
+			trace: [],
 			flags: [{ type: "privacy" }],
+			language: "en",
+			blocked: true,
+			needsReview: false,
+			code: "PII_BLOCKED",
 		});
 		const { default: handler } = await import("../../api/_polls.js");
 		const res = response();
@@ -731,7 +868,7 @@ describe("POST /api/polls — create", () => {
 				method: "POST",
 				query: {},
 				body: { title: "Where does Alex live?", author_id: "anon-2" },
-				headers: {},
+				headers: { "x-anon-id": "anon-2" },
 			},
 			res,
 		);
@@ -745,10 +882,18 @@ describe("POST /api/polls — create", () => {
 	});
 
 	it("blocks content that violates safety guidelines", async () => {
-		const { serverModerate } = await import("../../api/_moderation.js");
-		(serverModerate as ReturnType<typeof vi.fn>).mockReturnValueOnce({
+		pipelineMocks.evaluateContent.mockReturnValueOnce({
+			action: "BLOCK_ACTION",
+			classification: "hate_speech",
+			confidence: "high",
+			policy: "pipeline-test",
+			reasons: ["test"],
+			trace: [],
+			flags: [{ type: "hate_speech" }],
+			language: "en",
 			blocked: true,
-			flags: [{ type: "hate" }],
+			needsReview: false,
+			code: "CONTENT_BLOCKED",
 		});
 		const { default: handler } = await import("../../api/_polls.js");
 		const res = response();
@@ -757,7 +902,7 @@ describe("POST /api/polls — create", () => {
 				method: "POST",
 				query: {},
 				body: { title: "A dangerous question", author_id: "anon-2" },
-				headers: {},
+				headers: { "x-anon-id": "anon-2" },
 			},
 			res,
 		);
@@ -777,7 +922,7 @@ describe("POST /api/polls — create", () => {
 					expires_at: "2099-05-01T12:00:00Z",
 					author_id: "anon-2",
 				},
-				headers: {},
+				headers: { "x-anon-id": "anon-2" },
 			},
 			res1,
 		);
@@ -796,7 +941,7 @@ describe("POST /api/polls — create", () => {
 					expires_at: "not-a-date",
 					author_id: "anon-2",
 				},
-				headers: {},
+				headers: { "x-anon-id": "anon-2" },
 			},
 			res2,
 		);
@@ -816,13 +961,75 @@ describe("POST /api/polls — create", () => {
 				method: "POST",
 				query: {},
 				body: { title: "Official town hall poll?" },
-				headers: {},
+				headers: { "x-anon-id": "anon-1" },
 			},
 			res,
 		);
 		expect(res.statusCode).toBe(201);
 		expect((state.lastInsert as { author_id: string }).author_id).toBe("ADMIN");
 		expect(rateLimited).not.toHaveBeenCalled();
+	});
+
+	it("links a poll to the author's own post", async () => {
+		state.singleRow = { id: "post-own", author_id: "anon-2" };
+		const { default: handler } = await import("../../api/_polls.js");
+		const res = response();
+		await handler(
+			{
+				method: "POST",
+				query: {},
+				body: {
+					title: "Do you support this fix?",
+					post_id: "post-own",
+					author_id: "anon-2",
+				},
+				headers: { "x-anon-id": "anon-2" },
+			},
+			res,
+		);
+		expect(res.statusCode).toBe(201);
+		expect((state.lastInsert as { post_id: string }).post_id).toBe("post-own");
+	});
+
+	it("403s when linking a poll to someone else's post", async () => {
+		state.singleRow = { id: "post-theirs", author_id: "anon-9" };
+		const { default: handler } = await import("../../api/_polls.js");
+		const res = response();
+		await handler(
+			{
+				method: "POST",
+				query: {},
+				body: {
+					title: "Do you support this fix?",
+					post_id: "post-theirs",
+					author_id: "anon-2",
+				},
+				headers: { "x-anon-id": "anon-2" },
+			},
+			res,
+		);
+		expect(res.statusCode).toBe(403);
+		expect((res.body as { error: string }).error).toContain("your own posts");
+	});
+
+	it("404s when linking a poll to a missing post", async () => {
+		state.singleRow = null;
+		const { default: handler } = await import("../../api/_polls.js");
+		const res = response();
+		await handler(
+			{
+				method: "POST",
+				query: {},
+				body: {
+					title: "Do you support this fix?",
+					post_id: "post-gone",
+					author_id: "anon-2",
+				},
+				headers: { "x-anon-id": "anon-2" },
+			},
+			res,
+		);
+		expect(res.statusCode).toBe(404);
 	});
 });
 
@@ -836,7 +1043,7 @@ describe("PUT /api/polls", () => {
 				method: "PUT",
 				query: {},
 				body: { id: "nope", archived: true, author_id: "anon-2" },
-				headers: {},
+				headers: { "x-anon-id": "anon-2" },
 			},
 			res,
 		);
@@ -852,7 +1059,7 @@ describe("PUT /api/polls", () => {
 				method: "PUT",
 				query: {},
 				body: { id: "poll-1", archived: true, author_id: "ADMIN" },
-				headers: {},
+				headers: { "x-anon-id": "anon-1" },
 			},
 			res,
 		);
@@ -868,7 +1075,7 @@ describe("PUT /api/polls", () => {
 				method: "PUT",
 				query: {},
 				body: { id: "poll-1", archived: true, author_id: "anon-9" },
-				headers: {},
+				headers: { "x-anon-id": "anon-9" },
 			},
 			res,
 		);
@@ -884,7 +1091,7 @@ describe("PUT /api/polls", () => {
 				method: "PUT",
 				query: {},
 				body: { id: "poll-1", archived: true, author_id: "anon-2" },
-				headers: {},
+				headers: { "x-anon-id": "anon-2" },
 			},
 			res,
 		);
@@ -904,7 +1111,7 @@ describe("PUT /api/polls", () => {
 				method: "PUT",
 				query: {},
 				body: { id: "poll-1", expires_at: "2099-01-01T00:00:00Z" },
-				headers: {},
+				headers: { "x-anon-id": "anon-1" },
 			},
 			res,
 		);
@@ -923,24 +1130,162 @@ describe("DELETE /api/polls", () => {
 		const { default: handler } = await import("../../api/_polls.js");
 		const res = response();
 		await handler(
-			{ method: "DELETE", query: {}, body: { id: "poll-1" }, headers: {} },
+			{ method: "DELETE", query: {}, body: { id: "poll-1" }, headers: { "x-anon-id": "anon-1" } },
 			res,
 		);
 		expect(res.statusCode).toBe(403);
 	});
 
 	it("hard-deletes the poll and its votes as an admin", async () => {
+		// beforeEach leaves state.polls empty; the handler now proves the
+		// delete landed (0 rows => 404), so seed the poll being deleted.
+		state.polls = [makePoll()];
 		const { isAdmin } = await import("../../api/_auth.js");
 		(isAdmin as ReturnType<typeof vi.fn>).mockResolvedValueOnce(true);
 		const { default: handler } = await import("../../api/_polls.js");
 		const res = response();
 		await handler(
-			{ method: "DELETE", query: {}, body: { id: "poll-1" }, headers: {} },
+			{ method: "DELETE", query: {}, body: { id: "poll-1" }, headers: { "x-anon-id": "anon-1" } },
 			res,
 		);
 		expect(res.statusCode).toBe(200);
 		expect(res.body).toEqual({ ok: true });
 		expect(authMocks.auditLog).toHaveBeenCalledWith(
+			"admin",
+			"delete_poll",
+			"poll-1",
+		);
+		// Cascade order: the poll row is deleted (and proved) BEFORE its
+		// votes — never the reverse (a failed poll delete would otherwise
+		// leave a live poll with every vote already erased).
+		expect(state.deleteCalls.map((c) => c.table)).toEqual([
+			"polls",
+			"poll_votes",
+		]);
+		expect(state.deleteCalls[1]?.filters).toEqual([["poll_id", "poll-1"]]);
+	});
+
+	// REGRESSION: an id that matches no row used to no-op with ok:true —
+	// the same "row comes back on refresh" bug posts had. A delete that
+	// removes 0 rows must 404 and must not audit a deletion.
+	it("404s when the id matches no row instead of returning ok:true", async () => {
+		state.polls = [makePoll({ id: "some-other-poll" })];
+		const { isAdmin } = await import("../../api/_auth.js");
+		(isAdmin as ReturnType<typeof vi.fn>).mockResolvedValueOnce(true);
+		const { default: handler } = await import("../../api/_polls.js");
+		const res = response();
+		await handler(
+			{ method: "DELETE", query: {}, body: { id: "poll-1" }, headers: { "x-anon-id": "anon-1" } },
+			res,
+		);
+		expect(res.statusCode).toBe(404);
+		expect((res.body as { ok?: boolean }).ok).not.toBe(true);
+		expect((res.body as { error: string }).error).toBe("Poll not found");
+		expect(authMocks.auditLog).not.toHaveBeenCalledWith(
+			"admin",
+			"delete_poll",
+			"poll-1",
+		);
+	});
+
+	// Vercel drops DELETE request bodies — the id must arrive via query.
+	it("accepts the id from the query string with an empty body", async () => {
+		state.polls = [makePoll()];
+		const { isAdmin } = await import("../../api/_auth.js");
+		(isAdmin as ReturnType<typeof vi.fn>).mockResolvedValueOnce(true);
+		const { default: handler } = await import("../../api/_polls.js");
+		const res = response();
+		await handler(
+			{
+				method: "DELETE",
+				query: { id: "poll-1" },
+				body: {},
+				headers: { "x-anon-id": "anon-1" },
+			},
+			res,
+		);
+		expect(res.statusCode).toBe(200);
+		expect(res.body).toEqual({ ok: true });
+		expect(authMocks.auditLog).toHaveBeenCalledWith(
+			"admin",
+			"delete_poll",
+			"poll-1",
+		);
+	});
+
+	it("400s when the id is missing from both query and body", async () => {
+		const { isAdmin } = await import("../../api/_auth.js");
+		(isAdmin as ReturnType<typeof vi.fn>).mockResolvedValueOnce(true);
+		const { default: handler } = await import("../../api/_polls.js");
+		const res = response();
+		await handler(
+			{
+				method: "DELETE",
+				query: {},
+				body: {},
+				headers: { "x-anon-id": "anon-1" },
+			},
+			res,
+		);
+		expect(res.statusCode).toBe(400);
+		expect((res.body as { error: string }).error).toBe("Missing id");
+	});
+
+	// REGRESSION: votes were wiped BEFORE the poll row delete was proved.
+	// A transient error on the poll delete then left a live poll with every
+	// vote already erased. The poll row must go first, and a failed delete
+	// must leave poll_votes untouched.
+	it("does not touch poll_votes when the poll row delete fails", async () => {
+		state.polls = [makePoll()];
+		state.deleteErrors.polls = new Error("poll row delete failed");
+		const { isAdmin } = await import("../../api/_auth.js");
+		(isAdmin as ReturnType<typeof vi.fn>).mockResolvedValueOnce(true);
+		const { default: handler } = await import("../../api/_polls.js");
+		const res = response();
+		await expect(
+			handler(
+				{
+					method: "DELETE",
+					query: {},
+					body: { id: "poll-1" },
+					headers: { "x-anon-id": "anon-1" },
+				},
+				res,
+			),
+		).rejects.toThrow("poll row delete failed");
+		expect(state.deleteCalls.some((c) => c.table === "poll_votes")).toBe(
+			false,
+		);
+		expect((res.body as { ok?: boolean } | undefined)?.ok).not.toBe(true);
+		expect(authMocks.auditLog).not.toHaveBeenCalledWith(
+			"admin",
+			"delete_poll",
+			"poll-1",
+		);
+	});
+
+	// REGRESSION: the poll_votes delete error was discarded — orphan votes
+	// shipped with ok:true and an audit entry. Fail loudly instead.
+	it("surfaces a poll_votes wipe failure instead of answering ok:true", async () => {
+		state.polls = [makePoll()];
+		state.deleteErrors.poll_votes = new Error("votes wipe failed");
+		const { isAdmin } = await import("../../api/_auth.js");
+		(isAdmin as ReturnType<typeof vi.fn>).mockResolvedValueOnce(true);
+		const { default: handler } = await import("../../api/_polls.js");
+		const res = response();
+		await expect(
+			handler(
+				{
+					method: "DELETE",
+					query: {},
+					body: { id: "poll-1" },
+					headers: { "x-anon-id": "anon-1" },
+				},
+				res,
+			),
+		).rejects.toThrow("votes wipe failed");
+		expect((res.body as { ok?: boolean } | undefined)?.ok).not.toBe(true);
+		expect(authMocks.auditLog).not.toHaveBeenCalledWith(
 			"admin",
 			"delete_poll",
 			"poll-1",
@@ -952,7 +1297,7 @@ describe("method routing", () => {
 	it("answers OPTIONS with 204", async () => {
 		const { default: handler } = await import("../../api/_polls.js");
 		const res = response();
-		await handler({ method: "OPTIONS", query: {}, body: {}, headers: {} }, res);
+		await handler({ method: "OPTIONS", query: {}, body: {}, headers: { "x-anon-id": "anon-1" } }, res);
 		expect(res.statusCode).toBe(204);
 	});
 });

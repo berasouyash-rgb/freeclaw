@@ -1,0 +1,45 @@
+# Dependabot — Automated dependency updates
+# Checks weekly for outdated dependencies and creates PRs
+
+version: 2
+updates:
+  # npm dependencies
+  - package-ecosystem: npm
+    directory: /voice-box
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    reviewers: []
+    labels:
+      - dependencies
+      - automated
+    groups:
+      production:
+        dependency-type: production
+      development:
+        dependency-type: development
+
+  # GitHub Actions
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 3
+    labels:
+      - dependencies
+      - github-actions
+      - automated
+
+  # Python dependencies
+  - package-ecosystem: pip
+    directory: /voice-box/services
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 3
+    labels:
+      - dependencies
+      - python
+      - automated

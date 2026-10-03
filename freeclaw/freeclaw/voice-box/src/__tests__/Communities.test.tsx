@@ -54,6 +54,13 @@ beforeEach(() => {
 });
 
 describe("Communities page", () => {
+	it("does not poll the community list in the background", () => {
+		const intervalSpy = vi.spyOn(globalThis, "setInterval");
+		render(<Communities />);
+		expect(intervalSpy.mock.calls.map(([, delay]) => delay)).not.toContain(30_000);
+		intervalSpy.mockRestore();
+	});
+
 	it("renders the community list from the API", async () => {
 		render(<Communities />);
 		expect(await screen.findByText("Study Gang")).toBeInTheDocument();

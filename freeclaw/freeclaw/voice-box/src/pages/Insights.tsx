@@ -44,21 +44,71 @@ function normalizeInsights(raw: unknown): InsightsData | null {
 	const totals = r.totals;
 	if (!totals || typeof totals !== "object" || !Array.isArray(r.by_category))
 		return null;
+	// Coerce numerics: a string/NaN count would otherwise poison widths
+	// ("NaN%" bars) and stat tiles downstream. Numeric strings convert;
+	// everything else becomes 0.
+	const num = (v: unknown) => {
+		const n =
+			typeof v === "string" && v.trim() !== "" ? Number(v) : v;
+		return typeof n === "number" && Number.isFinite(n) ? n : 0;
+	};
+	const str = (v: unknown, fb = "") =>
+		typeof v === "string" ? v : fb;
 	return {
 		totals: {
-			posts: totals.posts ?? 0,
-			comments: totals.comments ?? 0,
-			reactions: totals.reactions ?? 0,
-			polls: totals.polls ?? 0,
-			poll_votes: totals.poll_votes ?? 0,
-			open: totals.open ?? 0,
-			solved: totals.solved ?? 0,
-			participants: totals.participants ?? 0,
+			posts: num(totals.posts),
+			comments: num(totals.comments),
+			reactions: num(totals.reactions),
+			polls: num(totals.polls),
+			poll_votes: num(totals.poll_votes),
+			open: num(totals.open),
+			solved: num(totals.solved),
+			participants: num(totals.participants),
 		},
-		by_category: r.by_category,
-		by_status: Array.isArray(r.by_status) ? r.by_status : [],
-		trend: Array.isArray(r.trend) ? r.trend : [],
-		top_categories: Array.isArray(r.top_categories) ? r.top_categories : [],
+		by_category: r.by_category.map((c) => {
+			const row = (c ?? {}) as Partial<{
+				category: unknown;
+				count: unknown;
+				solved: unknown;
+			}>;
+			return {
+				category: str(row.category, "?"),
+				count: num(row.count),
+				solved: num(row.solved),
+			};
+		}),
+		by_status: Array.isArray(r.by_status)
+			? r.by_status.map((s) => {
+					const row = (s ?? {}) as Partial<{
+						status: unknown;
+						count: unknown;
+					}>;
+					return { status: str(row.status, "?"), count: num(row.count) };
+				})
+			: [],
+		trend: Array.isArray(r.trend)
+			? r.trend.map((t) => {
+					const row = (t ?? {}) as Partial<{
+						date: unknown;
+						posts: unknown;
+						comments: unknown;
+					}>;
+					return {
+						date: str(row.date),
+						posts: num(row.posts),
+						comments: num(row.comments),
+					};
+				})
+			: [],
+		top_categories: Array.isArray(r.top_categories)
+			? r.top_categories.map((c) => {
+					const row = (c ?? {}) as Partial<{
+						category: unknown;
+						count: unknown;
+					}>;
+					return { category: str(row.category, "?"), count: num(row.count) };
+				})
+			: [],
 	};
 }
 
@@ -67,10 +117,10 @@ export default function Insights() {
 	const [loading, setLoading] = useState(true);
 	const [error, setError] = useState("");
 
-	const load = useCallback(async () => {
+	const load = useCallback(async (silent = false) => {
 		try {
 			setError("");
-			setLoading(true);
+			if (!silent) setLoading(true);
 			const norm = normalizeInsights(
 				await api.getSlow<unknown>("/api/insights"),
 			);
@@ -145,9 +195,10 @@ export default function Insights() {
 					<p className="text-bad font-medium text-sm">{error}</p>
 					<button
 						className="btn btn-soft mt-3"
+						// Silent retry: keep the error card honest without
+						// blanking to skeletons first.
 						onClick={() => {
-							setLoading(true);
-							load();
+							load(true);
 						}}
 					>
 						Retry
@@ -186,7 +237,7 @@ export default function Insights() {
 						))}
 					</div>
 
-					<div className="grid sm:grid-cols-2 gap-4">
+					<div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
 						{/* Category breakdown */}
 						<div className="card p-4">
 							<p className="text-[10px] font-bold uppercase tracking-wider text-ink3 mb-3 flex items-center gap-1.5">
@@ -284,12 +335,19 @@ export default function Insights() {
 							})}
 						</div>
 						<div className="flex justify-between gap-1 mt-1.5">
-							{data.trend.map((t) => (
+							{data.trend.map((t, i) => (
 								<span
 									key={t.date}
-									className="flex-1 text-center text-[8px] text-ink3 whitespace-nowrap"
+									className="flex-1 min-w-0 text-center text-[8px] text-ink3 whitespace-nowrap overflow-hidden"
 								>
-									{dayLabel(t.date)}
+									{/* A 14-day axis cannot fit 14 date labels on a phone (~24px
+									    per slot, ~28px per "Sep 18" label), so every label used
+									    to push the page wider than the viewport. Label every
+									    third day and always the last — standard tick density.
+									    Every day still gets its bar; only the ticks thin out. */}
+									{i % 3 === 0 || i === data.trend.length - 1
+										? dayLabel(t.date)
+										: ""}
 								</span>
 							))}
 						</div>

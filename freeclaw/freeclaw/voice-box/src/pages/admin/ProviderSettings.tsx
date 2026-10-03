@@ -108,7 +108,6 @@ export default function ProviderSettings() {
 	const [searchQuery, setSearchQuery] = useState("");
 	// Per-provider edit state
 	const [editKey, setEditKey] = useState("");
-	const [_editModel, _setEditModel] = useState("");
 	const [editCustomModel, setEditCustomModel] = useState("");
 	const [savingModel, setSavingModel] = useState<string | null>(null);
 
@@ -118,7 +117,9 @@ export default function ProviderSettings() {
 				api.get<Record<string, ProviderConfig>>("/api/providers?action=list"),
 				api.get<CategoryInfo>("/api/providers?action=categories"),
 			]);
-			setProviders(p);
+			// A null/empty payload must degrade to an empty list, never crash
+			// Object.values() downstream.
+			setProviders(p || {});
 			setCategoryInfo(c);
 		} catch (e: unknown) {
 			toast(
@@ -147,7 +148,7 @@ export default function ProviderSettings() {
 			if (r.success) {
 				toast(`${pName}: OK (${r.latency_ms}ms)`, "ok");
 			} else {
-				toast(`${pName}: Failed — ${r.error}`, "err");
+				toast(`${pName}: Failed — ${r.error || "unknown error"}`, "err");
 			}
 			await load();
 		} catch (e: unknown) {
@@ -299,9 +300,9 @@ export default function ProviderSettings() {
 				.filter(
 					(p) =>
 						!q ||
-						p.name.toLowerCase().includes(q) ||
-						p.id.includes(q) ||
-						p.model.toLowerCase().includes(q),
+						(p.name || "").toLowerCase().includes(q) ||
+						(p.id || "").includes(q) ||
+						(p.model || "").toLowerCase().includes(q),
 				)
 				.sort((a, b) =>
 					a.is_default ? -1 : b.is_default ? 1 : a.priority - b.priority,
@@ -331,9 +332,9 @@ export default function ProviderSettings() {
 			.filter((p) => {
 				const q = searchQuery.toLowerCase();
 				return (
-					p.name.toLowerCase().includes(q) ||
-					p.id.includes(q) ||
-					p.model.toLowerCase().includes(q)
+					(p.name || "").toLowerCase().includes(q) ||
+					(p.id || "").includes(q) ||
+					(p.model || "").toLowerCase().includes(q)
 				);
 			})
 			.sort((a, b) =>
@@ -448,6 +449,10 @@ export default function ProviderSettings() {
 							onClick={() => {
 								setExpanded(isExpanded ? null : p.id);
 								setEditKey("");
+								// The custom-model input is shared state — clear it
+								// when switching providers so provider A's draft
+								// never appears under (or saves into) B.
+								setEditCustomModel("");
 							}}
 							title="Settings"
 						>

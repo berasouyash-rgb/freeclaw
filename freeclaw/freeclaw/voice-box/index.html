@@ -3,9 +3,11 @@
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-    <title>Voice Box — Anonymous School Feedback Platform</title>
-    <meta name="description" content="Voice Box lets students share anonymous feedback, report issues, and track solutions. Voice matters — speak up and watch real change happen at your school." />
+    <title>Voice Flow — Anonymous School Feedback Platform</title>
+    <meta name="description" content="Voice Flow lets students share anonymous feedback, report issues, and track solutions. Voice matters — speak up and watch real change happen at your school." />
     <meta name="theme-color" content="#5652d6" />
 
     <!-- Fonts: preconnect + preload for zero FOIT -->
@@ -23,7 +25,7 @@
           #f6f6f9;
         color: #171724;
         font-family: 'Albert Sans', system-ui, sans-serif;
-        transition: opacity .5s cubic-bezier(.16,1,.3,1), visibility 0s linear .5s;
+        transition: opacity .2s cubic-bezier(.16,1,.3,1), visibility 0s linear .2s;
       }
       #vb-splash.vb-hide { opacity: 0; pointer-events: none; visibility: hidden; }
 
@@ -44,20 +46,22 @@
         18%  { opacity: .9; }
         100% { transform: scale(2.6); opacity: 0; }
       }
-      /* Glowing core */
-      .vb-orb b {
+      /* Glowing logo tile — the Voice Flow mark (speaker + sound arcs).
+         Ripple rings around it read as outgoing sound, matching the mark. */
+      .vb-logo-tile {
         position: absolute; inset: 0; margin: auto;
-        width: 34px; height: 34px; border-radius: 50%;
-        background:
-          radial-gradient(circle at 32% 28%, #a89dff 0%, #5652d6 58%, #4038c7 100%);
-        box-shadow:
-          0 0 22px rgba(86,82,214,.55),
-          inset 0 -4px 10px rgba(0,0,0,.22);
-        animation: vb-core 1.6s ease-in-out infinite alternate;
+        width: 44px; height: 44px;
+        filter: drop-shadow(0 0 18px rgba(86,82,214,.55));
       }
-      @keyframes vb-core {
-        from { transform: scale(.94); }
-        to   { transform: scale(1.06); }
+      .vb-logo-tile .vb-splash-arcs path {
+        opacity: .35;
+        animation: vb-splash-wave 2.2s ease-in-out infinite;
+      }
+      .vb-logo-tile .vb-splash-arcs path:nth-child(2) { animation-delay: .25s; }
+      .vb-logo-tile .vb-splash-arcs path:nth-child(3) { animation-delay: .5s; }
+      @keyframes vb-splash-wave {
+        0%,100% { opacity: .3; }
+        50%     { opacity: 1; }
       }
       /* Orbiting particles on two tilted rings */
       .vb-orb u {
@@ -103,6 +107,7 @@
       @media (prefers-reduced-motion: reduce) {
         .vb-orb i, .vb-orb b, .vb-orb u { animation: none !important; }
         .vb-orb i { opacity: .25 !important; transform: scale(1.4); }
+        .vb-logo-tile .vb-splash-arcs path { animation: none !important; opacity: .9 !important; }
         .vb-word span { animation-duration: .01s; }
         .vb-tag { animation-duration: .01s; }
         .vb-ring .fg { animation-duration: 2.6s; }
@@ -120,13 +125,31 @@
   </head>
   <body>
     <!-- Splash screen DOM — removed by main.tsx once React mounts -->
-    <div id="vb-splash" role="status" aria-label="Voice Box is loading">
+    <div id="vb-splash" role="status" aria-label="Voice Flow is loading">
       <div class="vb-orb" aria-hidden="true">
         <i></i><i></i><i></i>
-        <b></b>
+        <svg class="vb-logo-tile" viewBox="0 0 64 64" aria-hidden="true">
+          <defs>
+            <linearGradient id="vbsg" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0%" stop-color="#8b85f5"/>
+              <stop offset="58%" stop-color="#5652d6"/>
+              <stop offset="100%" stop-color="#4038c7"/>
+            </linearGradient>
+          </defs>
+          <rect width="64" height="64" rx="15" fill="url(#vbsg)"/>
+          <g fill="#ffffff">
+            <circle cx="23" cy="23" r="8.5"/>
+            <path d="M9 51 C9 42 15 38 23 38 C31 38 37 42 37 51 Z"/>
+          </g>
+          <g fill="none" stroke="#ffffff" stroke-width="3.2" stroke-linecap="round" class="vb-splash-arcs">
+            <path d="M40.4 22 A13 13 0 0 1 40.4 42"/>
+            <path d="M44.9 16.7 A20 20 0 0 1 44.9 47.3"/>
+            <path d="M49.3 11.3 A27 27 0 0 1 49.3 52.7"/>
+          </g>
+        </svg>
         <u></u><u></u>
       </div>
-      <div class="vb-word" aria-label="Voice Box">
+      <div class="vb-word" aria-label="Voice Flow">
         <span style="animation-delay:.45s">V</span><span style="animation-delay:.52s">o</span><span style="animation-delay:.59s">i</span><span style="animation-delay:.66s">c</span><span style="animation-delay:.73s">e</span><span style="animation-delay:.84s">&nbsp;</span><span style="animation-delay:.92s">B</span><span style="animation-delay:.99s">o</span><span style="animation-delay:1.06s">x</span>
       </div>
       <div class="vb-tag">Your Voice Matters</div>

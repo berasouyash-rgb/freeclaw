@@ -15,7 +15,7 @@
 //   const result = await orchestrateWorkflow(workflow, context);
 
 import supabase from "./_db-client.js";
-import { executeTool } from "./_tool-registry.js";
+import { executeTool } from "./_agent-tool-registry.js";
 
 // ─── Agent Definitions ────────────────────────────────────────────
 const AGENTS = {
@@ -30,7 +30,7 @@ const AGENTS = {
 		maxConcurrent: 5,
 		timeout: 30000,
 		tools: ["get_posts", "get_polls", "get_comments", "search_knowledge_base"],
-		systemPrompt: `You are a helpful general assistant for Voice Box, a school communication platform.
+		systemPrompt: `You are a helpful general assistant for Voice Flow, a school communication platform.
 Be friendly, clear, and concise. Help users navigate the platform and find information.
 If you don't know something, say so honestly and offer to help find the right resource.`,
 	},
@@ -57,7 +57,7 @@ If you don't know something, say so honestly and offer to help find the right re
 		maxConcurrent: 3,
 		timeout: 45000,
 		tools: ["search_knowledge_base", "get_posts"],
-		systemPrompt: `You are an empathetic emotional support agent for Voice Box.
+		systemPrompt: `You are an empathetic emotional support agent for Voice Flow.
 Listen actively, validate feelings, and provide gentle guidance.
 Never diagnose or provide medical advice. Encourage seeking professional help when appropriate.
 If someone is in crisis, immediately suggest contacting a trusted adult or crisis hotline.
@@ -93,7 +93,7 @@ Be warm, patient, and non-judgmental.`,
 		maxConcurrent: 4,
 		timeout: 30000,
 		tools: ["search_knowledge_base", "get_posts", "get_polls"],
-		systemPrompt: `You are an academic support agent for Voice Box.
+		systemPrompt: `You are an academic support agent for Voice Flow.
 Help students with study strategies, time management, and academic concerns.
 Encourage positive learning habits and seek help when needed.
 Be encouraging and supportive. Never do homework for students—teach them how to learn.`,
@@ -126,7 +126,7 @@ Be encouraging and supportive. Never do homework for students—teach them how t
 		maxConcurrent: 3,
 		timeout: 35000,
 		tools: ["search_knowledge_base", "get_posts", "get_reports", "warn_user"],
-		systemPrompt: `You are a behavioral support agent for Voice Box.
+		systemPrompt: `You are a behavioral support agent for Voice Flow.
 Address behavioral concerns professionally and fairly.
 Encourage conflict resolution and positive behavior.
 For serious issues (bullying, harassment), escalate immediately to appropriate staff.
@@ -156,7 +156,7 @@ Be neutral, fair, and focused on solutions.`,
 		maxConcurrent: 4,
 		timeout: 30000,
 		tools: ["search_knowledge_base", "get_posts", "create_comment"],
-		systemPrompt: `You are a facilities support agent for Voice Box.
+		systemPrompt: `You are a facilities support agent for Voice Flow.
 Help users report and track facility issues.
 Be specific about locations and urgency. Escalate safety concerns immediately.
 Provide updates when possible and set realistic expectations for resolution.`,
@@ -182,7 +182,7 @@ Provide updates when possible and set realistic expectations for resolution.`,
 		maxConcurrent: 2,
 		timeout: 60000,
 		tools: ["search_knowledge_base", "get_posts", "escalate_issue"],
-		systemPrompt: `You are a crisis response agent for Voice Box.
+		systemPrompt: `You are a crisis response agent for Voice Flow.
 Handle urgent safety situations with calm professionalism.
 IMMEDIATELY escalate any threat to life or safety.
 Provide clear instructions for staying safe.
@@ -241,7 +241,7 @@ Never attempt to handle serious crises alone—always involve human staff.`,
 			"get_posts",
 			"get_polls",
 		],
-		systemPrompt: `You are an admin operations agent for Voice Box.
+		systemPrompt: `You are an admin operations agent for Voice Flow.
 You can CREATE content: posts, polls, announcements, and comments.
 When asked to create something, DO IT — use the appropriate tool immediately.
 For polls: use create_poll with a title and options array.

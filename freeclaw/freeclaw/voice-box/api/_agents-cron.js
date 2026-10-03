@@ -12,10 +12,13 @@ import {
 	summarizeActions,
 } from "./_agent-actions.js";
 import { setAgentState } from "./_agent-team.js";
-import { cors, isAdmin } from "./_auth.js";
+import { cors, isAdmin, moderateContent, notifyUser, auditLog } from "./_auth.js";
+import { serverModerate } from "./_moderation.js";
 import supabase from "./_db-client.js";
 import { sanitizeError } from "./_error.js";
 import { consumeAgentEvents, EVENT_AGENT_MAP } from "./_events.js";
+import { logger } from "./_observability.js";
+import { dispatchNotifications } from "./_notification-delivery.js";
 import { buildChain, callLLMChain } from "./_providers.js";
 import { runAgent } from "./agents/_runner.js";
 
@@ -604,19 +607,13 @@ const AGENTS = {
 	"notification-dispatcher": {
 		name: "Notification Dispatcher",
 		division: "specialist",
-		task: async () => {
-			// REAL: Check pending notifications
-			const { count: pending } = await supabase
-				.from("notifications")
-				.select("*", { count: "exact", head: true })
-				.eq("read", false);
-
-			return {
-				summary: `Notification dispatcher: ${pending || 0} unread notifications pending.`,
-				unread_count: pending || 0,
-				status: "active",
-			};
-		},
+		// REAL: the notification store is `settings` rows keyed
+		// `notifications:<anonId>` — there is NO `notifications` table. The old
+		// query hit that phantom table, so `count` was always null and the agent
+		// reported a hard-coded "0 unread" against a store it never read. It now
+		// also drains the dead-letter ledger written by _auth.notifyUser, and each
+		// retry is only counted as delivered once read-back verifies the id.
+		task: () => dispatchNotifications(),
 	},
 
 	// ── Audit Trail ───────────────────────────────────────────
@@ -745,11 +742,12 @@ const AGENTS = {
 		division: "users",
 		task: async () => {
 			// REAL: Check inbox for unanswered messages
-			const { data: threads } = await supabase
-				.from("threads")
-				.select("id, updated_at")
+			const { data: threads, error: threadsErr } = await supabase
+				.from("chat_threads")
+				.select("thread_id, updated_at")
 				.order("updated_at", { ascending: false })
 				.limit(10);
+			if (threadsErr) throw threadsErr;
 
 			return {
 				summary: `Help desk: ${threads?.length || 0} recent threads active. System operational.`,
@@ -2112,34 +2110,111 @@ const AGENTS = {
 		name: "Privacy Auditor",
 		division: "specialist",
 		task: async () => {
-			// Check for potential privacy issues: user data exposure, PII patterns
-			const { data: users } = await supabase
-				.from("users_meta")
-				.select("anon_id, display_name, created_at")
-				.limit(100);
-			const { data: posts } = await supabase
-				.from("posts")
-				.select("id, description")
-				.limit(50);
-
-			// Check for potential PII in post descriptions (emails, phones)
-			const piiPatterns = [
-				/[\w.-]+@[\w.-]+\.\w+/g,
-				/\b\d{3}[-.]?\d{3}[-.]?\d{4}\b/g,
-			];
-			let piiFound = 0;
-			for (const p of posts || []) {
-				for (const pattern of piiPatterns) {
-					if (pattern.test(p.description || "")) piiFound++;
+			// BACKSTOP SWEEP — real protective work, not a census. Anything the
+			// write-time gates missed (PII, slurs, severe abuse) that is still
+			// PUBLIC gets quarantined to pending_review / soft-deleted on sight,
+			// filed as a report, and audit-logged. Reversible by admin, and
+			// capped per run. Scans the last 24h of public content.
+			const since = new Date(Date.now() - 86400000).toISOString();
+			const SWEEP_CAP = 25;
+			const [postsRes, commentsRes, openRes] = await Promise.all([
+				supabase
+					.from("posts")
+					.select("id, title, description, author_id")
+					.eq("hidden", false)
+					.eq("deleted", false)
+					.neq("status", "pending_review")
+					.gte("created_at", since)
+					.limit(100),
+				supabase
+					.from("comments")
+					.select("id, post_id, body, author_id")
+					.eq("deleted", false)
+					.gte("created_at", since)
+					.limit(100),
+				supabase
+					.from("reports")
+					.select("target_id")
+					.eq("status", "open")
+					.like("reason", "[BACKSTOP-%")
+					.gte("created_at", since)
+					.limit(200),
+			]);
+			const alreadyOpen = new Set((openRes.data || []).map((r) => r.target_id));
+			let quarantined = 0;
+			let scanned = 0;
+			const quarantine = async (kind, row, flags) => {
+				if (quarantined >= SWEEP_CAP) return;
+				const isPrivacy = flags.some((f) => f.type === "privacy" || f.type === "privacy_weak");
+				const tag = isPrivacy ? "[BACKSTOP-PII]" : "[BACKSTOP-ABUSE]";
+				try {
+					if (kind === "post") {
+						await supabase.from("posts").update({ status: "pending_review" }).eq("id", row.id);
+					} else {
+						await supabase.from("comments").update({ deleted: true }).eq("id", row.id);
+					}
+					await supabase.from("reports").insert({
+						target_id: row.id,
+						target_type: kind,
+						reason: `${tag} auto-quarantined by privacy sweep: ${flags.map((f) => f.type).join(",")}`.slice(0, 300),
+						author_id: "sweep:privacy-auditor",
+						status: "open",
+					});
+					if (row.author_id) {
+						await notifyUser(
+							row.author_id,
+							"moderation",
+							"Your post was held for review",
+							isPrivacy
+								? "Our safety sweep found personal details in your post and hid it until review. Remove addresses, phones, or emails and it can go back up."
+								: "Our safety sweep found abusive language in your post and hid it until review.",
+						);
+					}
+					quarantined++;
+				} catch (e) {
+					console.error("[privacy-sweep] quarantine failed:", kind, row.id, e.message);
 				}
+			};
+			for (const p of postsRes.data || []) {
+				scanned++;
+				if (alreadyOpen.has(p.id)) continue;
+				const text = `${p.title || ""}\n${p.description || ""}`;
+				const mod = serverModerate(p.title || "", p.description || "", null);
+				const hardFlags = (mod.flags || []).filter((f) =>
+					["privacy", "privacy_weak", "hate_speech"].includes(f.type),
+				);
+				if (mod.blocked || hardFlags.length) {
+					await quarantine("post", p, mod.flags || hardFlags);
+				} else {
+					const soft = moderateContent(text);
+					if (soft.flags.some((f) => f.severity === "critical")) {
+						await quarantine("post", p, soft.flags);
+					}
+				}
+				if (quarantined >= SWEEP_CAP) break;
 			}
-
+			for (const c of commentsRes.data || []) {
+				scanned++;
+				if (alreadyOpen.has(c.id)) continue;
+				const mod = serverModerate("", c.body || "", null);
+				const hardFlags = (mod.flags || []).filter((f) =>
+					["privacy", "privacy_weak", "hate_speech"].includes(f.type),
+				);
+				if (mod.blocked || hardFlags.length) {
+					await quarantine("comment", c, mod.flags || hardFlags);
+				}
+				if (quarantined >= SWEEP_CAP) break;
+			}
+			await auditLog(
+				"sweep",
+				"privacy_sweep",
+				`scanned=${scanned} quarantined=${quarantined}`,
+			);
 			return {
-				summary: `Privacy auditor: ${users?.length || 0} users checked, ${posts?.length || 0} posts scanned. ${piiFound} potential PII instances found.`,
-				users_checked: users?.length || 0,
-				posts_scanned: posts?.length || 0,
-				pii_instances: piiFound,
-				status: piiFound === 0 ? "clean" : "review_needed",
+				summary: `Privacy sweep: ${scanned} items scanned, ${quarantined} quarantined to pending_review with reports filed.`,
+				scanned,
+				quarantined,
+				status: quarantined === 0 ? "clean" : "action_taken",
 			};
 		},
 	},
@@ -2227,16 +2302,17 @@ const AGENTS = {
 		division: "platform",
 		task: async () => {
 			const oneDayAgo = new Date(Date.now() - 86400000).toISOString();
-			const { data: notifications } = await supabase
+			const { data: notifications, error: notifErr } = await supabase
 				.from("notifications")
-				.select("id, type, read, created_at")
+				.select("id, notif_type, is_read, created_at")
 				.gte("created_at", oneDayAgo);
+			if (notifErr) throw notifErr;
 
-			const unread = (notifications || []).filter((n) => !n.read).length;
+			const unread = (notifications || []).filter((n) => !n.is_read).length;
 			const byType = {};
 			(notifications || []).forEach((n) => {
-				byType[n.type] = (byType[n.type] || 0) + 1;
-			});
+				byType[n.notif_type] = (byType[n.notif_type] || 0) + 1;
+				});
 
 			return {
 				summary: `Notification manager: ${(notifications || []).length} notifications in 24h. ${unread} unread. Types: ${Object.entries(
@@ -2673,64 +2749,103 @@ export default async function handler(req, res) {
 		const isExternalTrigger =
 			action === "rotate" || req.query.trigger === "github";
 		if ((isCron && !agentId && !action) || isExternalTrigger) {
-			console.log("[CRON] Vercel Cron triggered — tier-based rotation");
+			logger.info("cron", "Vercel Cron triggered — tier-based rotation");
 
 			// Get the next batch of agents to run
 			const { selectedIds, step, totalAgents } = await getNextAgentBatch(12);
-			console.log(
-				`[CRON] Step ${step}: running ${selectedIds.length}/${totalAgents} agents`,
-			);
+			logger.info("cron", `Step ${step}: running ${selectedIds.length}/${totalAgents} agents`);
 
-			const cronResults = [];
-			for (const id of selectedIds) {
-				const agent = AGENTS[id];
-				if (!agent) continue;
-				setAgentState(id, "working", `Cron execution: ${agent.name}`);
-				try {
-					const result = await runAgent(
-						id,
-						agent.name,
-						agent.division,
-						agent.task,
-						"cron",
-					);
-					setAgentState(
-						id,
-						result.status === "completed" ? "completed" : "error",
-						`Cron: ${agent.name}`,
-						result,
-					);
-					cronResults.push({
-						agent: id,
-						status: result.status,
-						duration_ms: result.duration_ms,
-					});
-				} catch (e) {
-					setAgentState(id, "error", `Cron: ${agent.name}`, {
-						error: e.message,
-					});
-					cronResults.push({ agent: id, status: "failed", error: e.message });
-				}
-			}
+			// ── Tick budget + parallel batch ────────────────────────────────
+			// VERCEL REALITY: the platform limit for this function is its default
+			// (~10-15s) and the previous SEQUENTIAL loop of 12 agents (each doing
+			// multiple DB roundtrips, some making 10-15s self-probes) needed
+			// minutes — so production killed every tick mid-run and agents
+			// silently did nothing. The batch now runs in parallel under a hard
+			// wall-clock budget so the tick ALWAYS answers in time, and agents
+			// that don't fit simply run on their next eligible tick instead of
+			// getting the whole invocation killed.
+			const tickStart = Date.now();
+			const TICK_BUDGET_MS = 8000;
+			const remainingBudget = () =>
+				Math.max(0, TICK_BUDGET_MS - (Date.now() - tickStart));
+			const withDeadline = (promise, ms) =>
+				Promise.race([
+					promise,
+					new Promise((_, reject) => {
+						const t = setTimeout(
+							() => reject(new Error("tick budget exceeded")),
+							ms,
+						);
+						if (typeof t.unref === "function") t.unref();
+					}),
+				]);
 
-			// Also consume pending events (always, every tick)
+			const cronResults = (
+				await Promise.allSettled(
+					selectedIds.map(async (id) => {
+						const agent = AGENTS[id];
+						if (!agent) return null;
+						const budget = remainingBudget();
+						if (budget < 250)
+							return { agent: id, status: "skipped", reason: "tick_budget" };
+						setAgentState(id, "working", `Cron execution: ${agent.name}`);
+						try {
+							const result = await withDeadline(
+								runAgent(id, agent.name, agent.division, agent.task, "cron"),
+								budget,
+							);
+							setAgentState(
+								id,
+								result.status === "completed" ? "completed" : "error",
+								`Cron: ${agent.name}`,
+								result,
+							);
+							return {
+								agent: id,
+								status: result.status,
+								duration_ms: result.duration_ms,
+							};
+						} catch (e) {
+							setAgentState(id, "error", `Cron: ${agent.name}`, {
+								error: e.message,
+							});
+							return { agent: id, status: "failed", error: e.message };
+						}
+					}),
+				)
+			)
+				.map((r) =>
+					r.status === "fulfilled"
+						? r.value
+						: { agent: "unknown", status: "failed", error: String(r.reason) },
+				)
+				.filter(Boolean);
+
+			// Also consume pending events (always, every tick) — parallel too,
+			// bounded by whatever is left of the tick budget.
 			const eventTriggeredIds = [
 				...new Set(Object.values(EVENT_AGENT_MAP).flat()),
 			];
-			let eventsConsumed = 0;
-			for (const targetAgent of eventTriggeredIds.slice(0, 5)) {
-				try {
-					const events = await consumeAgentEvents(targetAgent, 3);
-					if (events.length > 0) {
+			const eventCounts = await Promise.allSettled(
+				eventTriggeredIds.slice(0, 5).map(async (targetAgent) => {
+					const budget = remainingBudget();
+					if (budget < 250) return 0;
+					try {
+						const events = await withDeadline(
+							consumeAgentEvents(targetAgent, 3),
+							budget,
+						);
+						if (events.length === 0) return 0;
 						const agent = AGENTS[targetAgent];
-						if (agent) {
-							setAgentState(
-								targetAgent,
-								"working",
-								`Event-triggered: ${agent.name}`,
-							);
-							try {
-								await runAgent(
+						if (!agent) return 0;
+						setAgentState(
+							targetAgent,
+							"working",
+							`Event-triggered: ${agent.name}`,
+						);
+						try {
+							await withDeadline(
+								runAgent(
 									targetAgent,
 									agent.name,
 									agent.division,
@@ -2741,29 +2856,37 @@ export default async function handler(req, res) {
 										event_data: events[events.length - 1].event_data,
 										triggered_by: "vercel_cron",
 									},
-								);
-								setAgentState(targetAgent, "completed", `Event: ${agent.name}`);
-							} catch (e) {
-								setAgentState(targetAgent, "error", `Event: ${agent.name}`, {
-									error: e.message,
-								});
-							}
-							eventsConsumed += events.length;
+								),
+								budget,
+							);
+							setAgentState(targetAgent, "completed", `Event: ${agent.name}`);
+						} catch (e) {
+							setAgentState(targetAgent, "error", `Event: ${agent.name}`, {
+								error: e.message,
+							});
 						}
+						return events.length;
+					} catch (e) {
+						/* skip failed event agents */
+						return 0;
 					}
-				} catch (e) {
-					/* skip failed event agents */
-				}
-			}
+				}),
+			);
+			const eventsConsumed = eventCounts.reduce(
+				(a, r) => a + (r.status === "fulfilled" ? r.value : 0),
+				0,
+			);
 
 			return res.status(200).json({
 				cron: true,
 				step,
 				total_agents: totalAgents,
-				agents_run: cronResults.length,
+				agents_run: cronResults.filter((r) => r.status !== "skipped").length,
+				agents_skipped: cronResults.filter((r) => r.status === "skipped").length,
 				agents_succeeded: cronResults.filter((r) => r.status === "completed")
 					.length,
 				agents_failed: cronResults.filter((r) => r.status === "failed").length,
+				tick_duration_ms: Date.now() - tickStart,
 				events_consumed: eventsConsumed,
 				results: cronResults,
 			});

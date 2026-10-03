@@ -22,10 +22,12 @@ const mocks = vi.hoisted(() => ({
 	get: vi.fn(),
 	getFresh: vi.fn(),
 	captureException: vi.fn(),
+	getClient: vi.fn(),
 }));
 
 vi.mock("@sentry/react", () => ({
 	captureException: mocks.captureException,
+	getClient: mocks.getClient,
 }));
 
 vi.mock("../lib/api", () => ({
@@ -272,6 +274,9 @@ describe("ErrorTracking — error events + Sentry", () => {
 
 	it("sends a test error to Sentry on the button click", async () => {
 		seed();
+		mocks.getClient.mockReturnValue({
+			getOptions: () => ({ dsn: "https://x@sentry.io/1" }),
+		});
 		renderPage();
 		await screen.findByText("Platform health");
 
@@ -285,6 +290,24 @@ describe("ErrorTracking — error events + Sentry", () => {
 			"Test error sent to Sentry ✓",
 			"ok",
 		);
+	});
+
+	it("refuses to claim a send when Sentry has no DSN", async () => {
+		seed();
+		mocks.getClient.mockReturnValue({
+			getOptions: () => ({ dsn: undefined }),
+		});
+		renderPage();
+		await screen.findByText("Platform health");
+
+		fireEvent.click(screen.getByRole("button", { name: /Send test error/ }));
+		await waitFor(() => {
+			expect(mocks.toast).toHaveBeenCalledWith(
+				"Sentry DSN is not configured — nothing was sent.",
+				"err",
+			);
+		});
+		expect(mocks.captureException).not.toHaveBeenCalled();
 	});
 
 	it("shows 'never' for the last test error before any send", async () => {
@@ -301,7 +324,7 @@ describe("ErrorTracking — error events + Sentry", () => {
 
 		fireEvent.click(screen.getByRole("button", { name: /Refresh all/ }));
 		await waitFor(() => {
-			expect(mocks.get).toHaveBeenCalledTimes(2); // initial + refresh
+			expect(mocks.get).toHaveBeenCalledTimes(4); // initial(3) + refresh frontend-errors
 		});
 		expect(mocks.getFresh).toHaveBeenCalledTimes(2);
 		expect(global.fetch).toHaveBeenCalledTimes(2);

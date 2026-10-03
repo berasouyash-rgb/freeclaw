@@ -1,15 +1,16 @@
 // ═══════════════════════════════════════════════════════════════════
 // MyActivity — full activity hub contract
 // ═══════════════════════════════════════════════════════════════════
-// Locks: tab rendering & switching across all 8 tabs, post/poll delete
+// Locks: tab rendering & switching across all 9 tabs, post/poll delete
 // with undo toasts, reset-anonymous-ID, clear-local-data, replay
 // tutorial, drafts (local), bookmarks fetch, notifications, viewed.
 // ═══════════════════════════════════════════════════════════════════
 
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import MyActivity from "../pages/MyActivity";
+import type { PollData } from "../types";
 
 const mocks = vi.hoisted(() => ({
 	toast: vi.fn(),
@@ -21,6 +22,7 @@ const mocks = vi.hoisted(() => ({
 	clearAllLocalData: vi.fn(),
 	resetTutorial: vi.fn(),
 	downloadFile: vi.fn(),
+	retireNotifsForLink: vi.fn(),
 	lsGet: vi.fn((_k: string): unknown => null),
 	useAppState: {			anonId: "anon-test",
 			displayName: "",
@@ -43,6 +45,7 @@ vi.mock("../lib/api", () => ({
 			bookmarks: mocks.useAppState.bookmarks,
 			recentlyViewed: mocks.useAppState.recentlyViewed,
 			profile: mocks.useAppState.profile,
+			retireNotifsForLink: mocks.retireNotifsForLink,
 		}),
 	}));
 
@@ -90,9 +93,11 @@ const POST = {
 	status: "reported",
 	created_at: "2026-07-01T10:00:00.000Z",
 };
-const POLL = {
+const POLL: PollData = {
 	id: "pl1",
 	title: "Coffee brand?",
+	options: ["Yes", "No"],
+	author_id: "anon-test",
 	total_votes: 3,
 	ptype: "yesno",
 	archived: false,
@@ -120,6 +125,19 @@ function defaultGet(url: string) {
 	if (url.includes("voter=")) return Promise.resolve([VOTE]);
 	if (url.includes("author=")) return Promise.resolve([POST]);
 	if (url.includes("/api/polls")) return Promise.resolve([POLL]);
+	if (url.includes("/api/appeals"))
+		return Promise.resolve({
+			items: [
+				{
+					id: "apl_1",
+					surface: "post",
+					title: "Canteen appeal",
+					body: "food sucks",
+					status: "open",
+					created_at: "2026-07-01T10:00:00.000Z",
+				},
+			],
+		});
 	if (url.includes("ids=")) return Promise.resolve([POST]);
 	return Promise.resolve([]);
 }
@@ -151,13 +169,34 @@ describe("MyActivity — profile card and tabs", () => {
 		expect(screen.getByText(/anon-test/)).toBeInTheDocument();
 	});
 
+	it("does not claim the user has no posts when the posts section fails", async () => {
+		mocks.get.mockImplementation((url: string) =>
+			url.includes("/api/posts?author=")
+				? Promise.reject(new Error("Network unavailable"))
+				: defaultGet(url),
+		);
+		renderPage();
+
+		expect(
+			await screen.findByRole("button", { name: /retry posts/i }),
+		).toBeInTheDocument();
+		expect(
+			screen.queryByText("You haven't posted anything yet."),
+		).not.toBeInTheDocument();
+		expect(
+			screen.queryByText("Couldn't load your activity"),
+		).not.toBeInTheDocument();
+	});
 	it("renders all tab buttons with counts", async () => {
 		renderPage();
 		await screen.findByText("Anonymous profile");
 
-		expect(screen.getByRole("button", { name: /Posts/ })).toHaveTextContent(
-			"(1)",
-		);
+		// Counts arrive with the async activity load — wait for the loaded
+		// state instead of asserting against the initial "(0)" render
+		// (flakes under full-suite load).
+		expect(
+			await screen.findByRole("button", { name: /Posts \(1\)/ }),
+		).toBeInTheDocument();
 		expect(screen.getByRole("button", { name: /My Polls/ })).toHaveTextContent(
 			"(1)",
 		);
@@ -179,6 +218,108 @@ describe("MyActivity — profile card and tabs", () => {
 		expect(
 			screen.getByRole("button", { name: /Recently viewed/ }),
 		).toHaveTextContent("(0)");
+		expect(
+			screen.getByRole("button", { name: /My appeals/ }),
+		).toHaveTextContent("(1)");
+	});
+});
+
+describe("MyActivity - independent section recovery", () => {
+	it("keeps successful sections visible when comments fail", async () => {
+		mocks.get.mockImplementation((url: string) => {
+			if (url.includes("/api/comments")) {
+				return Promise.reject(new Error("comments unavailable"));
+			}
+			return defaultGet(url);
+		});
+
+		renderPage();
+
+		expect(await screen.findByText(POST.title)).toBeInTheDocument();
+		expect(
+			screen.queryByText("Couldn't load your activity"),
+		).not.toBeInTheDocument();
+		fireEvent.click(screen.getByRole("button", { name: /Comments/ }));
+		expect(
+			await screen.findByRole("button", { name: /retry comments/i }),
+		).toBeInTheDocument();
+		expect(screen.getByRole("alert")).toHaveTextContent("comments unavailable");
+	});
+
+	it("retries only the failed comments section", async () => {
+		let commentCalls = 0;
+		mocks.get.mockImplementation((url: string) => {
+			if (url.includes("/api/comments")) {
+				commentCalls += 1;
+				return commentCalls === 1
+					? Promise.reject(new Error("comments unavailable"))
+					: Promise.resolve([COMMENT]);
+			}
+			return defaultGet(url);
+		});
+
+		renderPage();
+		await screen.findByText(POST.title);
+		const postCallsBeforeRetry = mocks.get.mock.calls.filter(([url]) =>
+			String(url).includes("/api/posts?author="),
+		).length;
+		fireEvent.click(screen.getByRole("button", { name: /Comments/ }));
+		const retry = await screen.findByRole("button", { name: /retry comments/i });
+		fireEvent.click(retry);
+
+		expect(await screen.findByText(COMMENT.body)).toBeInTheDocument();
+		expect(commentCalls).toBe(2);
+		expect(
+			mocks.get.mock.calls.filter(([url]) => String(url).includes("/api/comments")),
+		).toHaveLength(2);
+		expect(
+			mocks.get.mock.calls.filter(([url]) =>
+				String(url).includes("/api/posts?author="),
+			),
+		).toHaveLength(postCallsBeforeRetry);
+	});
+
+	it("does not block a ready section behind a slow unrelated section", async () => {
+		let resolvePolls: (() => void) | undefined;
+		const pendingPolls = new Promise<PollData[]>((resolve) => {
+			resolvePolls = () => resolve([POLL]);
+		});
+		mocks.get.mockImplementation((url: string) => {
+			if (url.includes("/api/polls?viewer=")) return pendingPolls;
+			return defaultGet(url);
+		});
+
+		renderPage();
+		expect(await screen.findByText(POST.title)).toBeInTheDocument();
+		fireEvent.click(screen.getByRole("button", { name: /My Polls/ }));
+		expect(screen.getByLabelText("Loading polls")).toBeInTheDocument();
+
+		await act(async () => resolvePolls?.());
+		expect(await screen.findByText(POLL.title)).toBeInTheDocument();
+	});
+});
+
+describe("MyActivity - appeals tab", () => {
+	it("lists my appeals with their review status", async () => {
+		renderPage();
+		await screen.findByText("Anonymous profile");
+		fireEvent.click(screen.getByRole("button", { name: /My appeals/ }));
+		expect(await screen.findByText("Canteen appeal")).toBeInTheDocument();
+		expect(screen.getByText(/Under review/)).toBeInTheDocument();
+	});
+
+	it("shows the empty state when there are no appeals", async () => {
+		mocks.get.mockImplementation((url: string) =>
+			url.includes("/api/appeals")
+				? Promise.resolve({ items: [] })
+				: defaultGet(url),
+		);
+		renderPage();
+		await screen.findByText("Anonymous profile");
+		fireEvent.click(screen.getByRole("button", { name: /My appeals/ }));
+		expect(
+			await screen.findByText(/No appeals yet/),
+		).toBeInTheDocument();
 	});
 });
 
@@ -223,6 +364,9 @@ describe("MyActivity — posts tab", () => {
 				deleted: true,
 			});
 		});
+		// Its "live" notice retires too — notifications can never claim more
+		// live posts than My Activity shows.
+		expect(mocks.retireNotifsForLink).toHaveBeenCalledWith("/post/p1");
 		expect(mocks.toast).toHaveBeenCalledWith(
 			"Deleted",
 			"info",
@@ -684,8 +828,13 @@ describe("MyActivity — notifications and recently viewed", () => {
 		mocks.get.mockRejectedValue(new Error("offline"));
 		renderPage();
 		expect(await screen.findByText("Anonymous profile")).toBeInTheDocument();
+		// A failed load shows the retry alert — never a false "no posts" state.
 		expect(
-			screen.getByText("You haven't posted anything yet."),
+			await screen.findByText("Couldn't load your activity"),
 		).toBeInTheDocument();
+		expect(
+			screen.queryByText("You haven't posted anything yet."),
+		).not.toBeInTheDocument();
+		expect(screen.getByRole("button", { name: /try again/i })).toBeInTheDocument();
 	});
 });

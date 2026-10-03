@@ -1,0 +1,6 @@
+reviews:  
+  path_filters:  
+    - "!**/*.wav"  
+    - "!**/*.mp3"  
+    - "!**/*.bin"  
+    - "!**/*.pt"  
