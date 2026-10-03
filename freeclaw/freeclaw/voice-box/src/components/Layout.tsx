@@ -34,6 +34,7 @@ import { prefetchRouteForPath } from "../lib/routeChunks";
 import { api } from "../lib/api";
 import {
 	checkForAppUpdate,
+	maybeNotifyAppUpdate,
 	snoozeUpdate,
 	type AppUpdate,
 } from "../lib/appUpdate";
@@ -195,11 +196,14 @@ export default function Layout() {
 
 	// Native-shell app update: ask /api/version at most daily (the checker
 	// enforces web-exclusion, daily cache, and snooze itself). Deferred a
-	// few seconds so the prompt never fights first paint.
+	// few seconds so the prompt never fights first paint. A device
+	// notification goes out too when the app isn't in front of the user.
 	useEffect(() => {
 		const t = setTimeout(() => {
 			void checkForAppUpdate().then((found) => {
-				if (found) setAppUpdate(found);
+				if (!found) return;
+				setAppUpdate(found);
+				maybeNotifyAppUpdate(found);
 			});
 		}, 4000);
 		return () => clearTimeout(t);

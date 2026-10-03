@@ -134,6 +134,66 @@ export function resetAnonId(): string {
 	return id;
 }
 
+// ---------- cross-device identity linking -------------------------
+// Browser localStorage, the APK's native store, and the EXE's userData file
+// are separate silos BY OPERATING-SYSTEM DESIGN — no code can silently share
+// one ID between Chrome and the app on the same phone. The honest bridge is
+// explicit and user-driven: device A shows a short link code, the student
+// types it into device B, and B adopts A's identity (same posts, same votes,
+// same ownership). Anyone holding the code owns the identity, so it is
+// shown only on explicit tap with a warning, never rendered by default.
+const LINK_PREFIX = "VF";
+
+function linkChecksum(payload: string): string {
+	let h = 0;
+	for (let i = 0; i < payload.length; i++) {
+		h = (h * 31 + payload.charCodeAt(i)) % 1296;
+	}
+	return h.toString(36).toUpperCase().padStart(2, "0");
+}
+
+/** Short typeable code for the given identity (defaults to this device). */
+export function createLinkCode(id: string = getAnonId()): string | null {
+	const m = /^anon_([a-z0-9]+)$/.exec(id.toLowerCase());
+	if (!m) return null;
+	const payload = m[1]!.toUpperCase();
+	const groups: string[] = [];
+	for (let i = 0; i < payload.length; i += 4) {
+		groups.push(payload.slice(i, i + 4));
+	}
+	return `${LINK_PREFIX}-${groups.join("-")}-${linkChecksum(payload)}`;
+}
+
+/** Parse a link code back to an anon id, or null when malformed/mistyped. */
+export function parseLinkCode(code: string): string | null {
+	const clean = String(code || "")
+		.toUpperCase()
+		.replace(/[^A-Z0-9]/g, "");
+	if (!clean.startsWith(LINK_PREFIX) || clean.length < LINK_PREFIX.length + 3) {
+		return null;
+	}
+	const rest = clean.slice(LINK_PREFIX.length);
+	if (rest.length < 3) return null;
+	const payload = rest.slice(0, -2).toLowerCase();
+	const check = rest.slice(-2);
+	if (!/^[a-z0-9]+$/.test(payload) || payload.length > 32) return null;
+	if (linkChecksum(payload.toUpperCase()) !== check.toUpperCase()) return null;
+	return `anon_${payload}`;
+}
+
+/**
+ * Adopt another device's identity (from a verified link code). Returns the
+ * adopted id, or null when the code is invalid (nothing changes). The old
+ * local id is abandoned: its published content stays up, but this device
+ * stops owning it — the confirm UI must say so before calling this.
+ */
+export function adoptIdentity(code: string): string | null {
+	const id = parseLinkCode(code);
+	if (!id) return null;
+	writeItem(ID_KEY, id);
+	return id;
+}
+
 export function anonCreatedAt(): string {
 	return readItem(CREATED_KEY) || new Date().toISOString();
 }

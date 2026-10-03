@@ -19,6 +19,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock("../lib/appUpdate", () => ({
 	checkForAppUpdate: mocks.checkForAppUpdate,
 	snoozeUpdate: mocks.snoozeUpdate,
+	maybeNotifyAppUpdate: vi.fn(() => false),
 }));
 
 vi.mock("../contexts/AppContext", () => ({

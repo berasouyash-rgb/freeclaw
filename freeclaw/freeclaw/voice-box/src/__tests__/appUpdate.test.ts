@@ -36,6 +36,61 @@ beforeEach(() => {
 	localStorage.clear();
 	setShell("web");
 	vi.unstubAllEnvs();
+	vi.unstubAllGlobals();
+});
+
+const UPDATE = {
+	platform: "android",
+	version: "2.1.0",
+	url: "https://example.com/app.apk",
+	notes: "Live feed fixes",
+} as const;
+
+function stubGrantedNotify() {
+	const shown: Array<{ title: string }> = [];
+	const Ctor = vi.fn(function (this: unknown, title: string) {
+		shown.push({ title });
+		return this;
+	}) as unknown as typeof Notification;
+	Object.defineProperty(Ctor, "permission", { value: "granted", configurable: true });
+	vi.stubGlobal("Notification", Ctor);
+	return shown;
+}
+
+function setHidden(hidden: boolean) {
+	Object.defineProperty(document, "hidden", { value: hidden, configurable: true });
+}
+
+describe("maybeNotifyAppUpdate", () => {
+	it("pings the device when the app is hidden and the channel is on", async () => {
+		const mod = await freshModule(async () => ({}));
+		stubGrantedNotify();
+		setHidden(true);
+		expect(mod.maybeNotifyAppUpdate({ ...UPDATE })).toBe(true);
+	});
+
+	it("stays silent in the foreground (the dialog covers it)", async () => {
+		const mod = await freshModule(async () => ({}));
+		const shown = stubGrantedNotify();
+		setHidden(false);
+		expect(mod.maybeNotifyAppUpdate({ ...UPDATE })).toBe(false);
+		expect(shown).toHaveLength(0);
+	});
+
+	it("honors the browser-channel opt-out", async () => {
+		const mod = await freshModule(async () => ({}));
+		stubGrantedNotify();
+		setHidden(true);
+		localStorage.setItem("vb:browser-notify", JSON.stringify({ enabled: false }));
+		expect(mod.maybeNotifyAppUpdate({ ...UPDATE })).toBe(false);
+	});
+
+	it("does nothing without an update", async () => {
+		const mod = await freshModule(async () => ({}));
+		stubGrantedNotify();
+		setHidden(true);
+		expect(mod.maybeNotifyAppUpdate(null)).toBe(false);
+	});
 });
 
 afterEach(() => {

@@ -36,7 +36,13 @@ import {
 } from "../lib/browserNotify";
 import { api } from "../lib/api";
 import { sendNotificationEmail } from "../lib/email";
-import { getDisplayName, resetAnonId } from "../lib/identity";
+import {
+	adoptIdentity,
+	createLinkCode,
+	getDisplayName,
+	parseLinkCode,
+	resetAnonId,
+} from "../lib/identity";
 import {
 	INFRASTRUCTURE_COPY,
 	LOCAL_PROFILE_COPY,
@@ -78,7 +84,13 @@ export default function Settings() {
 	const [avatarDraft, setAvatarDraft] = useState(profile.avatar || "");
 	const [bioDraft, setBioDraft] = useState(profile.bio || "");
 	const [photoDraft, setPhotoDraft] = useState(profile.photo || "");
-	const [dialog, setDialog] = useState<"resetTutorial" | "resetIdentity" | null>(null);
+	const [dialog, setDialog] = useState<"resetTutorial" | "resetIdentity" | "adoptIdentity" | null>(null);
+
+	// Identity linking: one ID across this student's browser, APK, and EXE.
+	// Storage silos are OS-segregated, so linking is explicit and typed.
+	const [linkRevealed, setLinkRevealed] = useState(false);
+	const [linkInput, setLinkInput] = useState("");
+	const [linkError, setLinkError] = useState("");
 	const photoRef = useRef<HTMLInputElement | null>(null);
 
 	// Notification preferences (stored in localStorage)
@@ -565,7 +577,41 @@ export default function Settings() {
 								</p>
 							</div>
 
-							{/* Session recovery: an expired or cleared session cannot
+							{/* Identity linking — one ID on every device. Showing the code is
+explicit (anyone holding it owns this identity); adopting swaps
+this device to the other identity after confirmation. */}
+<div className="p-4 rounded-xl border border-border bg-surface2/50">
+							<div className="flex items-center gap-2 mb-2">
+								<Shield size={14} className="text-accent" />
+								<span className="text-sm font-medium text-ink">
+									Use the same ID on another device
+								</span>
+							</div>
+							<p className="text-xs text-ink3 mb-2">
+								Your browser, the Android app, and the Windows app each keep a separate ID. To unite them, show the code here and type it on the other device.
+							</p>
+							{!linkRevealed ? (
+								<button type="button" className="btn btn-ghost !py-2 !px-4 !text-xs" onClick={() => setLinkRevealed(true)}>
+									Show my link code
+								</button>
+							) : (
+								<div className="rounded-lg bg-bg border border-warn/30 px-3 py-2.5">
+									<p className="font-mono text-sm font-bold tracking-wider text-ink break-all" aria-label="Your identity link code">
+										{createLinkCode(anonId) ?? "Unavailable"}
+									</p>
+									<p className="text-[11px] text-warn mt-1">Anyone with this code owns your posts and votes. Share it only with yourself.</p>
+								</div>
+							)}
+							<div className="flex gap-2 mt-2">
+								<input value={linkInput} onChange={(e) => { setLinkInput(e.target.value); setLinkError(""); }} placeholder="Type a link code, e.g. VF-AB12-CD34-EF" maxLength={40} className="input !py-2 !text-sm flex-1 font-mono" aria-label="Identity link code" />
+								<button type="button" className="btn btn-soft !py-2 !px-4 !text-xs" onClick={() => { const parsed = parseLinkCode(linkInput); if (!parsed) { setLinkError("That code doesn't look right — check each character and try again."); return; } if (parsed === anonId) { setLinkError("That's already this device's ID."); return; } setLinkError(""); setDialog("adoptIdentity"); }}>
+									Link this device
+								</button>
+							</div>
+							{linkError && <p className="text-[11px] text-bad mt-1.5" role="alert">{linkError}</p>}
+</div>
+
+{/* Session recovery: an expired or cleared session cannot
 								be restored server-side (doing so would let anyone
 								claim any ID), so the way back is a fresh ID. Old
 								posts stay published; this device simply stops
@@ -835,7 +881,29 @@ export default function Settings() {
 					onClose={() => setDialog(null)}
 				/>
 			)}
-			{dialog === "resetIdentity" && (
+			{dialog === "adoptIdentity" && (
+	<ConfirmDialog
+		open
+		title="Link this device to another ID?"
+		message="This device will adopt the linked identity — its posts, votes, and ownership move here. This device's current ID is abandoned (its published content stays up, but unmanaged). This cannot be undone from here."
+		confirmLabel="Link devices"
+		onConfirm={() => {
+			const adopted = adoptIdentity(linkInput);
+			if (!adopted) {
+				setLinkError("That code doesn't look right — check each character and try again.");
+				setDialog(null);
+				return;
+			}
+			setLinkInput("");
+			setLinkRevealed(false);
+			setDialog(null);
+			refreshIdentity();
+			toast("Devices linked — one ID everywhere now", "ok");
+		}}
+		onClose={() => setDialog(null)}
+	/>
+)}
+{dialog === "resetIdentity" && (
 				<ConfirmDialog
 					open
 					title="Start fresh with a new ID?"

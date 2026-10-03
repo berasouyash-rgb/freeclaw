@@ -6,6 +6,7 @@
 // update" — the check must never break or nag the app.
 
 import { apiBase, getPlatform } from "./platform";
+import { showBrowserNotification } from "./browserNotify";
 
 /** Build baked at compile time; override with VITE_APP_VERSION per release. */
 const CURRENT_VERSION: string =
@@ -142,5 +143,31 @@ function clearFound(): void {
 		localStorage.removeItem(FOUND_KEY);
 	} catch {
 		/* ignore */
+	}
+}
+
+/**
+ * Companion device notification for a detected app update. The in-app
+ * "Update detected" dialog always shows; this ping additionally reaches
+ * the student's PC/phone tray when the app isn't in front of them.
+ * Preference-gated (browser channel) and permission-guarded — returns true
+ * only when actually shown, never throws.
+ */
+export function maybeNotifyAppUpdate(update: AppUpdate | null): boolean {
+	if (!update) return false;
+	try {
+		if (!document.hidden) return false;
+		const mirror = JSON.parse(
+			localStorage.getItem("vb:browser-notify") || "{}",
+		) as { enabled?: boolean };
+		if (mirror.enabled === false) return false;
+		return showBrowserNotification({
+			title: `Update detected — Voice Flow ${update.version}`,
+			body: update.notes || "A new version is ready. Open the app to install it.",
+			tag: "voice-flow-update",
+			url: "/download",
+		});
+	} catch {
+		return false;
 	}
 }

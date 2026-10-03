@@ -85,6 +85,9 @@ let persistTimer: ReturnType<typeof setTimeout> | null = null;
 let persistChain: Promise<void> = Promise.resolve();
 /** Set once hydration has definitively failed — never retried this session. */
 let hydrationGaveUp = false;
+/** One delayed second chance after a give-up (slow first-boot bridge). */
+let retryTimer: ReturnType<typeof setTimeout> | null = null;
+const HYDRATE_RETRY_MS = 20_000;
 
 // ── localStorage probe ──────────────────────────────────────────────
 let lsBlocked: boolean | null = null;
@@ -369,7 +372,30 @@ export async function hydrateStore(): Promise<void> {
 		} finally {
 			hydrating = null;
 		}
+
 	})();
+
+	// One delayed second chance, settled no matter which path gave up:
+	// a bridge that was merely slow (cold first boot after an update)
+	// gets another shot, so a session that minted a temporary identity
+	// converges back to the durable one via the merge rules above.
+	// Exactly once per session, and only when a bridge actually exists —
+	// a missing bridge would just fail again on a 20s loop forever.
+	void hydrating.finally(() => {
+		if (
+			hydrationGaveUp &&
+			!hydrated &&
+			nativeStore &&
+			retryTimer === null &&
+			typeof setTimeout === "function"
+		) {
+			retryTimer = setTimeout(() => {
+				retryTimer = null;
+				hydrationGaveUp = false;
+				void hydrateStore();
+			}, HYDRATE_RETRY_MS);
+		}
+	});
 
 	return hydrating;
 }
@@ -536,6 +562,10 @@ export function __setStoreBackendForTests(
 	hydrated = false;
 	hydrationGaveUp = false;
 	hydrating = null;
+	if (retryTimer) {
+		clearTimeout(retryTimer);
+		retryTimer = null;
+	}
 	mirror.clear();
 	removed.clear();
 	dirty.clear();
@@ -553,6 +583,10 @@ export function __resetStoreForTests(): void {
 	hydrated = false;
 	hydrationGaveUp = false;
 	hydrating = null;
+	if (retryTimer) {
+		clearTimeout(retryTimer);
+		retryTimer = null;
+	}
 	mirror.clear();
 	removed.clear();
 	dirty.clear();
