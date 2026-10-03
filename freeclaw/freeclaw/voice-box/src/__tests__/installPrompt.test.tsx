@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import InstallPrompt, { decideInstallPrompt } from "../components/InstallPrompt";
 
@@ -41,5 +41,32 @@ describe("InstallPrompt", () => {
 	it("renders nothing until the browser fires beforeinstallprompt", () => {
 		render(<InstallPrompt />);
 		expect(screen.queryByRole("dialog")).toBeNull();
+	});
+
+	it("shows the install card when the browser offers installation", async () => {
+		render(<InstallPrompt />);
+		const prompt = vi.fn(async () => {});
+		const userChoice = Promise.resolve({ outcome: "accepted" });
+		const event = new Event("beforeinstallprompt") as Event & {
+			prompt: () => Promise<void>;
+			userChoice: Promise<{ outcome: string }>;
+		};
+		event.prompt = prompt;
+		event.userChoice = userChoice;
+		// jsdom fires the event synchronously; preventDefault is what the
+		// component relies on to capture it.
+		event.preventDefault = () => {};
+		window.dispatchEvent(event);
+		expect(
+			await screen.findByRole("dialog", { name: /install voice flow/i }),
+		).toBeInTheDocument();
+		fireEvent.click(screen.getByRole("button", { name: /^install$/i }));
+		await waitFor(() => {
+			expect(prompt).toHaveBeenCalledTimes(1);
+		});
+		// Accepted → dismissed, never nags again.
+		await waitFor(() => {
+			expect(screen.queryByRole("dialog")).toBeNull();
+		});
 	});
 });

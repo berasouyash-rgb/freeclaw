@@ -2,6 +2,8 @@
 	AlertCircle,
 	Ban,
 	CornerDownRight,
+	Eye,
+	EyeOff,
 	Flag,
 	Lock,
 	Pause,
@@ -97,6 +99,8 @@ export default memo(function Comments({
 	const [editText, setEditText] = useState("");
 	const [busy, setBusy] = useState(false);
 	const [reportTarget, setReportTarget] = useState<string | null>(null);
+	// Per-comment admin moderation flight (hide/unhide) — one at a time.
+	const [modBusy, setModBusy] = useState<string | null>(null);
 	const [asAdmin, setAsAdmin] = useState(false);
 	const [moderation, setModeration] = useState<ModerationResult | null>(null);
 	const [editModeration, setEditModeration] = useState<ModerationResult | null>(
@@ -341,8 +345,7 @@ export default memo(function Comments({
 		}
 	};
 
-	const del = async (id: string) => {
-		try {
+	const del = async (id: string) => {		try {
 			await api.put("/api/comments", { id, author_id: anonId, deleted: true });
 			await load();
 			toast("Comment deleted", "info", {
@@ -360,6 +363,45 @@ export default memo(function Comments({
 		} catch (e: unknown) {
 			toast(e instanceof Error ? e.message : "Failed to delete comment", "err");
 		}
+	};
+
+	/**
+	 * Admin hide / unhide a comment. The server is admin-gated and audited
+	 * (api/_comments.js); here we verify after the write with a fresh read
+	 * before claiming success — a failed hide must never look hidden.
+	 */
+	const toggleHide = async (id: string, hide: boolean) => {
+		if (modBusy) return;
+		setModBusy(id);
+		try {
+			await api.put("/api/comments", { id, hidden: hide });
+			const fresh = await api.getFresh<CommentData[]>(
+				`/api/comments?post_id=${postId}&viewer=${anonId}`,
+			);
+			const rows = Array.isArray(fresh) ? fresh : [];
+			setComments(rows.filter((c) => !c.deleted));
+			const row = rows.find((c) => c.id === id);
+			if (!row) {
+				toast("Comment not found — it may already be removed", "err");
+			} else if (!!row.hidden !== hide) {
+				toast(
+					hide
+						? "Hide failed — the comment is still visible"
+						: "Unhide failed — the comment is still hidden",
+					"err",
+				);
+			} else {
+				toast(
+					hide
+						? "Comment hidden — visible to admins only"
+						: "Comment visible to everyone again",
+					"ok",
+				);
+			}
+		} catch (e: unknown) {
+			toast(e instanceof Error ? e.message : "Moderation failed", "err");
+		}
+		setModBusy(null);
 	};
 
 	const report = async (id: string, reason: string) => {
@@ -406,6 +448,9 @@ export default memo(function Comments({
 					<span className="text-ink3">
 						{timeAgo(c.created_at)}
 						{c.edited ? " · edited" : ""}
+						{isAdminSession && !!c.hidden && (
+							<span className="chip !text-[9px] !py-0.5 text-warn">Hidden from users</span>
+						)}
 					</span>
 				</div>
 				{editing === c.id ? (
@@ -488,6 +533,18 @@ export default memo(function Comments({
 					>
 						<Flag size={11} /> Report
 					</button>
+					{isAdminSession && !c.id.startsWith("pending-") && (
+					<button
+						className="text-[11px] font-semibold text-ink3 hover:text-warn flex items-center gap-1 disabled:opacity-40"
+						onClick={() => void toggleHide(c.id, !c.hidden)}
+						disabled={modBusy === c.id}
+						title={c.hidden ? "Unhide this comment" : "Hide this comment"}
+						aria-label={c.hidden ? "Unhide comment" : "Hide comment"}
+					>
+						{c.hidden ? <Eye size={11} /> : <EyeOff size={11} />}
+						{modBusy === c.id ? "\u2026" : c.hidden ? "Unhide" : "Hide"}
+					</button>
+					)}
 				</div>
 			</div>
 			{c.children.map((ch) => renderNode(ch, depth + 1))}
