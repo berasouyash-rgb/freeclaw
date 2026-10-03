@@ -729,8 +729,7 @@ describe("AppProvider — core behavior", () => {
 		expect(notifsAfter).toContain("solved");
 	});
 
-	it("raises the inbox badge and a notification for AI replies, not just admin ones", async () => {
-		let chatCalls = 0;
+	it("raises the inbox badge and a notification for AI replies, not just admin ones", async () => {		let chatCalls = 0;
 		h.get.mockImplementation((url: string) => {
 			if (url.includes("/api/saved")) return Promise.resolve({ saved: [] });
 			if (url.includes("/api/posts")) return Promise.resolve([]);
@@ -763,6 +762,53 @@ describe("AppProvider — core behavior", () => {
 			},
 			{ timeout: 3000 },
 		);
+	});
+
+	it("pings the device once when updates piled up while the tab was hidden", async () => {
+		const shown: Array<{ title: string }> = [];
+		const Ctor = vi.fn(function (this: unknown, title: string) {
+			shown.push({ title });
+			return this;
+		}) as unknown as typeof Notification;
+		Object.defineProperty(Ctor, "permission", { value: "granted", configurable: true });
+		vi.stubGlobal("Notification", Ctor);
+		const hiddenDesc = Object.getOwnPropertyDescriptor(document, "hidden");
+		Object.defineProperty(document, "hidden", { value: true, configurable: true });
+
+		h.get.mockImplementation((url: string) => {
+			if (url.includes("/api/saved")) return Promise.resolve({ saved: [] });
+			if (url.includes("/api/posts")) return Promise.resolve([]);
+			if (url.includes("/api/chat"))
+				return Promise.resolve({ messages: [{ sender: "ai", read: false }] });
+			return Promise.resolve({});
+		});
+
+		render(
+			<AppProvider>
+				<Probe />
+			</AppProvider>,
+		);
+		// Mount run skips while hidden — nothing shown, nothing raised.
+		await act(async () => {
+			await Promise.resolve();
+		});
+		expect(shown).toHaveLength(0);
+
+		// Return + refresh identity re-runs the check with fresh items waiting.
+		Object.defineProperty(document, "hidden", { value: false, configurable: true });
+		const user = userEvent.setup();
+		await user.click(screen.getByRole("button", { name: "refresh" }));
+		await waitFor(
+			() => {
+				expect(screen.getByTestId("chat-unread")).toHaveTextContent("1");
+			},
+			{ timeout: 3000 },
+		);
+		expect(shown).toHaveLength(1);
+		expect(shown[0]?.title).toMatch(/away|reply|inbox|update/i);
+
+		if (hiddenDesc) Object.defineProperty(document, "hidden", hiddenDesc);
+		vi.unstubAllGlobals();
 	});
 });
 

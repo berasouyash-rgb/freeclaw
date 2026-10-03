@@ -1,12 +1,14 @@
-// Notification channel preferences — phone + email for SMS/email alerts.
-// GET  /api/notify-prefs?user_id=X → { phone, email, sms_enabled, email_enabled, ai_chat_enabled }
-// POST /api/notify-prefs { user_id, phone, email, sms_enabled, email_enabled, ai_chat_enabled }
+// Notification channel preferences — phone + email for SMS/email alerts,
+// plus on-device browser notifications (no phone number needed).
+// GET  /api/notify-prefs?user_id=X → { phone, email, sms_enabled, email_enabled, browser_enabled, ai_chat_enabled }
+// POST /api/notify-prefs { user_id, phone, email, sms_enabled, email_enabled, browser_enabled, ai_chat_enabled }
 //
 // Stored in the settings table under `notify_prefs:<anonId>` as
-// { phone, email, sms_enabled, email_enabled, ai_chat_enabled, updated_at } —
+// { phone, email, sms_enabled, email_enabled, browser_enabled, updated_at } —
 // the same KV pattern as follows/notifications. Consumed by _follows.js when a
 // followed post is solved/updated: enabled + valid phone → SMS, enabled +
-// valid email → email (via api/_dispatch.js). ai_chat_enabled gates the
+// valid email → email (via api/_dispatch.js). browser_enabled gates on-device
+// browser notifications in the client (Settings → Notifications). ai_chat_enabled gates the
 // inbox AI auto-reply in _inbox.js. Reading prefs is public; writes require
 // a valid, non-banned, non-suspended user (same gate as _posts.js).
 
@@ -46,6 +48,8 @@ export async function getNotifyPrefs(userId) {
 			email: typeof v.email === "string" ? v.email : "",
 			sms_enabled: v.sms_enabled !== false,
 			email_enabled: v.email_enabled !== false,
+			// On-device browser notifications (PC + mobile, no phone needed) — default ON.
+			browser_enabled: v.browser_enabled !== false,
 			// Inbox AI auto-replies — user-controllable, default ON.
 			ai_chat_enabled: v.ai_chat_enabled !== false,
 			// Status-change notifications (solved/in-progress/admin reply) — default ON.
@@ -147,6 +151,7 @@ export default async function handler(req, res) {
 				email: email ? email.trim() : "",
 				sms_enabled: b.sms_enabled !== false,
 				email_enabled: b.email_enabled !== false,
+				browser_enabled: b.browser_enabled !== false,
 				ai_chat_enabled: b.ai_chat_enabled !== false,
 				status_updates: b.status_updates !== false,
 				updated_at: new Date().toISOString(),

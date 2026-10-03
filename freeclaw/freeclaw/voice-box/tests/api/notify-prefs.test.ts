@@ -74,6 +74,7 @@ describe("GET /api/notify-prefs", () => {
 			email: "",
 			sms_enabled: true,
 			email_enabled: true,
+			browser_enabled: true,
 		});
 	});
 
@@ -198,6 +199,22 @@ describe("POST /api/notify-prefs", () => {
 			expect.objectContaining({ key: "notify_prefs:anon_abc123" }),
 			{ onConflict: "key" },
 		);
+	});
+
+	it("persists the browser-notification channel toggle", async () => {
+		const { default: handler } = await import("../../api/_notify-prefs.js");
+		const res = response();
+		await handler(
+			{
+				method: "POST",
+				query: {},
+				body: { user_id: "anon_abc123", browser_enabled: false },
+				headers: { "x-anon-id": "anon_abc123" },
+			},
+			res,
+		);
+		expect(res.statusCode).toBe(200);
+		expect(res.body.browser_enabled).toBe(false);
 	});
 
 	it("rejects a malformed phone with a helpful 400", async () => {

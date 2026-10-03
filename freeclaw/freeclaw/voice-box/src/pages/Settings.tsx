@@ -29,6 +29,11 @@ import { useEffect, useRef, useState } from "react";
 import { resetTutorial } from "../components/Tutorial";
 import { ConfirmDialog } from "../components/ui";
 import { useApp } from "../contexts/AppContext";
+import {
+	browserNotifyPermission,
+	requestBrowserNotifyPermission,
+	showBrowserNotification,
+} from "../lib/browserNotify";
 import { api } from "../lib/api";
 import { sendNotificationEmail } from "../lib/email";
 import { getDisplayName, resetAnonId } from "../lib/identity";
@@ -44,6 +49,7 @@ interface NotifyChannelPrefs {
 	email: string;
 	sms_enabled: boolean;
 	email_enabled: boolean;
+	browser_enabled: boolean;
 	status_updates: boolean;
 }
 
@@ -114,6 +120,7 @@ export default function Settings() {
 		email: "",
 		sms_enabled: false,
 		email_enabled: false,
+		browser_enabled: true,
 		status_updates: true,
 	});
 	const [channelSaving, setChannelSaving] = useState(false);
@@ -131,6 +138,7 @@ export default function Settings() {
 					phone: p.phone || "",
 					email: p.email || "",
 					sms_enabled: p.sms_enabled !== false,
+					browser_enabled: p.browser_enabled !== false,
 					status_updates: p.status_updates !== false,
 					email_enabled: p.email_enabled !== false,
 				}),
@@ -157,6 +165,7 @@ export default function Settings() {
 					phone: channelPrefs.phone,
 					email: channelPrefs.email,
 					sms_enabled: channelPrefs.sms_enabled,
+					browser_enabled: channelPrefs.browser_enabled,
 					status_updates: channelPrefs.status_updates !== false,
 					email_enabled: channelPrefs.email_enabled,
 				},
@@ -165,9 +174,18 @@ export default function Settings() {
 				phone: saved.phone || "",
 				email: saved.email || "",
 				sms_enabled: saved.sms_enabled !== false,
+				browser_enabled: saved.browser_enabled !== false,
 				status_updates: saved.status_updates !== false,
 				email_enabled: saved.email_enabled !== false,
 			});
+			try {
+				localStorage.setItem(
+					"vb:browser-notify",
+					JSON.stringify({ enabled: saved.browser_enabled !== false }),
+				);
+			} catch {
+				/* local mirror is best-effort */
+			}
 			lastSavedEmail.current = saved.email || "";
 			toast(
 				saved.phone || saved.email
@@ -373,6 +391,15 @@ export default function Settings() {
 											setChannelPrefs({ ...channelPrefs, email_enabled: v })
 										}
 									/>
+									<ToggleRow
+										label="Browser notifications"
+										desc="On-device alerts on this phone or PC \u2014 no phone number needed"
+										checked={channelPrefs.browser_enabled}
+										onChange={(v) =>
+											setChannelPrefs({ ...channelPrefs, browser_enabled: v })
+										}
+									/>
+									{channelPrefs.browser_enabled && <BrowserNotifyPrimer toast={toast} />}
 									<ToggleRow
 										label="Status-change notifications"
 										desc="In-app alerts when a followed post moves to verified, in progress, solved — or gets an admin reply"
@@ -906,6 +933,79 @@ function ActionRow({
 				className={`btn !text-xs !px-3 !py-1.5 flex-shrink-0 transition-all ${colors[variant]}`}
 			>
 				{action}
+			</button>
+		</div>
+	);
+}
+
+/**
+ * Permission-first primer for on-device browser notifications. Explains
+ * what the user gets (and how to undo) BEFORE the browser prompt appears —
+ * the prompt itself offers no context and can only be asked once with full
+ * effect. Includes a test ping so delivery is proven, not assumed.
+ */
+function BrowserNotifyPrimer({ toast }: { toast: (msg: string, kind: "ok" | "err" | "info") => void }) {
+	const [busy, setBusy] = useState(false);
+	const [state, setState] = useState(() => browserNotifyPermission());
+	if (state === "unsupported") {
+		return (
+			<p className="text-[11px] text-ink3 mt-1.5">
+				This browser can’t show device notifications — in-app alerts, SMS and email still work.
+			</p>
+		);
+	}
+	if (state === "denied") {
+		return (
+			<p className="text-[11px] text-ink3 mt-1.5">
+				Notifications are blocked for this site. Re-enable them in your browser’s site settings to get device alerts.
+			</p>
+		);
+	}
+	if (state === "granted") {
+		return (
+			<button
+				type="button"
+				disabled={busy}
+				onClick={() => {
+					const shown = showBrowserNotification({
+						title: "Voice Flow notifications work",
+						body: "You’ll get one like this when something you follow changes.",
+						tag: "voice-flow-test",
+					});
+					toast(shown ? "Test notification sent" : "Could not show a notification", shown ? "ok" : "err");
+				}}
+				className="btn btn-ghost !text-xs !py-1.5 mt-1.5"
+			>
+				Send a test notification
+			</button>
+		);
+	}
+	return (
+		<div className="rounded-xl border border-border p-3 mt-1.5">
+			<p className="text-[11px] text-ink2 leading-relaxed">
+				Allow notification access and this device will ping you the moment a followed post is solved, updated, or replied to — even when Voice Flow isn’t open in front of you. Turn it off anytime here or in your browser settings.
+			</p>
+			<button
+				type="button"
+				disabled={busy}
+				onClick={async () => {
+					setBusy(true);
+					const next = await requestBrowserNotifyPermission();
+					setState(next);
+					setBusy(false);
+					if (next === "granted") {
+						showBrowserNotification({
+							title: "Voice Flow notifications on",
+							body: "You’ll get one like this when something you follow changes.",
+							tag: "voice-flow-test",
+						});
+					} else if (next === "denied") {
+						toast("Notifications blocked — re-enable them in site settings anytime", "info");
+					}
+				}}
+				className="btn btn-primary !text-xs !py-1.5 mt-2"
+			>
+				{busy ? "Waiting for browser…" : "Enable device notifications"}
 			</button>
 		</div>
 	);

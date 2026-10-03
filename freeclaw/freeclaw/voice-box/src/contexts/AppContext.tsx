@@ -9,6 +9,7 @@ import {
 	useState,
 } from "react";
 import { api } from "../lib/api";
+import { showBrowserNotification } from "../lib/browserNotify";
 import {
 	getAnonId,
 	getDisplayName,
@@ -252,6 +253,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
 	// current list without a stale closure and without side effects inside a
 	// state updater.
 	const notificationsRef = useRef<Notification[]>(notifications);
+	/** True when the last engine pass was skipped while hidden. */
+	const wasAwayRef = useRef(false);
 	useEffect(() => {
 		notificationsRef.current = notifications;
 	}, [notifications]);
@@ -547,7 +550,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
 		let cancelled = false;
 		async function check() {
 			// Skip if tab is hidden — will catch up when user returns
-			if (document.hidden) return;
+			if (document.hidden) {
+				wasAwayRef.current = true;
+				return;
+			}
+			const freshTitles: string[] = [];
+			const notifyFresh = (n: Omit<Notification, "id" | "at" | "read">) => {
+				freshTitles.push(n.title);
+				pushNotif(n);
+			};
 			try {
 				const [mine, chat, serverNotifs] = await Promise.all([
 					api
@@ -592,7 +603,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 					if (!prev || typeof prev !== "object" || !("status" in prev))
 						continue;
 					if (prev.status !== p.status) {
-						pushNotif({
+						notifyFresh({
 							kind: "status",
 							title:
 								p.status === "solved"
@@ -603,7 +614,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 						});
 					}
 					if (!prev.reply && p.admin_reply) {
-						pushNotif({
+						notifyFresh({
 							kind: "reply",
 							title: "💬 Admin replied to your post",
 							body: p.title,
@@ -611,7 +622,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 						});
 					}
 					if ((p.comment_count ?? 0) > prev.comments) {
-						pushNotif({
+						notifyFresh({
 							kind: "comment",
 							title: `💬 ${(p.comment_count ?? 0) - prev.comments} new comment(s)`,
 							body: p.title,
@@ -636,7 +647,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 						const hasAdmin = unreadIncoming.some(
 							(m) => m.sender === "admin",
 						);
-						pushNotif({
+						notifyFresh({
 							kind: "chat",
 							title: hasAdmin
 								? "✉️ New message from admin"
@@ -669,7 +680,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 								(poll.expires_at && new Date(poll.expires_at) < new Date());
 							nextSnap[`poll_${pid}`] = !!ended;
 							if (ended && snapshot[`poll_${pid}`] === false) {
-								pushNotif({
+								notifyFresh({
 									kind: "poll",
 									title: "📊 A poll you voted in has ended",
 									body: poll.title,
@@ -683,6 +694,23 @@ export function AppProvider({ children }: { children: ReactNode }) {
 				}
 
 				lsSet("vb:notifSnapshot", nextSnap);
+				if (wasAwayRef.current && freshTitles.length > 0) {
+				try {
+				const mirror = lsGet<{ enabled?: boolean }>("vb:browser-notify", {});
+				if (mirror.enabled !== false) {
+				const first = freshTitles[0] || "New update";
+				showBrowserNotification({
+				title: freshTitles.length === 1 ? first : freshTitles.length + " updates while you were away",
+				body: freshTitles.slice(0, 3).join(" \u00b7 ").slice(0, 160),
+				tag: "voice-flow-catchup",
+				url: "/activity",
+				});
+				}
+				} catch {
+					/* ping is best-effort — in-app notifications already delivered */
+				}
+				}
+				wasAwayRef.current = false;
 			} catch {
 				/* offline-friendly: silently skip */
 			}
