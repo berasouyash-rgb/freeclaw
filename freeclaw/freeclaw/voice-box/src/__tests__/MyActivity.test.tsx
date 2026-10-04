@@ -759,6 +759,41 @@ describe("MyActivity — notifications and recently viewed", () => {
 		);
 	});
 
+	it("resolves recently viewed ids into their post titles", async () => {
+		mocks.useAppState.recentlyViewed = ["p1"];
+		const user = userEvent.setup();
+		renderPage();
+		await screen.findByText("Anonymous profile");
+
+		await user.click(screen.getByRole("button", { name: /Recently viewed/ }));
+		// The list must read like the rest of MyActivity (real content),
+		// not a bare database id the user cannot recognise.
+		expect(await screen.findByText("Broken projector")).toBeInTheDocument();
+		expect(screen.getByRole("link", { name: /Broken projector/ })).toHaveAttribute(
+			"href",
+			"/post/p1",
+		);
+	});
+
+	it("keeps an unresolvable id visible instead of dropping it", async () => {
+		// e.g. the post was deleted after it was viewed — the entry must not
+		// vanish from history, it falls back to the raw link.
+		mocks.useAppState.recentlyViewed = ["p1"];
+		mocks.get.mockImplementation((url: string) =>
+			url.includes("ids=") ? Promise.resolve([]) : defaultGet(url),
+		);
+		const user = userEvent.setup();
+		renderPage();
+		await screen.findByText("Anonymous profile");
+
+		await user.click(screen.getByRole("button", { name: /Recently viewed/ }));
+		expect(await screen.findByText("p1")).toBeInTheDocument();
+		expect(screen.getByRole("link", { name: "p1" })).toHaveAttribute(
+			"href",
+			"/post/p1",
+		);
+	});
+
 	it("shows the recently viewed empty state", async () => {
 		const user = userEvent.setup();
 		renderPage();

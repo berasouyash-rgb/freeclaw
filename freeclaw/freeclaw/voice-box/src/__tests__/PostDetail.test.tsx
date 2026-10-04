@@ -26,6 +26,7 @@ const mocks = vi.hoisted(() => ({
 	navigate: vi.fn(),
 	toggleBookmark: vi.fn(),
 	retireNotifsForLink: vi.fn(),
+	addRecentlyViewed: vi.fn(),
 	readAloud: vi.fn(),
 	stopReading: vi.fn(),
 	writeText: vi.fn(),
@@ -58,6 +59,7 @@ vi.mock("../contexts/AppContext", () => ({
 		bookmarks: [],
 		toggleBookmark: mocks.toggleBookmark,
 		retireNotifsForLink: mocks.retireNotifsForLink,
+		addRecentlyViewed: mocks.addRecentlyViewed,
 	}),
 }));
 
@@ -179,6 +181,34 @@ beforeEach(() => {
 		if (url.includes("/api/follows"))
 			return Promise.resolve({ follows: [], count: 0 });
 		return Promise.resolve({});
+	});
+});
+
+describe("PostDetail — recently viewed", () => {
+	it("records the opened post as recently viewed once it loads", async () => {
+		render(<PostDetail />);
+		await screen.findByText("Broken projector in Room 204");
+		await waitFor(() => {
+			expect(mocks.addRecentlyViewed).toHaveBeenCalledWith("p1");
+		});
+		expect(mocks.addRecentlyViewed).toHaveBeenCalledTimes(1);
+	});
+
+	it("does not record a post that failed to load", async () => {
+		const notFound = Object.assign(new Error("Post not found"), {
+			status: 404,
+		});
+		mocks.get.mockImplementation((url: string) => {
+			if (url.includes("/api/posts")) return Promise.reject(notFound);
+			if (url.includes("/api/follows"))
+				return Promise.resolve({ follows: [], count: 0 });
+			return Promise.resolve({});
+		});
+		render(<PostDetail />);
+		await waitFor(() => {
+			expect(screen.getByText(/no longer available|not found/i)).toBeTruthy();
+		});
+		expect(mocks.addRecentlyViewed).not.toHaveBeenCalled();
 	});
 });
 

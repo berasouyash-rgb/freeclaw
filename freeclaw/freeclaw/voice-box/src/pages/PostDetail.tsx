@@ -204,7 +204,8 @@ function AdminStatusCircles({	status,
 export default function PostDetail() {
 	const { id } = useParams<{ id: string }>();
 	const nav = useNavigate();
-	const { anonId, toast, bookmarks, toggleBookmark, retireNotifsForLink } = useApp();
+	const { anonId, toast, bookmarks, toggleBookmark, retireNotifsForLink, addRecentlyViewed } =
+		useApp();
 
 	const [p, setPost] = useState<PostData | null>(null);
 	const [loading, setLoading] = useState(true);
@@ -256,6 +257,12 @@ export default function PostDetail() {
 			setPost(res.post);
 			setCounts(res.counts || {});
 			setMine(res.mine || []);
+			// A successful render IS the "view". Recorded here rather than on
+			// the click so a 404/removed post never lands in the list, and
+			// only on the FIRST load of this id so background refetches
+			// (lock toggle, realtime reconcile, handleDetailUpdate) neither
+			// reshuffle the history nor re-run a write on every event.
+			if (loadedRef.current !== postId) addRecentlyViewed(postId);
 			loadedRef.current = postId;
 		} catch (e: unknown) {
 			// Distinguish "this post is gone" (404) from "the request failed"
@@ -266,7 +273,7 @@ export default function PostDetail() {
 		} finally {
 			setLoading(false);
 		}
-	}, [postId, anonId]);
+	}, [postId, anonId, addRecentlyViewed]);
 
 	useEffect(() => {
 		if (postId) fetchPost();

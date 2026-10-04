@@ -19,6 +19,7 @@ import {
 	useState,
 } from "react";
 import { isChunkLoadError, reloadOnceForStaleChunk } from "../lib/retryLazy";
+import { reportBoundaryError } from "../lib/errors";
 
 interface Props {
 	children: ReactNode;
@@ -101,6 +102,16 @@ export class ErrorBoundary extends Component<Props, State> {
 			describeError(error),
 			"\nComponent stack:",
 			info.componentStack,
+		);
+		// An error caught here never reaches window.onerror — React consumes it.
+		// Forward it to the client error buffer so it reaches /api/client-error
+		// instead of dying in the developer console. reportBoundaryError is a
+		// no-op until initErrorCapture() has run (it runs in main.tsx), so this
+		// is safe in every environment. Non-Error throws are normalised first:
+		// the buffer needs a message it can dedupe and display.
+		reportBoundaryError(
+			error instanceof Error ? error : new Error(describeError(error)),
+			info.componentStack ?? undefined,
 		);
 		this.props.onError?.(error as Error, info);
 	}

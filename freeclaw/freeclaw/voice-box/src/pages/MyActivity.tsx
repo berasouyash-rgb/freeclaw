@@ -178,6 +178,7 @@ export default function MyActivity() {
 	const [reactions, setReactions] = useState<ReactionEntry[]>([]);
 	const [pollVotes, setPollVotes] = useState<PollVote[]>([]);
 	const [bookmarkPosts, setBookmarkPosts] = useState<PostData[]>([]);
+	const [viewedPosts, setViewedPosts] = useState<PostData[]>([]);
 	const [appeals, setAppeals] = useState<AppealRow[]>([]);
 	const [sectionStatus, setSectionStatus] = useState<
 		Record<ActivitySection, SectionStatus>
@@ -313,6 +314,31 @@ export default function MyActivity() {
 			bookmarkKey ? bookmarkKey.split(",").filter(Boolean) : [],
 		);
 	}, [bookmarkKey, loadSection]);
+
+	// Recently-viewed holds bare ids. Resolve them to real posts so the tab
+	// reads like every other section here. Best-effort: if the lookup fails or
+	// a post has since been removed, the entry still renders as a raw link
+	// rather than disappearing from the user's history.
+	const viewedKey = recentlyViewed.join(",");
+
+	useEffect(() => {
+		if (!viewedKey) {
+			setViewedPosts([]);
+			return;
+		}
+		let cancelled = false;
+		api
+			.get<PostData[]>(`/api/posts?ids=${viewedKey}`)
+			.then((result) => {
+				if (!cancelled) setViewedPosts(Array.isArray(result) ? result : []);
+			})
+			.catch(() => {
+				/* titles are an enhancement — ids still render below */
+			});
+		return () => {
+			cancelled = true;
+		};
+	}, [viewedKey]);
 
 	const deletePoll = async (id: string) => {
 		try {
@@ -823,15 +849,33 @@ export default function MyActivity() {
 					{recentlyViewed.length === 0 && (
 						<Empty text="Nothing viewed recently." />
 					)}
-					{recentlyViewed.map((id) => (
-						<Link
-							key={id}
-							to={`/post/${id}`}
-							className="card card-hover p-3 block text-sm font-mono text-ink2 hover:text-accent"
-						>
-							{id}
-						</Link>
-					))}
+					{recentlyViewed.map((id) => {
+						const resolved = viewedPosts.find((p) => p.id === id);
+						return (
+							<Link
+								key={id}
+								to={`/post/${id}`}
+								className={
+									resolved
+										? "card card-hover p-3.5 block"
+										: "card card-hover p-3 block text-sm font-mono text-ink2 hover:text-accent"
+								}
+							>
+								{resolved ? (
+									<>
+										<p className="font-semibold text-sm line-clamp-1">
+											{resolved.title}
+										</p>
+										<p className="text-xs text-ink3">
+											{resolved.category} · {timeAgo(resolved.created_at)}
+										</p>
+									</>
+								) : (
+									id
+								)}
+							</Link>
+						);
+					})}
 				</div>
 			)}
 
