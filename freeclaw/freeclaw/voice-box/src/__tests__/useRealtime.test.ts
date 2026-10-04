@@ -518,3 +518,48 @@ describe("useRealtime — hidden-tab optimization", () => {
 		unmount();
 	});
 });
+
+// ─── debounceMs = 0 → "no debounce": every event is delivered ──────
+// REGRESSION (vote latency): a trailing debounce delivers only the LAST
+// payload in the window, so three polls updated together refreshed only the
+// third. Callers that need per-event delivery (the fast lane for poll votes,
+// which must land inside 100ms) pass 0 and get every event with no timer.
+// All production call sites pass 1000–2000ms, so nothing else changes.
+describe("useRealtime — debounceMs 0 means no debounce", () => {
+	const simulateStatus = (key: string, status: string) => {
+		mock.channels.get(`rt-${key}`)?.statusCb(status);
+	};
+
+	beforeEach(() => {
+		vi.useFakeTimers();
+		mock.channels.clear();
+	});
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
+	it("delivers every event of a synchronous burst, not just the last", async () => {
+		const onChange = vi.fn();
+		await renderHook(() => useRealtime(["polls"], onChange, 0));
+		act(() => {
+			simulateStatus("polls", "SUBSCRIBED");
+		});
+		const change = mock.channels.get("rt-polls")?.changeCb;
+		expect(change).toBeTypeOf("function");
+
+		act(() => {
+			change?.({ eventType: "UPDATE", new: { id: "A" } });
+			change?.({ eventType: "UPDATE", new: { id: "B" } });
+			change?.({ eventType: "UPDATE", new: { id: "C" } });
+			vi.advanceTimersByTime(10);
+		});
+
+		expect(onChange).toHaveBeenCalledTimes(3);
+		const ids = onChange.mock.calls.map((c: unknown[]) => {
+			const p = c[1] as { new?: { id?: string } };
+			return p?.new?.id;
+		});
+		expect(ids).toEqual(["A", "B", "C"]);
+	});
+});
+

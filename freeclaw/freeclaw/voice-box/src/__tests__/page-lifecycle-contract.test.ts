@@ -27,6 +27,38 @@ function callArgs(source: string, hook: string): string[] {
 	return out;
 }
 
+/**
+ * True when a `useRealtime` call registered its subscription with a
+ * `0` debounce — the zero-latency lane.
+ *
+ * The load-once rule below used to ban refetches on realtime events
+ * outright. The vote requirement (totals live inside ~100ms) makes a
+ * badge-then-tap impossible for poll rows, so the contract now carves out
+ * exactly one thing: a zero-debounce subscription may refetch THE SINGLE
+ * ROW it is about. Everything debounced stays badge-only, and no lane may
+ * ever reach a list/feed loader or the raw network — the reload storm this
+ * contract exists to prevent is still fully banned.
+ */
+function isFastLane(args: string): boolean {
+	return splitTopLevel(args)[2]?.trim() === "0";
+}
+
+/**
+ * The zero-debounce allowance, asserted tightly: registered with no
+ * debounce, scoped to `polls`, routed through the named targeted refresher,
+ * and never touching a list loader or a raw network call.
+ */
+function assertTargetedPollLane(args: string, helper: string, file: string) {
+	const parts = splitTopLevel(args);
+	expect(parts[2]?.trim(), `${file}: vote lane must be zero-debounce`).toBe("0");
+	expect(parts[0], `${file}: vote lane must subscribe to polls`).toMatch(/"polls"/);
+	expect(parts[1], `${file}: vote lane must call ${helper}()`).toContain(helper);
+	expect(
+		args,
+		`${file}: vote lane may not reload a list or hit the network directly`,
+	).not.toMatch(/load\s*\(|getSlow|getFresh|api\.(put|post|del)/);
+}
+
 /** Splits an argument list on commas that are not inside brackets. */
 function splitTopLevel(args: string): string[] {
 	const parts: string[] = [];
@@ -83,10 +115,22 @@ describe("page lifecycle contracts", () => {
 		expect(source).toContain('aria-label="Refresh dashboard"');
 	});
 
-	it("keeps Polls on an explicit refresh instead of full-list realtime reloads", () => {
+	it("keeps Polls on targeted row refreshes instead of full-list realtime reloads", () => {
+		// Contract evolution 2026-10-04 (vote realtime work): this used to be a
+		// blanket `not.toContain("useRealtime(")`, which made Polls the one page
+		// whose vote totals could freeze while the rest of the product was live.
+		// The actual harm the blanket ban targeted — a full-list reload on every
+		// vote elsewhere — stays banned; what is now allowed is the same
+		// single-row refetch Home/PostDetail use.
 		const source = readFileSync(resolve(process.cwd(), "src/pages/Polls.tsx"), "utf8");
-		expect(source).not.toContain("useRealtime(");
+		expect(source).not.toMatch(/setInterval\s*\(/);
 		expect(source).not.toContain("visibilitychange");
+		const calls = callArgs(source, "useRealtime");
+		expect(calls.length, "Polls should subscribe for live vote totals").toBeGreaterThan(0);
+		expect(calls.length, "Polls needs exactly one subscription").toBe(1);
+		assertTargetedPollLane(calls[0] as string, "refreshPoll", "Polls");
+		// The explicit Refresh control the ban was protecting stays.
+		expect(source).toContain('aria-label="Refresh polls"');
 	});
 
 	it("keeps retired operations screens out of the active Admin registry", () => {
@@ -190,12 +234,26 @@ describe("page lifecycle contracts", () => {
 			const source = readFileSync(resolve(process.cwd(), file), "utf8");
 			const calls = callArgs(source, "useRealtime");
 			expect(calls.length, `${file} should still subscribe`).toBeGreaterThan(0);
+			let fastLanes = 0;
 			for (const args of calls) {
+				// PostDetail alone owns a poll: the vote lane refetches that one
+				// row with no debounce. Every other lane — on any of these pages —
+				// stays a badge.
+				if (file.endsWith("PostDetail.tsx") && isFastLane(args)) {
+					fastLanes++;
+					assertTargetedPollLane(args, "fetchPoll", "PostDetail");
+					continue;
+				}
 				const handler = splitTopLevel(args)[1]?.trim();
 				expect(
 					handler,
 					`${file} realtime handler must be a freshness signal`,
 				).toBe("markUpdatesAvailable");
+			}
+			if (file.endsWith("PostDetail.tsx")) {
+				// Exactly one: the linked poll. A second would double-fetch the
+				// same row on every vote event.
+				expect(fastLanes, "PostDetail needs exactly one vote lane").toBe(1);
 			}
 			expect(source, file).toContain("UpdateNotice");
 		}
@@ -210,15 +268,15 @@ describe("page lifecycle contracts", () => {
 				file: "src/pages/Home.tsx",
 				// exact reaction/comment deltas are local state writes, not
 				// fetches — they stay. The live feed may quiet-merge through
-				// the silent path (silent: true only — never a loud refetch)
-				// and refresh a single poll row (refreshPoll); the badge
-				// raise stays for everything else.
+				// the silent path (silent: true only — never a loud refetch);
+				// the badge raise stays for everything else. Poll rows moved
+				// to the zero-debounce lane below, where `refreshPoll` is
+				// asserted — a feed-lane copy would fetch every vote twice.
 				mustKeep: [
 					"bumpReaction",
 					"bumpCommentCount",
 					"markUpdatesAvailable",
 					"silent: true",
-					"refreshPoll",
 				],
 			},
 		];
@@ -226,16 +284,32 @@ describe("page lifecycle contracts", () => {
 			const source = readFileSync(resolve(process.cwd(), file), "utf8");
 			const calls = callArgs(source, "useRealtime");
 			expect(calls.length, `${file} should still subscribe`).toBeGreaterThan(0);
+			let fastLanes = 0;
 			for (const args of calls) {
+				if (file.endsWith("Home.tsx") && isFastLane(args)) {
+					// The vote lane: no debounce, one small targeted row GET, nothing
+					// else. It is exempt from the feed-handler tokens because it is
+					// not a feed handler — but it is held to a tighter bar instead.
+					fastLanes++;
+					assertTargetedPollLane(args, "refreshPoll", "Home");
+					continue;
+				}
 				for (const token of mustKeep) {
 					expect(args, `${file} realtime handler lost ${token}`).toContain(
 						token,
 					);
 				}
 				if (file.endsWith("Home.tsx")) {
+					// Polls belong to the zero-debounce lane alone. Keeping them
+					// on the batched lane too would refetch every changed row
+					// twice per vote event.
+					expect(
+						splitTopLevel(args)[0],
+						`${file} feed lane must leave polls to the vote lane`,
+					).not.toMatch(/"polls"/);
 					// Live feed: the ONLY fetches allowed inside the handler are
 					// the quiet near-top merge (load with silent: true) and the
-					// single-poll refresh (refreshPoll). No raw network calls.
+					// badge raise. No raw network calls.
 					expect(
 						args,
 						`${file} realtime handler must not fetch directly`,
@@ -250,6 +324,11 @@ describe("page lifecycle contracts", () => {
 						`${file} realtime handler must not fetch`,
 					).not.toMatch(/load\(|getFresh|getSlow|refreshMyReactions\(/);
 				}
+			}
+			if (file.endsWith("Home.tsx")) {
+				// One vote lane. Zero-debounce subscriptions are counted so a
+				// second one cannot sneak in and multiply per-event GETs.
+				expect(fastLanes, "Home needs exactly one vote lane").toBe(1);
 			}
 			expect(source, file).toContain("UpdateNotice");
 			expect(source, file).toContain("clearUpdates");

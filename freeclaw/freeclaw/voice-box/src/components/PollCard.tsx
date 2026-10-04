@@ -23,6 +23,38 @@ interface PollCardProps {
 	onDeleted?: () => void;
 }
 
+/**
+ * Decide which copy of a poll to render: the one this component is holding
+ * (`local`, written by an optimistic/own vote) or the one its parent just
+ * refetched (`incoming`, usually from a realtime event).
+ *
+ * Why `local || poll` was wrong: `api/_polls.js:404` builds the vote response
+ * from the row fetched BEFORE the `updated_at` touch at `:399`, so `local` is
+ * always the older copy — and holding it unconditionally froze the counts at
+ * whatever your own vote returned, silently discarding every later refetch.
+ *
+ * Rule: the newer `updated_at` wins. A refetch after the touch is newer and
+ * replaces `local`; the vote response itself is older and does not; equal
+ * stamps keep `local` so repeated refetches of the same row cause no churn.
+ *
+ * Two guards keep this from going backwards:
+ *   - an incoming row without `vote_counts` cannot win (it would blank live
+ *     results the reader is looking at),
+ *   - an unparseable incoming stamp cannot win either (unknown freshness is
+ *     treated as not-newer).
+ */
+export function pickNewerPoll(local: PollData | null, incoming: PollData): PollData {
+	if (!local) return incoming;
+	if (!incoming.vote_counts) return local;
+	const stamp = (row: PollData) =>
+		row.updated_at ? Date.parse(row.updated_at) : Number.NaN;
+	const held = stamp(local);
+	const next = stamp(incoming);
+	if (Number.isNaN(next)) return local;
+	if (Number.isNaN(held)) return incoming;
+	return next > held ? incoming : local;
+}
+
 const PollCard = memo(function PollCard({
 	poll,
 	myVote,
@@ -36,7 +68,9 @@ const PollCard = memo(function PollCard({
 	const [local, setLocal] = useState<PollData | null>(null);
 	const [busy, setBusy] = useState(false);
 	const [showDelete, setShowDelete] = useState(false);
-	const p = local || poll;
+	// Which copy is on screen: newer `updated_at` wins (see pickNewerPoll).
+	// `local || poll` here froze the counts at the vote response forever.
+	const p = pickNewerPoll(local, poll);
 	const isOwner = p.is_mine === true || p.author_id === anonId;
 
 	const deleteOwn = async () => {

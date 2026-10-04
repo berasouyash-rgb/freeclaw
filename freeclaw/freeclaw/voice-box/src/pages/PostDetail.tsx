@@ -386,7 +386,16 @@ export default function PostDetail() {
 
 	useRealtime(["reactions", "comments"], markUpdatesAvailable, 1_500);
 
-	useRealtime(["polls", "poll_votes"], markUpdatesAvailable, 2_000);
+	// Post content is the other thing this page must notice (edits, status
+	// changes, moderation) — a badge, per the load-once contract.
+	useRealtime(["posts"], markUpdatesAvailable, 2_000);
+
+	// ── Vote fast lane (zero debounce). ──
+	// The linked poll is the page's only poll row, and a vote's only signal
+	// is the `polls` updated_at touch — so refetch that one row with no
+	// debounce instead of waiting out a badge. Nothing else: no list reload,
+	// no raw network call.
+	useRealtime(["polls"], () => void fetchPoll(), 0);
 
 	const toggleFollow = async () => {
 		// Defense-in-depth: the Follow button is disabled while a request is in

@@ -540,14 +540,57 @@ export default function Home() {
 		[anonId],
 	);
 
+	// Narrow row projection shared by both realtime lanes below.
+	const rowLike = (v: unknown) =>
+		(v && typeof v === "object"
+			? (v as { target_id?: string; target_type?: string; post_id?: string; poll_id?: string; kind?: string; deleted?: boolean; hidden?: boolean; author_id?: string; id?: string })
+			: undefined);
+
+	// ── Vote fast lane (declared FIRST, zero debounce). ──
+	// A vote lands as a `polls` UPDATE (the `updated_at` touch in
+	// api/_polls.js) — that touch is the ONLY signal a vote ever sends, so
+	// it cannot share the 1500ms feed batch without missing the ~100ms
+	// budget. Events are coalesced for ~25ms, then each distinct id is
+	// refreshed with one small GET. The handler may do nothing else: no
+	// feed reload, no badge, no raw network call.
+	const pendingPollIds = useRef<Set<string>>(new Set());
+	const pollFlushTimer = useRef<number | null>(null);
+
 	useRealtime(
-		["posts", "reactions", "comments", "polls", "poll_votes"],
+		["polls"],
+		(_table: string, payload: RealtimePayload) => {
+			const row = rowLike(payload.new) ?? rowLike(payload.old);
+			const pollId = row?.id;
+			if (!pollId) return;
+			pendingPollIds.current.add(pollId);
+			if (pollFlushTimer.current === null) {
+				pollFlushTimer.current = window.setTimeout(() => {
+					pollFlushTimer.current = null;
+					const ids = [...pendingPollIds.current];
+					pendingPollIds.current.clear();
+					for (const id of ids) void refreshPoll(id);
+				}, 25);
+			}
+		},
+		0,
+	);
+
+	// Flush-or-cancel the pending vote batch on unmount so a trailing
+	// timer never refetches into an unmounted feed.
+	useEffect(
+		() => () => {
+			if (pollFlushTimer.current !== null) {
+				window.clearTimeout(pollFlushTimer.current);
+				pollFlushTimer.current = null;
+			}
+		},
+		[],
+	);
+
+	useRealtime(
+		["posts", "reactions", "comments", "poll_votes"],
 		(table: string, payload: RealtimePayload) => {
 			const evt = payload.eventType;
-			const rowLike = (v: unknown) =>
-				(v && typeof v === "object"
-					? (v as { target_id?: string; target_type?: string; post_id?: string; poll_id?: string; kind?: string; deleted?: boolean; hidden?: boolean; author_id?: string })
-					: undefined);
 
 			// ── Reaction events: apply the exact delta instantly. ──
 			// The reactions table itself never delivers (no anon read — voter
@@ -614,22 +657,13 @@ export default function Home() {
 				return;
 			}
 
-			// ── Poll changes: targeted single-poll refresh. ──
-			// Votes land as polls UPDATE (updated_at touch); refetching just
-			// that row keeps counts live for the exact cost of one small GET
-			// instead of a badge or a full feed reload.
-			if (table === "polls" && (evt === "INSERT" || evt === "UPDATE")) {
-				const row = rowLike(payload.new) ?? rowLike(payload.old);
-				const pollId = (row as { id?: string } | undefined)?.id;
-				if (pollId) void refreshPoll(pollId);
-				else markUpdatesAvailable();
-				return;
-			}
-
 			// ── Everything else: freshness signal only. ──
 			// Comment events bump counts above (the open thread refetches
 			// itself); a feed GET per comment would rebuild the list under
 			// every busy minute — the old reload storm. No fetch here.
+			// Poll events are owned by the zero-debounce lane above; this
+			// batched lane deliberately does not list `polls` so a vote is
+			// never refetched twice.
 			markUpdatesAvailable();
 		},
 		1500, // longer debounce for the batch

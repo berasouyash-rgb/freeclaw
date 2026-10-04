@@ -298,3 +298,104 @@ describe("PollCard", () => {
     });
   });
 });
+
+// ─── Freshness: `local` vs the incoming `poll` prop ─────────────────
+// REGRESSION (stale vote counts). Two facts collide:
+//   1. `api/_polls.js:404` builds the vote response from the poll row
+//      fetched BEFORE the `updated_at` touch at `:399` — so `local` is
+//      provably OLDER than any realtime refetch of the same row.
+//   2. the old `const p = local || poll` picked `local` unconditionally
+//      once you had voted, so a fresher refetched row was discarded and
+//      the counts froze at whatever your own vote response said.
+// The rule is now "newer `updated_at` wins".
+describe("PollCard — freshness merge", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("adopts a fresher realtime poll over the older vote response", async () => {
+    const { api } = await import("../lib/api");
+    const postSpy = api.post as ReturnType<typeof vi.fn>;
+    const STALE = "2026-10-04T10:00:00.000Z";
+    const FRESH = "2026-10-04T10:00:00.500Z";
+    // Pre-touch vote response: one vote added, stamp unchanged.
+    postSpy.mockResolvedValueOnce(
+      makePoll({ updated_at: STALE, total_votes: 19, vote_counts: [11, 5, 3] }),
+    );
+
+    const { rerender } = render(
+      <PollCard poll={makePoll({ updated_at: STALE })} />,
+    );
+    fireEvent.click(screen.getByRole("radio", { name: /Yes/ }));
+    fireEvent.click(screen.getByRole("button", { name: /^Vote$/ }));
+    await waitFor(() =>
+      expect(screen.getByText(/19 votes/)).toBeInTheDocument(),
+    );
+
+    // Parent refetches after the row touch — strictly newer stamp, taller
+    // counts. It must win over the stale `local` copy.
+    rerender(
+      <PollCard
+        poll={makePoll({
+          updated_at: FRESH,
+          total_votes: 20,
+          vote_counts: [12, 5, 3],
+        })}
+      />,
+    );
+    expect(screen.getByText(/20 votes/)).toBeInTheDocument();
+  });
+
+  it("keeps its own vote response when the incoming row is older", async () => {
+    const { api } = await import("../lib/api");
+    const postSpy = api.post as ReturnType<typeof vi.fn>;
+    postSpy.mockResolvedValueOnce(
+      makePoll({ updated_at: "2026-10-04T10:00:01.000Z", total_votes: 19 }),
+    );
+    const { rerender } = render(
+      <PollCard poll={makePoll({ updated_at: "2026-10-04T10:00:00.000Z" })} />,
+    );
+    fireEvent.click(screen.getByRole("radio", { name: /Yes/ }));
+    fireEvent.click(screen.getByRole("button", { name: /^Vote$/ }));
+    await waitFor(() =>
+      expect(screen.getByText(/19 votes/)).toBeInTheDocument(),
+    );
+
+    // A cached/older payload must not roll the numbers backwards.
+    rerender(
+      <PollCard
+        poll={makePoll({ updated_at: "2026-10-04T10:00:00.000Z", total_votes: 18 })}
+      />,
+    );
+    expect(screen.getByText(/19 votes/)).toBeInTheDocument();
+  });
+
+  it("never lets a payload without tallies blank live results", async () => {
+    const { pickNewerPoll } = await import("../components/PollCard");
+    const withTallies = makePoll({
+      updated_at: "2026-10-04T10:00:02.000Z",
+      total_votes: 18,
+      vote_counts: [10, 5, 3],
+    });
+    const stripped = {
+      ...makePoll({ updated_at: "2026-10-04T10:00:03.000Z" }),
+      vote_counts: undefined,
+      total_votes: undefined,
+    } as PollData;
+    expect(pickNewerPoll(withTallies, stripped)).toBe(withTallies);
+  });
+
+  it("falls back to the incoming row when nothing is held locally", async () => {
+    const { pickNewerPoll } = await import("../components/PollCard");
+    const incoming = makePoll({ updated_at: "2026-10-04T10:00:00.000Z" });
+    expect(pickNewerPoll(null, incoming)).toBe(incoming);
+  });
+
+  it("treats a tie as no change (no churn on repeated refetches)", async () => {
+    const { pickNewerPoll } = await import("../components/PollCard");
+    const stamp = "2026-10-04T10:00:00.000Z";
+    const held = makePoll({ updated_at: stamp, total_votes: 19 });
+    const same = makePoll({ updated_at: stamp, total_votes: 19 });
+    expect(pickNewerPoll(held, same)).toBe(held);
+  });
+});

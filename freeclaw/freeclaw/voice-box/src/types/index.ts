@@ -99,6 +99,13 @@ export interface PollData {
 	vote_counts?: Record<number, number>;
 	is_mine?: boolean;
 	created_at?: string;
+	/**
+	 * Row liveness stamp. The vote endpoint bumps it (`api/_polls.js:399`) and
+	 * the realtime UPDATE carries the new value, so it is the freshness key that
+	 * decides between a locally-held poll and a refetched one (see
+	 * `pickNewerPoll` in `components/PollCard.tsx`).
+	 */
+	updated_at?: string;
 }
 
 export interface PollVote {

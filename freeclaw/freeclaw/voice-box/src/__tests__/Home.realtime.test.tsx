@@ -33,8 +33,16 @@ const mocks = vi.hoisted(() => ({
 	getSlowFresh: vi.fn(async (..._args: unknown[]): Promise<unknown> => []),
 	getFresh: vi.fn(async (..._args: unknown[]): Promise<unknown> => []),
 	post: vi.fn(async () => ({})),
-	// Captured so tests can fire realtime events by hand.
+	// Captured so tests can fire realtime events by hand. The callback
+	// routes by table to whichever subscription actually listens for it —
+	// the way production delivers — so the zero-debounce vote lane and the
+	// batched feed lane never receive each other's events.
 	realtimeCallback: null as null | ((table: string, payload: unknown) => void),
+	realtimeSubs: [] as Array<{
+		tables: string[];
+		cb: (table: string, payload: unknown) => void;
+		debounceMs: number;
+	}>,
 }));
 
 vi.mock("../lib/api", () => ({ api: mocks }));
@@ -55,10 +63,26 @@ vi.mock("../hooks/useCategories", () => ({
 
 vi.mock("../lib/useRealtime", () => ({
 	useRealtime: (
-		_tables: string[],
+		tables: string[],
 		cb: (table: string, payload: unknown) => void,
+		debounceMs = 1500,
 	) => {
-		mocks.realtimeCallback = cb;
+		// React re-renders call this again on every pass. A subscription is
+		// identified by its lane (tables + debounce), so re-registering a
+		// lane replaces it — otherwise each render would stack another
+		// delivery of the same event and double every delta.
+		const lane = `${tables.join(",")}|${debounceMs}`;
+		const existing = mocks.realtimeSubs.findIndex(
+			(s) => `${s.tables.join(",")}|${s.debounceMs}` === lane,
+		);
+		const sub = { tables, cb, debounceMs };
+		if (existing === -1) mocks.realtimeSubs.push(sub);
+		else mocks.realtimeSubs[existing] = sub;
+		mocks.realtimeCallback = (table, payload) => {
+			for (const s of mocks.realtimeSubs) {
+				if (s.tables.includes(table)) s.cb(table, payload);
+			}
+		};
 	},
 }));
 
@@ -110,6 +134,7 @@ beforeEach(() => {
 	// Module-level feed snapshot must not leak between cases.
 	__resetHomeSnapshot();
 	mocks.realtimeCallback = null;
+	mocks.realtimeSubs = [];
 	mocks.getSlow.mockResolvedValue([POST]);
 	mocks.getSlowFresh.mockResolvedValue([POST]);
 	mocks.get.mockResolvedValue([]);
@@ -313,5 +338,54 @@ describe("Home — realtime deltas from other users", () => {
 		expect(
 			await screen.findByRole("button", { name: /View \d+ new updates?/ }),
 		).toBeInTheDocument();
+	});
+
+	it("registers exactly one zero-debounce vote lane, separate from the batched feed lane", async () => {
+		await renderFeed();
+
+		// A vote's only liveness signal is the `polls` updated_at touch, so it
+		// cannot wait out the 1500ms feed batch and still meet ~100ms.
+		const pollSubs = mocks.realtimeSubs.filter((s) => s.tables.includes("polls"));
+		expect(
+			pollSubs,
+			"one lane owns polls — a second would double-fetch every vote",
+		).toHaveLength(1);
+		expect(
+			pollSubs[0]?.debounceMs,
+			"the vote lane must register with no debounce",
+		).toBe(0);
+
+		// The batched lane must leave polls alone rather than fetch them twice.
+		const feedSubs = mocks.realtimeSubs.filter((s) => !s.tables.includes("polls"));
+		expect(feedSubs.length).toBeGreaterThan(0);
+
+		mocks.getFresh.mockClear();
+		mocks.getSlow.mockClear();
+		mocks.getSlowFresh.mockClear();
+		await act(async () => {
+			mocks.realtimeCallback!("polls", {
+				eventType: "UPDATE",
+				new: { id: "poll9" },
+				old: {},
+			});
+			mocks.realtimeCallback!("polls", {
+				eventType: "UPDATE",
+				new: { id: "poll10" },
+				old: {},
+			});
+		});
+
+		// Both rows refetched — one small targeted GET each, never the feed.
+		await waitFor(() => {
+			expect(mocks.getFresh).toHaveBeenCalledWith(
+				expect.stringContaining("ids=poll9"),
+			);
+			expect(mocks.getFresh).toHaveBeenCalledWith(
+				expect.stringContaining("ids=poll10"),
+			);
+		});
+		expect(
+			mocks.getSlow.mock.calls.length + mocks.getSlowFresh.mock.calls.length,
+		).toBe(0);
 	});
 });

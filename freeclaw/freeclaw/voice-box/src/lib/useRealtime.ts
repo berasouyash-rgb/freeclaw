@@ -155,6 +155,18 @@ function getOrCreate(key: string, supabase: RealtimeClient | null): ChannelEntry
 					// timer (per-subscriber timers guarantee every subscriber fires — a
 					// shared map would let the last-writer win and drop earlier subscribers).
 					for (const [, sub] of entry!.subscribers) {
+						// debounceMs <= 0 means "no debounce": deliver this event NOW.
+						// A trailing timer coalesces a synchronous burst down to its LAST
+						// payload, so ids A, B, C arriving together would refresh only C —
+						// the two other rows stay stale until the next unrelated event.
+						// The vote fast lane (poll counts must land inside 100ms) needs
+						// every id, so it passes 0 and batches in its own handler.
+						// Every production call site passes 1000–2000ms, so the debounced
+						// paths below are unchanged.
+						if (sub.debounceMs <= 0) {
+							sub.callback(table, payload);
+							continue;
+						}
 						if (sub.timer) {
 							// Max-wait: a burst that has already run longer than the
 							// ceiling flushes NOW instead of pushing the timer again.
@@ -230,6 +242,12 @@ function removeSubscriber(id: number, key: string) {
  * Realtime failures and quiet channels are intentionally not converted into
  * recurring polling. Pages keep their current snapshot until an explicit
  * refresh or route re-entry, matching the one-load lifecycle contract.
+ *
+ * @param debounceMs Trailing debounce applied per subscriber, coalescing a
+ *   burst into one call with the LAST payload. A max-wait ceiling keeps a
+ *   sustained stream from starving the callback. Pass `0` to opt out and
+ *   receive EVERY event immediately — required when the payload carries a
+ *   per-row id that must not be dropped (see the poll-vote fast lane).
  */
 export function useRealtime(
 	tables: string[],

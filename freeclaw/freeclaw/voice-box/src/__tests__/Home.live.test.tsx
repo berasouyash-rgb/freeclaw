@@ -21,6 +21,14 @@ const mocks = vi.hoisted(() => ({
 	pushNotif: vi.fn(),
 	confetti: vi.fn(),
 	realtimeCb: null as null | ((table: string, payload: unknown) => void),
+	// Every registered subscription — `fireRealtime` routes by table so the
+	// zero-debounce vote lane and the batched feed lane each get only the
+	// events production would hand them.
+	realtimeSubs: [] as Array<{
+		tables: string[];
+		cb: (table: string, payload: unknown) => void;
+		debounceMs: number;
+	}>,
 	getSlow: vi.fn(),
 	getSlowFresh: vi.fn(),
 	getFresh: vi.fn(),
@@ -55,10 +63,25 @@ vi.mock("../contexts/AppContext", () => ({
 
 vi.mock("../lib/useRealtime", () => ({
 	useRealtime: (
-		_tables: string[],
+		tables: string[],
 		cb: (table: string, payload: unknown) => void,
+		debounceMs = 1500,
 	) => {
-		mocks.realtimeCb = cb;
+		// Re-renders re-run this; a lane is identified by tables + debounce,
+		// so re-registering replaces rather than stacking a duplicate
+		// delivery per render.
+		const lane = `${tables.join(",")}|${debounceMs}`;
+		const existing = mocks.realtimeSubs.findIndex(
+			(s) => `${s.tables.join(",")}|${s.debounceMs}` === lane,
+		);
+		const sub = { tables, cb, debounceMs };
+		if (existing === -1) mocks.realtimeSubs.push(sub);
+		else mocks.realtimeSubs[existing] = sub;
+		mocks.realtimeCb = (table, payload) => {
+			for (const s of mocks.realtimeSubs) {
+				if (s.tables.includes(table)) s.cb(table, payload);
+			}
+		};
 	},
 }));
 
@@ -131,6 +154,7 @@ function fireRealtime(table: string, payload: unknown) {
 beforeEach(() => {
 	vi.clearAllMocks();
 	mocks.realtimeCb = null;
+	mocks.realtimeSubs = [];
 	setScrollY(0);
 	sessionStorage.clear();
 	__resetHomeSnapshot();

@@ -1,10 +1,11 @@
 ﻿import { PlusCircle, RefreshCw } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router";
 import PollCard from "../components/PollCard";
 import { Segmented } from "../components/ui";
 import { useApp } from "../contexts/AppContext";
 import { api } from "../lib/api";
+import { useRealtime, type RealtimePayload } from "../lib/useRealtime";
 import type { PollData, PollVote } from "../types";
 
 /**
@@ -90,17 +91,76 @@ export default function Polls() {
 		[anonId],
 	);
 
+	// Targeted row refresh for the vote fast lane below: only the ids that
+	// actually changed are re-read in one small GET, merged by id. The full
+	// list is never refetched from a realtime event — that is what the
+	// explicit Refresh control is for, and why this lane may only ever name
+	// this function.
+	const refreshPolls = useCallback(
+		async (ids: string[]) => {
+			if (!ids.length) return;
+			try {
+				const query = ids.map((id) => encodeURIComponent(id)).join(",");
+				const rows = await api.getFresh<PollData[]>(
+					`/api/polls?ids=${query}&viewer=${anonId}`,
+				);
+				const byId = new Map<string, PollData>();
+				for (const r of Array.isArray(rows) ? rows : [])
+					if (r?.id) byId.set(r.id, r);
+				if (!byId.size) return;
+				setPolls((prev) =>
+					prev.map((p) => (byId.get(p.id) ?? p)),
+				);
+			} catch {
+				/* keep stale rows rather than blank the list over one id */
+			}
+		},
+		[anonId],
+	);
+
 	useEffect(() => {
 		load();
 	}, [load]);
 
-	// Poll results are reconciled after this user's vote/delete action or via
-	// the explicit Refresh control. Do not refetch the entire list for every
-	// unrelated vote event elsewhere in the product.
+	// ── Vote fast lane (zero debounce). ──
+	// A vote's only liveness signal is the `polls` updated_at touch, so it
+	// cannot wait on a manual refresh. Events coalesce for ~25ms, then each
+	// distinct id is refetched — one row per id, never the whole list.
+	const pendingPollIds = useRef<Set<string>>(new Set());
+	const pollFlushTimer = useRef<number | null>(null);
 
-	// Poll results are reconciled after this user's vote/delete action or via
-	// the explicit Refresh control. Do not refetch the entire list for every
-	// unrelated vote event elsewhere in the product.
+	useRealtime(
+		["polls"],
+		(_table: string, payload: RealtimePayload) => {
+			const raw = payload.new ?? payload.old;
+			const pollId =
+				raw && typeof raw === "object"
+					? (raw as { id?: string }).id
+					: undefined;
+			if (!pollId) return;
+			pendingPollIds.current.add(pollId);
+			if (pollFlushTimer.current === null) {
+				pollFlushTimer.current = window.setTimeout(() => {
+					pollFlushTimer.current = null;
+					const ids = [...pendingPollIds.current];
+					pendingPollIds.current.clear();
+					void refreshPolls(ids);
+				}, 25);
+			}
+		},
+		0,
+	);
+
+	// Never leave a vote batch queued into an unmounted list.
+	useEffect(
+		() => () => {
+			if (pollFlushTimer.current !== null) {
+				window.clearTimeout(pollFlushTimer.current);
+				pollFlushTimer.current = null;
+			}
+		},
+		[],
+	);
 
 	const isEnded = (p: PollData) =>
 		p.archived || (p.expires_at && new Date(p.expires_at) < new Date());
@@ -132,9 +192,8 @@ export default function Polls() {
 				</div>
 			</div>
 			<p className="text-sm text-ink3 mb-5">
-				Vote anonymously. Your vote updates the results immediately; use Refresh
-				to check for changes from other people. Every poll stays readable after it
-				closes.
+				Vote anonymously. Results update live as people vote; Refresh re-reads
+				every poll on demand. Every poll stays readable after it closes.
 			</p>
 
 			<div className="mb-4">
