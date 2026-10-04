@@ -934,9 +934,11 @@ export default function Overview() {
 		.filter((p) => p.linked_poll)
 		.map((p) => ({
 			post: p,
+			// Live poll fetch wins: `linked_poll_votes` is the feed snapshot
+			// taken when the posts query ran, so preferring it ranks stale counts.
 			score:
-				p.linked_poll_votes ??
 				pollsById.get(p.linked_poll!)?.total_votes ??
+				p.linked_poll_votes ??
 				0,
 		}))
 		.sort((a, b) => b.score - a.score || byCreatedDesc(a.post, b.post));

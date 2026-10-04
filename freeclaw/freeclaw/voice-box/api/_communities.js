@@ -22,6 +22,7 @@ import { clean, cors, isAdmin } from "./_auth.js";
 import supabase from "./_db-client.js";
 import { sanitizeError } from "./_error.js";
 import { evaluateContent } from "./_safety-pipeline.js";
+import { isTestArtifact } from "./_artifact-filter.js";
 
 const MAX_COMMUNITIES_PER_USER = 5;
 const MAX_MEMBERS = 500;
@@ -72,7 +73,8 @@ function slugify(name) {
 
 function summarize(c, admin) {
 	const isHidden = !!c.hidden;
-	if (isHidden && !admin) return null;		return {
+	if (isHidden && !admin) return null;
+	return {
 		slug: c.slug,
 		name: c.name,
 		description: c.description || "",
@@ -82,8 +84,17 @@ function summarize(c, admin) {
 		created_at: c.created_at,
 		hidden: isHidden,
 		member_count: Array.isArray(c.members) ? c.members.length : 0,
-		post_count: Array.isArray(c.posts) ? c.posts.length : 0,
+		post_count: cleanPosts(c.posts).length,
 	};
+}
+
+// Test/fuzz runs also seed community discussion feeds. Same contract as the
+// shared post surfaces: rows stay in storage, only the public listing hides
+// them — never delete.
+function cleanPosts(posts) {
+	return (Array.isArray(posts) ? posts : []).filter(
+		(p) => p && !isTestArtifact(p?.text),
+	);
 }
 
 function publicPost(p, anonId) {
@@ -101,7 +112,9 @@ function publicPost(p, anonId) {
 			Object.entries(p.reactions || {}).map(([k, v]) => [k, Array.isArray(v) && anonId ? v.includes(anonId) : false]),
 		),
 		poll: p.poll ? publicPoll(p.poll, anonId) : null,
-		comments: (p.comments || []).map((c) => ({
+		comments: (p.comments || [])
+			.filter((c) => c && !isTestArtifact(c?.text))
+			.map((c) => ({
 			id: c.id,
 			anon_id: c.anon_id,
 			author: c.author || "",
@@ -167,10 +180,20 @@ export default async function handler(req, res) {
 				.ilike("key", "community:%")
 				.limit(200);
 			const communities = (rows || [])
-				.map((r) => summarize(r.value, admin))
-				.filter(Boolean)
+				.map((r) => {
+					// The KV key is the routing authority: a legacy row whose value
+					// lost its `slug` field must still produce a link that resolves
+					// (otherwise "Open" navigates to /communities/undefined → 404).
+					const v = r.value || {};
+					const keySlug = String(r.key || "").replace(/^community:/, "");
+					return summarize({ ...v, slug: v.slug || keySlug }, admin);
+				})
+				.filter((c) => c && !isTestArtifact(c.name))
 				.sort((a, b) => b.created_at.localeCompare(a.created_at));
-			res.setHeader("Cache-Control", "public, max-age=30, s-maxage=30");
+			// Dynamic list: member/post counts change on every join and new post —
+			// match the other list endpoints (`private, no-cache`) so nothing serves
+			// a stale count for 30s.
+			res.setHeader("Cache-Control", "private, no-cache");
 			return res.status(200).json({ communities });
 		}
 
@@ -182,12 +205,16 @@ export default async function handler(req, res) {
 			const c = await getCommunity(slug);
 			if (!c || (c.hidden && !admin))
 				return res.status(404).json({ error: "Community not found" });
+			// The requested key slug is canonical for routing.
+			c.slug = slug;
 			return res.status(200).json({
 				...summarize(c, admin),
 				members: Array.isArray(c.members) ? c.members.slice(0, MAX_MEMBERS) : [],
 				is_member: anonId ? (c.members || []).includes(anonId) : false,
 				is_creator: anonId ? c.created_by === anonId : false,
-				posts: (c.posts || []).slice(-50).map((p) => publicPost(p, anonId)),
+				posts: cleanPosts(c.posts)
+					.slice(-50)
+					.map((p) => publicPost(p, anonId)),
 			});
 		}
 

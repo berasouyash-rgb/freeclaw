@@ -1,6 +1,6 @@
 # Capability map — spec §41 (102 capabilities, verified)
 
-Generated: 2026-09-24T12:01:41.911Z · by `scripts/audit-capabilities.mjs`. Every pointer below was checked against the working tree.
+Generated: 2026-10-04T07:04:11.100Z · by `scripts/audit-capabilities.mjs`. Every pointer below was checked against the working tree.
 
 ## 1. Proactive moderation — WIRED
 - worker `comment-watch`
@@ -68,19 +68,20 @@ Generated: 2026-09-24T12:01:41.911Z · by `scripts/audit-capabilities.mjs`. Ever
 - worker `authz-probe`
 
 ## 16. Slang understanding — WIRED
-- engine `src/lib/speech.ts#CORRECTIONS`
-- test `src/__tests__/speech.test.ts`
+- engine `src/lib/lexicon.ts#SLANG`
+- test `src/__tests__/moderation.test.ts`
 
 ## 17. Evasion detection — WIRED
 - engine `api/_moderation.js#checkSafetyRepost`
 - engine `api/_moderation.js#recordSafetyRepost`
 - engine `api/_safety-pipeline.js#evaluateContent`
-- engine `src/lib/moderation.ts#foldLeet`
+- engine `src/lib/lexicon.ts#foldLeet`
 - route `/api/comments`
 - test `tests/api/safety-parity.test.ts`
 
 ## 18. Multilingual moderation — WIRED
-- engine `src/lib/speech.ts#VOICE_LANGS`
+- engine `api/_translate.js#detectLanguage`
+- worker `multilingual`
 - test `tests/api/inbox-classify.test.ts`
 
 ## 19. Context analysis — WIRED
@@ -264,8 +265,9 @@ Generated: 2026-09-24T12:01:41.911Z · by `scripts/audit-capabilities.mjs`. Ever
 - test `src/__tests__/Submit.test.tsx`
 
 ## 61. Voice transcription — WIRED
-- engine `src/lib/speech.ts#startDictation`
-- test `src/__tests__/speech.test.ts`
+- engine `api/_transcribe.js`
+- route `/api/transcribe`
+- test `tests/api/transcribe.test.ts`
 
 ## 62. Voice response — WIRED
 - engine `src/lib/speech.ts#readAloud`

@@ -287,6 +287,51 @@ describe("PostCard", () => {
       );
       expect(screen.getByText("Should we fix it?")).toBeInTheDocument();
     });
+
+    it("badge follows the live poll total over the feed snapshot", () => {
+      render(
+        <PostCard
+          post={makePost({ linked_poll: "poll-1", linked_poll_votes: 0 })}
+          pollData={{
+            id: "poll-1",
+            title: "Should we fix it?",
+            options: ["Yes", "No"],
+            vote_counts: [4, 3],
+            total_votes: 7,
+            ptype: "yesno",
+            author_id: "user-1",
+          }}
+        />,
+      );
+      // The feed snapshot says 0; the live poll says 7. The badge must agree
+      // with the PollCard rendered directly below it.
+      expect(screen.getByRole("status", { name: "Poll with 7 votes" })).toBeInTheDocument();
+    });
+
+    it("badge falls back to the feed snapshot before the poll loads", () => {
+      render(
+        <PostCard post={makePost({ linked_poll: "poll-1", linked_poll_votes: 3 })} />,
+      );
+      expect(screen.getByRole("status", { name: "Poll with 3 votes" })).toBeInTheDocument();
+    });
+
+    it("singularises the badge for a single vote", () => {
+      render(
+        <PostCard
+          post={makePost({ linked_poll: "poll-1", linked_poll_votes: 0 })}
+          pollData={{
+            id: "poll-1",
+            title: "Should we fix it?",
+            options: ["Yes", "No"],
+            vote_counts: [1, 0],
+            total_votes: 1,
+            ptype: "yesno",
+            author_id: "user-1",
+          }}
+        />,
+      );
+      expect(screen.getByRole("status", { name: "Poll with 1 vote" })).toBeInTheDocument();
+    });
   });
 
   describe("comment count", () => {

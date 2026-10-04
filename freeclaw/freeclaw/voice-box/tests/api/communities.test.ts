@@ -490,3 +490,104 @@ describe("communities — detail edge cases", () => {
 		expect(res.statusCode).toBe(400);
 	});
 });
+
+describe("communities — artifact hygiene & link integrity", () => {
+	function seed(value: Record<string, unknown>, key?: string) {
+		const k = key || `community:${value.slug}`;
+		tableData["settings"][k] = { key: k, value };
+	}
+
+	it("hides test/fuzz artifact communities from the list", async () => {
+		seed({
+			slug: "study-gang",
+			name: "Study Gang",
+			created_at: "2026-09-01T00:00:00.000Z",
+			members: ["anon_a"],
+			posts: [],
+		});
+		seed({
+			slug: "full-crud-test-210145",
+			name: "Full CRUD Test 210145",
+			created_at: "2026-09-02T00:00:00.000Z",
+			members: [],
+			posts: [],
+		});
+		seed({
+			slug: "qa-test-community",
+			name: "QA test community",
+			created_at: "2026-09-03T00:00:00.000Z",
+			members: [],
+			posts: [],
+		});
+		const res = response();
+		await handler(getReq("list"), res);
+		const names = (res.body as { communities: { name: string }[] }).communities.map(
+			(c) => c.name,
+		);
+		expect(names).toContain("Study Gang");
+		expect(names).not.toContain("Full CRUD Test 210145");
+		expect(names).not.toContain("QA test community");
+	});
+
+	it("repairs the link slug from the KV key when the value lost it", async () => {
+		// Legacy row without `slug` inside the value — the list must still emit
+		// a slug that resolves, or "Open" navigates to a 404 page.
+		seed(
+			{
+				name: "Legacy Group",
+				created_at: "2026-09-01T00:00:00.000Z",
+				members: ["anon_a"],
+				posts: [],
+			},
+			"community:legacy-group",
+		);
+		const res = response();
+		await handler(getReq("list"), res);
+		const list = (res.body as { communities: { slug: string }[] }).communities;
+		expect(list.map((c) => c.slug)).toContain("legacy-group");
+
+		const detail = response();
+		await handler(getReq("get", { slug: "legacy-group" }), detail);
+		expect(detail.statusCode).toBe(200);
+		expect((detail.body as { slug: string }).slug).toBe("legacy-group");
+	});
+
+	it("filters seeded test posts and comments from the detail feed", async () => {
+		seed({
+			slug: "tech-talk",
+			name: "Tech Talk",
+			created_at: "2026-09-01T00:00:00.000Z",
+			members: ["anon_a"],
+			posts: [
+				{
+					id: "p-real",
+					anon_id: "anon_a",
+					author: "A",
+					text: "Anyone else hyped for the science fair?",
+					created_at: "2026-09-02T00:00:00.000Z",
+					comments: [
+						{ id: "c-real", text: "Same!" },
+						{ id: "c-junk", text: "This is a test comment" },
+					],
+				},
+				{
+					id: "p-junk",
+					anon_id: "anon_t",
+					author: "T",
+					text: "QA test post seeded by the harness",
+					created_at: "2026-09-03T00:00:00.000Z",
+					comments: [],
+				},
+			],
+		});
+		const res = response();
+		await handler(getReq("get", { slug: "tech-talk" }), res);
+		const body = res.body as {
+			post_count: number;
+			posts: { id: string; comments: { id: string }[] }[];
+		};
+		expect(body.posts.map((p) => p.id)).toEqual(["p-real"]);
+		expect(body.posts[0].comments.map((c) => c.id)).toEqual(["c-real"]);
+		expect(body.post_count).toBe(1);
+	});
+});

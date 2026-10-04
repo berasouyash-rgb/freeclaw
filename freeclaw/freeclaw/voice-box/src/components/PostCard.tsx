@@ -196,6 +196,14 @@ function PostCardInner({ post, myReactions, onReacted, pollData, myPollVote, onP
 		() => localMine || myReactions || [],
 		[localMine, myReactions],
 	);
+	// Single source for the badge count: the live poll fetch wins over the
+	// feed snapshot (`post.linked_poll_votes`), which only refreshes when the
+	// whole feed refetches — otherwise the badge lags the PollCard below it.
+	const badgeVotes = useMemo(() => {
+		if (pollData && typeof pollData.total_votes === "number")
+			return pollData.total_votes;
+		return post.linked_poll_votes ?? 0;
+	}, [pollData, post.linked_poll_votes]);
 
 	// Reset stale optimistic state when server data arrives (prevents double-reaction bug).
 	// Skip the reset immediately after a successful POST — onReacted() updates the parent,
@@ -446,13 +454,13 @@ function PostCardInner({ post, myReactions, onReacted, pollData, myPollVote, onP
 							<span
 								className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-semibold text-accent"
 								role="status"
-								aria-label={`Poll with ${post.linked_poll_votes ?? 0} votes`}
+								aria-label={`Poll with ${badgeVotes} vote${badgeVotes === 1 ? "" : "s"}`}
 								title="This post has a live poll — see below"
 							>
 								<BarChart3 size={13} /> Poll ·{" "}
-								{(post.linked_poll_votes ?? 0) === 1
+								{badgeVotes === 1
 									? "1 vote"
-									: `${post.linked_poll_votes ?? 0} votes`}
+									: `${badgeVotes} votes`}
 							</span>
 						)}
 						<button

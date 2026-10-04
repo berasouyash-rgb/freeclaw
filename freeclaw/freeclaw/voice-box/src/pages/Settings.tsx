@@ -571,8 +571,7 @@ export default function Settings() {
 									</code>
 								</p>
 								<p className="text-xs text-ink3">
-									This ID is stored locally in your browser and is used to
-									identify your posts, comments, and votes. No personal
+									This ID lives only on this device — in your browser, the Android app, or the Windows app, whichever you are using now — and it identifies your posts, comments, and votes. No personal
 									information is collected.
 								</p>
 							</div>
