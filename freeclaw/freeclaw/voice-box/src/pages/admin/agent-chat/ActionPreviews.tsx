@@ -1101,6 +1101,8 @@ export function getToolPreview(
 			return <ReportsPreview />;
 		case "create_comment":
 			return <CommentPreview args={args} />;
+		case "create_presentation":
+			return <PresentationPreview args={args} />;
 		case "update_post":
 			return <UpdatePostPreview args={args} />;
 		case "hide_post":
