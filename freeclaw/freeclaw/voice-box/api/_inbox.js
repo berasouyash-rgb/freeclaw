@@ -1120,10 +1120,14 @@ export default async function handler(req, res) {
 			if (thread_id) {
 				if (!validThreadId(thread_id)) return res.status(400).json({ error: "Invalid thread_id format" });
 				// Gate message-history reads like _chat.js: admins pass; anonymous
-				// requesters must present a valid (non-banned) anon id so message
-				// history is not readable by anyone who guesses a thread id.
+				// requesters must PROVE the thread is theirs (header == claim +
+				// session cookie), not merely know its id. Threads are keyed by
+				// owner anon id and ids are disclosed in communities — a ban
+				// check alone would let anyone read a student's private history.
 				const readerIsAdmin = await isAdmin(req);
 				if (!readerIsAdmin) {
+					const caller = await verifyCallerIdentity(req, res, thread_id);
+					if (!caller.ok) return res.status(caller.status || 403).json({ error: caller.error, code: caller.code });
 					const gate = await checkUser(thread_id);
 					if (!gate.ok) return res.status(403).json({ error: gate.error });
 				}
@@ -1423,6 +1427,11 @@ export default async function handler(req, res) {
 			// choice on the draft card (default private); public drafts are held
 			// for review inside acceptDraft, never published directly.
 			if (!admin && b.action === "accept_own_draft") {
+				// Ownership proof happens HERE (header == claim + cookie):
+				// acceptOwnDraft only re-checks the ban list, so without this
+				// anyone knowing a thread id could publish posts as its owner.
+				const caller = await verifyCallerIdentity(req, res, threadId);
+				if (!caller.ok) return res.status(caller.status || 403).json({ error: caller.error, code: caller.code });
 				const result = await acceptOwnDraft(threadId, b.visibility);
 				if (!result.ok) return res.status(403).json({ error: result.error, code: result.code });
 				return res.status(200).json({ ...result, server_ms: Date.now() - postStart });
@@ -1725,7 +1734,14 @@ export default async function handler(req, res) {
 			}
 
 			// ── User sends message ─────────────────────────────
+			// Session binding (same model as the thread reads above): the
+			// thread id IS the owner's anon id, so the caller must prove it
+			// (header == claim + cookie). A ban check alone would let anyone
+			// post into a student's private thread — forging messages that
+			// trigger AI replies, triage, and emergency pings in their name.
 			if (!admin) {
+				const caller = await verifyCallerIdentity(req, res, threadId);
+				if (!caller.ok) return res.status(caller.status || 403).json({ error: caller.error, code: caller.code });
 				const gate = await checkUser(threadId);
 				if (!gate.ok) return res.status(403).json({ error: gate.error });
 				if (await rateLimited("chat_messages", threadId, 60, 10)) {
@@ -2116,6 +2132,15 @@ export default async function handler(req, res) {
 			if (b.action === "mark_read") {
 				if (!b.thread_id)
 					return res.status(400).json({ error: "Missing thread_id" });
+				// Ownership proof: without it anyone could clear another
+				// student's unread badge and notification state.
+				if (!admin) {
+					const claimed = clean(b.thread_id, 40);
+					const caller = await verifyCallerIdentity(req, res, claimed);
+					if (!caller.ok) return res.status(caller.status || 403).json({ error: caller.error, code: caller.code });
+					const gate = await checkUser(claimed);
+					if (!gate.ok) return res.status(403).json({ error: gate.error });
+				}
 				// A user opening their inbox has read everything not from
 				// themselves — admin AND ai replies. Marking only "admin" left
 				// every AI reply unread forever, so the unread badge could never
