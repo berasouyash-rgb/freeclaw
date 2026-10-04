@@ -1,7 +1,7 @@
 // Reaction toggles — positive-only voting (Support on problems, Upvote on ideas).
 // One vote per anonymous browser per item; tapping again removes it.
 
-import { checkUser, clean, cors, isAdmin, rateLimited, rateLimitResponse } from "./_auth.js";
+import { checkUser, clean, cors, isAdmin, rateLimited, rateLimitResponse, verifyCallerIdentity } from "./_auth.js";
 import supabase from "./_db-client.js";
 import { sanitizeError } from "./_error.js";
 import { invalidateCounts } from "./_counts.js";
@@ -68,6 +68,13 @@ export default async function handler(req, res) {
 			const author_id = headerId || (admin ? "ADMIN" : "");
 			if (!author_id)
 				return res.status(403).json({ error: "Missing session identity (x-anon-id header)" });
+			// Session binding: the header claim must match a live session
+			// (same model as inbox/communities). Header-only auth let anyone
+			// knowing an id vote as them.
+			if (!admin) {
+				const caller = await verifyCallerIdentity(req, res, author_id);
+				if (!caller.ok) return res.status(caller.status || 403).json({ error: caller.error, code: caller.code });
+			}
 			const kind = NORMALIZE[b.kind] || null;
 			const target_id = clean(b.target_id, 60);
 			const target_type = ["post", "comment", "suggestion"].includes(

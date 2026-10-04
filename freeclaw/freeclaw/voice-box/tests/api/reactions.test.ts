@@ -17,6 +17,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const from = vi.fn();
 let reactionsData: Array<{ kind: string; author_id: string }> = [];
 let deleteResult: Array<{ id: string }> = [];
+// Default-allow session gate (feature tests exercise behavior, not auth;
+// the impersonation test below overrides with header==claim semantics).
+const verifyCallerMock = vi.fn(async () => ({ ok: true, callerId: "" }));
 // Error-injection + side-effect capture for resilience/priority tests.
 let deleteError: Error | null = null;
 let insertError: Error | null = null;
@@ -38,6 +41,7 @@ vi.mock("../../api/_auth.js", () => ({
 	rateLimitResponse: vi.fn((res) =>
 		res.status(429).json({ error: "Too many requests" }),
 	),
+	verifyCallerIdentity: verifyCallerMock,
 }));
 vi.mock("../../api/_error.js", () => ({
 	sanitizeError: (_res: unknown, err: unknown) => {
@@ -120,6 +124,10 @@ beforeEach(() => {
 	insertError = null;
 	countsError = null;
 	priorityPatches = [];
+	// Drain any leaked one-shot gate denial so a broken gate fails its own
+	// test instead of poisoning the next test's session check.
+	verifyCallerMock.mockReset();
+	verifyCallerMock.mockResolvedValue({ ok: true, callerId: "" });
 	from.mockImplementation((table: string) => chainFor(table));
 });
 
@@ -436,5 +444,32 @@ describe("POST /api/reactions — optimized toggle contract", () => {
 
 		expect(res.statusCode).toBe(200);
 		expect(priorityPatches).toContainEqual({ priority: "medium" });
+	});
+
+	it("refuses a toggle when the session gate denies, even with a matching header", async () => {
+		// Stolen-cookie scenario: header and body both claim victim_1, but
+		// the session proof fails. Header-only auth would allow this toggle;
+		// the bound gate must deny it.
+		verifyCallerMock.mockImplementation(async () => ({
+			ok: false,
+			status: 403,
+			error: "Invalid session identity",
+		}));
+		deleteResult = [];
+		const { default: handler } = await import("../../api/_reactions.js");
+		const res = response();
+		await handler(
+			{
+				method: "POST",
+				query: {},
+				body: { ...body(), author_id: "victim_1" },
+				headers: { "x-anon-id": "victim_1" },
+			},
+			res,
+		);
+		expect(res.statusCode).toBe(403);
+		const calls = verifyCallerMock.mock.calls as Array<[unknown, unknown, string]>;
+		expect(calls.length).toBeGreaterThan(0);
+		expect(calls[calls.length - 1]?.[2]).toBe("victim_1");
 	});
 });

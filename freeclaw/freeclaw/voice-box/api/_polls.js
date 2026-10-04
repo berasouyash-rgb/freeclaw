@@ -10,6 +10,7 @@ import {
 	maskProfanity,
 	rateLimited,
 	rateLimitResponse,
+	verifyCallerIdentity,
 } from "./_auth.js";
 import supabase from "./_db-client.js";
 import { sanitizeError } from "./_error.js";
@@ -324,6 +325,13 @@ export default async function handler(req, res) {
 			}
 
 			if (b.action === "vote") {
+				// Session binding: votes are identity-bound (UNIQUE
+				// poll_id+author_id), so the header claim must match a live
+				// session — otherwise anyone knowing an id votes as them.
+				if (!admin) {
+					const caller = await verifyCallerIdentity(req, res, author_id);
+					if (!caller.ok) return res.status(caller.status || 403).json({ error: caller.error, code: caller.code });
+				}
 				const gate = await checkUser(author_id);
 				if (!gate.ok) return res.status(403).json({ error: gate.error });
 				const { data: poll } = await supabase
@@ -455,6 +463,9 @@ export default async function handler(req, res) {
 
 			// Create poll
 			if (!admin) {
+				// Session binding: same impersonation class as votes.
+				const caller = await verifyCallerIdentity(req, res, author_id);
+				if (!caller.ok) return res.status(caller.status || 403).json({ error: caller.error, code: caller.code });
 				const gate = await checkUser(author_id);
 				if (!gate.ok) return res.status(403).json({ error: gate.error });
 				if (await rateLimited("polls", author_id, 120, 2))
@@ -566,6 +577,10 @@ export default async function handler(req, res) {
 				callerId !== "ADMIN" &&
 				callerId === poll.author_id;
 			if (!admin && isOwner) {
+				// Session binding before the ban check: the header claim must
+				// match a live session, or anyone knowing the id edits as them.
+				const caller = await verifyCallerIdentity(req, res, callerId);
+				if (!caller.ok) return res.status(caller.status || 403).json({ error: caller.error, code: caller.code });
 				const gate = await checkUser(callerId);
 				if (!gate.ok) return res.status(403).json({ error: gate.error });
 			}

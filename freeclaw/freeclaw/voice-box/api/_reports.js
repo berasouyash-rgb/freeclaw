@@ -11,6 +11,7 @@ import {
 	notifyUser,
 	rateLimited,
 	rateLimitResponse,
+	verifyCallerIdentity,
 } from "./_auth.js";
 import supabase from "./_db-client.js";
 import { sanitizeError } from "./_error.js";
@@ -505,6 +506,13 @@ export default async function handler(req, res) {
 			const author_id = headerId || (admin ? "ADMIN" : "");
 			if (!author_id)
 				return res.status(403).json({ error: "Missing session identity (x-anon-id header)" });
+			// Session binding: reports are attributed by author_id, so the
+			// header claim must match a live session — otherwise anyone
+			// knowing an id files reports as them.
+			if (!admin) {
+				const caller = await verifyCallerIdentity(req, res, author_id);
+				if (!caller.ok) return res.status(caller.status || 403).json({ error: caller.error, code: caller.code });
+			}
 			const gate = await checkUser(author_id);
 			if (!gate.ok) return res.status(403).json({ error: gate.error });
 			if (await rateLimited("reports", author_id, 300, 10)) {

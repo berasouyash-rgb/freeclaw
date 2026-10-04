@@ -52,6 +52,9 @@ const authMocks = {
 	rateLimitResponse: vi.fn((res) =>
 		res.status(429).json({ error: "Too many requests" }),
 	),
+	// Default-allow session gate (feature tests exercise behavior, not
+	// auth; the impersonation tests below override with denial).
+	verifyCallerIdentity: vi.fn(async () => ({ ok: true, callerId: "" })),
 };
 
 vi.mock("../../api/_auth.js", () => authMocks);
@@ -270,6 +273,10 @@ beforeEach(() => {
 	authMocks.isAdmin.mockResolvedValue(false);
 	authMocks.checkUser.mockResolvedValue({ ok: true });
 	authMocks.rateLimited.mockResolvedValue(false);
+	// Drain any leaked one-shot gate denial so a broken gate fails its own
+	// test instead of poisoning the next test's session check.
+	authMocks.verifyCallerIdentity.mockReset();
+	authMocks.verifyCallerIdentity.mockResolvedValue({ ok: true, callerId: "" });
 });
 
 describe("GET /api/posts — pagination, ids, visibility", () => {
@@ -597,6 +604,30 @@ describe("POST /api/posts — gate, validation, duplicate, moderation", () => {
 		);
 		expect(res.statusCode).toBe(403);
 		expect((res.body as { error: string }).error).toBe("banned");
+	});
+
+	it("refuses creation when the session gate denies, even with a matching header", async () => {
+		(authMocks.verifyCallerIdentity as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+			ok: false,
+			status: 403,
+			error: "Invalid session identity",
+		});
+		const { default: handler } = await import("../../api/_posts.js");
+		const res = response();
+		await handler(
+			{
+				method: "POST",
+				query: {},
+				body: {
+					author_id: "victim_1",
+					title: "Forged title here",
+					description: "Forged description text",
+				},
+				headers: { "x-anon-id": "victim_1" },
+			},
+			res,
+		);
+		expect(res.statusCode).toBe(403);
 	});
 
 	it("429s when rate limited", async () => {
@@ -1119,6 +1150,27 @@ describe("PUT /api/posts — ownership, admin patches, moderation", () => {
 				query: {},
 				body: { id: "p1", author_id: "anon-2" },
 				headers: { "x-anon-id": "anon-2" },
+			},
+			res,
+		);
+		expect(res.statusCode).toBe(403);
+	});
+
+	it("refuses an owner PUT when the session gate denies", async () => {
+		state.singleRow = makePost({ id: "p1", author_id: "victim_1" });
+		(authMocks.verifyCallerIdentity as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+			ok: false,
+			status: 403,
+			error: "Invalid session identity",
+		});
+		const { default: handler } = await import("../../api/_posts.js");
+		const res = response();
+		await handler(
+			{
+				method: "PUT",
+				query: {},
+				body: { id: "p1", author_id: "victim_1", title: "Forged title now" },
+				headers: { "x-anon-id": "victim_1" },
 			},
 			res,
 		);

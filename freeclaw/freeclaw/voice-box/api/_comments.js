@@ -11,6 +11,7 @@ import {
 	maskProfanity,
 	rateLimited,
 	rateLimitResponse,
+	verifyCallerIdentity,
 } from "./_auth.js";
 import supabase from "./_db-client.js";
 import { sanitizeError } from "./_error.js";
@@ -147,6 +148,12 @@ export default async function handler(req, res) {
 			const author_id = headerId || (is_admin_msg ? "ADMIN" : "");
 			if (!author_id)
 				return res.status(403).json({ error: "Missing session identity (x-anon-id header)" });
+			// Session binding: the header claim must match a live session.
+			// Header-only auth let anyone knowing an id comment as them.
+			if (!is_admin_msg) {
+				const caller = await verifyCallerIdentity(req, res, author_id);
+				if (!caller.ok) return res.status(caller.status || 403).json({ error: caller.error, code: caller.code });
+			}
 			if (!is_admin_msg) {
 				const gate = await checkUser(author_id);
 				if (!gate.ok) return res.status(403).json({ error: gate.error });
@@ -317,6 +324,13 @@ export default async function handler(req, res) {
 			const callerId = clean(req.headers["x-anon-id"] || "", 40);
 			const isOwner =
 				callerId && callerId !== "ADMIN" && callerId === cmt.author_id;
+			// Session binding: the header claim must match a live session
+			// before ownership is even compared. (Admins bypass inside the
+			// gate, like everywhere else.)
+			if (!admin) {
+				const caller = await verifyCallerIdentity(req, res, callerId || "!");
+				if (!caller.ok) return res.status(caller.status || 403).json({ error: caller.error, code: caller.code });
+			}
 			if (!isOwner && !admin)
 				return res.status(403).json({ error: "Not authorized" });
 			const patch = {};

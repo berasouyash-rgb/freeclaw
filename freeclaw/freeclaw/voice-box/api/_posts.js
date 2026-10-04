@@ -13,6 +13,7 @@ import {
 	notifyUser,
 	rateLimited,
 	rateLimitResponse,
+	verifyCallerIdentity,
 } from "./_auth.js";
 import supabase from "./_db-client.js";
 import { staleWhileRevalidate } from "./_cache.js";
@@ -648,6 +649,13 @@ export default async function handler(req, res) {
 			const author_id = headerId || (admin ? "ADMIN" : "");
 			if (!author_id)
 				return res.status(403).json({ error: "Missing session identity (x-anon-id header)" });
+			// Session binding: the header claim must match a live session.
+			// Header-only auth let anyone knowing an id post as them.
+			// (Admins bypass inside the gate, like everywhere else.)
+			if (!admin) {
+				const caller = await verifyCallerIdentity(req, res, author_id);
+				if (!caller.ok) return res.status(caller.status || 403).json({ error: caller.error, code: caller.code });
+			}
 			const gate = await checkUser(author_id);
 			if (!gate.ok) return res.status(403).json({ error: gate.error });
 			if (await rateLimited("posts", author_id, 60, 3)) {
@@ -1007,6 +1015,10 @@ export default async function handler(req, res) {
 			const callerId = clean(req.headers["x-anon-id"] || "", 40);
 			const isOwner = callerId && callerId !== "ADMIN" && callerId === post.author_id;
 			if (isOwner) {
+				// Session binding before the ban check: the header claim must
+				// match a live session, or anyone knowing the id edits as them.
+				const caller = await verifyCallerIdentity(req, res, callerId);
+				if (!caller.ok) return res.status(caller.status || 403).json({ error: caller.error, code: caller.code });
 				const gate = await checkUser(callerId);
 				if (!gate.ok) return res.status(403).json({ error: gate.error });
 			}

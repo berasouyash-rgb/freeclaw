@@ -35,6 +35,9 @@ const authMocks = {
 		res.status(429).json({ error: "Too many requests" }),
 	),
 	notifyUser: vi.fn(),
+	// Default-allow session gate (feature tests exercise behavior, not
+	// auth; the impersonation test below overrides with denial).
+	verifyCallerIdentity: vi.fn(async () => ({ ok: true, callerId: "" })),
 };
 
 vi.mock("../../api/_auth.js", () => authMocks);
@@ -192,6 +195,10 @@ beforeEach(async () => {
 	authMocks.checkUser.mockResolvedValue({ ok: true });
 	authMocks.isAdmin.mockResolvedValue(false);
 	authMocks.rateLimited.mockResolvedValue(false);
+	// Drain any leaked one-shot gate denial so a broken gate fails its own
+	// test instead of poisoning the next test's session check.
+	authMocks.verifyCallerIdentity.mockReset();
+	authMocks.verifyCallerIdentity.mockResolvedValue({ ok: true, callerId: "" });
 	({ default: handler } = await import("../../api/_reports.js"));
 	isTestArtifact = (await import("../../api/_artifact-filter.js"))
 		.isTestArtifact as ReturnType<typeof vi.fn>;
@@ -261,6 +268,21 @@ describe("POST /api/reports", () => {
 		});
 		const res = response();
 		await handler({ method: "POST", body: { ...REPORT }, headers: { "x-anon-id": "anon_reporter" } }, res);
+		expect(res.statusCode).toBe(403);
+		expect(state["reports:lastInsert"]).toBeUndefined();
+	});
+
+	it("refuses a report when the session gate denies, even with a matching header", async () => {
+		(authMocks.verifyCallerIdentity as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+			ok: false,
+			status: 403,
+			error: "Invalid session identity",
+		});
+		const res = response();
+		await handler(
+			{ method: "POST", body: { ...REPORT }, headers: { "x-anon-id": "anon_reporter" } },
+			res,
+		);
 		expect(res.statusCode).toBe(403);
 		expect(state["reports:lastInsert"]).toBeUndefined();
 	});

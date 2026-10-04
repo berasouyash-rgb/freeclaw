@@ -28,6 +28,9 @@ const authMocks = {
 	rateLimitResponse: vi.fn((res) =>
 		res.status(429).json({ error: "Too many requests" }),
 	),
+	// Default-allow session gate: the route under test binds writes to the
+	// session, and these behavior tests do not model auth failures.
+	verifyCallerIdentity: vi.fn(async () => ({ ok: true, callerId: "" })),
 };
 vi.mock("../../api/_auth.js", () => authMocks);
 vi.mock("../../api/_error.js", () => ({

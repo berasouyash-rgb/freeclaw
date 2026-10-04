@@ -93,6 +93,9 @@ const authMocks = {
 	rateLimitResponse: vi.fn((res: never) => res),
 	clean: (s: unknown, max = 2000) => String(s ?? "").slice(0, max),
 	maskProfanity: (s: unknown) => String(s ?? ""),
+	// Default-allow session gate: the route under test binds writes to the
+	// session, and these behavior tests do not model auth failures.
+	verifyCallerIdentity: vi.fn(async () => ({ ok: true, callerId: "" })),
 };
 
 vi.mock("../../api/_auth.js", () => authMocks);

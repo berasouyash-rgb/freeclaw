@@ -33,6 +33,9 @@ vi.mock("../../api/_auth.js", () => ({
 	rateLimitResponse: vi.fn((res: { status: (c: number) => { json: (b: unknown) => unknown } }) =>
 		res.status(429).json({ error: "Too many requests" }),
 	),
+	// Default-allow session gate: the route under test binds writes to the
+	// session, and these behavior tests do not model auth failures.
+	verifyCallerIdentity: vi.fn(async () => ({ ok: true, callerId: "" })),
 }));
 
 vi.mock("../../api/_error.js", () => ({

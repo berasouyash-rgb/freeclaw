@@ -37,6 +37,9 @@ const authMocks = {
 	rateLimitResponse: vi.fn((res) =>
 		res.status(429).json({ error: "Too many requests" }),
 	),
+	// Default-allow session gate (feature tests exercise behavior, not
+	// auth; the impersonation tests below override with denial).
+	verifyCallerIdentity: vi.fn(async () => ({ ok: true, callerId: "" })),
 };
 
 vi.mock("../../api/_auth.js", () => authMocks);
@@ -231,6 +234,10 @@ beforeEach(() => {
 		totalCount: 0,
 	});
 	from.mockImplementation((table: string) => chainFor(table));
+	// Drain any leaked one-shot gate denial so a broken gate fails its own
+	// test instead of poisoning the next test's session check.
+	authMocks.verifyCallerIdentity.mockReset();
+	authMocks.verifyCallerIdentity.mockResolvedValue({ ok: true, callerId: "" });
 });
 
 describe("GET /api/comments", () => {
@@ -780,6 +787,50 @@ describe("method routing", () => {
 		const res = response();
 		await handler({ method: "PATCH", query: {}, body: {}, headers: {} }, res);
 		expect(res.statusCode).toBe(405);
+	});
+});
+
+describe("comments — session binding (anti-impersonation)", () => {
+	async function denySession() {
+		const { verifyCallerIdentity } = await import("../../api/_auth.js");
+		(verifyCallerIdentity as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+			ok: false,
+			status: 403,
+			error: "Invalid session identity",
+		});
+	}
+
+	it("refuses a POST when the session gate denies, even with a matching header", async () => {
+		await denySession();
+		const { default: handler } = await import("../../api/_comments.js");
+		const res = response();
+		await handler(
+			{
+				method: "POST",
+				query: {},
+				body: { post_id: "p1", body: "forged as victim" },
+				headers: { "x-anon-id": "victim_1" },
+			},
+			res,
+		);
+		expect(res.statusCode).toBe(403);
+	});
+
+	it("refuses an owner PUT when the session gate denies", async () => {
+		state.singleRow = makeComment({ id: "c1", author_id: "victim_1" });
+		await denySession();
+		const { default: handler } = await import("../../api/_comments.js");
+		const res = response();
+		await handler(
+			{
+				method: "PUT",
+				query: {},
+				body: { id: "c1", body: "forged edit" },
+				headers: { "x-anon-id": "victim_1" },
+			},
+			res,
+		);
+		expect(res.statusCode).toBe(403);
 	});
 });
 
