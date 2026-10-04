@@ -99,6 +99,13 @@ class Metrics {
 			`LOAD TEST COMPLETE — ${this.requests} requests in ${wall.toFixed(1)}s · ${rps} req/s · ${this.errors} errors (${((100 * this.errors) / Math.max(1, this.requests)).toFixed(2)}%)`,
 		);
 		console.log("═".repeat(64));
+		// Zero requests is not a pass — it means every journey stalled before
+		// recording (e.g. all timeouts lost). Fail loudly instead of a green
+		// 0.00% error rate over nothing.
+		if (this.requests === 0) {
+			console.log("FAIL  no requests recorded — the run measured nothing");
+			return false;
+		}
 		console.log(
 			"endpoint".padEnd(26) +
 				"n".padStart(7) +
@@ -184,6 +191,18 @@ function request(label, method, path, body, identity) {
 			...(payload ? { "content-length": Buffer.byteLength(payload) } : {}),
 		};
 		if (identity) headers["x-anon-id"] = identity;
+		// A timeout must count exactly like a network error: without this the
+		// promise dangles, the virtual user stalls for the rest of the run,
+		// and effective concurrency silently decays while the report understates
+		// the load. The guard also prevents double-counting when destroy()
+		// triggers a follow-up 'error'.
+		let settled = false;
+		const fail = () => {
+			if (settled) return;
+			settled = true;
+			metrics.recordError(label);
+			resolve({ status: 0 });
+		};
 		const req = http.request(
 			`${BASE_URL}${path}`,
 			{
@@ -194,17 +213,19 @@ function request(label, method, path, body, identity) {
 			(res) => {
 				res.resume(); // drain
 				res.on("end", () => {
+					if (settled) return;
+					settled = true;
 					metrics.record(label, performance.now() - started, res.statusCode);
 					resolve({ status: res.statusCode });
 				});
 			},
 		);
 		req.on("timeout", () => {
+			fail();
 			req.destroy();
 		});
 		req.on("error", () => {
-			metrics.recordError(label);
-			resolve({ status: 0 });
+			fail();
 		});
 		if (payload) req.write(payload);
 		req.end();
@@ -222,6 +243,15 @@ function requestJson(label, method, path, body, identity) {
 		};
 		if (identity) headers["x-anon-id"] = identity;
 		const chunks = [];
+		// Same settle-guard as request(): a timeout must resolve as an error,
+		// never dangle the journey (see above).
+		let settled = false;
+		const fail = () => {
+			if (settled) return;
+			settled = true;
+			metrics.recordError(label);
+			resolve({ status: 0, data: null });
+		};
 		const req = http.request(
 			`${BASE_URL}${path}`,
 			{
@@ -232,6 +262,8 @@ function requestJson(label, method, path, body, identity) {
 			(res) => {
 				res.on("data", (c) => chunks.push(c));
 				res.on("end", () => {
+					if (settled) return;
+					settled = true;
 					metrics.record(label, performance.now() - started, res.statusCode);
 					let parsed = null;
 					try {
@@ -243,10 +275,12 @@ function requestJson(label, method, path, body, identity) {
 				});
 			},
 		);
-		req.on("timeout", () => req.destroy());
+		req.on("timeout", () => {
+			fail();
+			req.destroy();
+		});
 		req.on("error", () => {
-			metrics.recordError(label);
-			resolve({ status: 0, data: null });
+			fail();
 		});
 		if (payload) req.write(payload);
 		req.end();
