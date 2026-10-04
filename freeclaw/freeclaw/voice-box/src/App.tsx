@@ -3,6 +3,7 @@ import { BrowserRouter, HashRouter, Route, Routes } from "react-router";
 import { PageContextProvider } from "./components/admin/PageContext";
 import ErrorBoundary from "./components/ErrorBoundary";
 import Layout from "./components/Layout";
+import Seo from "./components/Seo";
 import { AppProvider } from "./contexts/AppContext";
 import ToastHost from "./components/ToastHost";
 import { isNativeShell } from "./lib/platform";
@@ -150,6 +151,8 @@ export default function App() {
 						{/* 404 */}
 						<Route path="*" element={<NotFound />} />
 					</Routes>
+					{/* Per-route title + canonical + 404 noindex (SEO) */}
+					<Seo />
 					<ToastHost />
 				</ShellRouter>
 			</AppProvider>

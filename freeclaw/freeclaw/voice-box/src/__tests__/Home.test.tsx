@@ -96,8 +96,12 @@ describe("Home — default feed behavior", () => {
 				<Home />
 			</MemoryRouter>,
 		);
-		// Should render the hero section at minimum
-		expect(screen.getByText(/speak up/i)).toBeInTheDocument();
+		// Should render the hero section at minimum — and the h1 must carry
+		// the primary keyword + brand (BugViso audit H1 requirement).
+		const h1 = screen.getByRole("heading", { level: 1 });
+		expect(h1).toHaveTextContent(/anonymous school feedback/i);
+		expect(h1).toHaveTextContent(/voice flow/i);
+		expect(h1).toHaveTextContent(/speak up/i);
 	});
 
 	it("requests linked polls in one bounded batch", async () => {
@@ -457,7 +461,7 @@ describe("Home — default feed behavior", () => {
 				<Home />
 			</MemoryRouter>,
 		);
-		await screen.findByText(/speak up/i);
+		await screen.findByRole("heading", { level: 1 });
 
 		const zone = document.querySelector(".min-h-dvh") as HTMLElement;
 		fireEvent.touchStart(zone, { touches: [{ clientY: 0 }] });

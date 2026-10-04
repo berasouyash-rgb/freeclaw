@@ -1,4 +1,4 @@
-﻿import {
+import {
 	Activity,
 	ArrowUp,
 	CheckCircle2,
@@ -803,32 +803,39 @@ export default function Home() {
 					aria-hidden
 				/>
 				<BorderBeam duration={12} size={200} colorFrom="rgba(255,255,255,0.3)" colorTo="rgba(255,255,255,0)" />
-				<img
-					src="/hero-art.png"
-					alt=""
-					aria-hidden
-					loading="lazy"
-					decoding="async"
-					fetchPriority="low"
-					className="hidden md:block absolute right-0 top-1/2 -translate-y-1/2 w-60 lg:w-72 h-auto select-none pointer-events-none"
-					style={{
-						maskImage: "linear-gradient(to left, black 60%, transparent)",
-						WebkitMaskImage: "linear-gradient(to left, black 60%, transparent)",
-						mixBlendMode: "soft-light",
-					}}
-				/>
+				{/* WebP-first: modern browsers get the ~90% smaller hero art,
+				legacy browsers fall back to the PNG. */}
+				<picture>
+					<source srcSet="/hero-art.webp" type="image/webp" />
+					<img
+						src="/hero-art.png"
+						alt=""
+						aria-hidden
+						loading="lazy"
+						decoding="async"
+						fetchPriority="low"
+						className="hidden md:block absolute right-0 top-1/2 -translate-y-1/2 w-60 lg:w-72 h-auto select-none pointer-events-none"
+						style={{
+							maskImage: "linear-gradient(to left, black 60%, transparent)",
+							WebkitMaskImage:
+								"linear-gradient(to left, black 60%, transparent)",
+							mixBlendMode: "soft-light",
+						}}
+					/>
+				</picture>
 				<div className="relative p-6 sm:p-8 md:max-w-[62%]">
-					<p
-						className="text-xs font-bold uppercase tracking-[0.18em] mb-2 flex items-center gap-1.5"
-						style={{ color: "rgba(255,255,255,0.72)" }}
-					>
-						<Megaphone size={13} /> Anonymous school feedback
-					</p>
-					<h1
-						className="font-display font-bold text-2xl sm:text-3xl leading-tight max-w-lg"
-						style={{ color: "#fff" }}
-					>
-						Speak up. Stay invisible. Get things fixed.
+					{/* H1 carries the primary keyword + brand for crawlers; the
+					eyebrow line is part of the heading, not a sibling of it. */}
+					<h1 className="max-w-lg" style={{ color: "#fff" }}>
+						<span
+							className="font-display text-xs font-bold uppercase tracking-[0.18em] mb-2 flex items-center gap-1.5"
+							style={{ color: "rgba(255,255,255,0.72)" }}
+						>
+							<Megaphone size={13} /> Anonymous school feedback
+						</span>
+						<span className="block font-display font-bold text-2xl sm:text-3xl leading-tight">
+							Voice Flow: speak up. Stay invisible. Get things fixed.
+						</span>
 					</h1>
 					<p
 						className="text-sm mt-2 max-w-md"
@@ -1175,6 +1182,86 @@ export default function Home() {
 							</div>
 						))}
 					</div>
+
+		{/* Sitewide footer - about, anonymity explainer, real links. */}
+		<SiteFooter />
 		</div>
 	);
 }
+
+/** Home-page footer — about, how anonymity works, and real internal links.
+ * Gives logged-out visitors (and crawlers) the context the homepage lacked:
+ * what Voice Flow is, what data it does NOT collect, and where to go next. */
+function SiteFooter() {
+	const link = "text-ink3 hover:text-ink transition-colors";
+	return (
+		<footer
+			className="mt-8 pt-6 border-t border-border"
+			data-testid="site-footer"
+		>
+			<div className="grid gap-6 sm:grid-cols-2 mb-6 text-left">
+				<div>
+					<p className="font-display font-bold text-sm mb-1">Voice Flow</p>
+					<p className="text-xs text-ink3 leading-relaxed">
+						Voice Flow is an anonymous school feedback platform. Students
+						report problems, share ideas, and vote in polls — with no names,
+						no emails, and no tracking. Every report moves through a visible
+						pipeline from Reported to Solved, so the whole school can see what
+						was raised and what actually changed. School staff moderate and
+						resolve each issue; students stay untraceable.
+					</p>
+				</div>
+				<div>
+					<p className="font-display font-bold text-sm mb-1">
+						How anonymity works
+					</p>
+					<ul className="text-xs text-ink3 leading-relaxed list-disc pl-4 space-y-1">
+						<li>
+							Your only identifier is a random ID generated in your own
+							browser.
+						</li>
+						<li>We never ask for a name, email, or phone number.</li>
+						<li>Moderators see the random ID — never a real identity.</li>
+						<li>You can delete your own posts, with a 30-second undo.</li>
+					</ul>
+				</div>
+			</div>
+			<nav
+				aria-label="Site links"
+				className="flex flex-wrap gap-x-4 gap-y-1 text-xs mb-3"
+			>
+				<Link to="/about" className={link}>
+					About
+				</Link>
+				<Link to="/faq" className={link}>
+					FAQ
+				</Link>
+				<Link to="/contact" className={link}>
+					Contact
+				</Link>
+				<Link to="/terms" className={link}>
+					Terms
+				</Link>
+				<Link to="/privacy" className={link}>
+					Privacy
+				</Link>
+				<Link to="/accessibility" className={link}>
+					Accessibility
+				</Link>
+				<Link to="/status" className={link}>
+					Status
+				</Link>
+				<Link to="/changelog" className={link}>
+					Changelog
+				</Link>
+				<Link to="/download" className={link}>
+					Download
+				</Link>
+			</nav>
+			<p className="text-[11px] text-ink3">
+				© 2026 Voice Flow · Speak up. Stay invisible. Get things fixed.
+			</p>
+		</footer>
+	);
+}
+

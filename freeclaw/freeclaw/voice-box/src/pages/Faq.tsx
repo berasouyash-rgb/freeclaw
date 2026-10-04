@@ -36,6 +36,19 @@ const FAQS = [
 	},
 ];
 
+// FAQPage structured data — derived from FAQS so the JSON-LD always matches
+// the visible Q&A verbatim (schema.org requires it, and it is what lets AI
+// answer engines cite the page).
+const FAQ_SCHEMA = JSON.stringify({
+	"@context": "https://schema.org",
+	"@type": "FAQPage",
+	mainEntity: FAQS.map((f) => ({
+		"@type": "Question",
+		name: f.q,
+		acceptedAnswer: { "@type": "Answer", text: f.a },
+	})),
+});
+
 export default function Faq() {
 	const [open, setOpen] = useState<number | null>(0);
 	const [search, setSearch] = useState("");
@@ -104,19 +117,22 @@ export default function Faq() {
 							className="card overflow-hidden vb-rise"
 							style={{ animationDelay: `${f.idx * 40}ms` }}
 						>
-							<button
-								className="w-full flex items-center justify-between gap-3 p-4 text-left"
-								onClick={() => setOpen(open === f.idx ? null : f.idx)}
-								aria-expanded={open === f.idx}
-							>
-								<span className="font-display font-semibold text-sm">
-									{f.q}
-								</span>
-								<ChevronDown
-									size={16}
-									className={`text-ink3 shrink-0 transition-transform ${open === f.idx ? "rotate-180" : ""}`}
-								/>
-							</button>
+							{/* h3 keeps every question crawlable as a heading */}
+							<h3 className="m-0">
+								<button
+									className="w-full flex items-center justify-between gap-3 p-4 text-left"
+									onClick={() => setOpen(open === f.idx ? null : f.idx)}
+									aria-expanded={open === f.idx}
+								>
+									<span className="font-display font-semibold text-sm">
+										{f.q}
+									</span>
+									<ChevronDown
+										size={16}
+										className={`text-ink3 shrink-0 transition-transform ${open === f.idx ? "rotate-180" : ""}`}
+									/>
+								</button>
+							</h3>
 							{open === f.idx && (
 								<p className="px-4 pb-4 text-sm text-ink2 leading-relaxed vb-rise">
 									{f.a}
@@ -126,6 +142,13 @@ export default function Faq() {
 					))}
 				</div>
 			)}
+
+			{/* FAQPage JSON-LD — mirrors FAQS exactly */}
+			<script
+				type="application/ld+json"
+				data-testid="faq-schema"
+				dangerouslySetInnerHTML={{ __html: FAQ_SCHEMA }}
+			/>
 		</div>
 	);
 }
