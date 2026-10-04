@@ -10,6 +10,9 @@
  * - android/app/src/main/AndroidManifest.xml:
  *   android:allowBackup="false" — the anon identity must never roam via
  *   Google cloud backup; anonymity is the product promise.
+ * - WebView third-party cookies are accepted by
+ *   scripts/patch-android-webview-cookies.mjs, wired into native.yml
+ *   between sync and build (NOT a manual edit — it runs every CI build).
  *
  * Structural type is declared locally (no @capacitor/cli import) so the
  * file typechecks even before mobile deps are installed.

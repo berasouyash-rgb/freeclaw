@@ -132,6 +132,13 @@ jobs:
           npx capacitor-assets generate --iconBackgroundColor '#5652d6' --splashBackgroundColor '#f6f6f9'
           npx cap sync android
 
+      # The session cookie is third-party inside the WebView shell and Android
+      # drops third-party cookies by default — without this patch every
+      # session-bound call 403s ~20s after install. Idempotent; fails loudly
+      # when the generated tree is absent.
+      - name: Accept third-party cookies in the app WebView
+        run: node scripts/patch-android-webview-cookies.mjs android
+
       - name: Build debug APK
         working-directory: android
         run: |
