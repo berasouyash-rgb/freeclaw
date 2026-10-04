@@ -332,7 +332,13 @@ async function renderDashboard() {
 	await waitFor(() =>
 		expect(screen.getByTestId("admin-dashboard")).toBeTruthy(),
 	);
-	await waitFor(() => expect(screen.getByTestId("work-sections")).toBeTruthy());
+	// Work sections arrive with the slowest section query — under full-shard
+	// load that lands past the default 1s waitFor budget (flaked 4× in CI
+	// style runs, always green solo). Same assertion, patient budget: this
+	// waits for rendering, never invents it.
+	await waitFor(() => expect(screen.getByTestId("work-sections")).toBeTruthy(), {
+		timeout: 10_000,
+	});
 }
 
 /** Sections render collapsed (glass card + live count in the header);
