@@ -245,10 +245,40 @@ describe("page lifecycle contracts", () => {
 					continue;
 				}
 				const handler = splitTopLevel(args)[1]?.trim();
+				// The badge is still mandatory — this remains the load-once
+				// rule: no refetch, just a freshness signal. The handler must
+				// be an identifier (the badge itself, or a named withdrawal
+				// handler), never an inline body that could hide a side effect.
 				expect(
 					handler,
-					`${file} realtime handler must be a freshness signal`,
-				).toBe("markUpdatesAvailable");
+					`${file} realtime handler must be the badge signal or a named withdrawal handler`,
+				).toMatch(/^(markUpdatesAvailable|handle\w*[Ww]ithdrawal)$/);
+				// Contract evolution 2026-10-04 (post-withdrawal work): a
+				// badge-only page may additionally DROP a row the server no
+				// longer serves — a local state write, never a fetch. When it
+				// does, the named handler must be a useCallback whose body
+				// BOTH raises the badge and routes through the shared
+				// predicate, so neither half can be dropped by a refactor.
+				if (handler !== "markUpdatesAvailable") {
+					const bodies = callArgs(source, "useCallback");
+					expect(
+						bodies.some(
+							(body) =>
+								body.includes("markUpdatesAvailable") &&
+								body.includes("postWithdrawal("),
+						),
+						`${file} withdrawal handler must raise the badge and route through postWithdrawal()`,
+					).toBe(true);
+				}
+				// The badge used to be guaranteed by handler equality; with
+				// named handlers allowed, state the no-fetch rule out loud.
+				// These pages pull a fresh snapshot only on explicit refresh.
+				expect(
+					args,
+					`${file} realtime handler must not fetch`,
+				).not.toMatch(
+					/getSlow|getFresh|api\.put|api\.post|api\.del|load\s*\(|refresh\w*\s*\(/,
+				);
 			}
 			if (file.endsWith("PostDetail.tsx")) {
 				// Exactly one: the linked poll. A second would double-fetch the
@@ -277,6 +307,11 @@ describe("page lifecycle contracts", () => {
 					"bumpCommentCount",
 					"markUpdatesAvailable",
 					"silent: true",
+					// Withdrawal: rows the server no longer serves (hidden /
+					// soft-deleted / hard-deleted) leave the feed immediately
+					// instead of waiting on a badge tap. A local state write —
+					// the same class as the two bump helpers above.
+					"postWithdrawal(",
 				],
 			},
 		];

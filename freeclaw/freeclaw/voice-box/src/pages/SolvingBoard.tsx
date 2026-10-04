@@ -5,7 +5,8 @@ import PurgeCountdown from "../components/PurgeCountdown";
 import UpdateNotice from "../components/admin/UpdateNotice";
 import { useUpdateSignal } from "../hooks/useUpdateSignal";
 import { api } from "../lib/api";
-import { useRealtime } from "../lib/useRealtime";
+import { postWithdrawal } from "../lib/postWithdrawal";
+import { useRealtime, type RealtimePayload } from "../lib/useRealtime";
 import { CAT_EMOJI, STATUS_META, timeAgo } from "../lib/utils";
 import type { PostData } from "../types";
 
@@ -72,8 +73,26 @@ export default function SolvingBoard() {
 	// possible. Realtime now only raises a badge; the reader pulls a fresh
 	// snapshot with Refresh or the update notice. Cards still move between
 	// columns — exactly one click later.
+	//
+	// The single exception is withdrawal: a card the server no longer serves
+	// (hidden by moderation, soft-deleted, hard-deleted) leaves the columns
+	// immediately, because `api/_posts.js:456-460` filters those rows out of
+	// the feed for every viewer and the badge path would leave moderation-
+	// hidden content sitting on the board until someone chose to refresh.
 	const { updatesAvailable, markUpdatesAvailable, clearUpdates } =
 		useUpdateSignal();
+
+	const handlePostWithdrawal = useCallback(
+		(table: string, payload: RealtimePayload) => {
+			const withdrawn = postWithdrawal(table, payload);
+			if (withdrawn) {
+				setPosts((prev) => prev.filter((post) => post.id !== withdrawn.id));
+				return;
+			}
+			markUpdatesAvailable();
+		},
+		[markUpdatesAvailable],
+	);
 	const [refreshing, setRefreshing] = useState(false);
 
 	const handleRefresh = useCallback(async () => {
@@ -86,7 +105,7 @@ export default function SolvingBoard() {
 		}
 	}, [load, clearUpdates]);
 
-	useRealtime(["posts"], markUpdatesAvailable, 1_000);
+	useRealtime(["posts"], handlePostWithdrawal, 1_000);
 
 	return (
 		<div>

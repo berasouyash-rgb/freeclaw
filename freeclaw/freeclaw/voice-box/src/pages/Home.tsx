@@ -33,6 +33,7 @@ import WordCloud from "../components/WordCloud";
 import { useApp } from "../contexts/AppContext";
 import { useCategories } from "../hooks/useCategories";
 import { api } from "../lib/api";
+import { postWithdrawal } from "../lib/postWithdrawal";
 import { apiBase, isMobileApp, isNativeShell } from "../lib/platform";
 import { useRealtime, type RealtimePayload } from "../lib/useRealtime";
 import { dedupeById, errorText, trendingScore } from "../lib/utils";
@@ -633,15 +634,35 @@ export default function Home() {
 			}
 
 			// ── New + updated posts: quiet auto-merge (live feed). ──
+			// ── Withdrawn rows leave the screen right now. ──
+			// Moderation (`api/_reports.js`) and the quarantine paths flip
+			// posts.hidden / posts.deleted, and the admin delete route removes
+			// the row outright. The server then refuses to serve it — the feed
+			// filters hidden/deleted for EVERY viewer (`api/_posts.js:456-460`)
+			// and a by-id read 404s for anyone but an admin or the author
+			// (`api/_posts.js:521-531`) — so a row still held here is content
+			// the next authoritative read denies. Drop it from the list, forget
+			// its id so an un-hide can bring it back, and skip the reload: this
+			// state IS what that reload would have produced. (The reload could
+			// not have done it anyway — the quiet merge keeps rows absent from
+			// the response, and a DELETE never reached it at all.)
+			if (table === "posts") {
+				const withdrawn = postWithdrawal(table, payload);
+				if (withdrawn) {
+					setPosts((prev) => prev.filter((p) => p.id !== withdrawn.id));
+					knownIdsRef.current.delete(withdrawn.id);
+					return;
+				}
+			}
+
 			// The silent path refreshes known rows in place (so another
 			// device's Support/vote/edit lands on this screen by itself) and
 			// prepends genuinely new ids when the reader is near the top;
 			// scrolled down, newcomers park behind the pill instead, so the
 			// list never reorders under a finger. A reader with an active
 			// search keeps the badge — a live row must not clobber search
-			// results. DELETEs keep the badge path below (the silent merge
-			// never removes rows, so a deleted post needs an explicit
-			// refresh to leave the screen honestly).
+			// results. Rows the server no longer serves are handled above, so
+			// what is left here is ordinary liveness.
 			if (table === "posts" && (evt === "INSERT" || evt === "UPDATE")) {
 				if (!query.trim()) {
 					void load({

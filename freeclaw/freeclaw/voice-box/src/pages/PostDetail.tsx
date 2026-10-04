@@ -30,8 +30,9 @@ import UpdateNotice from "../components/admin/UpdateNotice";
 import { useUpdateSignal } from "../hooks/useUpdateSignal";
 import { api, hasAdminSession, isNotFound } from "../lib/api";
 import { buildCaseXls, downloadXls } from "../lib/excelXML";
+import { postWithdrawal } from "../lib/postWithdrawal";
 import { readAloud, speechOutputSupported, stopReading } from "../lib/speech";
-import { useRealtime } from "../lib/useRealtime";
+import { useRealtime, type RealtimePayload } from "../lib/useRealtime";
 import { CAT_EMOJI, timeAgo } from "../lib/utils";
 import type { CommentData, PollData, PostData, PostStatus } from "../types";
 
@@ -388,7 +389,35 @@ export default function PostDetail() {
 
 	// Post content is the other thing this page must notice (edits, status
 	// changes, moderation) — a badge, per the load-once contract.
-	useRealtime(["posts"], markUpdatesAvailable, 2_000);
+	//
+	// One exception, and it is a safety one: a post the server has withdrawn
+	// must leave the screen, because this page is showing the FULL content the
+	// next read would deny (`api/_posts.js:456-460` excludes hidden/deleted
+	// from the feed for every viewer; `:521-531` 404s a by-id read for anyone
+	// but an admin or the row's author). `gone` is the same state a real 404
+	// sets, so the reader lands on the existing "Post not found" panel instead
+	// of a badge that would leave the content sitting there.
+	//
+	// The one asymmetry the server allows is honoured: a hidden/soft-deleted
+	// row is still served to its own author (`api/_posts.js:528`), so the
+	// author keeps the page; a hard DELETE is gone for everyone.
+	const handlePostWithdrawal = useCallback(
+		(table: string, payload: RealtimePayload) => {
+			const withdrawn = postWithdrawal(table, payload);
+			if (withdrawn && withdrawn.id === postId) {
+				if (withdrawn.permanent || p?.author_id !== anonId) {
+					setGone(true);
+					setPost(null);
+					setLoading(false);
+					return;
+				}
+			}
+			markUpdatesAvailable();
+		},
+		[postId, anonId, p, markUpdatesAvailable],
+	);
+
+	useRealtime(["posts"], handlePostWithdrawal, 2_000);
 
 	// ── Vote fast lane (zero debounce). ──
 	// The linked poll is the page's only poll row, and a vote's only signal

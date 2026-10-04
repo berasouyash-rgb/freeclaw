@@ -389,3 +389,119 @@ describe("Home — realtime deltas from other users", () => {
 		).toBe(0);
 	});
 });
+
+describe("Home — withdrawn posts leave the feed immediately", () => {
+	// The quiet merge updates rows in place and never drops one, and a
+	// hard DELETE never reached a loader at all — so a post the server had
+	// stopped serving (moderated, soft-deleted, hard-deleted) stayed on
+	// screen behind a badge whose own refresh could not remove it. These
+	// cases pin the withdrawal path: the row goes NOW, with no fetch and
+	// no badge, because dropping the row IS the refresh.
+	beforeEach(() => {
+		mocks.getSlow.mockClear();
+		mocks.getSlowFresh.mockClear();
+	});
+
+	it("removes a post from the feed on a moderation UPDATE (hidden: true), no fetch", async () => {
+		await renderFeed();
+		expect(screen.getByTestId("post-card")).toBeInTheDocument();
+		// Clear the initial load's calls so only the event's own effect counts.
+		mocks.getSlow.mockClear();
+		mocks.getSlowFresh.mockClear();
+
+		await act(async () => {
+			mocks.realtimeCallback!("posts", {
+				eventType: "UPDATE",
+				new: { id: "p1", hidden: true, deleted: false },
+				old: { id: "p1" },
+			});
+		});
+
+		await waitFor(() => {
+			expect(screen.queryByTestId("post-card")).toBeNull();
+		});
+		// No fetch — the reload could not drop it anyway (the quiet merge
+		// keeps rows absent from the response).
+		expect(mocks.getSlowFresh).not.toHaveBeenCalled();
+		expect(mocks.getSlow).not.toHaveBeenCalled();
+		// No badge either: there is nothing left to refresh into view.
+		expect(
+			screen.queryByRole("button", { name: /View \d+ new updates?/ }),
+		).toBeNull();
+	});
+
+	it("removes a post from the feed on a soft-delete UPDATE (deleted: true)", async () => {
+		await renderFeed();
+
+		await act(async () => {
+			mocks.realtimeCallback!("posts", {
+				eventType: "UPDATE",
+				new: { id: "p1", hidden: false, deleted: true },
+				old: { id: "p1" },
+			});
+		});
+
+		await waitFor(() => {
+			expect(screen.queryByTestId("post-card")).toBeNull();
+		});
+		expect(mocks.getSlowFresh).not.toHaveBeenCalled();
+	});
+
+	it("removes a post from the feed on a hard DELETE", async () => {
+		await renderFeed();
+
+		await act(async () => {
+			mocks.realtimeCallback!("posts", {
+				eventType: "DELETE",
+				new: {},
+				old: { id: "p1" },
+			});
+		});
+
+		await waitFor(() => {
+			expect(screen.queryByTestId("post-card")).toBeNull();
+		});
+		expect(mocks.getSlowFresh).not.toHaveBeenCalled();
+		expect(
+			screen.queryByRole("button", { name: /View \d+ new updates?/ }),
+		).toBeNull();
+	});
+
+	it("keeps a live post and still quiet-refreshes on an ordinary UPDATE", async () => {
+		// The predicate must not swallow the normal liveness path: a status
+		// change or an edit is still the silent merge's job.
+		await renderFeed();
+
+		await act(async () => {
+			mocks.realtimeCallback!("posts", {
+				eventType: "UPDATE",
+				new: { id: "p1", hidden: false, deleted: false, status: "solved" },
+				old: { id: "p1" },
+			});
+		});
+
+		await waitFor(() => {
+			expect(mocks.getSlowFresh).toHaveBeenCalled();
+		});
+		expect(screen.getByTestId("post-card")).toBeInTheDocument();
+	});
+
+	it("still raises the badge for a posts DELETE with no resolvable id", async () => {
+		// The page must degrade to the badge rather than silently ignoring
+		// an event it could not resolve to a row.
+		await renderFeed();
+
+		await act(async () => {
+			mocks.realtimeCallback!("posts", {
+				eventType: "DELETE",
+				new: {},
+				old: {},
+			});
+		});
+
+		expect(
+			await screen.findByRole("button", { name: /View \d+ new updates?/ }),
+		).toBeInTheDocument();
+		expect(mocks.getSlowFresh).not.toHaveBeenCalled();
+	});
+});

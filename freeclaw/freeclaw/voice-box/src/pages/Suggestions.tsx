@@ -16,7 +16,8 @@ import { useApp } from "../contexts/AppContext";
 import { useUpdateSignal } from "../hooks/useUpdateSignal";
 import { Segmented } from "../components/ui";
 import { api } from "../lib/api";
-import { useRealtime } from "../lib/useRealtime";
+import { postWithdrawal } from "../lib/postWithdrawal";
+import { useRealtime, type RealtimePayload } from "../lib/useRealtime";
 import { STATUS_META, timeAgo, trendingScore } from "../lib/utils";
 import type { PostData, ReactionEntry, ReactionResponse } from "../types";
 
@@ -70,9 +71,28 @@ export default function Suggestions() {
 	// the reader's finger. Realtime now only raises a badge; Refresh or the
 	// update notice pulls one fresh snapshot. Own votes stay instant via
 	// the optimistic flip in vote().
+	//
+	// The one exception is withdrawal: a suggestion the server no longer
+	// serves (hidden by moderation, soft-deleted, hard-deleted) leaves the
+	// list right now. `api/_posts.js:456-460` filters those rows out of this
+	// list for every viewer, so the badge path would keep moderation-hidden
+	// content on screen until someone chose to refresh. The `reactions`
+	// lane is untouched — the predicate ignores other tables.
 	const { updatesAvailable, markUpdatesAvailable, clearUpdates } =
 		useUpdateSignal();
 	const [refreshing, setRefreshing] = useState(false);
+
+	const handlePostWithdrawal = useCallback(
+		(table: string, payload: RealtimePayload) => {
+			const withdrawn = postWithdrawal(table, payload);
+			if (withdrawn) {
+				setItems((prev) => prev.filter((s) => s.id !== withdrawn.id));
+				return;
+			}
+			markUpdatesAvailable();
+		},
+		[markUpdatesAvailable],
+	);
 
 	const handleRefresh = useCallback(async () => {
 		setRefreshing(true);
@@ -84,7 +104,7 @@ export default function Suggestions() {
 		}
 	}, [load, clearUpdates]);
 
-	useRealtime(["posts", "reactions"], markUpdatesAvailable, 1_000);
+	useRealtime(["posts", "reactions"], handlePostWithdrawal, 1_000);
 
 	const vote = async (id: string) => {
 		if (busy) return;

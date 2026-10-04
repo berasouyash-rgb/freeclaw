@@ -212,8 +212,16 @@ export async function purgeExpired() {
 		if (expired?.length) {
 			const ids = expired.map((p) => p.id);
 			await auditLog("system", "purge_expired", `${ids.length} solved/archived posts inactive 5d`);
-			// Ordered compensating deletes: posts first, then dependents.
-			// If a later step fails we log ids so the next sweep retries them.
+			// Ordered compensating deletes: unlink linked polls first, then the
+			// parent posts, then dependents. The unlink MUST succeed before a
+			// parent row is removed — once it is gone the sweep can never
+			// re-select it, so a failed unlink throws and the next sweep
+			// retries the intact batch instead of orphaning polls.post_id.
+			// (Dependent comment/reaction failures below stay log-only: those
+			// reads are always anchored at the post, so their orphans are
+			// invisible, but a poll points AT the post and dangles visibly.)
+			const { error: e0 } = await supabase.from("polls").update({ post_id: null }).in("post_id", ids);
+			if (e0) throw e0;
 			const { error: e1 } = await supabase.from("posts").delete().in("id", ids);
 			if (e1) throw e1;
 			purged = ids.length;
@@ -247,6 +255,10 @@ export async function purgeExpired() {
 			if (userDeletedErr) throw userDeletedErr;
 			if (userDeleted?.length) {
 				const uids = userDeleted.map((p) => p.id);
+				// Same unlink-first order as the solved/archived sweep above:
+				// a failed unlink throws before any parent row is removed.
+				const { error: u0 } = await supabase.from("polls").update({ post_id: null }).in("post_id", uids);
+				if (u0) throw u0;
 				const { error: u1 } = await supabase.from("posts").delete().in("id", uids);
 				if (u1) throw u1;
 				purged += uids.length;
