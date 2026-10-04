@@ -15,6 +15,15 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const from = vi.fn();
+// Every `.select()` issued through the mocked client, so a test can assert on
+// QUERY SHAPE (e.g. `{ count: "exact", head: true }`) instead of only on how
+// many times `from()` was touched.
+const selectCalls: { table: string; columns: string; opts?: unknown }[] = [];
+// Real Postgres round trips. `from()` fires when a query CHAIN is built, but a
+// PostgREST builder only reaches the database when it is awaited — so counting
+// `from()` over-reports. This counter ticks inside `then()`/`maybeSingle()`/
+// `single()`/`upsert()`, i.e. at the moment a request would leave the process.
+const roundTrips = { n: 0 };
 
 vi.mock("../../api/_db-client.js", () => ({
 	default: { from },
@@ -88,22 +97,59 @@ function response() {
 
 function chainFor(table: string) {
 	const rows = table === "posts" ? POSTS : [];
-	return {
-		select: vi.fn().mockReturnThis(),
+	const c = {
+		select: vi.fn(),
 		eq: vi.fn().mockReturnThis(),
 		neq: vi.fn().mockReturnThis(),
 		in: vi.fn().mockReturnThis(),
 		lt: vi.fn().mockReturnThis(),
 		order: vi.fn().mockReturnThis(),
 		limit: vi.fn().mockReturnThis(),
-		maybeSingle: vi.fn().mockResolvedValue({ data: null, error: null }),
-		single: vi.fn().mockResolvedValue({ data: null, error: null }),
-		upsert: vi.fn().mockResolvedValue({ data: null, error: null }),
+		maybeSingle: vi.fn(async () => {
+			roundTrips.n++;
+			return { data: null, error: null };
+		}),
+		single: vi.fn(async () => {
+			roundTrips.n++;
+			return { data: null, error: null };
+		}),
+		upsert: vi.fn(async () => {
+			roundTrips.n++;
+			return { data: null, error: null };
+		}),
 		delete: vi.fn().mockReturnThis(),
 		then(fn: (r: unknown) => unknown) {
+			// A PostgREST builder only talks to Postgres when it is awaited, so
+			// THIS is the moment a database round trip actually happens. Building
+			// a chain (`.from()...select()`) is free — which is why counting
+			// `from()` calls would over-report and hide a real regression.
+			roundTrips.n++;
 			fn({ data: rows, error: null });
 		},
 	};
+	// Record every select() so tests can assert on query SHAPE — notably that
+	// `{ count: "exact", head: true }` (the COUNT(*) scans) only fires where
+	// the handler is allowed to issue one.
+	c.select.mockImplementation((columns: unknown, opts?: unknown) => {
+		selectCalls.push({
+			table,
+			columns: String(columns ?? ""),
+			opts,
+		});
+		return c;
+	});
+	return c;
+}
+
+/** COUNT(*) probes: exact-head selects, regardless of table. */
+function exactCountSelects(table?: string) {
+	return selectCalls.filter(
+		(s) =>
+			(!table || s.table === table) &&
+			!!s.opts &&
+			(s.opts as { count?: string }).count === "exact" &&
+			(s.opts as { head?: boolean }).head === true,
+	);
 }
 
 describe("PERF GUARD — feed cache", () => {
@@ -219,6 +265,112 @@ describe("PERF GUARD — feed cache", () => {
 		// Three write paths: POST (create), PUT (update/moderation), DELETE (remove).
 		// A missing call means new/changed rows stay stale up to staleTtl again.
 		expect(calls.length).toBeGreaterThanOrEqual(3);
+	});
+
+	it("every derived-count writer calls invalidateCounts()", async () => {
+		const { readFileSync } = await import("node:fs");
+		// _counts.js caches reactions/comments/polls/poll_votes aggregates. A
+		// mutation that does not invalidate it leaves a wrong badge for up to
+		// staleTtl (6s) — and worse, the counts SWR entry is keyed by id-set, so
+		// the stale value is served as if fresh.
+		const writers: [file: string, minCalls: number][] = [
+			["_reactions.js", 1], // like/unlike toggle
+			["_comments.js", 3], // create / update / delete
+			["_polls.js", 4], // createPoll + vote + update + delete
+			["_posts.js", 4], // purge sweep + create + update + hard delete
+		];
+		for (const [file, minCalls] of writers) {
+			const src = readFileSync(
+				new URL(`../../api/${file}`, import.meta.url),
+				"utf8",
+			);
+			const calls = src.match(/invalidateCounts\(\)/g) || [];
+			expect(calls.length, `${file} invalidateCounts() calls`).toBeGreaterThanOrEqual(minCalls);
+		}
+	});
+
+	// ── Page-1 count query: the p95 line item ────────────────────────
+	it("page 1 (paginate=1, no cursor) issues NO exact COUNT(*) on posts", async () => {
+		from.mockImplementation((table: string) => chainFor(table));
+		delete (process.env as { VITEST?: string }).VITEST;
+		try {
+			const { default: handler } = await import("../../api/_posts.js");
+			const res = response();
+			selectCalls.length = 0;
+			await handler(
+				{ method: "GET", query: { paginate: "1" }, headers: {} },
+				res,
+			);
+			expect(res.statusCode).toBe(200);
+			const body = res.body as { data: unknown[]; total: number };
+			// Page 1 sees the whole filtered window, so rows.length IS the total.
+			expect(body.total).toBe(POSTS.length);
+			expect(body.data).toHaveLength(POSTS.length);
+			// THE CONTRACT: the exact COUNT(*) used to run on EVERY page-1 read
+			// and then be thrown away by `cursor ? sqlCount : rows.length`.
+			expect(exactCountSelects("posts")).toHaveLength(0);
+		} finally {
+			process.env.VITEST = "1";
+			vi.resetModules();
+		}
+	});
+
+	it("cursor pages still run the exact COUNT(*) (their total is not observed)", async () => {
+		from.mockImplementation((table: string) => chainFor(table));
+		delete (process.env as { VITEST?: string }).VITEST;
+		try {
+			const { default: handler } = await import("../../api/_posts.js");
+			const res = response();
+			selectCalls.length = 0;
+			await handler(
+				{
+					method: "GET",
+					query: {
+						paginate: "1",
+						cursor: "2020-01-01T00:00:00.000Z",
+					},
+					headers: {},
+				},
+				res,
+			);
+			expect(res.statusCode).toBe(200);
+			// Deeper pages never scanned the full set, so the header total has to
+			// come from SQL — exactly one, not one per request shape.
+			expect(exactCountSelects("posts")).toHaveLength(1);
+		} finally {
+			process.env.VITEST = "1";
+			vi.resetModules();
+		}
+	});
+
+	it("a warm page-1 read costs ZERO database round trips", async () => {
+		from.mockImplementation((table: string) => chainFor(table));
+		delete (process.env as { VITEST?: string }).VITEST;
+		try {
+			const { default: handler } = await import("../../api/_posts.js");
+			const req = { method: "GET", query: { paginate: "1" }, headers: {} };
+
+			// Cold: page-size settings + feed scan + 4 derived count queries.
+			const res = response();
+			await handler(req, res);
+			expect(res.statusCode).toBe(200);
+			const coldTrips = roundTrips.n;
+			expect(coldTrips).toBeGreaterThan(1);
+
+			// Warm (same second): feedSWR (10s) and countsSWR (3s) are both
+			// fresh, the page-size settings read is memoized for 60s, and page 1
+			// needs no total query. Nothing at all reaches Postgres — that is the
+			// whole point of the derived-count layer.
+			roundTrips.n = 0;
+			const warm = response();
+			await handler(req, warm);
+			expect(warm.statusCode).toBe(200);
+			expect((warm.body as { data: unknown[] }).data).toHaveLength(POSTS.length);
+			expect(roundTrips.n).toBe(0);
+		} finally {
+			process.env.VITEST = "1";
+			vi.resetModules();
+		}
 	});
 
 	// ── Layer 2: route wiring ───────────────────────────────────────

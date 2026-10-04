@@ -27,6 +27,23 @@ const state = {
 	probeError: null as unknown,
 	writeError: null as unknown,
 	resultsError: null as unknown,
+	// Race drivers for the concurrent-first-vote (23505) branch. Every
+	// `poll_votes .select("id").maybeSingle()` probe consumes `probeSeq`
+	// first and every insert consumes `insertErrorSeq` first, falling back to
+	// `existingVote` / `writeError` once the queue is empty — so a test can
+	// script "initial probe misses → insert loses the race → winner probe
+	// sees the winner" while every pre-existing test keeps its single-value
+	// behaviour. `null` in `insertErrorSeq` means "this insert succeeds".
+	probeSeq: [] as unknown[],
+	insertErrorSeq: [] as Array<Error | null>,
+	// Every insert() payload, in order. Without it a test cannot tell
+	// "recovery went through the winner's UPDATE" from "recovery retried the
+	// INSERT" — both end at 200, so the attempt count is the only witness.
+	insertCalls: [] as unknown[],
+	// Fails ONLY the polls-table update (the realtime liveness touch), so a
+	// test can break the vote signal without breaking the ballot write
+	// itself — `writeError` would take down both and prove nothing.
+	touchError: null as unknown,
 	// Per-table delete failures + call log for the DELETE regression
 	// contracts (loud failure, wipe ordering).
 	deleteErrors: {} as Record<string, Error | undefined>,
@@ -160,6 +177,7 @@ function chainFor(table: string): Chain {
 		insert(row: unknown) {
 			this.op = "insert";
 			state.lastInsert = row;
+			state.insertCalls.push(row);
 			return this;
 		},
 		delete() {
@@ -168,29 +186,47 @@ function chainFor(table: string): Chain {
 		},
 		then(fn: (v: unknown) => void) {
 			if (this.op === "insert") {
-				if (state.writeError) {
-					fn({ data: null, error: state.writeError });
+				// Race scripts override the blanket `writeError` per insert, so a
+				// test can fail ONLY the first insert with a duplicate key and
+				// let the recovery insert succeed.
+				const insertErr =
+					state.insertErrorSeq.length > 0
+						? state.insertErrorSeq.shift()
+						: state.writeError;
+				if (insertErr) {
+					fn({ data: null, error: insertErr });
 					return;
 				}
 				fn({ data: state.lastInsert, error: null });
 				return;
 			}
 			if (this.op === "update") {
-				if (state.writeError) {
-					fn({ data: null, error: state.writeError });
+				const err =
+					table === "polls" && state.touchError
+						? state.touchError
+						: state.writeError;
+				if (err) {
+					fn({ data: null, error: err });
 					return;
 				}
 				fn({ data: state.lastUpdate, error: null });
 				return;
 			}
 			if (this.op === "maybeSingle") {
-				// The vote-existence probe selects only `id` from poll_votes.
+				// The vote-existence probe selects only `id` from poll_votes. The
+				// race branch probes a SECOND time (winner lookup) with an
+				// identical signature, so both probes consume `probeSeq` in call
+				// order: [firstMiss, winnerRow]. Empty queue => `existingVote`.
 				if (table === "poll_votes" && this.selCol === "id") {
 					if (state.probeError) {
 						fn({ data: null, error: state.probeError });
 						return;
 					}
-					fn({ data: state.existingVote, error: null });
+					const v =
+						state.probeSeq.length > 0
+							? state.probeSeq.shift()
+							: state.existingVote;
+					fn({ data: v, error: null });
 					return;
 				}
 				fn({ data: state.singleRow, error: null });
@@ -289,6 +325,10 @@ beforeEach(() => {
 		probeError: null,
 		writeError: null,
 		resultsError: null,
+		probeSeq: [],
+		insertErrorSeq: [],
+		insertCalls: [],
+		touchError: null,
 		deleteErrors: {},
 		deleteCalls: [],
 	});
@@ -745,7 +785,202 @@ describe("POST /api/polls { action: vote }", () => {
 		expect(res.statusCode).toBe(200);
 	});
 
-	it("throws (no zeroed results) when the post-write results read fails", async () => {
+	// ── Concurrent first-vote (23505) race branch ────────────────────────
+	// Two clients can both pass the existence probe and both INSERT; with
+	// migration 009's UNIQUE (poll_id, author_id) the loser gets 23505. The
+	// handler's comment claims a regression suite covers this — these are
+	// that suite. Three outcomes must all be real: convert to an update,
+	// retry when the winner vanished, and REJECT (never fake 200) when the
+	// retry also loses.
+
+	const dupKey = (msg: string) =>
+		Object.assign(new Error(msg), {
+			code: "23505",
+		});
+
+	it("converts a lost race into an update of the winning row", async () => {
+		state.singleRow = makePoll();
+		state.poll_votes = [];
+		// probe#1 misses (no row yet) → insert loses → winner probe finds it.
+		state.probeSeq = [null, { id: "winner-1" }];
+		state.insertErrorSeq = [
+			dupKey(
+				'duplicate key value violates unique constraint "poll_votes_poll_id_author_id_key"',
+			),
+		];
+		const { default: handler } = await import("../../api/_polls.js");
+		const res = response();
+		await handler(
+			{
+				method: "POST",
+				query: {},
+				body: {
+					action: "vote",
+					poll_id: "poll-1",
+					choices: [0],
+					author_id: "anon-2",
+				},
+				headers: { "x-anon-id": "anon-2" },
+			},
+			res,
+		);
+		expect(res.statusCode).toBe(200);
+		// The ballot write landed as an UPDATE on poll_votes — the losing
+		// request CHANGED its vote rather than erroring or double-inserting.
+		expect(state.updateCalls).toContainEqual({
+			table: "poll_votes",
+			patch: { choices: [0] },
+		});
+		// And the recovery went through the winner's id: exactly ONE insert
+		// attempt (the loser), then an UPDATE — not a blind second insert.
+		expect(state.insertCalls).toHaveLength(1);
+	});
+
+	it("retries the insert when the winning row vanished mid-flight", async () => {
+		state.singleRow = makePoll();
+		state.poll_votes = [];
+		// probe#1 miss → 23505 → winner probe returns null (row deleted
+		// between the conflict and the re-probe) → retry insert succeeds.
+		state.probeSeq = [null, null];
+		state.insertErrorSeq = [
+			dupKey("duplicate key value violates unique constraint"),
+			null, // retry succeeds
+		];
+		const { default: handler } = await import("../../api/_polls.js");
+		const res = response();
+		await handler(
+			{
+				method: "POST",
+				query: {},
+				body: {
+					action: "vote",
+					poll_id: "poll-1",
+					choices: [0],
+					author_id: "anon-2",
+				},
+				headers: { "x-anon-id": "anon-2" },
+			},
+			res,
+		);
+		expect(res.statusCode).toBe(200);
+		expect(state.lastInsert).toMatchObject({
+			poll_id: "poll-1",
+			author_id: "anon-2",
+			choices: [0],
+		});
+		// Exactly two insert attempts: the loser plus ONE retry. One attempt
+		// means the branch never ran; three means it loops instead of
+		// giving up after the single documented retry.
+		expect(state.insertCalls).toHaveLength(2);
+		expect(state.updateCalls.filter((u) => u.table === "poll_votes")).toHaveLength(0);
+	});
+
+	it("throws (no fake 200) when the retry insert also loses the race", async () => {
+		state.singleRow = makePoll();
+		state.poll_votes = [];
+		state.probeSeq = [null, null];
+		state.insertErrorSeq = [
+			dupKey("duplicate key value violates unique constraint"),
+			dupKey("duplicate key value violates unique constraint"),
+		];
+		const { default: handler } = await import("../../api/_polls.js");
+		const res = response();
+		await expect(
+			handler(
+				{
+					method: "POST",
+					query: {},
+					body: {
+						action: "vote",
+						poll_id: "poll-1",
+						choices: [0],
+						author_id: "anon-2",
+					},
+					headers: { "x-anon-id": "anon-2" },
+				},
+				res,
+			),
+		).rejects.toThrow(/duplicate key/);
+		// The response was never completed — no zeroed results, no 200.
+		expect(res.statusCode).toBe(200);
+		expect(state.updateCalls.filter((u) => u.table === "poll_votes")).toHaveLength(0);
+		// Both attempts happened: the initial insert AND the single retry.
+		// Without this the test passes vacuously — a bare "insert failed →
+		// throw" would look identical even if the retry branch never ran.
+		expect(state.insertCalls).toHaveLength(2);
+	});
+
+	// ── Realtime liveness touch visibility ────────────────────────────────
+	// `poll_votes` has no anon SELECT policy, so this touch on the parent
+	// `polls` row is the ONLY thing that makes a vote reach realtime
+	// readers. It was wrapped in try/catch — but PostgREST resolves with
+	// {error} and never throws, so the catch could never fire and a failed
+	// touch was invisible to every metric. A silent lost vote signal is
+	// indistinguishable from a broken realtime feed, so it must be counted.
+
+	it("counts a failed liveness touch without failing the ballot", async () => {
+		state.singleRow = makePoll();
+		state.existingVote = null;
+		state.poll_votes = [];
+		state.touchError = Object.assign(new Error("touch denied"), {
+			code: "42501",
+		});
+		const mod = await import("../../api/_polls.js");
+		const before = Number(mod.touchFailureCount ?? 0);
+		const res = response();
+		await mod.default(
+			{
+				method: "POST",
+				query: {},
+				body: {
+					action: "vote",
+					poll_id: "poll-1",
+					choices: [0],
+					author_id: "anon-2",
+				},
+				headers: { "x-anon-id": "anon-2" },
+			},
+			res,
+		);
+		// The ballot already counted — a broken realtime signal must not
+		// turn into a rejected vote.
+		expect(res.statusCode).toBe(200);
+		expect(state.lastInsert).toMatchObject({ poll_id: "poll-1" });
+		// …but the failure is no longer silent.
+		expect(Number(mod.touchFailureCount ?? 0)).toBe(before + 1);
+	});
+
+	it("does not count a successful liveness touch", async () => {
+		state.singleRow = makePoll();
+		state.existingVote = null;
+		state.poll_votes = [];
+		const mod = await import("../../api/_polls.js");
+		const before = Number(mod.touchFailureCount ?? 0);
+		const res = response();
+		await mod.default(
+			{
+				method: "POST",
+				query: {},
+				body: {
+					action: "vote",
+					poll_id: "poll-1",
+					choices: [0],
+					author_id: "anon-2",
+				},
+				headers: { "x-anon-id": "anon-2" },
+			},
+			res,
+		);
+		expect(res.statusCode).toBe(200);
+		expect(state.updateCalls).toContainEqual({
+			table: "polls",
+			patch: expect.objectContaining({ updated_at: expect.any(String) }),
+		});
+		// Control: the counter moves only on real failures.
+		expect(Number(mod.touchFailureCount ?? 0)).toBe(before);
+	});
+
+	it("throws (no fake 200) when the post-write results read fails", async () => {
 		state.singleRow = makePoll();
 		state.existingVote = null;
 		state.resultsError = new Error("results read failed");

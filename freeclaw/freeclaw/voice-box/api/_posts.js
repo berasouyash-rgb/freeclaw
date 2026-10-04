@@ -16,6 +16,7 @@ import {
 } from "./_auth.js";
 import supabase from "./_db-client.js";
 import { staleWhileRevalidate } from "./_cache.js";
+import { getRawCounts, invalidateCounts } from "./_counts.js";
 import { evaluateContentDeep, messageFor } from "./_safety-pipeline.js";
 import { strikeSlangAbuse } from "./_reports.js";
 import { sanitizeError } from "./_error.js";
@@ -259,6 +260,10 @@ export async function purgeExpired() {
 			console.error("[posts] user-deleted purge sweep failed", { error: err?.message || String(err) });
 		}
 		}
+		// Purging cascades comment/reaction deletes — drop the derived-count SWR
+		// so the next feed read does not serve a purged post's counts for up to
+		// staleTtl. Best-effort: a miss just ages out with the TTL anyway.
+		if (purged) invalidateCounts();
 		// FIX #10: Persist last purge timestamp so throttle survives cold starts
 		try {
 			await supabase.from("settings").upsert({ key: "purge_state", value: { last_purge_at: new Date().toISOString() } }, { onConflict: "key" });
@@ -274,87 +279,19 @@ async function attachCounts(posts) {
 	const ids = posts.map((p) => p.id);
 	if (!ids.length) return posts;
 
-	// Batch all 3 count queries in parallel across ALL IDs (chunked for Supabase IN limit)
-	const chunkSize = 100;
-	const allReactions = [];
-	const allComments = [];
-	const allPolls = [];
-
-	// Build chunk arrays once, then run all queries in flat parallel
-	const chunks = [];
-	for (let i = 0; i < ids.length; i += chunkSize)
-		chunks.push(ids.slice(i, i + chunkSize));
-
-	const results = await Promise.all(
-		chunks.flatMap((chunk) => [
-			supabase
-				.from("reactions")
-				.select("target_id,kind")
-				.in("target_id", chunk),
-			supabase
-				.from("comments")
-				.select("post_id")
-				.in("post_id", chunk)
-				.eq("deleted", false)
-				.eq("hidden", false),
-			supabase.from("polls").select("id,post_id").in("post_id", chunk),
-		]),
-	);
-
-	// Unpack results: every 3 entries correspond to one chunk (reactions, comments, polls)
-	for (let i = 0; i < results.length; i += 3) {
-		const reactRes = results[i];
-		const commRes = results[i + 1];
-		const pollRes = results[i + 2];
-		if (reactRes.data) allReactions.push(...reactRes.data);
-		if (commRes.data) allComments.push(...commRes.data);
-		if (pollRes.data) allPolls.push(...pollRes.data);
-	}
-
-	const rMap = {};
-	const cMap = {};
-	const pollsByPost = {};
-	allReactions.forEach((r) => {
-		rMap[r.target_id] = rMap[r.target_id] || {};
-		rMap[r.target_id][r.kind] = (rMap[r.target_id][r.kind] || 0) + 1;
-	});
-	allComments.forEach((c) => {
-		cMap[c.post_id] = (cMap[c.post_id] || 0) + 1;
-	});
-	allPolls.forEach((p) => {
-		(pollsByPost[p.post_id] = pollsByPost[p.post_id] || []).push(p.id);
-	});
-
-	// Live vote count per linked poll. Vote upserts never write the polls row,
-	// so count poll_votes rows directly (same source as /api/polls results).
-	const pollIds = [...new Set(Object.values(pollsByPost).flat())].filter(Boolean);
-	const pvMap = {};
-	for (let i = 0; i < pollIds.length; i += chunkSize) {
-		const chunk = pollIds.slice(i, i + chunkSize);
-		const { data: votes } = await supabase
-			.from("poll_votes")
-			.select("poll_id")
-			.in("poll_id", chunk);
-		(votes || []).forEach((v) => {
-			pvMap[v.poll_id] = (pvMap[v.poll_id] || 0) + 1;
-		});
-	}
-
-	// Canonical linked poll: a double-created question can leave several poll
-	// rows on one post with the votes split between them. Link the highest
-	// total (first-seen wins ties) so the feed badge shows the real count
-	// instead of whichever duplicate the scan hits last.
-	const pMap = {};
-	for (const [postId, ids] of Object.entries(pollsByPost)) {
-		let best = ids[0];
-		for (const id of ids) {
-			if ((pvMap[id] || 0) > (pvMap[best] || 0)) best = id;
-		}
-		pMap[postId] = best;
-	}
+	// The four raw count queries live in _counts.js behind staleWhileRevalidate
+	// (3 s fresh / 6 s stale) so N concurrent visitors cost ONE set of queries
+	// per window instead of 4 N. Under Vitest that cache is bypassed, so this
+	// still hits the mocked DB every call — nothing test-visible changes here.
+	// Everything below is presentation and is recomputed on EVERY request:
+	// status gates, the co-sign threshold and purge_at are wall-clock/status
+	// dependent and must never be served from a cache.
+	const { rMap, cMap, pMap, pvMap } = await getRawCounts(ids);
 
 	return posts.map((p) => {
-		const reactions = rMap[p.id] || {};
+		// Copy: the maps are shared across requests, so the response must not
+		// hand out a reference a later handler could mutate.
+		const reactions = { ...(rMap[p.id] || {}) };
 		const isClosed = ["solved", "archived"].includes(p.status);
 		const pollId = pMap[p.id] || null;
 		return {
@@ -599,26 +536,28 @@ export default async function handler(req, res) {
 				const nextCursor = hasMore
 					? sliced[sliced.length - 1]?.created_at
 					: null;
-				const out = await attachCounts(sliced);
-				const masked = out.map((p) => {
-					const is_mine = !!viewerId && p.author_id === viewerId;
-					return {
-						...p,
-						is_mine,
-						author_id:
-							admin || is_mine ? p.author_id : p.author_id.slice(0, 9) + "...",
-					};
-				});					// Get total count (separate query, lightweight). It must describe
-					// the SAME set the rows came from, or the header reports a total
-					// that contradicts what pagination can actually serve: a plain
-					// count here once reported 1068 while the artifact-filtered rows
-					// numbered 32, so every "total posts" widget lied by 33x. The JS
-					// filter below (artifacts + visibility) cannot be expressed in
-					// SQL (word-boundary matching), but page 1 already scans the full
-					// window and applies it — so `rows.length` IS the honest total
-					// whenever the set fits the window (the comment at the limit(2000)
-					// documents that ceiling). Deeper cursor pages keep the SQL count
-					// as an approximate header, where precision matters less.
+
+				// ── Total count ────────────────────────────────────────────
+				// The count must describe the SAME set the rows came from, or the
+				// header reports a total that contradicts what pagination can
+				// actually serve: a plain count here once reported 1068 while the
+				// artifact-filtered rows numbered 32, so every "total posts" widget
+				// lied by 33x. The JS filter (artifacts + visibility) cannot be
+				// expressed in SQL (word-boundary matching), but page 1 already
+				// scans the full window and applies it — so `rows.length` IS the
+				// honest total there (the comment at the limit(2000) documents that
+				// ceiling).
+				//
+				// That also means page 1 never needs the SQL count. It used to run
+				// an exact COUNT(*) — a matching-row scan plus one round trip — on
+				// EVERY page-1 request and then DISCARD the result via
+				// `cursor ? sqlCount : rows.length`. Page 1 is the hot path every
+				// visitor lands on first, so skipping it removes a whole DB round
+				// trip from the request that matters most under load. Only deeper
+				// cursor pages, which never saw the whole set, still run the query —
+				// and they start it BEFORE attachCounts so the two overlap instead
+				// of queueing.
+				const runTotalCount = () => {
 					let totalQ = supabase
 						.from("posts")
 						.select("id", { count: "exact", head: true });
@@ -629,16 +568,35 @@ export default async function handler(req, res) {
 							.eq("deleted", false)
 							.neq("status", "pending_review");
 					totalQ = applyListFilters(totalQ);
-					const { count } = await totalQ;
-					const sqlCount = typeof count === "number" ? count : 0;
-					// On page 1 (no cursor) trust the observed, fully-filtered set:
-					// pagination can serve exactly these rows, so this IS the total.
-					// Deeper cursor pages report the SQL count as an approximate
-					// header, where row-level precision matters less.
-					const total = cursor ? sqlCount : rows.length;
-					return res
-						.status(200)
-						.json({ data: masked, nextCursor, total });
+					return Promise.resolve(totalQ);
+				};
+				const countPromise = cursor ? runTotalCount() : null;
+				// Not awaited yet: if attachCounts throws below we must not leave
+				// an unhandled rejection behind. The original stays awaitable.
+				if (countPromise) countPromise.catch(() => {});
+
+				const out = await attachCounts(sliced);
+				const masked = out.map((p) => {
+					const is_mine = !!viewerId && p.author_id === viewerId;
+					return {
+						...p,
+						is_mine,
+						author_id:
+							admin || is_mine ? p.author_id : p.author_id.slice(0, 9) + "...",
+					};
+				});
+
+				// Page 1: the observed, fully-filtered set IS the total (pagination
+				// can serve exactly these rows). Deeper cursor pages report the SQL
+				// count as an approximate header, where precision matters less.
+				let total = rows.length;
+				if (countPromise) {
+					const { count } = await countPromise;
+					total = typeof count === "number" ? count : 0;
+				}
+				return res
+					.status(200)
+					.json({ data: masked, nextCursor, total });
 			}
 
 			const out = await attachCounts(rows);
@@ -1004,6 +962,7 @@ export default async function handler(req, res) {
 				console.warn("[posts] emit POST_CREATED failed:", err.message),
 			);
 			feedSWR.invalidate(); // new post appears immediately, no stale 10s window
+			invalidateCounts(); // its id enters a different id-set anyway; cheap
 			// Background: auto-generate AI summary (non-blocking, best-effort)
 			import("./_ai-summary.js").then((mod) => {
 				if (typeof mod.default === "function") {
@@ -1234,6 +1193,7 @@ export default async function handler(req, res) {
 				}
 			}
 			feedSWR.invalidate(); // solved/hidden/pinned changes show live
+			invalidateCounts(); // hide/unhide changes which rows counts map onto
 			// Emit event for status changes
 			if (patch.status)
 				emitEventAndBridge(EVENT_TYPES.POST_STATUS_CHANGED, {
@@ -1383,6 +1343,7 @@ export default async function handler(req, res) {
 				return res.status(404).json({ error: "Post not found" });
 			await auditLog("admin", "hard_delete_post", id);
 			feedSWR.invalidate();
+			invalidateCounts(); // cascade-deleted reactions/comments leave the cache
 			return res.status(200).json({ ok: true });
 		}
 

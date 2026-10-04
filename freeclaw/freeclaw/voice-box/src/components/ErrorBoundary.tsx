@@ -104,7 +104,7 @@ export class ErrorBoundary extends Component<Props, State> {
 			info.componentStack,
 		);
 		// An error caught here never reaches window.onerror — React consumes it.
-		// Forward it to the client error buffer so it reaches /api/client-error
+		// Forward it to the client error buffer so it reaches POST /api/errors
 		// instead of dying in the developer console. reportBoundaryError is a
 		// no-op until initErrorCapture() has run (it runs in main.tsx), so this
 		// is safe in every environment. Non-Error throws are normalised first:

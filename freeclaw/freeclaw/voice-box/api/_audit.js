@@ -12,6 +12,11 @@ const LOG_LEVELS = {
 	CRITICAL: 4,
 };
 
+// Mirrors the CHECK constraint on audit_logs.actor_type in
+// migrations/003_v3_enterprise.sql. Kept in sync by
+// tests/api/audit-write.test.ts, which reads the migration file.
+const ACTOR_TYPES = new Set(["user", "admin", "ai", "system"]);
+
 // ─── Core Audit Logger ───────────────────────────────────────────
 export async function auditLog({
 	action,
@@ -24,18 +29,36 @@ export async function auditLog({
 	userAgent = null,
 }) {
 	try {
-		// actor_id is NOT NULL in the schema: a missing actor must never cost
-		// us the audit row itself. Coerce to "unknown" (the row lands, the
-		// gap stays visible) instead of failing the insert and losing the
-		// event entirely — silent audit loss on a safety platform is worse
-		// than an unattributed row.
+		// audit_logs declares FIVE NOT NULL columns (actor_type, actor_id,
+		// action, resource_type, resource_id — see migrations/003). A missing
+		// value on any of them makes PostgREST reject the insert, so the event
+		// is lost outright and all we keep is the console line below.
+		//
+		// actor_id was already coerced to "unknown" for exactly this reason;
+		// the other three were not, which meant 8 of the 10 convenience
+		// loggers below (system, security, error, auth, userAction,
+		// adminAction, aiAction, toolExecution) could never land a row — the
+		// abuse events in api/_security.js among them. Coerce the same way:
+		// the row lands, and "unknown" keeps the attribution gap visible in
+		// the data instead of hiding the event entirely. Silent audit loss on
+		// a school safety platform is worse than an unattributed row.
+		//
+		// actor_type is different: it carries a CHECK constraint
+		// (user|admin|ai|system), so a bare sentinel would fail there too —
+		// fall back to "system", the only value that is true for an event
+		// nobody claimed.
 		const entry = {
-			action,
-			actor_type: actorType,
+			action: String(action ?? "unknown"),
+			actor_type: ACTOR_TYPES.has(actorType) ? actorType : "system",
 			actor_id: actorId ?? "unknown",
-			resource_type: resourceType,
-			resource_id: resourceId,
-			details: typeof details === "string" ? { message: details } : details,
+			resource_type: resourceType ?? "unknown",
+			resource_id: resourceId ?? "unknown",
+			details:
+				details == null
+					? {}
+					: typeof details === "string"
+						? { message: details }
+						: details,
 			ip_address: ipAddress,
 			user_agent: userAgent,
 			timestamp: new Date().toISOString(),
@@ -138,6 +161,11 @@ export const log = {
 	error: (action, error, context = {}) =>
 		auditLog({
 			action,
+			// A handler crash has no user behind it. Leaving actorType unset
+			// made these rows claim actor_type="user" with actor_id="unknown"
+			// — a false attribution in the audit trail.
+			actorType: "system",
+			resourceType: "error",
 			details: {
 				...context,
 				level: "ERROR",

@@ -112,6 +112,7 @@ import toolForge from "./_tool-forge.js";
 import trends from "./_trends.js";
 import upload from "./_upload.js";
 import users from "./_users.js";
+import version from "./version.js";
 import workforce from "./_workforce.js";
 import agentCron from "./agent-cron.js";
 import learning from "./learning.js";
@@ -217,6 +218,10 @@ const routes = {
 	// (every call 404'd, which showed up as "Not found" noise on page load)
 	errors: protect(errors, "errors"),
 	vitals: protect(vitals, "vitals"),
+	// Public update feed for the native shells. It used to be missing from this
+	// map, so every APK/EXE update check got a 404 and the in-app update dialog
+	// could never fire. Guarded by tests/api/router-contract.test.ts.
+	version: protect(version, "version"),
 	spam: protect(spam, "spam"),
 	security: protect(securityEvents, "security"),
 	"email-templates": protect(emailTemplates, "email-templates"),

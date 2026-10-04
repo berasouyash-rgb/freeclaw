@@ -13,9 +13,21 @@ import {
 } from "./_auth.js";
 import supabase from "./_db-client.js";
 import { sanitizeError } from "./_error.js";
+import { invalidateCounts } from "./_counts.js";
+import { trackError } from "./_observability.js";
 import { EVENT_TYPES, emitEventAndBridge } from "./_events.js";
 import { sendPollClosedEmail } from "./_email.js";
 import { evaluateContentDeep, messageFor } from "./_safety-pipeline.js";
+
+// Failed realtime liveness touches on `polls`. The ballot write itself has
+// already succeeded when this runs, so the vote is not lost — but `poll_votes`
+// has no anon SELECT policy, meaning this touch is the ONLY signal that makes
+// the new total reach connected readers. A silent failure here is
+// indistinguishable from a broken realtime feed, so it is counted and routed
+// into `trackError` (surfaced by v3 monitoring's `getErrorSummary`).
+// Mirrors `_auth.js`'s `auditFailedCount`: `export let` gives tests a live
+// binding they can diff before/after a call.
+export let touchFailureCount = 0;
 
 async function attachResults(polls, strict = false) {
 	const ids = polls.map((p) => p.id);
@@ -123,6 +135,9 @@ export async function createPoll({
 		.select()
 		.single();
 	if (error) return { ok: false, error };
+	// A NEW linked poll changes pMap/pvMap for that post (the feed badge goes
+	// from "no poll" to "0 votes") — drop the derived-count entry.
+	invalidateCounts();
 	return { ok: true, poll: data };
 }
 
@@ -392,14 +407,35 @@ export default async function handler(req, res) {
 				// Bumping the parent row emits one polls UPDATE event carrying
 				// zero voter data; readers re-pull totals through /api/polls.
 				// Best-effort and AFTER success: it must never fail a ballot
-				// that already counted.
+				// that already counted — but it must NOT be silent either.
+				// PostgREST resolves with {error} and never throws, so the old
+				// bare try/catch was dead code: a failed touch (the sole
+				// realtime vote signal) was invisible to every metric and
+				// looked identical to a healthy feed. Inspect the result,
+				// count it, report it — then still return 200.
 				try {
-					await supabase
+					const { error: touchError } = await supabase
 						.from("polls")
 						.update({ updated_at: new Date().toISOString() })
 						.eq("id", poll.id);
-				} catch {
-					/* liveness only — the vote already succeeded */
+					if (touchError) {
+						touchFailureCount += 1;
+						trackError(
+							new Error(touchError.message || "poll liveness touch failed"),
+							{
+								scope: "poll_liveness_touch",
+								poll_id: poll.id,
+								code: touchError.code,
+							},
+						);
+					}
+				} catch (touchErr) {
+					// Transport-level failure (the only case the old catch covered).
+					touchFailureCount += 1;
+					trackError(touchErr, {
+						scope: "poll_liveness_touch",
+						poll_id: poll.id,
+					});
 				}
 				const [withResults] = await attachResults([poll], true);
 				// Emit poll.voted event for workforce consumption
@@ -409,6 +445,11 @@ export default async function handler(req, res) {
 					kind: "vote",
 					author_id,
 				}).catch(() => {});
+				// Feed-linked poll totals come from api/_counts.js's 3s/6s SWR
+				// cache. The `polls` touch above only signals connected clients;
+				// without this a COLD feed load would keep showing the pre-vote
+				// `linked_poll_votes` for up to staleTtl.
+				invalidateCounts();
 				return res.status(200).json(withResults);
 			}
 
@@ -547,6 +588,8 @@ export default async function handler(req, res) {
 				throw error;
 			}
 			if (admin) await auditLog("admin", "update_poll", b.id);
+			// hidden/archived/deleted change which polls the feed badge links to.
+			invalidateCounts();
 			return res.status(200).json(data);
 		}
 
@@ -577,6 +620,8 @@ export default async function handler(req, res) {
 				.eq("poll_id", id);
 			if (votesErr) throw votesErr;
 			await auditLog("admin", "delete_poll", id);
+			// The linked poll is gone — pMap must drop it on the next feed read.
+			invalidateCounts();
 			return res.status(200).json({ ok: true });
 		}
 

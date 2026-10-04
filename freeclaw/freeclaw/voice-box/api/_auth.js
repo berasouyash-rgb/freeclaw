@@ -272,9 +272,22 @@ export async function notifyUser(anonId, type, title, body) {
 export let auditFailedCount = 0;
 export async function auditLog(actor, action, detail) {
 	try {
-		await supabase
+		// PostgREST reports a rejected insert through the returned `{ error }`
+		// — it never throws. Ignoring it meant this function returned `true`
+		// for rows that never landed, so callers believed the audit succeeded
+		// and `auditFailedCount` could never move.
+		const { error } = await supabase
 			.from("activity_logs")
 			.insert({ actor, action, detail: String(detail || "").slice(0, 500) });
+		if (error) {
+			auditFailedCount += 1;
+			console.error("[auth] auditLog failed", {
+				actor,
+				action,
+				error: error.message || String(error),
+			});
+			return false;
+		}
 		return true;
 	} catch (err) {
 		auditFailedCount += 1;

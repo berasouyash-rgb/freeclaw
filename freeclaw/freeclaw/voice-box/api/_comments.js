@@ -14,6 +14,7 @@ import {
 } from "./_auth.js";
 import supabase from "./_db-client.js";
 import { sanitizeError } from "./_error.js";
+import { invalidateCounts } from "./_counts.js";
 import { EVENT_TYPES, emitEventAndBridge } from "./_events.js";
 import { recordSafetyRepost, checkSafetyRepost } from "./_moderation.js";
 import { evaluateContentDeep } from "./_safety-pipeline.js";
@@ -297,6 +298,7 @@ export default async function handler(req, res) {
 				post_id: row.post_id,
 				author_id: row.author_id,
 			}).catch(() => {});
+			invalidateCounts(); // comment_count is cached in api/_counts.js
 			return res.status(201).json(data);
 		}
 
@@ -357,6 +359,7 @@ export default async function handler(req, res) {
 				.single();
 			if (error) throw error;
 			if (admin && !isOwner) await auditLog("admin", "moderate_comment", b.id);
+			invalidateCounts(); // edit/hide/soft-delete all change comment_count
 			return res.status(200).json(data);
 		}
 
@@ -368,6 +371,7 @@ export default async function handler(req, res) {
 			const { error } = await supabase.from("comments").delete().eq("id", id);
 			if (error) throw error;
 			await auditLog("admin", "hard_delete_comment", String(id));
+			invalidateCounts();
 			return res.status(200).json({ ok: true });
 		}
 

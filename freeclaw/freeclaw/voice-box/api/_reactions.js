@@ -4,6 +4,7 @@
 import { checkUser, clean, cors, isAdmin, rateLimited, rateLimitResponse } from "./_auth.js";
 import supabase from "./_db-client.js";
 import { sanitizeError } from "./_error.js";
+import { invalidateCounts } from "./_counts.js";
 import { EVENT_TYPES, emitEventAndBridge } from "./_events.js";
 
 // Normalize legacy/synonym kinds from older cached clients so nobody
@@ -107,6 +108,11 @@ export default async function handler(req, res) {
 					.insert({ target_id, target_type, author_id, kind });
 				if (insError) throw insError;
 			}
+			// The feed's derived counts are behind a 3s/6s stale-while-revalidate
+			// cache (api/_counts.js). Without this, a toggle would stay invisible to
+			// a COLD page load for up to staleTtl even though every connected client
+			// already got the realtime delta. Clearing it is two Map deletions.
+			invalidateCounts();
 
 			// Fresh counts AND the caller's own reactions in ONE query; the activity
 			// bump runs in parallel (different table, independent of the counts).
