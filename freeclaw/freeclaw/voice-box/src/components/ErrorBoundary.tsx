@@ -20,6 +20,7 @@ import {
 } from "react";
 import { isChunkLoadError, reloadOnceForStaleChunk } from "../lib/retryLazy";
 import { reportBoundaryError } from "../lib/errors";
+import { navigateTo } from "../lib/platform";
 
 interface Props {
 	children: ReactNode;
@@ -121,7 +122,7 @@ export class ErrorBoundary extends Component<Props, State> {
 	};
 
 	handleGoHome = () => {
-		window.location.href = "/";
+		navigateTo("/");
 	};
 
 	/**

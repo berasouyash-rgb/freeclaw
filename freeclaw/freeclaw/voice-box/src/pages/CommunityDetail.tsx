@@ -1,6 +1,6 @@
 // ─── Community Detail — one group's discussion feed ──────────────
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Link, useParams } from "react-router";
+import { Link, useNavigate, useParams } from "react-router";
 import {
 	AlertTriangle,
 	ArrowLeft,
@@ -83,6 +83,7 @@ function timeAgoShort(iso: string): string {
 
 export default function CommunityDetail() {
 	const { slug = "" } = useParams<{ slug: string }>();
+	const navigate = useNavigate();
 	const { anonId, toast, displayName } = useApp();
 	const isAdmin = hasAdminSession();
 	const [data, setData] = useState<CommunityDetailData | null>(null);
@@ -323,7 +324,7 @@ export default function CommunityDetail() {
 			await api.post("/api/communities", { action: "admin", slug: data.slug, op });
 			toast(op === "delete" ? "Community deleted" : op === "hide" ? "Community hidden" : "Community restored", "ok");
 			if (op === "delete") {
-				window.location.href = "/communities";
+				navigate("/communities");
 				return;
 			}
 			await load();

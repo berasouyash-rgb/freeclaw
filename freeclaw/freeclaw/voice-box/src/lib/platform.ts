@@ -141,3 +141,19 @@ export function storageWhere(): string {
 			return "in this browser";
 	}
 }
+
+/**
+ * Navigate safely across both web (BrowserRouter) and native shells (HashRouter).
+ * Outside React Router components (e.g. ErrorBoundary, toast action callbacks),
+ * directly assigning window.location.href breaks native shells by loading file:///path.
+ */
+export function navigateTo(path: string): void {
+	if (typeof window === "undefined") return;
+	const clean = path.startsWith("/") ? path : `/${path}`;
+	if (isNativeShell()) {
+		window.location.hash = clean;
+	} else {
+		window.location.href = clean;
+	}
+}
+

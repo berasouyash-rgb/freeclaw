@@ -20,6 +20,7 @@ import {
 	setProfile as persistProfile,
 	type LocalProfile,
 } from "../lib/identity";
+import { navigateTo } from "../lib/platform";
 import type {
 	AccountStatus,
 	ChatMessage,
@@ -179,7 +180,7 @@ let toastSeq = 1;
 // Toast action callback — never exercised in unit tests because the
 // toast UI button renders outside <AppProvider>.
 const _toastAction = () => {
-	window.location.href = "/chat";
+	navigateTo("/chat");
 };
 /* v8 ignore stop -- @preserve */
 
