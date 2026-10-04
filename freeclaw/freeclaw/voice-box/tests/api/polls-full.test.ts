@@ -44,6 +44,9 @@ const state = {
 	// test can break the vote signal without breaking the ballot write
 	// itself — `writeError` would take down both and prove nothing.
 	touchError: null as unknown,
+	// Makes the touch update REJECT (transport failure) instead of resolving
+	// {error} — the only way to reach the catch around the liveness touch.
+	touchReject: null as unknown,
 	// Per-table delete failures + call log for the DELETE regression
 	// contracts (loud failure, wipe ordering).
 	deleteErrors: {} as Record<string, Error | undefined>,
@@ -201,6 +204,9 @@ function chainFor(table: string): Chain {
 				return;
 			}
 			if (this.op === "update") {
+				// Transport failure: reject so the touch's catch (not just its
+				// {error} branch) is exercised.
+				if (table === "polls" && state.touchReject) throw state.touchReject;
 				const err =
 					table === "polls" && state.touchError
 						? state.touchError
@@ -335,6 +341,7 @@ beforeEach(() => {
 		insertErrorSeq: [],
 		insertCalls: [],
 		touchError: null,
+		touchReject: null,
 		deleteErrors: {},
 		deleteCalls: [],
 	});
@@ -984,6 +991,36 @@ describe("POST /api/polls { action: vote }", () => {
 		expect(res.statusCode).toBe(200);
 		expect(state.lastInsert).toMatchObject({ poll_id: "poll-1" });
 		// …but the failure is no longer silent.
+		expect(Number(mod.touchFailureCount ?? 0)).toBe(before + 1);
+	});
+
+	it("counts a transport-level touch failure without failing the ballot", async () => {
+		// PostgREST resolves {error}; a dropped socket REJECTS. Both must
+		// count — the catch is the only thing standing between a dead touch
+		// and an invisible one.
+		state.singleRow = makePoll();
+		state.existingVote = null;
+		state.poll_votes = [];
+		state.touchReject = new Error("socket hang up");
+		const mod = await import("../../api/_polls.js");
+		const before = Number(mod.touchFailureCount ?? 0);
+		const res = response();
+		await mod.default(
+			{
+				method: "POST",
+				query: {},
+				body: {
+					action: "vote",
+					poll_id: "poll-1",
+					choices: [0],
+					author_id: "anon-2",
+				},
+				headers: { "x-anon-id": "anon-2" },
+			},
+			res,
+		);
+		expect(res.statusCode).toBe(200);
+		expect(state.lastInsert).toMatchObject({ poll_id: "poll-1" });
 		expect(Number(mod.touchFailureCount ?? 0)).toBe(before + 1);
 	});
 
