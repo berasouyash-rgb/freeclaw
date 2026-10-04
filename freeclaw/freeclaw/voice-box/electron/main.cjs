@@ -18,6 +18,7 @@ const {
 	renameSync,
 	mkdirSync,
 	rmSync,
+	copyFileSync,
 } = require("fs");
 const { join, dirname } = require("path");
 
@@ -67,8 +68,17 @@ function loadStore() {
 			}
 		}
 	} catch {
-		// Unreadable or corrupt: start clean rather than crash the app. The
-		// previous file is left on disk untouched for manual recovery.
+		// Unreadable or corrupt: back up the existing file on disk so student data
+		// (identity, drafts, bookmarks) can be rescued before a future write overwrites it.
+		try {
+			const file = storeFile();
+			if (existsSync(file)) {
+				const backup = `${file}.corrupted-${Date.now()}`;
+				copyFileSync(file, backup);
+			}
+		} catch {
+			/* best effort backup */
+		}
 		cache = {};
 	}
 	return cache;

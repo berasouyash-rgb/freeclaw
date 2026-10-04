@@ -7,12 +7,14 @@ import supabase from "./_db-client.js";
 import { staleWhileRevalidate } from "./_cache.js";
 import { isMissingColumn } from "./_polls.js";
 
-/** Escape LIKE metacharacters to prevent pattern injection */
+/** Escape LIKE metacharacters and strip PostgREST separators to prevent pattern injection and clause breakout */
 function escapeLike(str) {
 	return String(str)
+		.replace(/[,()%*]/g, " ")
 		.replace(/\\/g, "\\\\")
 		.replace(/%/g, "\\%")
-		.replace(/_/g, "\\_");
+		.replace(/_/g, "\\_")
+		.trim();
 }
 
 /**
