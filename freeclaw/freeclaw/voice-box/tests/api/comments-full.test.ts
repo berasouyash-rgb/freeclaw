@@ -104,8 +104,10 @@ function response() {
 
 interface Chain {
 	op: string;
+	/** eq() filters recorded so delete chains can honor them (like PostgREST) */
+	filters: Array<[string, unknown]>;
 	select: (col?: unknown, opts?: unknown) => Chain;
-	eq: () => Chain;
+	eq: (col?: unknown, val?: unknown) => Chain;
 	in: () => Chain;
 	lt: () => Chain;
 	gte: () => Chain;
@@ -122,12 +124,14 @@ interface Chain {
 function chainFor(table: string): Chain {
 	const chain = {
 		op: "select",
+		filters: [] as Array<[string, unknown]>,
 		select(_col?: unknown, opts?: unknown) {
 			if ((opts as { count?: string } | undefined)?.count === "exact")
 				this.op = "headCount";
 			return this;
 		},
-		eq() {
+		eq(col?: unknown, val?: unknown) {
+			if (typeof col === "string") this.filters.push([col, val]);
 			return this;
 		},
 		in() {
@@ -184,7 +188,13 @@ function chainFor(table: string): Chain {
 				return;
 			}
 			if (this.op === "delete") {
-				fn({ data: null, error: null });
+				// Simulate PostgREST deletes: honor eq() filters so a delete for
+				// the wrong id resolves { data: [] } (0 rows) like production.
+				const rows = table === "comments" ? state.comments : state.posts;
+				const matched = (rows as Array<Record<string, unknown>>).filter((r) =>
+					this.filters.every(([col, val]) => r?.[col] === val),
+				);
+				fn({ data: matched, error: null });
 				return;
 			}
 			const rows = table === "comments" ? state.comments : state.posts;
@@ -717,6 +727,7 @@ describe("DELETE /api/comments", () => {
 	});
 
 	it("hard-deletes a comment as an admin and audits it", async () => {
+		state.comments = [makeComment({ id: "c1" })];
 		const { isAdmin } = await import("../../api/_auth.js");
 		(isAdmin as ReturnType<typeof vi.fn>).mockResolvedValueOnce(true);
 		const { default: handler } = await import("../../api/_comments.js");
@@ -731,6 +742,27 @@ describe("DELETE /api/comments", () => {
 			"admin",
 			"hard_delete_comment",
 			"c1",
+		);
+	});
+
+	it("returns 404 instead of ok:true when the id matches no row", async () => {
+		// A mistyped or already-purged id must not report success while the
+		// row "comes back" on reload — the posts hard-delete route learned
+		// this the same way (removal verification).
+		state.comments = [makeComment({ id: "c1" })];
+		const { isAdmin } = await import("../../api/_auth.js");
+		(isAdmin as ReturnType<typeof vi.fn>).mockResolvedValueOnce(true);
+		const { default: handler } = await import("../../api/_comments.js");
+		const res = response();
+		await handler(
+			{ method: "DELETE", query: {}, body: { id: "c-gone" }, headers: {} },
+			res,
+		);
+		expect(res.statusCode).toBe(404);
+		expect(authMocks.auditLog).not.toHaveBeenCalledWith(
+			"admin",
+			"hard_delete_comment",
+			"c-gone",
 		);
 	});
 });

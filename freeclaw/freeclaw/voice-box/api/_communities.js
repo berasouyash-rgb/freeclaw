@@ -18,7 +18,7 @@
 // The value is the full community record (members + posts). Nothing here is
 // faked: every mutation reads the current row, applies the change, and upserts.
 
-import { clean, cors, isAdmin } from "./_auth.js";
+import { clean, cors, isAdmin, verifyCallerIdentity } from "./_auth.js";
 import supabase from "./_db-client.js";
 import { sanitizeError } from "./_error.js";
 import { evaluateContent } from "./_safety-pipeline.js";
@@ -170,6 +170,20 @@ export default async function handler(req, res) {
 		// GET params travel in the query string; POST params in the body.
 		const b = req.method === "GET" ? { ...(req.query || {}) } : req.body || {};
 		const action = req.method === "GET" ? req.query.action : b.action;
+
+		// Session binding (same model as the main posts/comments writes):
+		// community posts/comments expose full anon_ids to any viewer, so the
+		// body-claimed anon_id must match the x-anon-id header AND the session
+		// cookie. Without this, anyone knowing a student's id could post,
+		// vote, or delete as them. Reads (list/get) stay open; the admin op
+		// carries no anon_id and keeps its admin-token gate below.
+		if (action !== "list" && action !== "get" && action !== "admin") {
+			const claimed = clean(b.anon_id || "", 40).toLowerCase();
+			if (!claimed) return res.status(400).json({ error: "anon_id required" });
+			const gate = await verifyCallerIdentity(req, res, claimed);
+			if (!gate.ok)
+				return res.status(gate.status || 403).json({ error: gate.error, code: gate.code });
+		}
 
 		// ── LIST ────────────────────────────────────────────────
 		if (action === "list") {

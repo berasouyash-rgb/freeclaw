@@ -368,8 +368,17 @@ export default async function handler(req, res) {
 				return res.status(403).json({ error: "Admin only" });
 			const id = req.body?.id || req.query?.id;
 			if (!id) return res.status(400).json({ error: "Missing id" });
-			const { error } = await supabase.from("comments").delete().eq("id", id);
+			// Prove the delete landed: an unparsed/missing id used to no-op and
+			// still return ok:true, so the row "came back" on reload (same flaw
+			// class as the posts hard-delete route before removal verification).
+			const { data: removed, error } = await supabase
+				.from("comments")
+				.delete()
+				.eq("id", id)
+				.select("id");
 			if (error) throw error;
+			if (!removed || removed.length === 0)
+				return res.status(404).json({ error: "Comment not found" });
 			await auditLog("admin", "hard_delete_comment", String(id));
 			invalidateCounts();
 			return res.status(200).json({ ok: true });

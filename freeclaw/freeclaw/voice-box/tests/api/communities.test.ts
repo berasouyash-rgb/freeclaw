@@ -12,6 +12,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const tableData: Record<string, Record<string, unknown>> = {};
 const from = vi.fn();
 const isAdminMock = vi.fn();
+// Default-allow session gate: existing behavior tests below exercise features,
+// not auth. Impersonation tests override this with a strict header==claim
+// implementation mirroring the real verifyCallerIdentity.
+const verifyCallerMock = vi.fn(async () => ({ ok: true, callerId: "" }));
 
 vi.mock("../../api/_db-client.js", () => ({
 	default: { from },
@@ -19,6 +23,7 @@ vi.mock("../../api/_db-client.js", () => ({
 vi.mock("../../api/_auth.js", () => ({
 	cors: vi.fn(),
 	isAdmin: isAdminMock,
+	verifyCallerIdentity: verifyCallerMock,
 	clean: (v: unknown, max: number) => {
 		const s = typeof v === "string" ? v : "";
 		return s.length > max ? s.slice(0, max) : s;
@@ -127,11 +132,12 @@ from.mockImplementation((table: string) => {
 	return settingsChain();
 });
 
-function req(action: string, body: Record<string, unknown> = {}) {
+function req(action: string, body: Record<string, unknown> = {}, headers: Record<string, string> = {}) {
 	return {
 		method: "POST",
 		query: {},
 		body: { action, ...body },
+		headers,
 	};
 }
 function getReq(action: string, query: Record<string, string> = {}) {
@@ -145,6 +151,8 @@ beforeEach(async () => {
 	tableData["reports"] = {};
 	isAdminMock.mockReset();
 	isAdminMock.mockResolvedValue(false);
+	verifyCallerMock.mockReset();
+	verifyCallerMock.mockResolvedValue({ ok: true, callerId: "" });
 	vi.resetModules();
 	({ default: handler } = await import("../../api/_communities.js"));
 });
@@ -589,5 +597,99 @@ describe("communities — artifact hygiene & link integrity", () => {
 		expect(body.posts.map((p) => p.id)).toEqual(["p-real"]);
 		expect(body.posts[0].comments.map((c) => c.id)).toEqual(["c-real"]);
 		expect(body.post_count).toBe(1);
+	});
+});
+
+describe("communities — session binding (anti-impersonation)", () => {
+	// Community posts/comments expose full anon_ids to any viewer, so the
+	// body-claimed anon_id must be proven by header + session cookie — the
+	// same model as the main posts/comments writes. The strict mock mirrors
+	// the real verifyCallerIdentity: the x-anon-id header must equal the
+	// body claim, otherwise the caller is operating on another identity.
+	function authed(anonId: string) {
+		return { "x-anon-id": anonId };
+	}
+
+	beforeEach(async () => {
+		verifyCallerMock.mockImplementation(
+			async (req: unknown, _res: unknown, claimed: string) => {
+				const h = String(
+					(req as { headers?: Record<string, string> })?.headers?.["x-anon-id"] || "",
+				).toLowerCase();
+				if (h && h === String(claimed).toLowerCase())
+					return { ok: true, callerId: claimed };
+				return { ok: false, status: 403, error: "Cannot operate on another user's data" };
+			},
+		);
+		await handler(
+			req("create", { name: "Victim Club", anon_id: "victim_1" }, authed("victim_1")),
+			response(),
+		);
+		await handler(
+			req("join", { slug: "victim-club", anon_id: "attacker_9" }, authed("attacker_9")),
+			response(),
+		);
+		await handler(
+			req("post", { slug: "victim-club", anon_id: "victim_1", text: "hello" }, authed("victim_1")),
+			response(),
+		);
+	});
+
+	async function victimPostId(): Promise<string> {
+		const detail = response();
+		await handler(getReq("get", { slug: "victim-club" }), detail);
+		return (detail.body as { posts: { id: string }[] }).posts[0].id;
+	}
+
+	it("rejects a delete_post whose body claim does not match the session", async () => {
+		const postId = await victimPostId();
+		const res = response();
+		await handler(
+			req(
+				"delete_post",
+				{ slug: "victim-club", post_id: postId, anon_id: "victim_1" },
+				authed("attacker_9"),
+			),
+			res,
+		);
+		expect(res.statusCode).toBe(403);
+
+		// The victim's post survives the attempt.
+		const d2 = response();
+		await handler(getReq("get", { slug: "victim-club" }), d2);
+		expect((d2.body as { posts: unknown[] }).posts).toHaveLength(1);
+	});
+
+	it("rejects comments and posts forged under another student's identity", async () => {
+		const postId = await victimPostId();
+		const c = response();
+		await handler(
+			req(
+				"comment",
+				{ slug: "victim-club", post_id: postId, anon_id: "victim_1", text: "forged" },
+				authed("attacker_9"),
+			),
+			c,
+		);
+		expect(c.statusCode).toBe(403);
+
+		const p = response();
+		await handler(
+			req("post", { slug: "victim-club", anon_id: "victim_1", text: "forged post" }, authed("attacker_9")),
+			p,
+		);
+		expect(p.statusCode).toBe(403);
+	});
+
+	it("lets the matching session through and gates on the body claim", async () => {
+		const res = response();
+		await handler(
+			req("post", { slug: "victim-club", anon_id: "attacker_9", text: "mine" }, authed("attacker_9")),
+			res,
+		);
+		expect(res.statusCode).toBe(201);
+		const calls = verifyCallerMock.mock.calls as Array<[unknown, unknown, string]>;
+		expect(calls.length).toBeGreaterThan(0);
+		expect(calls[calls.length - 1]?.[2]).toBe("attacker_9");
 	});
 });
