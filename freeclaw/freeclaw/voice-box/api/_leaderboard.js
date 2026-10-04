@@ -10,6 +10,7 @@ import { isTestArtifact } from "./_artifact-filter.js";
 import { cors } from "./_auth.js";
 import supabase from "./_db-client.js";
 import { sanitizeError } from "./_error.js";
+import { isMissingColumn } from "./_polls.js";
 
 // Default page size when no admin config is stored — kept in sync with the
 // admin setter default (api/_admin.js) so the Customize panel always previews
@@ -74,6 +75,27 @@ export default async function handler(req, res) {
 		// ── Problems & Suggestions: fetch real columns + compute support from the
 		//    reactions table (posts.reactions / comment_count are NOT stored columns —
 		//    selecting them would make PostgREST error and silently empty the board).
+		// Polls carry the same hidden rule as problems/suggestions — a moderated
+		// (hidden) poll must not rank publicly. Pre-migration DBs lack
+		// polls.hidden (migration 018): retry without the filter so the board
+		// degrades to unfiltered polls instead of emptying, mirroring the
+		// runList fallback in api/_polls.js.
+		const fetchPollRows = async () => {
+			const runPolls = (withHidden) => {
+				let qq = supabase
+					.from("polls")
+					.select("id,title,ptype,created_at,archived")
+					.eq("deleted", false)
+					.order("created_at", { ascending: false })
+					.limit(200);
+				if (withHidden) qq = qq.neq("hidden", true);
+				return qq;
+			};
+			const first = await runPolls(true);
+			if (first.error && isMissingColumn(first.error, "hidden"))
+				return runPolls(false);
+			return first;
+		};
 		const [{ data: problems }, { data: suggestions }, { data: pollRows }] =
 			await Promise.all([
 				supabase
@@ -92,12 +114,7 @@ export default async function handler(req, res) {
 					.neq("hidden", true)
 					.order("created_at", { ascending: false })
 					.limit(200),
-				supabase
-					.from("polls")
-					.select("id,title,ptype,created_at,archived")
-					.eq("deleted", false)
-					.order("created_at", { ascending: false })
-					.limit(200),
+				fetchPollRows(),
 			]);
 
 		// Batch-fetch reactions for the union of post ids, then sum per target_id.
@@ -224,6 +241,7 @@ export default async function handler(req, res) {
 
 		// ── Polls: ranked by total votes (independent leg of the fan-out) ───────
 		let rankedPolls = [];
+		let votesFailed = false;
 		const votesTask = (async () => {
 		const pollIds = (pollRows || []).map((p) => p.id);
 		if (pollIds.length) {
@@ -231,10 +249,11 @@ export default async function handler(req, res) {
 				const votes = [];
 				for (let i = 0; i < pollIds.length; i += 100) {
 					const slice = pollIds.slice(i, i + 100);
-					const { data } = await supabase
+					const { data, error: sliceErr } = await supabase
 						.from("poll_votes")
 						.select("poll_id")
 						.in("poll_id", slice);
+					if (sliceErr) throw sliceErr;
 					if (data) votes.push(...data);
 				}
 				const voteMap = {};
@@ -248,7 +267,9 @@ export default async function handler(req, res) {
 					.sort((a, b) => b.votes - a.votes)
 					.slice(0, LIMIT);
 			} catch {
-				/* non-fatal — leaderboard shows zero votes */
+				// Non-fatal, but the section now shows zero votes as estimates —
+				// say so via the degraded flag instead of silently ranking.
+				votesFailed = true;
 			}
 		}
 		})();
@@ -309,7 +330,7 @@ export default async function handler(req, res) {
 		const { counts: commentCounts, failed: commentsFailed } = await commentsTask;
 		await votesTask;
 		await aiTask;
-		const countsDegraded = reactionsFailed || commentsFailed;
+		const countsDegraded = reactionsFailed || commentsFailed || votesFailed;
 
 		const allProblems = (problems || [])
 			.map((p) => {

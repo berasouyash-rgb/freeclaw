@@ -121,6 +121,27 @@ describe("Leaderboard — lists", () => {
 		expect(screen.queryByText(/AI activity/)).toBeNull();
 		expect(screen.queryByText("No AI activity yet")).toBeNull();
 	});
+
+	it("warns when the server flags ranks as estimates", async () => {
+		mocks.getSlow.mockResolvedValue({
+			...EMPTY,
+			estimated: true,
+			degraded: true,
+			leaderboard: [{ id: "p1", title: "Top post", type: "problem", score: 1 }],
+		});
+		renderPage();
+		expect(await screen.findByText(/ranks may be incomplete/i)).toBeInTheDocument();
+	});
+
+	it("stays quiet when ranks are complete", async () => {
+		mocks.getSlow.mockResolvedValue({
+			...EMPTY,
+			leaderboard: [{ id: "p1", title: "Top post", type: "problem", score: 1 }],
+		});
+		renderPage();
+		await screen.findByText("Top post");
+		expect(screen.queryByText(/ranks may be incomplete/i)).toBeNull();
+	});
 });
 
 describe("Leaderboard — error state", () => {

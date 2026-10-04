@@ -14,6 +14,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const tableData: Record<string, unknown[]> = {};
 const from = vi.fn();
+// Failure injection for the degraded-counts paths. Reset per test.
+let pollsHiddenErrorOnce = false;
+let pollVotesError: Error | null = null;
 
 vi.mock("../../api/_db-client.js", () => ({
 	default: { from },
@@ -45,13 +48,17 @@ function response() {
 
 function chainFor(table: string) {
 	const filters: Record<string, unknown> = {};
+	const neqFilters: Record<string, unknown> = {};
 	const chain = {
 		select: vi.fn().mockReturnThis(),
 		eq(col: string, val: unknown) {
 			filters[col] = val;
 			return this;
 		},
-		neq: vi.fn().mockReturnThis(),
+		neq(col: string, val: unknown) {
+			neqFilters[col] = val;
+			return this;
+		},
 		in: vi.fn().mockReturnThis(),
 		order: vi.fn().mockReturnThis(),
 		limit: vi.fn().mockReturnThis(),
@@ -63,11 +70,33 @@ function chainFor(table: string) {
 			});
 		},
 		then(onResolve: (v: unknown) => void) {
+			// Pre-migration databases lack polls.hidden: the first (filtered)
+			// query errors once, and the route must retry without the filter.
+			if (table === "polls" && pollsHiddenErrorOnce && "hidden" in neqFilters) {
+				pollsHiddenErrorOnce = false;
+				onResolve({
+					data: null,
+					error: Object.assign(new Error('column "hidden" does not exist'), {
+						code: "PGRST204",
+					}),
+				});
+				return;
+			}
+			if (table === "poll_votes" && pollVotesError) {
+				onResolve({ data: null, error: pollVotesError });
+				return;
+			}
 			const rows = tableData[table] ?? [];
-			const filtered =
+			let filtered =
 				"type" in filters && table === "posts"
 					? rows.filter((r) => (r as { type: string }).type === filters.type)
 					: rows;
+			// Mirror PostgREST neq("hidden", true): rows without the column
+			// (legacy/seeded) stay visible; only hidden:true drops out.
+			if (table === "polls" && "hidden" in neqFilters)
+				filtered = filtered.filter(
+					(r) => (r as { hidden?: unknown }).hidden !== true,
+				);
 			onResolve({ data: filtered, error: null });
 		},
 	};
@@ -79,6 +108,8 @@ beforeEach(() => {
 	vi.clearAllMocks();
 	// Reset the shared table store so no config/data leaks between tests.
 	for (const k of Object.keys(tableData)) delete tableData[k];
+	pollsHiddenErrorOnce = false;
+	pollVotesError = null;
 	from.mockImplementation((table: string) => chainFor(table));
 });
 
@@ -569,5 +600,83 @@ describe("GET /api/leaderboard — admin customization is applied", () => {
 		const res = await fetchBoard();
 		expect(res.statusCode).toBe(200);
 		expect(res.body.problems.length).toBe(1);
+	});
+});
+
+describe("GET /api/leaderboard — hidden polls and degraded counts", () => {
+	function seedPollBoard() {
+		tableData["posts"] = [];
+		tableData["polls"] = [
+			{
+				id: "poll_live",
+				title: "Should we pave the courtyard?",
+				ptype: "yesno",
+				created_at: "2026-07-15T00:00:00Z",
+				archived: false,
+			},
+			{
+				id: "poll_hidden",
+				title: "Should we extend the library hours?",
+				ptype: "yesno",
+				created_at: "2026-07-16T00:00:00Z",
+				archived: false,
+				hidden: true,
+			},
+		];
+		tableData["reactions"] = [];
+		tableData["poll_votes"] = [
+			{ poll_id: "poll_live" },
+			{ poll_id: "poll_hidden" },
+			{ poll_id: "poll_hidden" },
+		];
+		tableData["agent_executions"] = [];
+		tableData["agent_insights"] = [];
+	}
+
+	async function fetchBoard() {
+		const { default: handler } = await import("../../api/_leaderboard.js");
+		const res = response();
+		await handler({ method: "GET", query: {}, body: {}, headers: {} }, res);
+		return res;
+	}
+
+	it("excludes hidden (moderated) polls from every ranked list", async () => {
+		// Problems/suggestions already filter hidden — polls must match, or a
+		// moderated poll keeps ranking publicly.
+		seedPollBoard();
+		const res = await fetchBoard();
+		expect(res.statusCode).toBe(200);
+		const titles = (res.body.polls as { title: string }[]).map((p) => p.title);
+		expect(titles).toEqual(["Should we pave the courtyard?"]);
+		const merged = (res.body.leaderboard as { title: string }[]).map((i) => i.title);
+		expect(merged).not.toContain("Should we extend the library hours?");
+		expect(res.body.degraded).toBeUndefined();
+		expect(res.body.estimated).toBeUndefined();
+	});
+
+	it("retries without the hidden filter on pre-migration databases", async () => {
+		// Migration 018 (polls.hidden) may be unapplied: the filtered query
+		// errors once, and the board must degrade to unfiltered polls rather
+		// than emptying the section.
+		pollsHiddenErrorOnce = true;
+		seedPollBoard();
+		const res = await fetchBoard();
+		expect(res.statusCode).toBe(200);
+		const titles = (res.body.polls as { title: string }[]).map((p) => p.title);
+		expect(titles).toContain("Should we pave the courtyard?");
+		expect(titles).toContain("Should we extend the library hours?");
+	});
+
+	it("flags the board degraded when vote counts fail instead of failing silently", async () => {
+		seedPollBoard();
+		pollVotesError = new Error("poll_votes fetch failed");
+		const res = await fetchBoard();
+		expect(res.statusCode).toBe(200);
+		// Fail-closed: without vote data the polls ranking cannot be computed,
+		// so the section stays empty — but the board must SAY the ranks are
+		// incomplete rather than look like a quiet board.
+		expect(res.body.polls).toEqual([]);
+		expect(res.body.degraded).toBe(true);
+		expect(res.body.estimated).toBe(true);
 	});
 });

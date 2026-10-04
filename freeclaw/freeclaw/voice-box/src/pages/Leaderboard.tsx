@@ -44,6 +44,11 @@ interface LeaderboardData {
 	leaderboard: RankedItem[];
 	ai_activity: AiActivityItem[];
 	generated_at?: string;
+	// Set when one of the count legs (reactions, comments, poll votes)
+	// failed and ranks were computed from partial data. The reader must
+	// see that, or a quiet board reads as an unpopular one.
+	degraded?: boolean;
+	estimated?: boolean;
 }
 
 const RANK_MEDALS = ["🥇", "🥈", "🥉"];
@@ -186,6 +191,16 @@ export default function Leaderboard() {
 				Top problems, suggestions, and polls ranked by real community
 				support — every score links back to its supporters.
 			</p>
+
+			{(data?.degraded || data?.estimated) && (
+				<p
+					role="status"
+					className="mb-4 rounded-lg border border-warn/30 bg-warn/[0.07] px-3 py-2 text-xs text-ink2"
+				>
+					Some counts failed to load — ranks may be incomplete. Refresh to
+					retry.
+				</p>
+			)}
 
 			{/* Tabs */}
 			<div className="mb-4 flex flex-wrap gap-2">
