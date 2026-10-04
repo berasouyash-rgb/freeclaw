@@ -782,3 +782,96 @@ describe("method routing", () => {
 		expect(res.statusCode).toBe(405);
 	});
 });
+
+describe("comments — private posts, repost guard, and identity gate", () => {
+	it("hides private-post comments from strangers but serves the owner", async () => {
+		state.singleRow = { id: "p-private", visibility: "private", author_id: "owner-1" };
+		state.comments = [makeComment({ id: "c1", post_id: "p-private" })];
+		const { default: handler } = await import("../../api/_comments.js");
+
+		const denied = response();
+		await handler(
+			{ method: "GET", query: { post_id: "p-private", viewer: "stranger-9" }, body: {}, headers: {} },
+			denied,
+		);
+		expect(denied.statusCode).toBe(403);
+
+		const allowed = response();
+		await handler(
+			{ method: "GET", query: { post_id: "p-private", viewer: "owner-1" }, body: {}, headers: {} },
+			allowed,
+		);
+		expect(allowed.statusCode).toBe(200);
+	});
+
+	it("rejects comments on a private post from non-authors", async () => {
+		state.singleRow = { id: "p-private", visibility: "private", author_id: "owner-1", locked: false };
+		const { default: handler } = await import("../../api/_comments.js");
+		const res = response();
+		await handler(
+			{
+				method: "POST",
+				query: {},
+				body: { post_id: "p-private", body: "let me in" },
+				headers: { "x-anon-id": "stranger-9" },
+			},
+			res,
+		);
+		expect(res.statusCode).toBe(403);
+	});
+
+	it("rejects POST without a session identity", async () => {
+		const { default: handler } = await import("../../api/_comments.js");
+		const res = response();
+		await handler(
+			{ method: "POST", query: {}, body: { post_id: "p1", body: "hello" }, headers: {} },
+			res,
+		);
+		expect(res.statusCode).toBe(403);
+	});
+
+	it("blocks reposting previously removed content and audits the attempt", async () => {
+		const { checkSafetyRepost } = await import("../../api/_moderation.js");
+		(checkSafetyRepost as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+			blocked: true,
+			rule: "unit-test",
+			attempts: 3,
+		});
+		const { default: handler } = await import("../../api/_comments.js");
+		const res = response();
+		await handler(
+			{
+				method: "POST",
+				query: {},
+				body: { post_id: "p1", body: "banned content returns" },
+				headers: { "x-anon-id": "anon-2" },
+			},
+			res,
+		);
+		expect(res.statusCode).toBe(403);
+		expect((res.body as { code?: string }).code).toBe("SAFETY_REPOST_BLOCKED");
+		expect(authMocks.auditLog).toHaveBeenCalledWith(
+			"moderation",
+			"comment_repost_blocked",
+			expect.stringContaining("anon-2"),
+		);
+	});
+
+	it("applies the cursor bound when paginating", async () => {
+		state.comments = [
+			makeComment({ id: "c-new", created_at: "2026-08-01T00:00:00Z" }),
+			makeComment({ id: "c-old", created_at: "2026-07-01T00:00:00Z" }),
+		];
+		const { default: handler } = await import("../../api/_comments.js");
+		const res = response();
+		await handler(
+			{ method: "GET", query: { paginate: "1", cursor: "2026-07-15T00:00:00Z" }, body: {}, headers: {} },
+			res,
+		);
+		expect(res.statusCode).toBe(200);
+		const body = res.body as { data: unknown[]; nextCursor: string | null; total: number };
+		expect(body.data).toHaveLength(2);
+		expect(body.nextCursor).toBeNull();
+		expect(body.total).toBe(0);
+	});
+});

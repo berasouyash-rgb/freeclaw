@@ -17,6 +17,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const from = vi.fn();
 let reactionsData: Array<{ kind: string; author_id: string }> = [];
 let deleteResult: Array<{ id: string }> = [];
+// Error-injection + side-effect capture for resilience/priority tests.
+let deleteError: Error | null = null;
+let insertError: Error | null = null;
+let countsError: Error | null = null;
+let priorityPatches: Array<Record<string, unknown>> = [];
 
 vi.mock("../../api/_db-client.js", () => ({
 	default: { from },
@@ -63,7 +68,7 @@ function chainFor(table: string) {
 		eq(): unknown;
 		delete(): unknown;
 		insert(): unknown;
-		update(): unknown;
+		update(patch?: unknown): unknown;
 		maybeSingle(): Promise<unknown>;
 		then(cb: (v: unknown) => void): Promise<unknown>;
 	} = {
@@ -83,8 +88,10 @@ function chainFor(table: string) {
 			this.op = "insert";
 			return this;
 		},
-		update() {
+		update(patch?: unknown) {
 			this.op = "update";
+			if (patch && typeof patch === "object" && "priority" in (patch as Record<string, unknown>))
+				priorityPatches.push(patch as Record<string, unknown>);
 			return this;
 		},
 		maybeSingle() {
@@ -92,11 +99,11 @@ function chainFor(table: string) {
 			return Promise.resolve({ data: null, error: null });
 		},
 		then(onResolve: (v: unknown) => void) {
-			if (this.op === "delete") onResolve({ data: deleteResult, error: null });
-			else if (this.op === "insert") onResolve({ data: null, error: null });
+			if (this.op === "delete") onResolve({ data: deleteResult, error: deleteError });
+			else if (this.op === "insert") onResolve({ data: null, error: insertError });
 			else if (this.op === "update") onResolve({ data: null, error: null });
 			else if (this.op === "counts" && table === "reactions")
-				onResolve({ data: reactionsData, error: null });
+				onResolve({ data: reactionsData, error: countsError });
 			else onResolve({ data: [], error: null });
 			return Promise.resolve(undefined);
 		},
@@ -109,6 +116,10 @@ beforeEach(() => {
 	vi.clearAllMocks();
 	reactionsData = [];
 	deleteResult = [];
+	deleteError = null;
+	insertError = null;
+	countsError = null;
+	priorityPatches = [];
 	from.mockImplementation((table: string) => chainFor(table));
 });
 
@@ -309,5 +320,121 @@ describe("POST /api/reactions — optimized toggle contract", () => {
 
 		expect(res.statusCode).toBe(429);
 		expect(from).not.toHaveBeenCalled();
+	});
+
+	it("rejects a missing identity before any DB roundtrip", async () => {
+		const { default: handler } = await import("../../api/_reactions.js");
+		const res = response();
+		await handler(
+			{ method: "POST", query: {}, body: body(), headers: {} },
+			res,
+		);
+
+		expect(res.statusCode).toBe(403);
+		expect(from).not.toHaveBeenCalled();
+	});
+
+	it("throws when the toggle DELETE fails instead of reporting success", async () => {
+		deleteResult = [];
+		deleteError = new Error("delete blew up");
+		const { default: handler } = await import("../../api/_reactions.js");
+		const res = response();
+
+		await expect(
+			handler(
+				{ method: "POST", query: {}, body: body(), headers: { "x-anon-id": "anon-1" } },
+				res,
+			),
+		).rejects.toThrow("delete blew up");
+	});
+
+	it("throws when the toggle INSERT fails instead of reporting success", async () => {
+		deleteResult = []; // toggle ON → insert path
+		insertError = new Error("insert blew up");
+		const { default: handler } = await import("../../api/_reactions.js");
+		const res = response();
+
+		await expect(
+			handler(
+				{ method: "POST", query: {}, body: body(), headers: { "x-anon-id": "anon-1" } },
+				res,
+			),
+		).rejects.toThrow("insert blew up");
+	});
+
+	it("still returns success when the counts query fails after a good toggle", async () => {
+		deleteResult = [];
+		countsError = new Error("counts blew up");
+		reactionsData = [];
+		const { default: handler } = await import("../../api/_reactions.js");
+		const res = response();
+		await handler(
+			{ method: "POST", query: {}, body: body(), headers: { "x-anon-id": "anon-1" } },
+			res,
+		);
+
+		// The toggle itself worked — counts are best-effort, never fatal.
+		expect(res.statusCode).toBe(200);
+		expect(res.body).toEqual({ toggled: true, counts: {}, mine: [] });
+	});
+
+	function supportRows(n: number) {
+		return Array.from({ length: n }, (_, i) => ({ kind: "support", author_id: `voter-${i}` }));
+	}
+
+	it("escalates priority to critical at 20 supports", async () => {
+		deleteResult = [];
+		reactionsData = supportRows(20);
+		const { default: handler } = await import("../../api/_reactions.js");
+		const res = response();
+		await handler(
+			{ method: "POST", query: {}, body: body(), headers: { "x-anon-id": "anon-1" } },
+			res,
+		);
+
+		expect(res.statusCode).toBe(200);
+		expect(priorityPatches).toContainEqual({ priority: "critical" });
+	});
+
+	it("escalates priority to high at 10 supports", async () => {
+		deleteResult = [];
+		reactionsData = supportRows(10);
+		const { default: handler } = await import("../../api/_reactions.js");
+		const res = response();
+		await handler(
+			{ method: "POST", query: {}, body: body(), headers: { "x-anon-id": "anon-1" } },
+			res,
+		);
+
+		expect(res.statusCode).toBe(200);
+		expect(priorityPatches).toContainEqual({ priority: "high" });
+	});
+
+	it("drops priority to low below 3 supports with no concern", async () => {
+		deleteResult = [];
+		reactionsData = supportRows(2);
+		const { default: handler } = await import("../../api/_reactions.js");
+		const res = response();
+		await handler(
+			{ method: "POST", query: {}, body: body(), headers: { "x-anon-id": "anon-1" } },
+			res,
+		);
+
+		expect(res.statusCode).toBe(200);
+		expect(priorityPatches).toContainEqual({ priority: "low" });
+	});
+
+	it("keeps priority at medium for ordinary counts", async () => {
+		deleteResult = [];
+		reactionsData = supportRows(5);
+		const { default: handler } = await import("../../api/_reactions.js");
+		const res = response();
+		await handler(
+			{ method: "POST", query: {}, body: body(), headers: { "x-anon-id": "anon-1" } },
+			res,
+		);
+
+		expect(res.statusCode).toBe(200);
+		expect(priorityPatches).toContainEqual({ priority: "medium" });
 	});
 });

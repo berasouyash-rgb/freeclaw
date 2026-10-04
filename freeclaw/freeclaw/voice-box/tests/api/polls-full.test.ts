@@ -226,6 +226,12 @@ function chainFor(table: string): Chain {
 						state.probeSeq.length > 0
 							? state.probeSeq.shift()
 							: state.existingVote;
+					// A queued Error fails ONLY that probe — lets a test fail the
+					// winner re-probe while the first probe still misses.
+					if (v instanceof Error) {
+						fn({ data: null, error: v });
+						return;
+					}
 					fn({ data: v, error: null });
 					return;
 				}
@@ -910,6 +916,37 @@ describe("POST /api/polls { action: vote }", () => {
 		expect(state.insertCalls).toHaveLength(2);
 	});
 
+	it("throws (no fake 200) when the winner re-probe itself fails", async () => {
+		state.singleRow = makePoll();
+		state.poll_votes = [];
+		// probe#1 miss → 23505 → winner re-probe errors (DB down mid-race).
+		// The ballot must surface the failure, never a fabricated success.
+		state.probeSeq = [null, new Error("winner probe failed")];
+		state.insertErrorSeq = [
+			dupKey("duplicate key value violates unique constraint"),
+		];
+		const { default: handler } = await import("../../api/_polls.js");
+		const res = response();
+		await expect(
+			handler(
+				{
+					method: "POST",
+					query: {},
+					body: {
+						action: "vote",
+						poll_id: "poll-1",
+						choices: [0],
+						author_id: "anon-2",
+					},
+					headers: { "x-anon-id": "anon-2" },
+				},
+				res,
+			),
+		).rejects.toThrow("winner probe failed");
+		expect(res.statusCode).toBe(200);
+		expect(state.updateCalls.filter((u) => u.table === "poll_votes")).toHaveLength(0);
+	});
+
 	// ── Realtime liveness touch visibility ────────────────────────────────
 	// `poll_votes` has no anon SELECT policy, so this touch on the parent
 	// `polls` row is the ONLY thing that makes a vote reach realtime
@@ -1356,6 +1393,123 @@ describe("PUT /api/polls", () => {
 			"admin",
 			"update_poll",
 			"poll-1",
+		);
+	});
+});
+
+describe("polls — ban deny, migration fallback, admin scan, create errors", () => {
+	it("rejects an owner PUT when checkUser denies (banned)", async () => {
+		state.singleRow = makePoll({ author_id: "anon-2" });
+		const { checkUser } = await import("../../api/_auth.js");
+		(checkUser as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+			ok: false,
+			error: "This anonymous ID has been permanently banned.",
+		});
+		const { default: handler } = await import("../../api/_polls.js");
+		const res = response();
+		await handler(
+			{
+				method: "PUT",
+				query: {},
+				body: { id: "poll-1", archived: true, author_id: "anon-2" },
+				headers: { "x-anon-id": "anon-2" },
+			},
+			res,
+		);
+		expect(res.statusCode).toBe(403);
+	});
+
+	it("answers 400 (not a crash) when the hidden column is missing pre-migration", async () => {
+		state.singleRow = makePoll({ author_id: "anon-2" });
+		state.writeError = Object.assign(new Error('column "hidden" does not exist'), {
+			code: "PGRST204",
+		});
+		const { isAdmin } = await import("../../api/_auth.js");
+		(isAdmin as ReturnType<typeof vi.fn>).mockResolvedValueOnce(true);
+		const { default: handler } = await import("../../api/_polls.js");
+		const res = response();
+		await handler(
+			{
+				method: "PUT",
+				query: {},
+				body: { id: "poll-1", hidden: true },
+				headers: { "x-anon-id": "anon-1" },
+			},
+			res,
+		);
+		expect(res.statusCode).toBe(400);
+		expect((res.body as { error: string }).error).toContain("migration 018");
+	});
+
+	it("rejects poll creation when checkUser denies", async () => {
+		state.singleRow = { id: "post-own", author_id: "anon-2" };
+		const { checkUser } = await import("../../api/_auth.js");
+		(checkUser as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+			ok: false,
+			error: "This anonymous ID has been permanently banned.",
+		});
+		const { default: handler } = await import("../../api/_polls.js");
+		const res = response();
+		await handler(
+			{
+				method: "POST",
+				query: {},
+				body: {
+					title: "Banned user poll?",
+					post_id: "post-own",
+					author_id: "anon-2",
+				},
+				headers: { "x-anon-id": "anon-2" },
+			},
+			res,
+		);
+		expect(res.statusCode).toBe(403);
+	});
+
+	it("throws (no fake 201) when the create insert fails", async () => {
+		state.singleRow = { id: "post-own", author_id: "anon-2" };
+		state.polls = [];
+		state.writeError = new Error("insert blew up");
+		const { default: handler } = await import("../../api/_polls.js");
+		const res = response();
+		await expect(
+			handler(
+				{
+					method: "POST",
+					query: {},
+					body: {
+						title: "Doomed poll?",
+						post_id: "post-own",
+						author_id: "anon-2",
+					},
+					headers: { "x-anon-id": "anon-2" },
+				},
+				res,
+			),
+		).rejects.toThrow("insert blew up");
+	});
+
+	it("lets an admin scan a poll read-only and audits it", async () => {
+		state.singleRow = makePoll({ id: "poll-1", title: "Clean question?", options: ["Yes", "No"] });
+		const { isAdmin } = await import("../../api/_auth.js");
+		(isAdmin as ReturnType<typeof vi.fn>).mockResolvedValueOnce(true);
+		const { default: handler } = await import("../../api/_polls.js");
+		const res = response();
+		await handler(
+			{
+				method: "POST",
+				query: {},
+				body: { action: "scan", poll_id: "poll-1" },
+				headers: { "x-anon-id": "anon-1" },
+			},
+			res,
+		);
+		expect(res.statusCode).toBe(200);
+		expect((res.body as { blocked: boolean }).blocked).toBe(false);
+		expect(authMocks.auditLog).toHaveBeenCalledWith(
+			"admin",
+			"poll_scan",
+			expect.stringContaining("poll-1"),
 		);
 	});
 });
