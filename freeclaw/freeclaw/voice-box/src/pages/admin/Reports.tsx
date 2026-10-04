@@ -33,6 +33,7 @@ import WorkItem from "../../components/admin/WorkItem";
 import type { WorkItemData } from "../../components/admin/WorkItem";
 import { useApp } from "../../contexts/AppContext";
 import { api } from "../../lib/api";
+import { BULK_CONCURRENCY, mapWithConcurrency } from "../../lib/async";
 import { groupReports } from "../../lib/report-groups";
 import { useRealtime } from "../../lib/useRealtime";
 import { CAT_EMOJI, CATEGORIES, timeAgo } from "../../lib/utils";
@@ -868,18 +869,21 @@ export default function Reports() {
 	// Resolve a whole root issue (spec §24): every member report goes through
 	// the same verified PUT as a single resolve, so each keeps its own
 	// verification; the toast reports the honest total, never a fake bulk OK.
+	// Bounded-parallel (not sequential): a 20-report root issue cost 20
+	// serial round-trips; 8 at a time matches the PostsTable bulk-delete
+	// ceiling without flooding the connection pool.
 	const resolveGroup = async (key: string, ids: Array<number | string>) => {
 		setBusy(`resolve-group:${key}`);
-		let ok = 0;
-		let failed = 0;
-		for (const id of ids) {
-			try {
+		const outcomes = await mapWithConcurrency(
+			ids,
+			BULK_CONCURRENCY,
+			async (id) => {
 				await api.put("/api/reports", { id, status: "resolved" });
-				ok++;
-			} catch {
-				failed++;
-			}
-		}
+				return id;
+			},
+		);
+		const ok = outcomes.filter((o) => o.status === "fulfilled").length;
+		const failed = outcomes.length - ok;
 		toast(
 			failed === 0
 				? `Resolved root issue — ${ok} report(s) verified`

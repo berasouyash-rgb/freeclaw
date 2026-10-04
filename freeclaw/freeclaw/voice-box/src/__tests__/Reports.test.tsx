@@ -698,3 +698,74 @@ describe("Reports — community targets, reporter context, related content", () 
     expect(screen.getByText("Flagged title")).toBeInTheDocument();
   });
 });
+
+describe("Reports — root-issue bulk resolve runs bounded-parallel", () => {
+  function seedSixfold() {
+    seedData({
+      reports: Array.from({ length: 6 }, (_, i) => ({
+        ...REPORT,
+        id: 200 + i,
+        target_id: "post_x",
+        target_type: "post",
+        status: null,
+        reason: "Harassment",
+        created_at: new Date().toISOString(),
+      })),
+      reviewQueue: [],
+      posts: [],
+    });
+  }
+
+  it("resolves a 6-report root issue with parallel PUTs, never more than 8 in flight", async () => {
+    seedSixfold();
+    let inFlight = 0;
+    let maxInFlight = 0;
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    mockedPut.mockImplementation(async () => {
+      inFlight++;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      await gate;
+      inFlight--;
+      return {};
+    });
+    render(<Reports />);
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Resolve root issue post_x (6 reports)" }),
+    );
+    // All lanes start together — sequential code would never exceed 1.
+    await waitFor(() => expect(maxInFlight).toBeGreaterThan(1));
+    expect(maxInFlight).toBeLessThanOrEqual(8);
+    release();
+    await waitFor(() => expect(mockedPut).toHaveBeenCalledTimes(6));
+    await waitFor(() =>
+      expect(mockToast).toHaveBeenCalledWith(
+        expect.stringMatching(/Resolved root issue — 6 report\(s\) verified/),
+        "ok",
+      ),
+    );
+  });
+
+  it("reports honest partial counts when some resolves fail", async () => {
+    seedSixfold();
+    let calls = 0;
+    mockedPut.mockImplementation(async () => {
+      calls++;
+      if (calls === 3) throw new Error("row locked");
+      return {};
+    });
+    render(<Reports />);
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Resolve root issue post_x (6 reports)" }),
+    );
+    await waitFor(() => expect(mockedPut).toHaveBeenCalledTimes(6));
+    await waitFor(() =>
+      expect(mockToast).toHaveBeenCalledWith(
+        expect.stringMatching(/Resolved 5, 1 failed/),
+        "err",
+      ),
+    );
+  });
+});
