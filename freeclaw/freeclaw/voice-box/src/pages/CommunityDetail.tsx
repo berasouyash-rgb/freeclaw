@@ -101,7 +101,7 @@ export default function CommunityDetail() {
 	const [pollQuestion, setPollQuestion] = useState("");
 	const [pollOptions, setPollOptions] = useState(["", ""]);
 
-	const load = useCallback(async () => {
+	const load = useCallback(async (quiet = false) => {
 		try {
 			const r = await api.get<CommunityDetailData>(
 				`/api/communities?action=get&slug=${encodeURIComponent(slug)}&anon_id=${anonId}`,
@@ -112,20 +112,50 @@ export default function CommunityDetail() {
 		} catch (e: unknown) {
 			// Only a 404 means the community actually does not exist. Anything
 			// else (429, timeout, 500) is a failed request and must say so —
-			// otherwise a busy API tells users the group was deleted.
+			// otherwise a busy API tells users the group was deleted. A quiet
+			// background tick stays silent on those instead of flashing a
+			// banner every interval over a transient blip.
 			if (isNotFound(e)) {
 				setNotFound(true);
 				setLoadError("");
 				return;
 			}
-			setLoadError(
-				e instanceof Error ? e.message : "Failed to load community",
-			);
+			if (!quiet)
+				setLoadError(
+					e instanceof Error ? e.message : "Failed to load community",
+				);
 		}
 	}, [slug, anonId]);
 
 	useEffect(() => {
 		void load();
+	}, [load]);
+
+	// ── Visible-only quiet tick (contract evolution 2026-10-05) ──
+	// The discussion feed owns no subscription (community tables are
+	// outside the anon realtime contract), so posts, reactions, comments,
+	// and poll votes from another device appeared only after a manual
+	// reload. Every 10s while mounted AND visible (plus on focus/return),
+	// quietly revalidate the whole thread: every mutation already reloads
+	// through load(), so there is no optimistic state a tick could
+	// clobber, and drafts live in separate state the tick never touches.
+	useEffect(() => {
+		const tick = () => {
+			if (
+				typeof document !== "undefined" &&
+				document.visibilityState === "hidden"
+			)
+				return;
+			void load(true);
+		};
+		const id = window.setInterval(tick, 10_000);
+		window.addEventListener("focus", tick);
+		document.addEventListener("visibilitychange", tick);
+		return () => {
+			window.clearInterval(id);
+			window.removeEventListener("focus", tick);
+			document.removeEventListener("visibilitychange", tick);
+		};
 	}, [load]);
 
 	const joinLeave = async () => {

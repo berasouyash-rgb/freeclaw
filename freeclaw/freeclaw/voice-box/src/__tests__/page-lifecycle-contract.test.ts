@@ -79,13 +79,22 @@ function splitTopLevel(args: string): string[] {
 }
 
 describe("page lifecycle contracts", () => {
-	it("keeps CommunityDetail on explicit refresh instead of background polling", () => {
+	it("lets CommunityDetail quietly revalidate while visible (evolution 2026-10-05)", () => {
+		// Owner override: the discussion feed owns no subscription
+		// (community tables are outside the realtime contract), so the
+		// explicit-refresh-only rule left discussions frozen until a manual
+		// reload. The allowance is exactly one visibility-guarded quiet
+		// tick: it may not raise error banners (all mutations already
+		// reload through load(), so there is no optimistic state to
+		// clobber, and drafts live in separate state).
 		const source = readFileSync(
 			resolve(process.cwd(), "src/pages/CommunityDetail.tsx"),
 			"utf8",
 		);
-		expect(source).not.toMatch(/setInterval\s*\(/);
-		expect(source).not.toContain("visibilitychange");
+		const timers = source.match(/setInterval\s*\(/g) || [];
+		expect(timers.length, "CommunityDetail may own exactly one quiet timer").toBe(1);
+		expect(source).toContain('document.visibilityState === "hidden"');
+		expect(source).toContain("void load(true)");
 	});
 
 	it("keeps the admin Overview on explicit refresh with a badge, never a refetch", () => {
