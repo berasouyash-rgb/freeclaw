@@ -9,8 +9,7 @@
 	ShieldCheck,
 	Sparkles,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Link } from "react-router";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";import { Link } from "react-router";
 import UpdateNotice from "../components/admin/UpdateNotice";
 import { useApp } from "../contexts/AppContext";
 import { useUpdateSignal } from "../hooks/useUpdateSignal";
@@ -65,12 +64,13 @@ export default function Suggestions() {
 		load();
 	}, [load]);
 
-	// Freshness signal, not a refetch: the old wiring reloaded the whole
+	// Freshness signal + single-row merge: the old wiring reloaded the whole
 	// suggestion list on every posts event (and re-pulled the reaction map
 	// on every reaction event), so steady activity rebuilt the page under
-	// the reader's finger. Realtime now only raises a badge; Refresh or the
-	// update notice pulls one fresh snapshot. Own votes stay instant via
-	// the optimistic flip in vote().
+	// the reader's finger. New ideas and upvote touches now merge one row
+	// at a time (see below); Refresh or the update notice still pulls one
+	// fresh snapshot. Own votes stay instant via the optimistic flip in
+	// vote().
 	//
 	// The one exception is withdrawal: a suggestion the server no longer
 	// serves (hidden by moderation, soft-deleted, hard-deleted) leaves the
@@ -82,6 +82,72 @@ export default function Suggestions() {
 		useUpdateSignal();
 	const [refreshing, setRefreshing] = useState(false);
 
+	// ── Single-row live merge (contract evolution 2026-10-05) ──
+	// New ideas and upvote touches arrive as posts INSERT/UPDATE (every
+	// toggle touches the parent row). One small GET per changed id merges
+	// into the list — no whole-list reload under the reader's finger.
+	// Withdrawal keeps its immediate drop below; unresolvable events keep
+	// the badge.
+	const pendingRowIds = useRef<Set<string>>(new Set());
+	const rowFlushTimer = useRef<number | null>(null);
+
+	const flushSuggestionRows = useCallback(async () => {
+		rowFlushTimer.current = null;
+		const ids = [...pendingRowIds.current].slice(0, 20);
+		pendingRowIds.current.clear();
+		if (ids.length === 0) return;
+		const settled = await Promise.all(
+			ids.map(async (rowId) => {
+				try {
+					const res = await api.getFresh<{ post: PostData }>(
+						`/api/posts?id=${rowId}`,
+					);
+					return res.post ?? null;
+				} catch {
+					return null;
+				}
+			}),
+		);
+		const rows = settled.filter((r): r is PostData => !!r);
+		if (rows.length === 0) {
+			markUpdatesAvailable();
+			return;
+		}
+		// Suggestions-only list: new rows of another type never join, and
+		// a known card that changed away drops off.
+		setItems((prev) => {
+			const next: PostData[] = [];
+			for (const s of prev) {
+				const f = rows.find((r) => r.id === s.id);
+				if (f) {
+					if (f.type === "suggestion") next.push(f);
+				} else next.push(s);
+			}
+			for (const r of rows) {
+				if (r.type === "suggestion" && !prev.some((q) => q.id === r.id))
+					next.push(r);
+			}
+			return next;
+		});
+	}, [markUpdatesAvailable]);
+
+	const scheduleSuggestionFlush = useCallback(() => {
+		if (rowFlushTimer.current !== null) return;
+		rowFlushTimer.current = window.setTimeout(() => {
+			void flushSuggestionRows();
+		}, 400);
+	}, [flushSuggestionRows]);
+
+	useEffect(
+		() => () => {
+			if (rowFlushTimer.current !== null) {
+				window.clearTimeout(rowFlushTimer.current);
+				rowFlushTimer.current = null;
+			}
+		},
+		[],
+	);
+
 	const handlePostWithdrawal = useCallback(
 		(table: string, payload: RealtimePayload) => {
 			const withdrawn = postWithdrawal(table, payload);
@@ -89,9 +155,20 @@ export default function Suggestions() {
 				setItems((prev) => prev.filter((s) => s.id !== withdrawn.id));
 				return;
 			}
+			if (table === "posts") {
+				const evt = payload.eventType;
+				const next = payload.new as { id?: string } | undefined;
+				const prev = payload.old as { id?: string } | undefined;
+				const rowId = (evt === "DELETE" ? prev?.id : next?.id) ?? prev?.id;
+				if ((evt === "INSERT" || evt === "UPDATE") && rowId) {
+					pendingRowIds.current.add(rowId);
+					scheduleSuggestionFlush();
+					return;
+				}
+			}
 			markUpdatesAvailable();
 		},
-		[markUpdatesAvailable],
+		[markUpdatesAvailable, scheduleSuggestionFlush],
 	);
 
 	const handleRefresh = useCallback(async () => {

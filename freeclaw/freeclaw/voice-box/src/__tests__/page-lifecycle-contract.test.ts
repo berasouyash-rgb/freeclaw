@@ -418,8 +418,7 @@ describe("page lifecycle contracts", () => {
 		expect(block).toContain("matches(");
 	});
 
-	it("holds the board merge to single-row GETs, never a rebuild (evolution 2026-10-05)", () => {
-		// The whole-board reload per event made steady activity unusable.
+	it("holds the board merge to single-row GETs, never a rebuild (evolution 2026-10-05)", () => {		// The whole-board reload per event made steady activity unusable.
 		// The flush may fetch changed ids one by one and merge them into
 		// state; it may not call the board loader, show skeletons, or move
 		// more than the changed rows (columns derive from state, so an
@@ -431,6 +430,25 @@ describe("page lifecycle contracts", () => {
 		const block = source.slice(
 			source.indexOf("const flushBoardRows = useCallback"),
 			source.indexOf("const scheduleBoardFlush = useCallback"),
+		);
+		expect(block).toContain("/api/posts?id=");
+		expect(block).toContain("api.getFresh");
+		expect(block).not.toContain("api.getSlow");
+		expect(block).not.toContain("void load(");
+		expect(block).not.toContain("setLoading(true)");
+	});
+
+	it("holds the suggestions merge to single-row GETs, never a reload (evolution 2026-10-05)", () => {
+		// Same allowance as the board: changed ids merge one by one; the
+		// list loader, skeletons, and the per-event reaction-map pull stay
+		// out of the event path.
+		const source = readFileSync(
+			resolve(process.cwd(), "src/pages/Suggestions.tsx"),
+			"utf8",
+		);
+		const block = source.slice(
+			source.indexOf("const flushSuggestionRows = useCallback"),
+			source.indexOf("const scheduleSuggestionFlush = useCallback"),
 		);
 		expect(block).toContain("/api/posts?id=");
 		expect(block).toContain("api.getFresh");
