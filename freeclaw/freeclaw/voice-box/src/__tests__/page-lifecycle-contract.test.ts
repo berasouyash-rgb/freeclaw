@@ -97,18 +97,24 @@ describe("page lifecycle contracts", () => {
 		expect(source).toContain("void load(true)");
 	});
 
-	it("keeps the admin Overview on explicit refresh with a badge, never a refetch", () => {
-		// Explicit user override 2026-09-26: adds/deletes surface in real
-		// time like the admin feed — realtime raises "N new updates", the
-		// admin pulls with Refresh / View updates. Same badge contract as
-		// PostsTable: the handler must be the freshness signal, never a
-		// fetch, and no timer or visibility reload may sneak back in.
+	it("keeps the admin Overview fresh while visible, badge intact (evolution 2026-10-05)", () => {
+		// Owner override: a wall of numbers that never moves until clicked
+		// reads as a dead dashboard. The allowance is one 30s
+		// visibility-guarded SILENT revalidation reusing the Refresh path —
+		// the realtime handler itself stays a badge-only freshness signal
+		// and the badge still clears only on explicit pull.
 		const source = readFileSync(
 			resolve(process.cwd(), "src/pages/admin/Overview.tsx"),
 			"utf8",
 		);
-		expect(source).not.toMatch(/setInterval\s*\(/);
-		expect(source).not.toContain("visibilitychange");
+		const timers = source.match(/setInterval\s*\(/g) || [];
+		expect(timers.length, "Overview may own exactly one revalidation timer").toBe(1);
+		expect(source).toContain('document.visibilityState === "hidden"');
+		expect(source).toContain("void loadAll(true)");
+		// Exactly one loud initial load (mount) — every other call site
+		// is the silent tick or the explicit Refresh path.
+		const loudLoads = source.match(/void loadAll\(\);/g) || [];
+		expect(loudLoads.length, "only the mount may load loudly").toBe(1);
 
 		const calls = callArgs(source, "useRealtime");
 		expect(calls.length, "Overview should subscribe for the badge").toBeGreaterThan(0);

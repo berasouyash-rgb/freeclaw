@@ -409,6 +409,34 @@ describe("Overview — header and snapshot", () => {
 			expect(mocks.getSlow.mock.calls.length).toBeGreaterThan(before),
 		);
 	});
+
+	it("revalidates on window focus without a click (evolution 2026-10-05)", async () => {
+		await renderDashboard();
+		expect(
+			screen.getByText(/2 posts · 1 comments · 1042 users/),
+		).toBeTruthy();
+
+		// A third report lands on the server after the dashboard loaded.
+		const THIRD = { ...PROBLEM, id: "post-3", title: "Third report arrives" };
+		mocks.getSlow.mockImplementation(async (path: string) => {
+			if (path.startsWith("/api/workforce"))
+				return { alerts: { alerts: [] }, updated_at: now() };
+			return [PROBLEM, SOLVED, THIRD];
+		});
+
+		// No Refresh click — returning to the tab pulls it in on its own.
+		// (Dispatched on document: a window-level focus event trips an
+		// undici/jsdom Event-brand check in this environment.)
+		document.dispatchEvent(new Event("visibilitychange"));
+		await waitFor(
+			() => {
+				expect(
+					screen.getByText(/3 posts · 1 comments · 1042 users/),
+				).toBeTruthy();
+			},
+			{ timeout: 15000 },
+		);
+	});
 });
 
 describe("Overview — the six work sections", () => {

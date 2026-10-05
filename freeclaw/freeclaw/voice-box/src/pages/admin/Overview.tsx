@@ -558,6 +558,34 @@ export default function Overview() {
 		1_000,
 	);
 
+	// ── Visible-only silent revalidation (contract evolution 2026-10-05) ──
+	// Adds/deletes still land as a badge for an explicit pull, but a wall
+	// of numbers that never moves until clicked reads as a dead dashboard.
+	// Every 30s while mounted AND visible (plus on focus/return), silently
+	// re-run the same snapshot load the Refresh button uses — no loaders
+	// (silent), no badge clearing (the admin still pulls formally when the
+	// notice matters). Dashboards conventionally revalidate at this
+	// cadence; the heavy alerts lane keeps its own overlap guard.
+	useEffect(() => {
+		const tick = () => {
+			if (
+				typeof document !== "undefined" &&
+				document.visibilityState === "hidden"
+			)
+				return;
+			void loadAll(true);
+			void loadAlerts();
+		};
+		const id = window.setInterval(tick, 30_000);
+		window.addEventListener("focus", tick);
+		document.addEventListener("visibilitychange", tick);
+		return () => {
+			window.clearInterval(id);
+			window.removeEventListener("focus", tick);
+			document.removeEventListener("visibilitychange", tick);
+		};
+	}, [loadAll, loadAlerts]);
+
 	const publishAnnouncement = async () => {
 		const text = annText.trim().slice(0, 300);
 		if (!text || annBusy) return;
