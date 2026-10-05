@@ -11,6 +11,11 @@ import Polls from "../pages/Polls";
 const mocks = vi.hoisted(() => ({
 	get: vi.fn(),
 	getFresh: vi.fn(),
+	realtimeSubs: [] as Array<{
+		tables: string[];
+		cb: (table: string, payload: unknown) => void;
+		debounceMs: number;
+	}>,
 }));
 
 vi.mock("../contexts/AppContext", () => ({
@@ -20,6 +25,16 @@ vi.mock("../contexts/AppContext", () => ({
 vi.mock("../lib/api", () => ({
 	api: { get: mocks.get, getFresh: mocks.getFresh, post: vi.fn() },
 	hasAdminSession: () => false,
+}));
+
+vi.mock("../lib/useRealtime", () => ({
+	useRealtime: (
+		tables: string[],
+		cb: (table: string, payload: unknown) => void,
+		debounceMs = 1500,
+	) => {
+		mocks.realtimeSubs.push({ tables, cb, debounceMs });
+	},
 }));
 
 function poll(over: Record<string, unknown> = {}) {
@@ -48,6 +63,7 @@ function renderPage() {
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	mocks.realtimeSubs = [];
 	mocks.get.mockImplementation((url: string) => {
 		if (String(url).includes("voter=")) return Promise.resolve([]);
 		return Promise.resolve([poll({ id: "a" })]);
@@ -109,5 +125,39 @@ describe("Polls page", () => {
 		fireEvent.click(screen.getByText(/ended & archived/i));
 		expect(await screen.findByText("Old question")).toBeInTheDocument();
 		expect(screen.queryByText("Live question")).toBeNull();
+	});
+
+	it("lists a poll created elsewhere, with no clicks (evolution 2026-10-05)", async () => {
+		renderPage();
+		expect(await screen.findByText("Best canteen dish?")).toBeInTheDocument();
+		const lane = mocks.realtimeSubs.find((s) => s.tables.includes("polls"));
+		expect(lane, "polls lane must be subscribed").toBeDefined();
+		mocks.getFresh.mockImplementation((url: string) => {
+			if (String(url).includes("voter=")) return Promise.resolve([]);
+			if (String(url).includes("ids=new-poll"))
+				return Promise.resolve([
+					poll({
+						id: "new-poll",
+						title: "New sports poll?",
+						options: ["Cricket", "Football"],
+						total_votes: 0,
+						vote_counts: {},
+					}),
+				]);
+			return Promise.resolve([]);
+		});
+
+		const { act } = await import("@testing-library/react");
+		await act(async () => {
+			lane!.cb("polls", {
+				eventType: "INSERT",
+				new: { id: "new-poll" },
+				old: {},
+			});
+		});
+
+		// No Refresh click — the vote lane fetches the unknown id and the
+		// list gains the card on its own.
+		expect(await screen.findByText("New sports poll?")).toBeInTheDocument();
 	});
 });

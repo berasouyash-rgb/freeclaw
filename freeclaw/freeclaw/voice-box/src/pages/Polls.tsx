@@ -108,9 +108,18 @@ export default function Polls() {
 				for (const r of Array.isArray(rows) ? rows : [])
 					if (r?.id) byId.set(r.id, r);
 				if (!byId.size) return;
-				setPolls((prev) =>
-					prev.map((p) => (byId.get(p.id) ?? p)),
-				);
+				setPolls((prev) => {
+					const merged = prev.map((p) => (byId.get(p.id) ?? p));
+					// Newcomers: a poll created elsewhere arrives through this
+					// same lane (its only signal is the polls INSERT). Rows the
+					// list has never seen join it — deleted rows never arrive
+					// here (load() filters them), so no resurrection is possible.
+					for (const row of byId.values()) {
+						if (!row.deleted && !merged.some((p) => p.id === row.id))
+							merged.push(row);
+					}
+					return collapseDuplicatePolls(merged);
+				});
 			} catch {
 				/* keep stale rows rather than blank the list over one id */
 			}
