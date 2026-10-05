@@ -382,4 +382,27 @@ describe("page lifecycle contracts", () => {
 			expect(source, file).toContain("clearUpdates");
 		}
 	});
+
+	it("lets UserChat auto-peek while visible (contract evolution 2026-10-05)", () => {
+		// Owner override: chat_messages is outside the anon realtime
+		// contract, so no subscription can ever deliver a reply — the
+		// badge-only rule left chat dead until a manual refresh. The
+		// allowance is exactly one visible-only merge tick: it may not
+		// become a reload storm, touch read state, or show a loader.
+		const source = readFileSync(
+			resolve(process.cwd(), "src/pages/UserChat.tsx"),
+			"utf8",
+		);
+		const timers = source.match(/setInterval\s*\(/g) || [];
+		expect(timers.length, "UserChat may own exactly one peek timer").toBe(1);
+		expect(source).toContain('document.visibilityState === "hidden"');
+		expect(source).toContain("api.getFresh");
+		expect(source).toContain("mergeMessages(prev, newMsgs)");
+		// The tick merges only: read state stays with the explicit
+		// load/send paths, and no loader may flash per tick.
+		const peekBlock = source.slice(source.indexOf("const peek = useCallback"));
+		expect(peekBlock).not.toContain("mark_read");
+		expect(peekBlock).not.toContain("setLoading");
+		expect(peekBlock).not.toContain("api.put");
+	});
 });

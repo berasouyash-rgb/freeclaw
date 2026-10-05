@@ -26,6 +26,7 @@ const mocks = vi.hoisted(() => ({
 	postInbox: vi.fn(),
 	post: vi.fn(),
 	get: vi.fn(),
+	getFresh: vi.fn(),
 	put: vi.fn(),
 	uploadImage: vi.fn(),
 	postSlow: vi.fn(),
@@ -35,6 +36,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock("../lib/api", () => ({
 	api: {
 		get: mocks.get,
+		getFresh: mocks.getFresh,
 		put: mocks.put,
 		post: mocks.post,
 		postInbox: mocks.postInbox,
@@ -98,6 +100,10 @@ beforeEach(() => {
 	vi.clearAllMocks();
 	Element.prototype.scrollIntoView = vi.fn();
 	mocks.get.mockResolvedValue({
+		messages: [...SERVER_MESSAGES],
+		thread: { thread_id: "anon-test", status: "open" },
+	});
+	mocks.getFresh.mockResolvedValue({
 		messages: [...SERVER_MESSAGES],
 		thread: { thread_id: "anon-test", status: "open" },
 	});
@@ -1134,4 +1140,42 @@ describe("UserChat — derived title + owner delete", () => {
 		);
 		expect(screen.getByTestId("chat-title")).toBeInTheDocument();
 	});
+});
+
+describe("UserChat — visible auto-peek", () => {
+	it(
+		"merges a reply that lands after mount, with no user action and no extra mark_read",
+		async () => {
+			renderPage();
+			await waitFor(() =>
+				expect(screen.getByText("Hello! How can I help?")).toBeTruthy(),
+			);
+			const putsAfterLoad = mocks.put.mock.calls.length;
+
+			// A reply from the other side lands on the server after mount.
+			mocks.getFresh.mockResolvedValue({
+				messages: [
+					...SERVER_MESSAGES,
+					{
+						id: "m2",
+						sender: "admin",
+						body: "Reply from the office",
+						created_at: "2026-08-01T10:05:00.000Z",
+						read: false,
+					},
+				],
+				thread: { thread_id: "anon-test", status: "open" },
+			});
+
+			// No clicks, no refresh — the peek merges it on its own.
+			await waitFor(
+				() => expect(screen.getByText("Reply from the office")).toBeTruthy(),
+				{ timeout: 15000 },
+			);
+			// A peek is a merge, not a load: read state is written by the
+			// explicit load/send paths, never by the background tick.
+			expect(mocks.put.mock.calls.length).toBe(putsAfterLoad);
+		},
+		20000,
+	);
 });

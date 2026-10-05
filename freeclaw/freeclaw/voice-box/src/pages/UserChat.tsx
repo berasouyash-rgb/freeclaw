@@ -247,6 +247,49 @@ export default function UserChat() {
 		load();
 	}, [load]);
 
+	// ── Visible-only auto-peek (contract evolution 2026-10-05) ──
+	// chat_messages is outside the anon realtime contract
+	// (src/lib/realtimeContract.json), so the subscription below can never
+	// deliver: without this, a reply from another device appears only after
+	// a manual refresh. Peek at the thread every 4s while this page is
+	// mounted AND visible, plus once on focus/visibility return. This is a
+	// merge, not a load: no mark_read PUT (read state is written by the
+	// explicit load/send paths), no loader touch, and getFresh bypasses the
+	// 5s GET cache so the tick sees live rows. One timer for one thread —
+	// no fan-out; torn down on unmount.
+	const peek = useCallback(async () => {
+		if (
+			typeof document !== "undefined" &&
+			document.visibilityState === "hidden"
+		)
+			return;
+		try {
+			const data = await api.getFresh<InboxResponse>(
+				`/api/inbox?thread_id=${anonId}`,
+			);
+			const newMsgs = data.messages || [];
+			setMessages((prev: ChatMessage[]) => mergeMessages(prev, newMsgs));
+		} catch {
+			/* offline ok */
+		}
+	}, [anonId]);
+
+	useEffect(() => {
+		const id = window.setInterval(() => {
+			void peek();
+		}, 4000);
+		const refetch = () => {
+			void peek();
+		};
+		window.addEventListener("focus", refetch);
+		document.addEventListener("visibilitychange", refetch);
+		return () => {
+			window.clearInterval(id);
+			window.removeEventListener("focus", refetch);
+			document.removeEventListener("visibilitychange", refetch);
+		};
+	}, [peek]);
+
 	const toggleAi = async () => {
 		if (aiBusy) return;
 		const next = !aiEnabled;
