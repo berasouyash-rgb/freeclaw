@@ -398,8 +398,7 @@ describe("page lifecycle contracts", () => {
 		expect(source).toContain("livenessTimer");
 	});
 
-	it("holds the Home merge to single-row GETs, never a list reload (evolution 2026-10-05)", () => {
-		// The full silent reload per event is what made posts land seconds
+	it("holds the Home merge to single-row GETs, never a list reload (evolution 2026-10-05)", () => {		// The full silent reload per event is what made posts land seconds
 		// late. The flush may fetch changed ids one by one; it may not
 		// call the list loader or a list endpoint, replace the whole list
 		// wholesale, or skip the active-filter check that keeps a
@@ -417,6 +416,27 @@ describe("page lifecycle contracts", () => {
 		expect(block).not.toContain("getSlow");
 		expect(block).not.toContain("void load(");
 		expect(block).toContain("matches(");
+	});
+
+	it("holds the board merge to single-row GETs, never a rebuild (evolution 2026-10-05)", () => {
+		// The whole-board reload per event made steady activity unusable.
+		// The flush may fetch changed ids one by one and merge them into
+		// state; it may not call the board loader, show skeletons, or move
+		// more than the changed rows (columns derive from state, so an
+		// in-place merge moves exactly the changed card).
+		const source = readFileSync(
+			resolve(process.cwd(), "src/pages/SolvingBoard.tsx"),
+			"utf8",
+		);
+		const block = source.slice(
+			source.indexOf("const flushBoardRows = useCallback"),
+			source.indexOf("const scheduleBoardFlush = useCallback"),
+		);
+		expect(block).toContain("/api/posts?id=");
+		expect(block).toContain("api.getFresh");
+		expect(block).not.toContain("api.getSlow");
+		expect(block).not.toContain("void load(");
+		expect(block).not.toContain("setLoading(true)");
 	});
 
 	it("gives the public boards and inbox an explicit manual refresh", () => {

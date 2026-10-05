@@ -1,5 +1,5 @@
 ﻿import { KanbanSquare, RefreshCw } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router";
 import PurgeCountdown from "../components/PurgeCountdown";
 import UpdateNotice from "../components/admin/UpdateNotice";
@@ -67,12 +67,12 @@ export default function SolvingBoard() {
 		load();
 	}, [load]);
 
-	// Freshness signal, not a refetch: the old wiring reloaded the WHOLE
+	// Freshness signal + single-row merge: the old wiring reloaded the WHOLE
 	// board (skeletons and all) on every posts event, so under any steady
 	// write activity the columns visibly rebuilt every ~1s and no work was
-	// possible. Realtime now only raises a badge; the reader pulls a fresh
-	// snapshot with Refresh or the update notice. Cards still move between
-	// columns — exactly one click later.
+	// possible. New reports and status changes now merge one row at a time
+	// (see below) — cards move between columns on their own. Anything the
+	// merge cannot resolve still raises the badge for an explicit pull.
 	//
 	// The single exception is withdrawal: a card the server no longer serves
 	// (hidden by moderation, soft-deleted, hard-deleted) leaves the columns
@@ -82,6 +82,72 @@ export default function SolvingBoard() {
 	const { updatesAvailable, markUpdatesAvailable, clearUpdates } =
 		useUpdateSignal();
 
+	// ── Single-row live merge (contract evolution 2026-10-05) ──
+	// New reports and status changes arrive as posts INSERT/UPDATE. One
+	// small GET per changed id slots the card into its column (or moves
+	// it) without rebuilding the board — the old whole-board reload made
+	// steady activity unusable. Withdrawal keeps its immediate drop
+	// below; unresolvable events keep the badge.
+	const pendingRowIds = useRef<Set<string>>(new Set());
+	const rowFlushTimer = useRef<number | null>(null);
+
+	const flushBoardRows = useCallback(async () => {
+		rowFlushTimer.current = null;
+		const ids = [...pendingRowIds.current].slice(0, 20);
+		pendingRowIds.current.clear();
+		if (ids.length === 0) return;
+		const settled = await Promise.all(
+			ids.map(async (rowId) => {
+				try {
+					const res = await api.getFresh<{ post: PostData }>(
+						`/api/posts?id=${rowId}`,
+					);
+					return res.post ?? null;
+				} catch {
+					return null;
+				}
+			}),
+		);
+		const rows = settled.filter((r): r is PostData => !!r);
+		if (rows.length === 0) {
+			markUpdatesAvailable();
+			return;
+		}
+		// The board is problems-only: new rows of another type never join,
+		// and a known card that changed away drops off.
+		setPosts((prev) => {
+			const next: PostData[] = [];
+			for (const p of prev) {
+				const f = rows.find((r) => r.id === p.id);
+				if (f) {
+					if (f.type === "problem") next.push(f);
+				} else next.push(p);
+			}
+			for (const r of rows) {
+				if (r.type === "problem" && !prev.some((q) => q.id === r.id))
+					next.push(r);
+			}
+			return next;
+		});
+	}, [markUpdatesAvailable]);
+
+	const scheduleBoardFlush = useCallback(() => {
+		if (rowFlushTimer.current !== null) return;
+		rowFlushTimer.current = window.setTimeout(() => {
+			void flushBoardRows();
+		}, 400);
+	}, [flushBoardRows]);
+
+	useEffect(
+		() => () => {
+			if (rowFlushTimer.current !== null) {
+				window.clearTimeout(rowFlushTimer.current);
+				rowFlushTimer.current = null;
+			}
+		},
+		[],
+	);
+
 	const handlePostWithdrawal = useCallback(
 		(table: string, payload: RealtimePayload) => {
 			const withdrawn = postWithdrawal(table, payload);
@@ -89,9 +155,20 @@ export default function SolvingBoard() {
 				setPosts((prev) => prev.filter((post) => post.id !== withdrawn.id));
 				return;
 			}
+			if (table === "posts") {
+				const evt = payload.eventType;
+				const next = payload.new as { id?: string } | undefined;
+				const prev = payload.old as { id?: string } | undefined;
+				const rowId = (evt === "DELETE" ? prev?.id : next?.id) ?? prev?.id;
+				if ((evt === "INSERT" || evt === "UPDATE") && rowId) {
+					pendingRowIds.current.add(rowId);
+					scheduleBoardFlush();
+					return;
+				}
+			}
 			markUpdatesAvailable();
 		},
-		[markUpdatesAvailable],
+		[markUpdatesAvailable, scheduleBoardFlush],
 	);
 	const [refreshing, setRefreshing] = useState(false);
 
