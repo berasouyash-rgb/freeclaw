@@ -370,6 +370,33 @@ describe("page lifecycle contracts", () => {
 		}
 	});
 
+	it("lets PostDetail merge live counts from the parent-post touch (evolution 2026-10-05)", () => {
+		// Owner override: reaction toggles and comment writes touch the
+		// parent posts row, but the reactions table is outside the realtime
+		// contract — counts on the detail page moved only on a manual tap.
+		// The allowance is a debounced SINGLE-ROW counts+mine merge for
+		// this row only. It may not replace the post object, show a
+		// skeleton, or reload anything else; the badge path is untouched.
+		const source = readFileSync(
+			resolve(process.cwd(), "src/pages/PostDetail.tsx"),
+			"utf8",
+		);
+		expect(source).toContain("refreshCounts");
+		const block = source.slice(
+			source.indexOf("const refreshCounts = useCallback"),
+			source.indexOf("const handleDetailUpdate = useCallback"),
+		);
+		expect(block).toContain("`/api/posts?id=${postId}&viewer=${anonId}`");
+		expect(block).toContain("setCounts(");
+		expect(block).toContain("setMine(");
+		expect(block).not.toContain("setPost(");
+		expect(block).not.toContain("setGone(");
+		expect(block).not.toContain("setLoading(true)");
+		// One coalescing timer, torn down on unmount — a burst of touches
+		// merges once instead of refetching per event.
+		expect(source).toContain("livenessTimer");
+	});
+
 	it("gives the public boards and inbox an explicit manual refresh", () => {
 		const labelled: Array<[string, string]> = [
 			["src/pages/SolvingBoard.tsx", 'aria-label="Refresh solving board"'],

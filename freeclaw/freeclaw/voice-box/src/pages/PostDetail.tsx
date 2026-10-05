@@ -366,6 +366,39 @@ export default function PostDetail() {
 		setAttachBusy(false);
 	};
 
+	// ── Counts-only live refresh (contract evolution 2026-10-05) ──
+	// Reaction toggles and comment writes touch the parent posts row
+	// (api/_reactions.js, api/_comments.js), but the reactions table itself
+	// is outside the realtime contract — so the counts on this page only
+	// moved on a manual update-notice tap. A posts UPDATE for THIS row now
+	// schedules one debounced single-row counts+mine merge: no list
+	// reload, no post-object replace (the page never "resets"), no
+	// skeleton. Content edits still surface through the badge, which this
+	// lane keeps raising exactly as before.
+	const livenessTimer = useRef<number | null>(null);
+	useEffect(
+		() => () => {
+			if (livenessTimer.current !== null) {
+				window.clearTimeout(livenessTimer.current);
+				livenessTimer.current = null;
+			}
+		},
+		[],
+	);
+	const refreshCounts = useCallback(async () => {
+		try {
+			const res = await api.getFresh<{
+				post: PostData;
+				counts: Record<string, number>;
+				mine: string[];
+			}>(`/api/posts?id=${postId}&viewer=${anonId}`);
+			setCounts(res.counts || {});
+			setMine(res.mine || []);
+		} catch {
+			/* keep stale-but-correct local state */
+		}
+	}, [postId, anonId]);
+
 	const handleDetailUpdate = useCallback(async () => {
 		try {
 			// Counts/mine only — never replace the post object here, which
@@ -412,9 +445,24 @@ export default function PostDetail() {
 					return;
 				}
 			}
+			// Live counts: a reaction/comment touch lands here as a posts
+			// UPDATE for this row. Coalesce a burst into one single-row
+			// merge — the badge below still raises, so content edits keep
+			// their explicit pull path.
+			if (table === "posts") {
+				const raw = (payload.new ?? payload.old) as { id?: string } | undefined;
+				if (payload.eventType === "UPDATE" && raw?.id === postId) {
+					if (livenessTimer.current !== null)
+						window.clearTimeout(livenessTimer.current);
+					livenessTimer.current = window.setTimeout(() => {
+						livenessTimer.current = null;
+						void refreshCounts();
+					}, 750);
+				}
+			}
 			markUpdatesAvailable();
 		},
-		[postId, anonId, p, markUpdatesAvailable],
+		[postId, anonId, p, markUpdatesAvailable, refreshCounts],
 	);
 
 	useRealtime(["posts"], handlePostWithdrawal, 2_000);

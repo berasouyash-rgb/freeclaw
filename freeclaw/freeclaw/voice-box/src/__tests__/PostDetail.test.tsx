@@ -24,12 +24,16 @@ const mocks = vi.hoisted(() => ({
 	post: vi.fn(),
 	put: vi.fn(),
 	navigate: vi.fn(),
-	toggleBookmark: vi.fn(),
-	retireNotifsForLink: vi.fn(),
+	toggleBookmark: vi.fn(),	retireNotifsForLink: vi.fn(),
 	addRecentlyViewed: vi.fn(),
 	readAloud: vi.fn(),
 	stopReading: vi.fn(),
 	writeText: vi.fn(),
+	rtSubs: [] as Array<{
+		tables: string[];
+		cb: (table: string, payload: unknown) => void;
+		ms: number;
+	}>,
 	icon: () => null,
 	hasAdminSession: vi.fn(() => false),
 }));
@@ -74,7 +78,9 @@ vi.mock("react-router", () => ({
 }));
 
 vi.mock("../lib/useRealtime", () => ({
-	useRealtime: () => undefined,
+	useRealtime: (tables: string[], cb: (table: string, payload: unknown) => void, ms = 250) => {
+		mocks.rtSubs.push({ tables, cb, ms });
+	},
 }));
 
 vi.mock("../lib/utils", () => ({
@@ -173,6 +179,7 @@ const POST: any = {
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	mocks.rtSubs.length = 0;
 	mocks.hasAdminSession.mockReturnValue(false);
 	mocks.writeText.mockResolvedValue(undefined);
 	mocks.get.mockImplementation((url: string) => {
@@ -1113,4 +1120,44 @@ describe("PostDetail — admin inline actions", () => {
 			expect(mocks.toast).toHaveBeenCalledWith("solve boom", "err");
 		});
 	});
+});
+
+describe("PostDetail — live reaction counts", () => {
+	it("merges another user's like from the parent-post touch, with no clicks", async () => {
+		mocks.get.mockImplementation((url: string) => {
+			if (url.includes("/api/posts"))
+				return Promise.resolve({ post: POST, counts: { like: 1 }, mine: [] });
+			if (url.includes("/api/follows"))
+				return Promise.resolve({ follows: [], count: 0 });
+			return Promise.resolve({});
+		});
+		render(<PostDetail />);
+		await screen.findByText("Broken projector in Room 204");
+		expect(screen.getByRole("button", { name: "Like (1)" })).toBeInTheDocument();
+
+		// Another user likes: the server touches posts.updated_at, which
+		// arrives as a posts UPDATE for this row.
+		mocks.get.mockImplementation((url: string) => {
+			if (url.includes("/api/posts"))
+				return Promise.resolve({ post: POST, counts: { like: 2 }, mine: [] });
+			if (url.includes("/api/follows"))
+				return Promise.resolve({ follows: [], count: 0 });
+			return Promise.resolve({});
+		});
+		const lane = mocks.rtSubs.find(
+			(s) => s.tables.length === 1 && s.tables[0] === "posts",
+		);
+		expect(lane, "posts lane must be subscribed").toBeDefined();
+		const { act } = await import("@testing-library/react");
+		await act(async () => {
+			lane!.cb("posts", { eventType: "UPDATE", new: { id: "p1" }, old: {} });
+		});
+
+		// No clicks, no update-notice tap — the debounced single-row
+		// refresh merges the new total on its own.
+		await waitFor(
+			() => expect(screen.getByRole("button", { name: "Like (2)" })).toBeInTheDocument(),
+			{ timeout: 15000 },
+		);
+	}, 20000);
 });
