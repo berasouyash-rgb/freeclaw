@@ -457,6 +457,31 @@ describe("page lifecycle contracts", () => {
 		expect(block).not.toContain("setLoading(true)");
 	});
 
+	it("holds the admin inbox peek to read-only fresh revalidation (evolution 2026-10-05)", () => {
+		// Owner override: chat_messages / chat_threads are outside the
+		// realtime contract, so the dead subscription left the admin inbox
+		// frozen until a manual Refresh. The allowance is a visible-only
+		// revalidation tick. It may not write read state (that belongs to
+		// explicit open/send), touch loaders, or poll while hidden — and
+		// the realtime handler itself stays a badge-only freshness signal.
+		const source = readFileSync(
+			resolve(process.cwd(), "src/pages/admin/UnifiedInbox.tsx"),
+			"utf8",
+		);
+		const timers = source.match(/setInterval\s*\(/g) || [];
+		expect(timers.length, "UnifiedInbox may own exactly one peek timer").toBe(1);
+		expect(source).toContain('document.visibilityState === "hidden"');
+		const peekBlock = source.slice(
+			source.indexOf("const peekInbox = useCallback"),
+			source.indexOf("}, [peekInbox]);") + "}, [peekInbox]);".length,
+		);
+		expect(peekBlock).toContain("loadThreads({ fresh: true })");
+		expect(peekBlock).toContain("quiet: true");
+		expect(peekBlock).not.toContain("mark_read");
+		expect(peekBlock).not.toContain("api.put");
+		expect(peekBlock).not.toContain("setLoading(true)");
+	});
+
 	it("gives the public boards and inbox an explicit manual refresh", () => {
 		const labelled: Array<[string, string]> = [
 			["src/pages/SolvingBoard.tsx", 'aria-label="Refresh solving board"'],

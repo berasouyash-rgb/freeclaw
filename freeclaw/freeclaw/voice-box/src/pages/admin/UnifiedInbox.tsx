@@ -514,12 +514,15 @@ export default function UnifiedInbox() {
 	};
 
 	/* ── Load threads from BOTH APIs ──────────────────────── */
-	const loadThreads = useCallback(async () => {		try {
+	const loadThreads = useCallback(async (opts?: { fresh?: boolean }) => {		try {
+			// Fresh reads bypass the 5s GET cache: the peek revalidates
+			// precisely because the database has changed since the tick.
+			const reader = opts?.fresh ? api.getFresh : api.get;
 			const [inboxRes, chatRes] = await Promise.allSettled([
-				api.get<ThreadSummary[] | { threads: ThreadSummary[] }>(
+				reader<ThreadSummary[] | { threads: ThreadSummary[] }>(
 					"/api/inbox?threads=1",
 				),
-				api.get<ThreadSummary[] | { threads: ThreadSummary[] }>(
+				reader<ThreadSummary[] | { threads: ThreadSummary[] }>(
 					"/api/chat?threads=1",
 				),
 			]);
@@ -562,25 +565,32 @@ export default function UnifiedInbox() {
 	}, []);
 
 	/* ── Load messages — source-aware ─────────────────────── */
-	const loadMessages = useCallback(async (threadId: string) => {
+	const loadMessages = useCallback(async (threadId: string, opts?: { fresh?: boolean; quiet?: boolean }) => {
 		const t = threadsRef.current.find((x) => x.thread_id === threadId);
 		const source = t?.source || sourceRef.current[threadId] || "inbox";
+		// Fresh reads bypass the 5s GET cache; quiet skips the mark_read
+		// write (read state belongs to explicit open/send paths, never to
+		// a background tick — otherwise the peek would clear unread
+		// badges just by looking).
+		const reader = opts?.fresh ? api.getFresh : api.get;
 
 		try {
 			if (source === "chat") {
-				const data = await api.get<{
+				const data = await reader<{
 					messages: ChatMessage[];
 					thread: ThreadState;
 				}>(`/api/chat?thread_id=${threadId}`);
 				setMessages(data.messages || []);
 				setThreadState({ ...data.thread, source: "chat" });
-				await api.put("/api/chat", {
-					action: "mark_read",
-					thread_id: threadId,
-					as: "admin",
-				});
+				if (!opts?.quiet) {
+					await api.put("/api/chat", {
+						action: "mark_read",
+						thread_id: threadId,
+						as: "admin",
+					});
+				}
 			} else {
-				const data = await api.get<{
+				const data = await reader<{
 					messages?: ChatMessage[];
 					state?: ThreadState;
 					history_window?: string;
@@ -656,6 +666,45 @@ export default function UnifiedInbox() {
 	}, [active, loadMessages, loadThreads, clearUpdates]);
 
 	useRealtime(["chat_messages", "chat_threads"], markUpdatesAvailable, 1_000);
+
+	// ── Visible-only peek (contract evolution 2026-10-05) ──
+	// chat_messages / chat_threads are outside the anon realtime contract,
+	// so the subscription above can never deliver: new conversations and
+	// replies appeared only after a manual Refresh. Every 5s while mounted
+	// AND visible (plus on focus/return), revalidate the thread list and
+	// the open thread with fresh reads. Read-only by construction: the
+	// peek never issues mark_read and never touches loaders — read state
+	// still belongs to the explicit open/send paths.
+	const peekInbox = useCallback(async () => {
+		if (
+			typeof document !== "undefined" &&
+			document.visibilityState === "hidden"
+		)
+			return;
+		try {
+			await loadThreads({ fresh: true });
+			const open = activeRef.current;
+			if (open) await loadMessages(open, { fresh: true, quiet: true });
+		} catch {
+			/* offline ok */
+		}
+	}, [loadThreads, loadMessages]);
+
+	useEffect(() => {
+		const id = window.setInterval(() => {
+			void peekInbox();
+		}, 5_000);
+		const refetch = () => {
+			void peekInbox();
+		};
+		window.addEventListener("focus", refetch);
+		document.addEventListener("visibilitychange", refetch);
+		return () => {
+			window.clearInterval(id);
+			window.removeEventListener("focus", refetch);
+			document.removeEventListener("visibilitychange", refetch);
+		};
+	}, [peekInbox]);
 	// Deep-link (?thread=): digest rows land straight on the chat.
 	useEffect(() => {
 		const wanted = searchParams.get("thread");
