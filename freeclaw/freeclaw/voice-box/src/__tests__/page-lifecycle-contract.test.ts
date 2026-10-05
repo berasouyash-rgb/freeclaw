@@ -306,7 +306,8 @@ describe("page lifecycle contracts", () => {
 					"bumpReaction",
 					"bumpCommentCount",
 					"markUpdatesAvailable",
-					"silent: true",
+					"pendingRowIds",
+					"scheduleRowFlush",
 					// Withdrawal: rows the server no longer serves (hidden /
 					// soft-deleted / hard-deleted) leave the feed immediately
 					// instead of waiting on a badge tap. A local state write —
@@ -395,6 +396,27 @@ describe("page lifecycle contracts", () => {
 		// One coalescing timer, torn down on unmount — a burst of touches
 		// merges once instead of refetching per event.
 		expect(source).toContain("livenessTimer");
+	});
+
+	it("holds the Home merge to single-row GETs, never a list reload (evolution 2026-10-05)", () => {
+		// The full silent reload per event is what made posts land seconds
+		// late. The flush may fetch changed ids one by one; it may not
+		// call the list loader or a list endpoint, replace the whole list
+		// wholesale, or skip the active-filter check that keeps a
+		// category/status change from showing a row that no longer matches.
+		const source = readFileSync(
+			resolve(process.cwd(), "src/pages/Home.tsx"),
+			"utf8",
+		);
+		const block = source.slice(
+			source.indexOf("const flushPostRows = useCallback"),
+			source.indexOf("const scheduleRowFlush = useCallback"),
+		);
+		expect(block).toContain("/api/posts?id=");
+		expect(block).toContain("api.getFresh");
+		expect(block).not.toContain("getSlow");
+		expect(block).not.toContain("void load(");
+		expect(block).toContain("matches(");
 	});
 
 	it("gives the public boards and inbox an explicit manual refresh", () => {

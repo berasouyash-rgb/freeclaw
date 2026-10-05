@@ -236,6 +236,13 @@ describe("Home — realtime deltas from other users", () => {
 		expect(mocks.realtimeCallback).toBeTruthy();
 		mocks.getSlow.mockClear();
 		mocks.getSlowFresh.mockClear();
+		mocks.getFresh.mockClear();
+		const NEWER = { ...POST, id: "new-9", title: "Just arrived" };
+		mocks.getFresh.mockImplementation(async (url: unknown) => {
+			if (typeof url === "string" && url.includes("/api/posts?id=new-9"))
+				return { post: NEWER, counts: {}, mine: [] };
+			return [];
+		});
 
 		await act(async () => {
 			mocks.realtimeCallback!("posts", {
@@ -245,10 +252,13 @@ describe("Home — realtime deltas from other users", () => {
 			});
 		});
 
-		// Silent merge path: one quiet refresh, no badge, no pill.
+		// Single-row merge path: one small GET, no badge, no pill, and no
+		// whole-list silent reload.
 		await waitFor(() => {
-			expect(mocks.getSlowFresh).toHaveBeenCalled();
+			expect(screen.getByText("Just arrived")).toBeInTheDocument();
 		});
+		expect(mocks.getSlowFresh).not.toHaveBeenCalled();
+		expect(mocks.getSlow).not.toHaveBeenCalled();
 		expect(
 			screen.queryByRole("button", { name: /View \d+ new updates?/ }),
 		).toBeNull();
@@ -262,8 +272,13 @@ describe("Home — realtime deltas from other users", () => {
 		});
 		mocks.getSlow.mockClear();
 		mocks.getSlowFresh.mockClear();
+		mocks.getFresh.mockClear();
 		const NEWER = { ...POST, id: "new-9", title: "Just arrived" };
-		mocks.getSlowFresh.mockResolvedValue([NEWER, POST]);
+		mocks.getFresh.mockImplementation(async (url: unknown) => {
+			if (typeof url === "string" && url.includes("/api/posts?id=new-9"))
+				return { post: NEWER, counts: {}, mine: [] };
+			return [];
+		});
 
 		await act(async () => {
 			mocks.realtimeCallback!("posts", {
@@ -285,6 +300,11 @@ describe("Home — realtime deltas from other users", () => {
 	it("pulls one fresh snapshot when the pill is tapped", async () => {
 		mocks.getSlow.mockImplementation(async () => [POST]);
 		mocks.getSlowFresh.mockImplementation(async () => [POST]);
+		mocks.getFresh.mockImplementation(async (url: unknown) => {
+			if (typeof url === "string" && url.includes("/api/posts?id=new-9"))
+				return { post: { ...POST, id: "new-9", title: "Just arrived" }, counts: {}, mine: [] };
+			return [];
+		});
 		await renderFeed();
 		// Pill only rises while scrolled — the near-top path merges quietly.
 		Object.defineProperty(window, "scrollY", {
@@ -300,12 +320,14 @@ describe("Home — realtime deltas from other users", () => {
 				old: {},
 			});
 		});
+		// The pill must rise while still scrolled: the 400ms merge flush
+		// reads scrollY when it fires, so reset only after it appears (the
+		// honest flow — the reader scrolls up, then taps).
+		const pillButton = await screen.findByRole("button", { name: /1 new post/ });
 		Object.defineProperty(window, "scrollY", { value: 0, configurable: true });
 
 		mocks.getSlowFresh.mockImplementation(async () => [NEWER, POST]);
-		fireEvent.click(
-			await screen.findByRole("button", { name: /1 new post/ }),
-		);
+		fireEvent.click(pillButton);
 
 		// Explicit pulls demand a fully fresh read (never the shared snapshot).
 		await waitFor(() => {
@@ -467,10 +489,20 @@ describe("Home — withdrawn posts leave the feed immediately", () => {
 		).toBeNull();
 	});
 
-	it("keeps a live post and still quiet-refreshes on an ordinary UPDATE", async () => {
+	it("keeps a live post and refreshes just that row on an ordinary UPDATE", async () => {
 		// The predicate must not swallow the normal liveness path: a status
-		// change or an edit is still the silent merge's job.
+		// change or an edit refreshes the one row in place — never a full
+		// silent reload.
 		await renderFeed();
+		mocks.getSlow.mockClear();
+		mocks.getSlowFresh.mockClear();
+		mocks.getFresh.mockClear();
+		const EDITED = { ...POST, status: "solved" };
+		mocks.getFresh.mockImplementation(async (url: unknown) => {
+			if (typeof url === "string" && url.includes("/api/posts?id=p1"))
+				return { post: EDITED, counts: {}, mine: [] };
+			return [];
+		});
 
 		await act(async () => {
 			mocks.realtimeCallback!("posts", {
@@ -481,8 +513,12 @@ describe("Home — withdrawn posts leave the feed immediately", () => {
 		});
 
 		await waitFor(() => {
-			expect(mocks.getSlowFresh).toHaveBeenCalled();
+			expect(mocks.getFresh).toHaveBeenCalledWith(
+				expect.stringContaining("/api/posts?id=p1"),
+			);
 		});
+		expect(mocks.getSlowFresh).not.toHaveBeenCalled();
+		expect(mocks.getSlow).not.toHaveBeenCalled();
 		expect(screen.getByTestId("post-card")).toBeInTheDocument();
 	});
 

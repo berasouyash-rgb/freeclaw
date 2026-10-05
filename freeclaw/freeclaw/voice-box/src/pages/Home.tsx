@@ -584,9 +584,97 @@ export default function Home() {
 				window.clearTimeout(pollFlushTimer.current);
 				pollFlushTimer.current = null;
 			}
+			if (rowFlushTimer.current !== null) {
+				window.clearTimeout(rowFlushTimer.current);
+				rowFlushTimer.current = null;
+			}
 		},
 		[],
 	);
+
+	// ── Single-row live merge (contract evolution 2026-10-05). ──
+	// The old path ran a FULL silent feed reload per event (whole list +
+	// reactions + poll batch) — that reload is what made new posts land
+	// seconds late. Changed ids collect here and flush together: one small
+	// GET per id, merged by the same near-top / pill rules. A burst of N
+	// posts costs N small row reads, never a list scan.
+	const pendingRowIds = useRef<Set<string>>(new Set());
+	const rowFlushTimer = useRef<number | null>(null);
+	const filterRef = useRef({ feedType, cat, statusFilter });
+	filterRef.current = { feedType, cat, statusFilter };
+
+	const flushPostRows = useCallback(async () => {
+		rowFlushTimer.current = null;
+		const ids = [...pendingRowIds.current].slice(0, 20);
+		pendingRowIds.current.clear();
+		if (ids.length === 0) return;
+		const settled = await Promise.all(
+			ids.map(async (rowId) => {
+				try {
+					const res = await api.getFresh<{ post: PostData }>(
+						`/api/posts?id=${rowId}&viewer=${anonId}`,
+					);
+					return res.post ?? null;
+				} catch {
+					return null;
+				}
+			}),
+		);
+		const rows = settled.filter((r): r is PostData => !!r);
+		if (rows.length === 0) {
+			// Every row failed (gone or unreachable): the withdrawal path
+			// owns 404s, so degrade to the badge for the rest.
+			markUpdatesAvailable();
+			return;
+		}
+		const { feedType: ft, cat: c, statusFilter: sf } = filterRef.current;
+		const matches = (row: PostData) =>
+			(ft === "all" || row.type === ft) &&
+			(c === "All" || row.category === c) &&
+			(sf !== "solved" || row.status === "solved");
+		const known = knownIdsRef.current;
+		const newcomers = rows.filter((r) => !known.has(r.id) && matches(r));
+		rows.forEach((r) => known.add(r.id));
+		const scrolled =
+			typeof window !== "undefined" && window.scrollY > 300;
+		if (scrolled) {
+			// Park newcomers behind the pill; refresh known rows in place
+			// and drop rows the current filter no longer matches.
+			setPosts((prev) => {
+				const next: PostData[] = [];
+				for (const p of prev) {
+					const f = rows.find((r) => r.id === p.id);
+					if (f) {
+						if (matches(f)) next.push(f);
+					} else next.push(p);
+				}
+				return dedupeById(next);
+			});
+			if (newcomers.length > 0)
+				setPendingNew((n) => n + newcomers.length);
+			return;
+		}
+		setPosts((prev) => {
+			const next: PostData[] = [];
+			for (const p of prev) {
+				const f = rows.find((r) => r.id === p.id);
+				if (f) {
+					if (matches(f)) next.push(f);
+				} else next.push(p);
+			}
+			const freshNew = rows.filter(
+				(r) => !prev.some((q) => q.id === r.id) && matches(r),
+			);
+			return dedupeById([...freshNew, ...next]);
+		});
+	}, [anonId, markUpdatesAvailable]);
+
+	const scheduleRowFlush = useCallback(() => {
+		if (rowFlushTimer.current !== null) return;
+		rowFlushTimer.current = window.setTimeout(() => {
+			void flushPostRows();
+		}, 400);
+	}, [flushPostRows]);
 
 	useRealtime(
 		["posts", "reactions", "comments", "poll_votes"],
@@ -655,7 +743,7 @@ export default function Home() {
 				}
 			}
 
-			// The silent path refreshes known rows in place (so another
+			// The single-row path refreshes known rows in place (so another
 			// device's Support/vote/edit lands on this screen by itself) and
 			// prepends genuinely new ids when the reader is near the top;
 			// scrolled down, newcomers park behind the pill instead, so the
@@ -665,13 +753,13 @@ export default function Home() {
 			// what is left here is ordinary liveness.
 			if (table === "posts" && (evt === "INSERT" || evt === "UPDATE")) {
 				if (!query.trim()) {
-					void load({
-						silent: true,
-						search: query,
-						feedType,
-						category: cat,
-						status: statusFilter,
-					});
+					const changed = rowLike(payload.new) ?? rowLike(payload.old);
+					if (changed?.id) {
+						pendingRowIds.current.add(changed.id);
+						scheduleRowFlush();
+					} else {
+						markUpdatesAvailable();
+					}
 				} else {
 					markUpdatesAvailable();
 				}
@@ -687,7 +775,8 @@ export default function Home() {
 			// never refetched twice.
 			markUpdatesAvailable();
 		},
-		1500, // longer debounce for the batch
+		250, // short debounce: bursts coalesce in pendingRowIds + the 400ms
+		// row flush, so reaction deltas land in ~250ms instead of 1.5s.
 	);
 
 	const showPending = () => {

@@ -1,14 +1,18 @@
 // ─── Home live feed — auto-merge on realtime events ──────────────
 // The feed used to badge every realtime event ("New posts" pill / update
 // notice) and never merge content on its own, so scrolling readers saw a
-// frozen list until they tapped. Contract pinned here:
-//   1. posts INSERT near the top → quiet silent merge, newcomers prepended,
-//      no pill, no reorder of rows being read.
-//   2. posts INSERT while scrolled down → newcomers park behind the pill,
-//      visible rows untouched.
-//   3. polls INSERT/UPDATE → targeted single-poll GET merged into pollsMap,
+// frozen list until they tapped; the interim silent path then reloaded the
+// WHOLE list per event, which is what made new posts land seconds late.
+// Contract pinned here (evolution 2026-10-05: single-row merge):
+//   1. posts INSERT near the top → one small row GET prepended, no pill,
+//      no reorder of rows being read, never a list reload.
+//   2. posts INSERT while scrolled down → the row is fetched, then parked
+//      behind the pill; visible rows untouched.
+//   3. posts UPDATE → just that row refetched and merged in place (dropped
+//      when it no longer matches the active filter).
+//   4. polls INSERT/UPDATE → targeted single-poll GET merged into pollsMap,
 //      never a full feed reload.
-//   4. comments INSERT → comment count bumps, but NO feed refetch (the open
+//   5. comments INSERT → comment count bumps, but NO feed refetch (the open
 //      thread live-refetches itself; a feed GET per comment would rebuild
 //      the list under every busy minute — the old reload storm).
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
@@ -177,24 +181,39 @@ describe("Home live feed — realtime auto-merge", () => {
 		expect(await screen.findByText("Old cafeteria issue")).toBeTruthy();
 		const callsBefore =
 			mocks.getSlowFresh.mock.calls.length + mocks.getSlow.mock.calls.length;
+		mocks.getFresh.mockClear();
 
-		// A new post lands on the server; the next silent read includes it.
-		feedGetImpl([post("p2", "Fresh broken bench"), post("p1", "Old cafeteria issue")]);
+		// A new post lands on the server; the lane fetches just that row.
+		const fresh = post("p2", "Fresh broken bench");
+		mocks.getFresh.mockImplementation(async (url: unknown) =>
+			typeof url === "string" && url.includes("/api/posts?id=p2")
+				? { post: fresh }
+				: [],
+		);
 		fireRealtime("posts", { eventType: "INSERT", new: { id: "p2" } });
 
 		expect(await screen.findByText("Fresh broken bench")).toBeTruthy();
-		// Merged via silent path — no "new posts" pill raised.
+		// Merged via single-row GET — no "new posts" pill raised, and no
+		// whole-list reload fired.
 		expect(screen.queryByText(/new posts?/i)).toBeNull();
 		const callsAfter =
 			mocks.getSlowFresh.mock.calls.length + mocks.getSlow.mock.calls.length;
-		expect(callsAfter).toBeGreaterThan(callsBefore);
+		expect(callsAfter).toBe(callsBefore);
+		expect(mocks.getFresh).toHaveBeenCalledWith(
+			expect.stringContaining("/api/posts?id=p2"),
+		);
 	});
 
 	it("parks newcomers behind the pill when scrolled down", async () => {
 		setScrollY(1200);
 		await renderHome([post("p1", "Old cafeteria issue")]);
 
-		feedGetImpl([post("p2", "Fresh broken bench"), post("p1", "Old cafeteria issue")]);
+		// The lane fetches the row to learn it, then parks it unseen.
+		mocks.getFresh.mockImplementation(async (url: unknown) =>
+			typeof url === "string" && url.includes("/api/posts?id=p2")
+				? { post: post("p2", "Fresh broken bench") }
+				: [],
+		);
 		fireRealtime("posts", { eventType: "INSERT", new: { id: "p2" } });
 
 		// Pill appears…
