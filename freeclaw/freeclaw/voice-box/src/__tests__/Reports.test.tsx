@@ -20,6 +20,7 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import Reports from "../pages/admin/Reports";
+import { resetQuoteCacheForTests } from "../components/admin/ReportTargetQuote";
 
 // ── Mocks ──────────────────────────────────────────────────────────
 const realtimeState = vi.hoisted(() => ({
@@ -656,6 +657,151 @@ describe("Reports (combined queue + content review + approvals)", () => {
 	});
 });
 
+describe("Reports — story cards (evolution 2026-10-06)", () => {
+	beforeEach(() => {
+		// The quote component memoizes per target across mounts: a stale
+		// entry from an earlier case would make later cases assert on
+		// another test's rows.
+		resetQuoteCacheForTests();
+	});
+
+	it("states who reported what and whom in plain language on the row", async () => {
+		seedData({
+			reports: [{ ...REPORT, id: 70, reason: "Harassment here" }],
+		});
+		render(<Reports />);
+
+		// One plain sentence, not truncated IDs in a mono footnote: the
+		// reporter, the reason, and the reported author must all read
+		// directly on the queue row.
+		const story = await screen.findByTestId("report-story-70");
+		expect(story.textContent).toContain("anon_reporter");
+		expect(story.textContent).toContain("Harassment here");
+		expect(story.textContent).toContain("anon_abuser");
+	});
+
+	it("opens the full detail on double-click as well as single click", async () => {
+		seedData({
+			reports: [{ ...REPORT, id: 71, reason: "Double-click me" }],
+		});
+		mockedGet.mockImplementation(async (path: string) => {
+			if (path.startsWith("/api/posts?id=")) return { post: FLAGGED_POST };
+			if (path.startsWith("/api/reports"))
+				return [{ ...REPORT, id: 71, reason: "Double-click me" }];
+			if (path.startsWith("/api/comments")) return [];
+			return [];
+		});
+		render(<Reports />);
+
+		const story = await screen.findByTestId("report-story-71");
+		fireEvent.doubleClick(story);
+		// Same destination as the single-click path: the full detail view.
+		expect(await screen.findByText("RELATED CONTENT")).toBeInTheDocument();
+		expect(screen.getByText("Flagged title")).toBeInTheDocument();
+	});
+
+	it("opens the detail on Enter for keyboard admins", async () => {
+		seedData({
+			reports: [{ ...REPORT, id: 72, reason: "Keyboard open" }],
+		});
+		render(<Reports />);
+
+		const story = await screen.findByTestId("report-story-72");
+		fireEvent.keyDown(story, { key: "Enter" });
+		expect(await screen.findByText("RELATED CONTENT")).toBeInTheDocument();
+	});
+
+	it("quotes the reported post's content inline on the row", async () => {
+		seedData({
+			reports: [{ ...REPORT, id: 73, reason: "Quote me" }],
+		});
+		mockedGet.mockImplementation(async (path: string) => {
+			if (path.startsWith("/api/posts?id=post_x"))
+				return { post: { id: "post_x", title: "Quoted post title", description: "Quoted body words" } };
+			if (path.startsWith("/api/reports"))
+				return [{ ...REPORT, id: 73, reason: "Quote me" }];
+			if (path.startsWith("/api/comments")) return [];
+			return [];
+		});
+		render(<Reports />);
+
+		const quote = await screen.findByTestId("report-quote-73");
+		expect(quote.textContent).toContain("Quoted post title");
+		expect(quote.textContent).toContain("Quoted body words");
+	});
+
+	it("quotes the reported comment's body inline on the row", async () => {
+		seedData({
+			reports: [{ ...REPORT, id: 74, target_id: "c9", target_type: "comment", reason: "Bad comment" }],
+		});
+		mockedGet.mockImplementation(async (path: string) => {
+			if (path.startsWith("/api/comments"))
+				return [{ id: "c9", body: "The offending comment text", author_id: "anon_abuser" }];
+			if (path.startsWith("/api/reports"))
+				return [{ ...REPORT, id: 74, target_id: "c9", target_type: "comment", reason: "Bad comment" }];
+			return [];
+		});
+		render(<Reports />);
+
+		const quote = await screen.findByTestId("report-quote-74");
+		expect(quote.textContent).toContain("The offending comment text");
+	});
+
+	it("says honestly when the reported content is gone", async () => {
+		seedData({
+			reports: [{ ...REPORT, id: 75, reason: "Gone content" }],
+		});
+		mockedGet.mockImplementation(async (path: string) => {
+			if (path.startsWith("/api/posts?id=")) return { post: null };
+			if (path.startsWith("/api/reports"))
+				return [{ ...REPORT, id: 75, reason: "Gone content" }];
+			if (path.startsWith("/api/comments")) return [];
+			return [];
+		});
+		render(<Reports />);
+
+		const quote = await screen.findByTestId("report-quote-75");
+		expect(quote.textContent).toMatch(/no longer available/i);
+	});
+
+	it("states who flagged a review post and why, in plain language", async () => {
+		seedData({
+			reviewQueue: [],
+			posts: [{ ...FLAGGED_POST, id: "post_r1", status: "pending_review" }],
+		});
+		render(<Reports />);
+		fireEvent.click(screen.getByRole("button", { name: /^Review/ }));
+
+		const story = await screen.findByTestId("review-story-post_r1");
+		expect(story.textContent).toContain("pre-publish gate");
+		expect(story.textContent).toContain("pending_review");
+		expect(story.textContent).toContain("anon_2");
+	});
+
+	it("opens a review post on double-click as well as single click", async () => {
+		seedData({
+			reviewQueue: [],
+			posts: [{ ...FLAGGED_POST, id: "post_r2" }],
+		});
+		render(<Reports />);
+		fireEvent.click(screen.getByRole("button", { name: /^Review/ }));
+
+		const card = await screen.findByTestId("review-story-post_r2");
+		fireEvent.doubleClick(card);
+		expect(await screen.findByText("Full Description")).toBeInTheDocument();
+	});
+
+	it("states who requested an approval and about what, in plain language", async () => {
+		seedData({ approvals: [APPROVAL] });
+		render(<Reports />);
+		fireEvent.click(screen.getByRole("button", { name: /^Approvals/ }));
+
+		const story = await screen.findByTestId("approval-story-task-123");
+		expect(story.textContent).toContain("discovery");
+		expect(story.textContent).toContain("post_x");
+	});
+});
+
 describe("Reports — community targets, reporter context, related content", () => {
   it("links community reports to the community page (never a dead chip)", async () => {
     seedData({
@@ -670,8 +816,7 @@ describe("Reports — community targets, reporter context, related content", () 
     expect(link!.getAttribute("href")).toBe("/communities/club");
   });
 
-  it("shows reporter reliability and the related post in the opened detail", async () => {
-    seedData({
+  it("shows reporter reliability and the related post in the opened detail", async () => {    seedData({
       reports: [
         { ...REPORT, id: 61, reason: "Harassment here" },
         { ...REPORT, id: 62, status: "resolved", reason: "Old upheld report" },

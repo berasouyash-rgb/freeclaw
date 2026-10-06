@@ -29,6 +29,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import UpdateNotice from "../../components/admin/UpdateNotice";
 import { useUpdateSignal } from "../../hooks/useUpdateSignal";
 import PostPreviewCard from "../../components/PostPreviewCard";
+import ReportTargetQuote from "../../components/admin/ReportTargetQuote";
 import WorkItem from "../../components/admin/WorkItem";
 import type { WorkItemData } from "../../components/admin/WorkItem";
 import { useApp } from "../../contexts/AppContext";
@@ -675,6 +676,35 @@ function relatedFor(
 		default:
 			return null;
 	}
+}
+
+// ── Story-card detail payload (evolution 2026-10-06) ──
+// One shared constructor for "open this report": single click,
+// double-click, and keyboard Enter all land on the identical WorkItem
+// detail, so the three paths can never drift apart again.
+function reportDetailPayload(
+	r: ReportRow,
+	reports: ReportRow[],
+	commentPostId?: string | null,
+): WorkItemData {
+	return {
+		id: r.id,
+		type: "report",
+		title: r.reason || "Report",
+		content: r.details || r.reason || "No details provided",
+		status: r.status || "pending",
+		category: String((r as Record<string, unknown>).category || ""),
+		priority: String((r as Record<string, unknown>).priority || "medium"),
+		author_id: String(r.author_id || ""),
+		target_author_id: String(r.target_author_id || ""),
+		target_type: r.target_type,
+		target_id: r.target_id,
+		reporterStats: reporterStatsFor(reports, String(r.author_id || "")),
+		related: relatedFor(r, commentPostId),
+		created_at: r.created_at,
+		assigned_to: String((r as Record<string, unknown>).assigned_to || ""),
+		enforcement: (r as Record<string, unknown>).enforcement as WorkItemData["enforcement"],
+	};
 }
 export default function Reports() {
 	const { toast } = useApp();
@@ -1554,28 +1584,25 @@ export default function Reports() {
 								</p>
 							)}
 							{openReports.map((r) => {
+										const commentPostId = r.target_type === "comment" ? commentStates[r.target_id]?.postId : null;
+										const openDetail = () => setSelectedReport(reportDetailPayload(r, reports, commentPostId));
 									return (
 									<div key={r.id} className="glass-card rounded-xl overflow-hidden">
 										<div
 											className="p-4 flex items-start gap-3 cursor-pointer hover:bg-surface2/30 transition-colors"
-											onClick={() => setSelectedReport({
-												id: r.id,
-												type: "report",
-												title: r.reason || "Report",
-												content: r.details || r.reason || "No details provided",
-												status: r.status || "pending",
-												category: String((r as Record<string, unknown>).category || ""),
-												priority: String((r as Record<string, unknown>).priority || "medium"),
-												author_id: String(r.author_id || ""),
-												target_author_id: String(r.target_author_id || ""),
-											target_type: r.target_type,
-											target_id: r.target_id,
-											reporterStats: reporterStatsFor(reports, String(r.author_id || "")),
-											related: relatedFor(r, r.target_type === "comment" ? commentStates[r.target_id]?.postId : null),
-												created_at: r.created_at,
-												assigned_to: String((r as Record<string, unknown>).assigned_to || ""),
-												enforcement: (r as Record<string, unknown>).enforcement as WorkItemData["enforcement"],
-											})}
+											onClick={() => openDetail()}
+											onDoubleClick={() => openDetail()}
+											onKeyDown={(e) => {
+												if (e.key === "Enter") {
+													e.preventDefault();
+													openDetail();
+												}
+											}}
+											data-testid={`report-story-${r.id}`}
+											role="button"
+											tabIndex={0}
+											aria-label={`Open report ${r.id}: ${r.reason || "Report"}`}
+											// (detail payload lives in reportDetailPayload — shared by click, double-click, Enter)
 										>
 											<div className="min-w-0 flex-1">
 												<div className="flex items-center gap-2 mb-1 flex-wrap">
@@ -1660,11 +1687,14 @@ export default function Reports() {
 											)}
 										</div>
 												<p className="text-sm font-medium">🚩 {r.reason}</p>
-												<p className="text-[11px] text-ink3 mt-1 font-mono">
-													target: {r.target_id} · by{" "}
-													{String(r.author_id || "").slice(0, 12)}… ·{" "}
-													{timeAgo(r.created_at)}
+												<p className="text-xs text-ink2 mt-1" data-testid={`report-story-text-${r.id}`}>
+													Reported by <span className="font-semibold">{String(r.author_id || "unknown")}</span>
+													{r.target_author_id ? (
+														<> against <span className="font-semibold">{String(r.target_author_id)}</span></>
+													) : null}{" "}
+													· {String(r.target_type || "content")} {String(r.target_id || "").slice(0, 20)} · {timeAgo(r.created_at)}
 												</p>
+												<ReportTargetQuote reportId={r.id} targetType={String(r.target_type || "")} targetId={String(r.target_id || "")} />
 											</div>
 							<div className="flex items-center gap-2 shrink-0">
 								<button
@@ -1922,7 +1952,18 @@ export default function Reports() {
 											{/* Post header */}
 											<div
 												className="p-4 cursor-pointer hover:bg-surface2/50 transition-colors"
+												data-testid={`review-story-${post.id}`}
+												role="button"
+												tabIndex={0}
+												aria-label={`Review flagged post: ${post.title || post.id}`}
 												onClick={() => toggleExpand(post.id)}
+												onDoubleClick={() => toggleExpand(post.id)}
+												onKeyDown={(e) => {
+													if (e.key === "Enter") {
+														e.preventDefault();
+														toggleExpand(post.id);
+													}
+												}}
 											>
 												<div className="flex items-start gap-3">
 													<div className="flex-1 min-w-0">
@@ -1962,6 +2003,13 @@ export default function Reports() {
 														</h3>
 														<p className="text-xs text-ink2 mt-1 line-clamp-2">
 															{post.description}
+														</p>
+														<p className="text-xs text-ink2 mt-1">
+															Flagged by{" "}
+															<span className="font-semibold">
+																{post.status === "pending_review" ? "pre-publish gate" : "AI review"}
+															</span>{" "}
+															· {post.status} · by {post.author_id}
 														</p>
 														<div className="flex flex-col sm:flex-row items-start sm:items-center gap-1 sm:gap-3 mt-2 text-[9px] sm:text-[10px] text-ink3">
 															<span className="flex items-center gap-1 truncate max-w-full sm:max-w-[160px]">
@@ -2321,8 +2369,8 @@ export default function Reports() {
 															{a.description}
 														</p>
 													)}
-													<p className="text-[10px] font-mono text-ink3 mt-2">
-														{why} · by {a.created_by} · {timeAgo(a.created_at)}
+													<p className="text-xs text-ink2 mt-1" data-testid={`approval-story-${a.id}`}>
+														Requested by <span className="font-semibold">{a.created_by}</span> · about {why} · {timeAgo(a.created_at)}
 													</p>
 												</div>
 												<div className="flex items-center gap-2 shrink-0">
