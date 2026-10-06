@@ -1,5 +1,5 @@
 import { Archive, Eye, EyeOff, Plus, RefreshCw, RotateCcw, ScanSearch, Trash2 } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ConfirmDialog } from "../../components/ui";
 import UpdateNotice from "../../components/admin/UpdateNotice";
 import { useApp } from "../../contexts/AppContext";
@@ -33,15 +33,12 @@ export default function PollManager() {
 		load();
 	}, [load]);
 
-	// ─── Freshness signal, not a refetch ──────────────────────────
-	// A single busy poll fires one `poll_votes` row per voter. The old
+	// ─── Targeted live rows + badge fallback ────────────────────
+	// A single busy poll fires one `polls` touch per vote. The old
 	// handler refetched the WHOLE poll list on every one of them (debounced
-	// 2.5s), so a popular poll made the manager visibly thrash. `api.ts`
-	// clears the entire GET cache on every non-GET, so concurrent agent
-	// writes guaranteed a refetch per event too.
-	//
-	// Realtime now only RAISES A BADGE. Votes land visibly after one click
-	// on Refresh (or the UpdateNotice button) instead of on a timer.
+	// 2.5s), so a popular poll made the manager visibly thrash. Changed
+	// ids now merge one row at a time (see below); anything the merge
+	// cannot resolve still raises the badge for an explicit pull.
 	const { updatesAvailable, markUpdatesAvailable, clearUpdates } =
 		useUpdateSignal();
 	const [refreshing, setRefreshing] = useState(false);
@@ -56,7 +53,81 @@ export default function PollManager() {
 		}
 	}, [load, clearUpdates]);
 
-	useRealtime(["polls", "poll_votes"], markUpdatesAvailable, 1_000);
+	// ─── Targeted live rows, not a refetch ────────────────────
+	// A single busy poll fires one `polls` touch per vote (plus INSERTs for
+	// new polls). Changed ids collect here and flush together: one small
+	// GET for exactly those rows, merged in place, newcomers appended.
+	// Per-row actions (archive/delete/hide/scan) address rows by id, so a
+	// merge can never retarget a finger mid-tap — and the badge still
+	// raises for anything the merge cannot resolve.
+	const pendingPollIds = useRef<Set<string>>(new Set());
+	const pollFlushTimer = useRef<number | null>(null);
+
+	const flushPollRows = useCallback(async () => {
+		pollFlushTimer.current = null;
+		const ids = [...pendingPollIds.current].slice(0, 20);
+		pendingPollIds.current.clear();
+		if (ids.length === 0) return;
+		try {
+			const query = ids.map((id) => encodeURIComponent(id)).join(",");
+			const rows = await api.getFresh<PollData[]>(
+				`/api/polls?ids=${query}`,
+			);
+			const fresh = (Array.isArray(rows) ? rows : []).filter((r) => r?.id);
+			if (!fresh.length) {
+				markUpdatesAvailable();
+				return;
+			}
+			setPolls((prev) => {
+				const merged = prev.map(
+					(p) => fresh.find((r) => r.id === p.id) ?? p,
+				);
+				for (const row of fresh) {
+					if (!merged.some((p) => p.id === row.id)) merged.push(row);
+				}
+				return merged;
+			});
+		} catch {
+			markUpdatesAvailable();
+		}
+	}, [markUpdatesAvailable]);
+
+	const schedulePollFlush = useCallback(() => {
+		if (pollFlushTimer.current !== null) return;
+		pollFlushTimer.current = window.setTimeout(() => {
+			void flushPollRows();
+		}, 500);
+	}, [flushPollRows]);
+
+	useEffect(
+		() => () => {
+			if (pollFlushTimer.current !== null) {
+				window.clearTimeout(pollFlushTimer.current);
+				pollFlushTimer.current = null;
+			}
+		},
+		[],
+	);
+
+	const handlePollLiveness = useCallback(
+		(table: string, payload: { eventType?: string; new?: { id?: string }; old?: { id?: string } }) => {
+			if (table === "polls") {
+				const evt = payload.eventType;
+				const rowId =
+					(evt === "DELETE" ? payload.old?.id : payload.new?.id) ??
+					payload.old?.id;
+				if ((evt === "INSERT" || evt === "UPDATE") && rowId) {
+					pendingPollIds.current.add(rowId);
+					schedulePollFlush();
+					return;
+				}
+			}
+			markUpdatesAvailable();
+		},
+		[markUpdatesAvailable, schedulePollFlush],
+	);
+
+	useRealtime(["polls", "poll_votes"], handlePollLiveness, 1_000);
 
 	const create = async () => {
 		try {

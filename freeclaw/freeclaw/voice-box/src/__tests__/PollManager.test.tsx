@@ -14,13 +14,25 @@ import PollManager from "../pages/admin/PollManager";
 const mocks = vi.hoisted(() => ({
 	toast: vi.fn(),
 	get: vi.fn(),
+	getFresh: vi.fn(async (_url: unknown): Promise<unknown> => []),
 	post: vi.fn(),
 	put: vi.fn(),
 	del: vi.fn(),
+	realtimeSubs: [] as Array<{
+		tables: string[];
+		cb: (table: string, payload: unknown) => void;
+		debounceMs: number;
+	}>,
 }));
 
 vi.mock("../lib/api", () => ({
-	api: { get: mocks.get, post: mocks.post, put: mocks.put, del: mocks.del },
+	api: {
+		get: mocks.get,
+		getFresh: mocks.getFresh,
+		post: mocks.post,
+		put: mocks.put,
+		del: mocks.del,
+	},
 }));
 
 vi.mock("../contexts/AppContext", () => ({
@@ -28,7 +40,13 @@ vi.mock("../contexts/AppContext", () => ({
 }));
 
 vi.mock("../lib/useRealtime", () => ({
-	useRealtime: () => undefined,
+	useRealtime: (
+		tables: string[],
+		cb: (table: string, payload: unknown) => void,
+		debounceMs = 1000,
+	) => {
+		mocks.realtimeSubs.push({ tables, cb, debounceMs });
+	},
 }));
 
 vi.mock("../lib/utils", () => ({
@@ -72,6 +90,7 @@ const POLL_MULTI = {
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	mocks.realtimeSubs = [];
 	mocks.get.mockResolvedValue([]);
 	mocks.post.mockResolvedValue({ id: "new" });
 	mocks.put.mockResolvedValue({ ok: true });
@@ -412,5 +431,49 @@ describe("PollManager — realtime + interaction details", () => {
 		renderPage();
 		fireEvent.click(screen.getByRole("button", { name: /New poll/ }));
 		expect(screen.getByPlaceholderText("Poll question")).toBeInTheDocument();
+	});
+});
+
+describe("PollManager — live rows (evolution 2026-10-05)", () => {
+	it("lists a poll created elsewhere and refreshes vote totals, with no clicks", async () => {
+		mocks.get.mockResolvedValue([{ ...POLL_YESNO }]);
+		renderPage();
+		expect(
+			await screen.findByText("Should the library stay open late?"),
+		).toBeInTheDocument();
+		const lane = mocks.realtimeSubs.find((s) => s.tables.includes("polls"));
+		expect(lane, "polls lane must be subscribed").toBeDefined();
+		mocks.getFresh.mockImplementation(async (url: unknown) => {
+			if (String(url).includes("ids="))
+				return [
+					{ ...POLL_YESNO, total_votes: 5 },
+					{
+						id: "p-new",
+						title: "New bus route poll?",
+						ptype: "single",
+						options: ["Yes", "No"],
+						total_votes: 0,
+						vote_counts: [0, 0],
+						archived: false,
+						created_at: "2026-09-01T00:00:00Z",
+					},
+				];
+			return [];
+		});
+
+		const { act } = await import("@testing-library/react");
+		await act(async () => {
+			lane!.cb("polls", {
+				eventType: "INSERT",
+				new: { id: "p-new" },
+				old: {},
+			});
+		});
+
+		// No Refresh click — the lane fetches the changed ids and the list
+		// gains the card plus the fresh total on its own.
+		expect(await screen.findByText("New bus route poll?")).toBeInTheDocument();
+		expect(screen.getByText(/yesno · 5 votes · created 2d ago/)).toBeInTheDocument();
+		expect(mocks.get).toHaveBeenCalledTimes(1);
 	});
 });

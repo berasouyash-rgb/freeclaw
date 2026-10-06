@@ -212,6 +212,17 @@ describe("page lifecycle contracts", () => {
 			expect(calls.length, `${file} should still subscribe`).toBeGreaterThan(0);
 			for (const args of calls) {
 				const handler = splitTopLevel(args)[1]?.trim();
+				// Contract evolution 2026-10-05 (PollManager live rows):
+				// per-row admin actions address rows by id, so a targeted
+				// single-row merge can never retarget a tap — PollManager
+				// alone may route its lane through the named liveness
+				// handler (single-row GETs only, badge fallback intact,
+				// pinned by the dedicated guardrail test below).
+				if (
+					file.endsWith("PollManager.tsx") &&
+					handler === "handlePollLiveness"
+				)
+					continue;
 				expect(
 					handler,
 					`${file} realtime handler must be a freshness signal`,
@@ -495,6 +506,26 @@ describe("page lifecycle contracts", () => {
 		expect(peekBlock).not.toContain("mark_read");
 		expect(peekBlock).not.toContain("api.put");
 		expect(peekBlock).not.toContain("setLoading(true)");
+	});
+
+	it("holds the poll manager merge to targeted row GETs (evolution 2026-10-05)", () => {
+		// Owner override: per-row admin actions address rows by id, so a
+		// merge can never retarget a tap — the badge-only rule only hid new
+		// polls and fresh totals until a click. The allowance is a
+		// coalesced single-row flush: changed ids merge in place,
+		// newcomers append, and the badge still raises for the rest.
+		const source = readFileSync(
+			resolve(process.cwd(), "src/pages/admin/PollManager.tsx"),
+			"utf8",
+		);
+		const block = source.slice(
+			source.indexOf("const flushPollRows = useCallback"),
+			source.indexOf("const schedulePollFlush = useCallback"),
+		);
+		expect(block).toContain("/api/polls?ids=");
+		expect(block).toContain("api.getFresh");
+		expect(block).not.toContain("void load(");
+		expect(block).not.toContain("setLoading(true)");
 	});
 
 	it("gives the public boards and inbox an explicit manual refresh", () => {
