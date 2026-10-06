@@ -64,6 +64,9 @@ const MENTION_SEEN_KEY = "vb:seenMentions";
 
 interface CommentNode extends CommentData {
 	children: CommentNode[];
+	/** True when this reply was promoted to a root because its parent is
+	 *  not in the fetched window (500-row slice, hidden/deleted parent). */
+	orphan?: boolean;
 }
 
 function buildTree(rows: CommentData[]): CommentNode[] {
@@ -76,7 +79,13 @@ function buildTree(rows: CommentData[]): CommentNode[] {
 		const parent = r.parent_id ? map[r.parent_id] : undefined;
 		const node = map[r.id];
 		if (parent && node) parent.children.push(node);
-		else if (node) roots.push(node);
+		else if (node) {
+			// A reply whose parent fell outside this window is promoted to a
+			// root — flag it so the render can SAY it is a reply instead of
+			// letting it impersonate a brand-new top-level comment.
+			if (r.parent_id) node.orphan = true;
+			roots.push(node);
+		}
 	});
 	return roots;
 }
@@ -451,8 +460,18 @@ export default memo(function Comments({
 						{isAdminSession && !!c.hidden && (
 							<span className="chip !text-[9px] !py-0.5 text-warn">Hidden from users</span>
 						)}
+						{!isAdminSession && c.is_mine && !!c.hidden && (
+							<span className="chip !text-[9px] !py-0.5 text-warn">
+								Held for review — only you can see this
+							</span>
+						)}
 					</span>
 				</div>
+				{c.orphan && (
+					<p className="text-[10px] italic text-ink3 mt-0.5">
+						↩ reply to an earlier comment
+					</p>
+				)}
 				{editing === c.id ? (
 					<>
 						<div className="mt-1.5 flex gap-2">

@@ -773,6 +773,128 @@ describe("Reports — story cards (evolution 2026-10-06)", () => {
 		await waitFor(() => expect(quote.textContent).toMatch(/no longer available/i));
 	});
 
+	// ── State distinction: a report row must say WHY content is not public.
+	// Before this, live / REMOVED (admin-hidden) / DELETED (author) /
+	// UNDER REVIEW (pending_review) / LOCKED all collapsed into "ready" or
+	// "gone — it was deleted", so triage decisions ran on wrong facts.
+
+	it("labels a moderation-hidden comment as REMOVED, not silently ready", async () => {
+		seedData({
+			reports: [
+				{ ...REPORT, id: 76, target_type: "comment", target_id: "c76", reason: "Hidden one" },
+			],
+		});
+		mockedGet.mockImplementation(async (path: string) => {
+			if (path.startsWith("/api/comments"))
+				return [{ id: "c76", body: "held words for triage", hidden: true }];
+			if (path.startsWith("/api/reports"))
+				return [{ ...REPORT, id: 76, target_type: "comment", target_id: "c76" }];
+			return [];
+		});
+		render(<Reports />);
+
+		const quote = await screen.findByTestId("report-quote-76");
+		await waitFor(() =>
+			expect(quote.textContent).toMatch(/Removed by moderation/i),
+		);
+		// The body still quotes — admins need the words to triage.
+		expect(quote.textContent).toContain("held words for triage");
+	});
+
+	it("labels an author-deleted comment as DELETED, not as generic gone", async () => {
+		seedData({
+			reports: [
+				{ ...REPORT, id: 77, target_type: "comment", target_id: "c77", reason: "Self-removed" },
+			],
+		});
+		mockedGet.mockImplementation(async (path: string) => {
+			if (path.startsWith("/api/comments"))
+				return [{ id: "c77", body: "withdrawn words", deleted: true }];
+			if (path.startsWith("/api/reports"))
+				return [{ ...REPORT, id: 77, target_type: "comment", target_id: "c77" }];
+			return [];
+		});
+		render(<Reports />);
+
+		const quote = await screen.findByTestId("report-quote-77");
+		await waitFor(() =>
+			expect(quote.textContent).toMatch(/Deleted by its author/i),
+		);
+	});
+
+	it("labels a pending post as UNDER REVIEW — it is not public yet", async () => {
+		seedData({
+			reports: [{ ...REPORT, id: 78, target_id: "post_r78", reason: "Queued post" }],
+		});
+		mockedGet.mockImplementation(async (path: string) => {
+			if (path.startsWith("/api/posts?id=post_r78"))
+				return {
+					post: {
+						id: "post_r78",
+						title: "Queued title",
+						description: "Queued body",
+						status: "pending_review",
+					},
+				};
+			if (path.startsWith("/api/reports"))
+				return [{ ...REPORT, id: 78, target_id: "post_r78" }];
+			return [];
+		});
+		render(<Reports />);
+
+		const quote = await screen.findByTestId("report-quote-78");
+		await waitFor(() =>
+			expect(quote.textContent).toMatch(/Under review/i),
+		);
+	});
+
+	it("labels a locked post — readers can no longer comment on it", async () => {
+		seedData({
+			reports: [{ ...REPORT, id: 79, target_id: "post_r79", reason: "Locked thread" }],
+		});
+		mockedGet.mockImplementation(async (path: string) => {
+			if (path.startsWith("/api/posts?id=post_r79"))
+				return {
+					post: {
+						id: "post_r79",
+						title: "Locked title",
+						description: "Locked body",
+						locked: true,
+					},
+				};
+			if (path.startsWith("/api/reports"))
+				return [{ ...REPORT, id: 79, target_id: "post_r79" }];
+			return [];
+		});
+		render(<Reports />);
+
+		const quote = await screen.findByTestId("report-quote-79");
+		await waitFor(() =>
+			expect(quote.textContent).toMatch(/Comments locked/i),
+		);
+	});
+
+	it("labels a moderation-hidden poll as REMOVED too", async () => {
+		seedData({
+			reports: [
+				{ ...REPORT, id: 80, target_type: "poll", target_id: "pl80", reason: "Blocked poll" },
+			],
+		});
+		mockedGet.mockImplementation(async (path: string) => {
+			if (path.startsWith("/api/polls"))
+				return [{ id: "pl80", title: "Blocked poll title", hidden: true }];
+			if (path.startsWith("/api/reports"))
+				return [{ ...REPORT, id: 80, target_type: "poll", target_id: "pl80" }];
+			return [];
+		});
+		render(<Reports />);
+
+		const quote = await screen.findByTestId("report-quote-80");
+		await waitFor(() =>
+			expect(quote.textContent).toMatch(/Removed by moderation/i),
+		);
+	});
+
 	it("states who flagged a review post and why, in plain language", async () => {
 		seedData({
 			reviewQueue: [],

@@ -67,8 +67,17 @@ export default async function handler(req, res) {
 				.order("created_at", { ascending: false });
 			if (post_id) q = q.eq("post_id", post_id);
 			if (author) q = q.eq("author_id", clean(author, 40));
-			// Public listings exclude hidden AND soft-deleted comments
-			if (!admin) q = q.eq("hidden", false).eq("deleted", false);
+			// Public listings exclude hidden AND soft-deleted comments. When a
+			// viewer identifies themselves, the hidden filter moves into the JS
+			// self-view filter below so the author's OWN hidden row can still be
+			// returned — a moderation hide must not vanish from their thread with
+			// no explanation (posts solved the same hole with isSelfView).
+			// Soft-deleted rows stay DB-excluded either way.
+			const selfId = clean(viewer, 40);
+			if (!admin) {
+				q = q.eq("deleted", false);
+				if (!selfId) q = q.eq("hidden", false);
+			}
 
 			// Support cursor pagination for ALL query types (post_id, author, general)
 			// The artifact filter runs in JS AFTER this SQL limit, so fetch a wide
@@ -86,7 +95,19 @@ export default async function handler(req, res) {
 			// Full-site zero-fuzz: hide test/fuzz comment bodies on every surface,
 			// admin included (mirrors _search.js, which already filters comment
 			// bodies). Rows stay intact in the DB; they are only hidden.
-			const cleanRows = (data || []).filter((c) => !isTestArtifact(c.body));
+			let cleanRows = (data || []).filter((c) => !isTestArtifact(c.body));
+
+			// Author self-view: with a viewer present the DB did NOT exclude
+			// hidden rows, so drop everyone else's here — server-side, before
+			// any response. Only the viewer's OWN hidden comments survive
+			// (flagged `hidden` + `is_mine` for the client to render as held);
+			// soft-deleted rows never self-show. The paginated `total` below
+			// still counts public rows only, so the honest count never moves.
+			if (!admin && selfId) {
+				cleanRows = cleanRows.filter(
+					(c) => !c.deleted && (!c.hidden || c.author_id === selfId),
+				);
+			}
 
 			// Strangers may not read comments on a private post (owner can).
 			if (
