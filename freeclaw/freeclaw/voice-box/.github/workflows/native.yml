@@ -123,8 +123,10 @@ jobs:
       - name: Generate icons
         run: node scripts/make-icons.mjs
 
-      - name: Build web bundle
+      - name: Build web bundle (strip source maps for mobile APK)
         run: npm run build
+        env:
+          VB_NATIVE_ANDROID: "1"
 
       - name: Add + sync native project
         run: |

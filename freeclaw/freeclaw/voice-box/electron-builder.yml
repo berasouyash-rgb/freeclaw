@@ -11,6 +11,7 @@ directories:
 # file ... does not exist".
 files:
   - dist/**
+  - "!dist/**/*.map"
   - electron/main.cjs
   - electron/preload.cjs
   - electron/icon.png

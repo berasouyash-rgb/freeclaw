@@ -119,8 +119,11 @@ export default defineConfig(async ({ mode }): Promise<UserConfig> => {
 			cssMinify: "lightningcss" as const,
 			target: "es2020",
 			cssTarget: "chrome87",
-			// Source maps needed for Sentry (but only uploaded in production)
-			sourcemap: mode === "production",
+			// Source maps needed for Sentry on web (omitted for native shells to save ~5.6 MB)
+			sourcemap:
+				mode === "production" &&
+				!process.env.VB_NATIVE_ANDROID &&
+				!process.env.VB_NATIVE_ELECTRON,
 			rollupOptions: {
 				output: {
 					manualChunks: {

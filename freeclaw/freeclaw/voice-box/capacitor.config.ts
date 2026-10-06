@@ -25,6 +25,14 @@ const config: {
 	android?: {
 		backgroundColor: string;
 	};
+	plugins?: {
+		CapacitorCookies?: {
+			enabled: boolean;
+		};
+		CapacitorHttp?: {
+			enabled: boolean;
+		};
+	};
 } = {
 	appId: "app.voicebox",
 	appName: "Voice Flow",
@@ -32,6 +40,14 @@ const config: {
 	backgroundColor: "#f6f6f9",
 	android: {
 		backgroundColor: "#f6f6f9",
+	},
+	plugins: {
+		CapacitorCookies: {
+			enabled: true,
+		},
+		CapacitorHttp: {
+			enabled: true,
+		},
 	},
 };
 
