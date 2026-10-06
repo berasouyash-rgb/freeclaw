@@ -32,6 +32,19 @@ vi.mock("../../api/_auth.js", () => ({
 vi.mock("../../api/_error.js", () => ({
 	sanitizeError: (err: unknown) => (err instanceof Error ? err.message : null),
 }));
+// Providers are mocked FILE-WIDE: vitest loads the repo .env (real
+// NVIDIA/GROQ keys), so the Deep pipeline's benign path would otherwise
+// fire REAL model calls. Null / degraded → the pipeline falls back to its
+// deterministic verdicts, exactly like the sibling suites that exercise
+// real Deep.
+vi.mock("../../api/_providers.js", () => ({
+	callNvidiaFast: vi.fn(async () => null),
+	callLLMChain: vi.fn(async () => ({
+		ok: false,
+		degraded: true,
+		error: "AI PROVIDER DEGRADED — no API key configured",
+	})),
+}));
 
 function response() {
 	const res = { statusCode: 200, body: undefined as unknown };
@@ -691,5 +704,100 @@ describe("communities — session binding (anti-impersonation)", () => {
 		const calls = verifyCallerMock.mock.calls as Array<[unknown, unknown, string]>;
 		expect(calls.length).toBeGreaterThan(0);
 		expect(calls[calls.length - 1]?.[2]).toBe("attacker_9");
+	});
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// Layered moderation parity — communities must run the SAME pipeline as
+// main-feed posts/comments (Deep = L1 keywords + deterministic contextual
+// scan + bounded model pass). Before this batch: create had NO gate and
+// post/comment ran L1 only, so the documented keyword-pass miss ("Rahul,
+// I hate you." — passes evaluateContent, caught only by the contextual
+// layer) published unchecked on this surface.
+// ═══════════════════════════════════════════════════════════════════
+describe("communities — layered safety (Deep parity)", () => {
+	// The documented keyword-pass miss (see _context-moderation.js header).
+	const CONTEXTUAL_ONLY = "Rahul, I hate you.";
+
+	it("premise: L1 alone does NOT catch the contextual-only text", async () => {
+		// If this fails, the test inputs below no longer prove layering —
+		// they would be blocked by the keyword pass and say nothing about
+		// the contextual layer.
+		const { evaluateContent } = await import("../../api/_safety-pipeline.js");
+		expect(evaluateContent(CONTEXTUAL_ONLY, "direct", null).blocked).toBe(false);
+	});
+
+	it("blocks a harmful community DESCRIPTION at create (no queue on this surface)", async () => {
+		const res = response();
+		await handler(
+			req("create", { name: "Study Gang", description: "fuck this homework", anon_id: "anon_x" }),
+			res,
+		);
+		expect(res.statusCode).toBe(403);
+		expect((res.body as { code?: string }).code).toBe("CONTENT_BLOCKED");
+	});
+
+	it("blocks a contextual-only hostile description at create", async () => {
+		const res = response();
+		await handler(
+			req("create", { name: "Secret Club", description: CONTEXTUAL_ONLY, anon_id: "anon_x" }),
+			res,
+		);
+		expect(res.statusCode).toBe(403);
+		expect((res.body as { code?: string }).code).toBe("CONTENT_BLOCKED");
+	});
+
+	it("blocks a contextual-only hostile community POST (L1 would pass it)", async () => {
+		await handler(req("create", { name: "Gamers", anon_id: "anon_c" }), response());
+		const res = response();
+		await handler(
+			req("post", { slug: "gamers", anon_id: "anon_c", text: CONTEXTUAL_ONLY }),
+			res,
+		);
+		expect(res.statusCode).toBe(403);
+		expect((res.body as { code?: string }).code).toBe("CONTENT_BLOCKED");
+	});
+
+	it("blocks a contextual-only hostile community COMMENT", async () => {
+		await handler(req("create", { name: "Gamers", anon_id: "anon_c" }), response());
+		await handler(req("post", { slug: "gamers", anon_id: "anon_c", text: "hi all" }), response());
+		const detail = response();
+		await handler(getReq("get", { slug: "gamers", anon_id: "anon_c" }), detail);
+		const postId = (detail.body as { posts: { id: string }[] }).posts[0].id;
+
+		const res = response();
+		await handler(
+			req("comment", { slug: "gamers", post_id: postId, anon_id: "anon_c", text: CONTEXTUAL_ONLY }),
+			res,
+		);
+		expect(res.statusCode).toBe(403);
+		expect((res.body as { code?: string }).code).toBe("CONTENT_BLOCKED");
+	});
+
+	it("still publishes benign create/post/comment (no false blocks)", async () => {
+		const create = response();
+		await handler(
+			req("create", { name: "Dune Fans", description: "Weekend reading circle", anon_id: "anon_y" }),
+			create,
+		);
+		expect(create.statusCode).toBe(201);
+
+		const post = response();
+		await handler(
+			req("post", { slug: "dune-fans", anon_id: "anon_y", text: "Reading Dune this weekend?" }),
+			post,
+		);
+		expect(post.statusCode).toBe(201);
+
+		const detail = response();
+		await handler(getReq("get", { slug: "dune-fans", anon_id: "anon_y" }), detail);
+		const postId = (detail.body as { posts: { id: string }[] }).posts[0].id;
+
+		const comment = response();
+		await handler(
+			req("comment", { slug: "dune-fans", post_id: postId, anon_id: "anon_y", text: "Yes!" }),
+			comment,
+		);
+		expect(comment.statusCode).toBe(201);
 	});
 });

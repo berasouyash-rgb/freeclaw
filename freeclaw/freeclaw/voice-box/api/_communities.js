@@ -21,7 +21,7 @@
 import { clean, cors, isAdmin, verifyCallerIdentity } from "./_auth.js";
 import supabase from "./_db-client.js";
 import { sanitizeError } from "./_error.js";
-import { evaluateContent } from "./_safety-pipeline.js";
+import { evaluateContentDeep } from "./_safety-pipeline.js";
 import { isTestArtifact } from "./_artifact-filter.js";
 
 const MAX_COMMUNITIES_PER_USER = 5;
@@ -247,6 +247,22 @@ export default async function handler(req, res) {
 			if (photo && !PHOTO_RE.test(photo))
 				return res.status(400).json({ error: "Photo must be an image URL" });
 
+			// School-safe gate — a community's name and description are
+			// reader-facing text too, and this surface has NO review queue,
+			// so anything the policy blocks is refused outright. Same Deep
+			// pipeline as posts/comments (L1 keywords + deterministic
+			// contextual scan + bounded model pass): layers only ever make
+			// the verdict stricter, never more permissive.
+			const gate = await evaluateContentDeep(
+				[name, description].filter(Boolean).join("\n"),
+				"direct",
+				null,
+				{ taskKey: "communities.write" },
+			);
+			if (gate.blocked) {
+				return res.status(403).json({ error: gate.message, code: gate.code });
+			}
+
 			const slug = slugify(name);
 			const existing = await getCommunity(slug);
 			if (existing)
@@ -322,7 +338,9 @@ export default async function handler(req, res) {
 			// School-safe gate — same unified pipeline as comments/posts.
 			// Runs on the raw text (plus poll question/options when present)
 			// so tricks and obfuscation face detection, not just the wordlist.
-			// Surfaces without a human review queue block outright.
+			// DEEP path: keywords + deterministic contextual scan + bounded
+			// model judging — this surface has no review queue, so anything
+			// flagged as blocked is refused outright rather than held.
 			{
 				const pollQuestion =
 					b.poll && typeof b.poll === "object"
@@ -335,9 +353,11 @@ export default async function handler(req, res) {
 								.filter((o) => o.length > 0)
 								.slice(0, MAX_POLL_OPTIONS)
 						: [];
-				const decision = evaluateContent(
+				const decision = await evaluateContentDeep(
 					[text, pollQuestion, ...pollOptions].filter(Boolean).join("\n"),
 					"direct",
+					null,
+					{ taskKey: "communities.write" },
 				);
 				if (decision.blocked) {
 					return res.status(403).json({
@@ -394,7 +414,15 @@ export default async function handler(req, res) {
 			if (!anonId) return res.status(400).json({ error: "anon_id required" });
 			if (!text) return res.status(400).json({ error: "Comment cannot be empty" });
 			{
-				const decision = evaluateContent(text, "direct");
+				// DEEP path, same as main-feed comments: keywords + deterministic
+				// contextual scan + bounded model pass. Community comments have
+				// no review queue, so blocked means refused.
+				const decision = await evaluateContentDeep(
+					text,
+					"direct",
+					null,
+					{ taskKey: "communities.comment" },
+				);
 				if (decision.blocked) {
 					return res.status(403).json({
 						error: decision.message,
