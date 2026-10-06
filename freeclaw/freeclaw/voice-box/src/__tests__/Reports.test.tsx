@@ -726,8 +726,13 @@ describe("Reports — story cards (evolution 2026-10-06)", () => {
 		render(<Reports />);
 
 		const quote = await screen.findByTestId("report-quote-73");
-		expect(quote.textContent).toContain("Quoted post title");
-		expect(quote.textContent).toContain("Quoted body words");
+		// The quote element mounts in its loading state; the mocked post
+		// GET commits a tick later — wait for the loaded content instead of
+		// racing it (CI load exposed this class of race).
+		await waitFor(() => {
+			expect(quote.textContent).toContain("Quoted post title");
+			expect(quote.textContent).toContain("Quoted body words");
+		});
 	});
 
 	it("quotes the reported comment's body inline on the row", async () => {
@@ -744,7 +749,7 @@ describe("Reports — story cards (evolution 2026-10-06)", () => {
 		render(<Reports />);
 
 		const quote = await screen.findByTestId("report-quote-74");
-		expect(quote.textContent).toContain("The offending comment text");
+		await waitFor(() => expect(quote.textContent).toContain("The offending comment text"));
 	});
 
 	it("says honestly when the reported content is gone", async () => {
@@ -761,7 +766,11 @@ describe("Reports — story cards (evolution 2026-10-06)", () => {
 		render(<Reports />);
 
 		const quote = await screen.findByTestId("report-quote-75");
-		expect(quote.textContent).toMatch(/no longer available/i);
+		// findByTestId only guarantees the quote exists — it exists first
+		// with "Loading reported content…"; the {post: null} response flips
+		// it to the honest gone-state asynchronously (CI run 37423726953
+		// caught this assertion mid-load).
+		await waitFor(() => expect(quote.textContent).toMatch(/no longer available/i));
 	});
 
 	it("states who flagged a review post and why, in plain language", async () => {
