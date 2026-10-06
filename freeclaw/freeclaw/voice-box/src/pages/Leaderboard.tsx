@@ -147,6 +147,30 @@ export default function Leaderboard() {
 		load();
 	}, [load]);
 
+	// ── Visible-only silent revalidation (evolution 2026-10-06) ──
+	// Ranks move with every vote elsewhere, so a frozen board reads as
+	// broken. Every 30s while mounted AND visible (plus on focus/return),
+	// silently reload the same snapshot the Refresh button uses — no
+	// skeletons (silent), no error banners on transient blips.
+	useEffect(() => {
+		const tick = () => {
+			if (
+				typeof document !== "undefined" &&
+				document.visibilityState === "hidden"
+			)
+				return;
+			void load(true);
+		};
+		const id = window.setInterval(tick, 30_000);
+		window.addEventListener("focus", tick);
+		document.addEventListener("visibilitychange", tick);
+		return () => {
+			window.clearInterval(id);
+			window.removeEventListener("focus", tick);
+			document.removeEventListener("visibilitychange", tick);
+		};
+	}, [load]);
+
 	const shown: RankedItem[] = (() => {
 		if (!data) return [];
 		// Server arrays are optional in practice — a missing/null list must

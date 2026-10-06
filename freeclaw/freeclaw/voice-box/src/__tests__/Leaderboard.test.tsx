@@ -9,6 +9,8 @@
 
 import { fireEvent, render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import Leaderboard from "../pages/Leaderboard";
 
@@ -97,8 +99,7 @@ describe("Leaderboard — lists", () => {
 		expect(await screen.findByText("Weird row")).toBeInTheDocument();
 	});
 
-	it("survives null lists from the server", async () => {
-		mocks.getSlow.mockResolvedValue({
+	it("survives null lists from the server", async () => {		mocks.getSlow.mockResolvedValue({
 			problems: null,
 			suggestions: null,
 			polls: null,
@@ -156,5 +157,54 @@ describe("Leaderboard — error state", () => {
 		});
 		fireEvent.click(screen.getByRole("button", { name: /retry/i }));
 		expect(await screen.findByText("Top post")).toBeInTheDocument();
+	});
+});
+
+describe("Leaderboard — live ranks (evolution 2026-10-06)", () => {
+	it("re-ranks when scores change, with no clicks", async () => {
+		mocks.getSlow.mockResolvedValue({
+			...EMPTY,
+			leaderboard: [
+				{ id: "p1", title: "Top post", type: "problem", score: 42 },
+				{ id: "p2", title: "Second post", type: "problem", score: 7 },
+			],
+		});
+		renderPage();
+		expect(await screen.findByText("Top post")).toBeInTheDocument();
+
+		// Votes elsewhere flip the ranking after this screen loaded.
+		mocks.getSlow.mockResolvedValue({
+			...EMPTY,
+			leaderboard: [
+				{ id: "p2", title: "Second post", type: "problem", score: 50 },
+				{ id: "p1", title: "Top post", type: "problem", score: 42 },
+			],
+		});
+
+		// No Refresh click — returning to the tab re-ranks on its own.
+		// (Dispatched on document: a window-level focus event trips an
+		// undici/jsdom Event-brand check in this environment.)
+		document.dispatchEvent(new Event("visibilitychange"));		const { waitFor } = await import("@testing-library/react");
+		await waitFor(
+			() => {
+				const html = document.body.textContent ?? "";
+				expect(html.indexOf("Second post")).toBeGreaterThan(-1);
+				expect(html.indexOf("Second post")).toBeLessThan(
+					html.indexOf("Top post"),
+				);
+			},
+			{ timeout: 15000 },
+		);
+	});
+
+	it("owns exactly one visibility-guarded revalidation timer", () => {
+		const source = readFileSync(
+			resolve(process.cwd(), "src/pages/Leaderboard.tsx"),
+			"utf8",
+		);
+		const timers = source.match(/setInterval\s*\(/g) || [];
+		expect(timers.length).toBe(1);
+		expect(source).toContain('document.visibilityState === "hidden"');
+		expect(source).toContain("void load(true)");
 	});
 });
