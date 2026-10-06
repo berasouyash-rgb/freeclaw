@@ -1,0 +1,76 @@
+name: E2E Tests
+
+# Runs the Voice Flow Playwright suite on EVERY push and pull request.
+# (The copy at freeclaw/freeclaw/voice-box/.github/workflows/e2e.yml is
+# inert — GitHub only reads workflows from the repo-root .github dir, so
+# E2E never ran in CI until this file existed. Proven locally first:
+# both shards green on this branch, only lab-load flakes that pass on
+# retry; the overflow spec re-settles once when a client-side redirect
+# races its measurement.)
+#
+# The suite is launch-path smoke (page boots, headings/inputs render)
+# against the Vite dev server with the local API adapter mounted. It does
+# not need backend secrets: pages render their chrome with empty data and
+# the global setup only verifies the served page really is Voice Flow.
+on:
+  push:
+  pull_request:
+  workflow_dispatch: # Allow manual trigger
+
+concurrency:
+  group: e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  e2e:
+    name: E2E Tests (${{ matrix.shard }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        # The voice-box app lives at this path inside the repo (git root is
+        # the parent workspace, tracked as freeclaw/freeclaw/voice-box).
+        working-directory: freeclaw/freeclaw/voice-box
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: freeclaw/freeclaw/voice-box/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium
+
+      - name: Run E2E tests
+        # playwright.config.ts starts its own dev server (npm run dev) and
+        # refuses to run unless the served page really is Voice Flow.
+        run: npx playwright test --shard=${{ matrix.shard }}/2
+        env:
+          VB_PORT: 5173
+
+      - name: Upload test report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report-${{ matrix.shard }}
+          path: freeclaw/freeclaw/voice-box/playwright-report/
+          retention-days: 7
+
+      - name: Upload test results
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-${{ matrix.shard }}
+          path: freeclaw/freeclaw/voice-box/test-results/
+          retention-days: 7

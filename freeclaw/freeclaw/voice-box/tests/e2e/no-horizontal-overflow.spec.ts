@@ -143,7 +143,16 @@ for (const width of WIDTHS) {
 		for (const route of ROUTES) {
 			await page.goto(route, { waitUntil: "domcontentloaded" });
 			await settle(page);
-			const o = await overflow(page);
+			let o;
+			try {
+				o = await overflow(page);
+			} catch {
+				// A client-side redirect (auth guards) raced the check: the
+				// context was destroyed by the navigation, not by the page.
+				// Re-settle on the landed URL and run the same assertion once.
+				await settle(page);
+				o = await overflow(page);
+			}
 			if (o)
 				failures.push(
 					`${route}: scrollWidth ${o.scrollWidth} > ${o.viewport} (+${o.overflow}px)` +
