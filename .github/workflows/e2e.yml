@@ -9,9 +9,13 @@ name: E2E Tests
 # races its measurement.)
 #
 # The suite is launch-path smoke (page boots, headings/inputs render)
-# against the Vite dev server with the local API adapter mounted. It does
-# not need backend secrets: pages render their chrome with empty data and
-# the global setup only verifies the served page really is Voice Flow.
+# against the Vite dev server with the local API adapter mounted. The
+# adapter runs the real api/index.js in-process and reads its Supabase
+# config from the real process env first (plugins/api-dev.mjs: "real env
+# wins over files" — the .env files are gitignored and absent in CI), so
+# the three backend keys come from repo secrets. Without them every /api
+# call answers 500/503 and the console-error assertions fail honestly —
+# proven on the first CI run of this workflow.
 on:
   push:
   pull_request:
@@ -58,6 +62,12 @@ jobs:
         run: npx playwright test --shard=${{ matrix.shard }}/2
         env:
           VB_PORT: 5173
+          # Backend config for the in-process API adapter (and for Vite,
+          # which exposes VITE_* process vars to the client in dev). From
+          # repo secrets — never committed.
+          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
 
       - name: Upload test report
         if: failure()

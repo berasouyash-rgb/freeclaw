@@ -283,7 +283,11 @@ describe("AdminSettings", () => {
 		mockedPost.mockResolvedValue({ user_delete_hours: 12 });
 		render(<AdminSettings />);
 		const input = await screen.findByLabelText("User-deleted auto-remove hours");
-		expect(input).toHaveValue(5);
+		// The input renders on first paint with value ""; the mocked
+		// get_retention_config GET lands a tick later. findByLabelText only
+		// guarantees existence — wait for the loaded value (CI proved the
+		// race: jest-dom reports "" on a number input as null).
+		await waitFor(() => expect(input).toHaveValue(5));
 		fireEvent.change(input, { target: { value: "12" } });
 		fireEvent.click(screen.getByRole("button", { name: "Save retention" }));
 		await waitFor(() => {
@@ -428,7 +432,9 @@ describe("AdminSettings — feed page size", () => {
 		mockFeedGet(50);
 		render(<AdminSettings />);
 		const input = await screen.findByLabelText("Posts loaded per feed fetch");
-		expect(input).toHaveValue(50);
+		// Same async-load race as the retention control: the GET value commits
+		// after the input already exists — wait for it instead of racing.
+		await waitFor(() => expect(input).toHaveValue(50));
 	});
 
 	it("saves through set_feed_config and adopts the normalized value", async () => {
@@ -444,8 +450,12 @@ describe("AdminSettings — feed page size", () => {
 				page_size: 20,
 			}),
 		);
-		expect(toastMock).toHaveBeenCalledWith("Feed loads 20 posts at once", "ok");
-		expect(input).toHaveValue(20);
+		// The save round-trip adopts the normalized value from the POST
+		// response — wait for the committed render, not just the call.
+		await waitFor(() => {
+			expect(toastMock).toHaveBeenCalledWith("Feed loads 20 posts at once", "ok");
+			expect(input).toHaveValue(20);
+		});
 	});
 
 	it("disables save until the value loads", () => {
