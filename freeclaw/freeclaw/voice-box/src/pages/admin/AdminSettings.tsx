@@ -31,6 +31,24 @@ export default function AdminSettings() {
 			.catch(() => setEnvMode(false));
 	}, []);
 
+	// ── Live AI-provider posture (mirrors ProviderSettings' own read) ──
+	// The security copy must state the ACTUAL default provider/model, not a
+	// hardcoded "Claude + ANTHROPIC_API_KEY" claim: /api/ai runs
+	// callLLMChain (provider-DB chain → NIM fallback → heuristic), so the
+	// active engine is whatever the admin has set as default right now.
+	const [defaultProvider, setDefaultProvider] = useState<{ name: string; model: string } | null>(null);
+	useEffect(() => {
+		api
+			.get<Record<string, { name: string; model: string; is_default: boolean; enabled?: boolean }>>(
+				"/api/providers?action=list",
+			)
+			.then((rows) => {
+				const def = Object.values(rows || {}).find((p) => p.is_default && p.enabled !== false);
+				setDefaultProvider(def ? { name: def.name, model: def.model } : null);
+			})
+			.catch(() => setDefaultProvider(null));
+	}, []);
+
 	// ── Platform controls (agent kill switch + spam sensitivity) ────
 	const [agentActions, setAgentActions] = useState<boolean | null>(null);
 	const [agentSaving, setAgentSaving] = useState(false);
@@ -487,9 +505,9 @@ Currently: {autoDelete === false ? "deleted posts are kept for admins indefinite
 						ID.
 					</li>
 					<li>
-						AI moderation (Claude Sonnet 4.6) runs when an{" "}
-						<code className="font-mono">ANTHROPIC_API_KEY</code> secret is
-						configured; otherwise a built-in heuristic engine is used.
+						{defaultProvider
+							? `AI moderation runs on ${defaultProvider.name} (${defaultProvider.model}) — the default provider set under AI providers below; without a working key a built-in heuristic engine is used.`
+							: "AI moderation runs on a built-in heuristic engine (no AI provider configured). Set a default under AI providers below to enable model-backed review."}
 					</li>
 				</ul>
 			</div>
@@ -519,20 +537,31 @@ Currently: {autoDelete === false ? "deleted posts are kept for admins indefinite
 						</p>
 					</div>
 					<div>
-						<p className="font-bold text-ink mb-1">
-							2 · AI integration (Anthropic)
-						</p>
+						<p className="font-bold text-ink mb-1">2 · AI integration</p>
 						<p>
-							Add a secret named{" "}
-							<code className="font-mono bg-surface2 px-1 rounded">
-								ANTHROPIC_API_KEY
-							</code>{" "}
-							in your deployment environment (Secrets tab). It is used{" "}
-							<b>server-side only</b> — never shipped to the browser. Model:{" "}
-							<code className="font-mono">claude-sonnet-4-6</code>, called from{" "}
-							<code className="font-mono">/api/ai</code> with strict-JSON
-							responses. Without the key, a deterministic heuristic engine keeps
-							all AI features functional.
+							{defaultProvider ? (
+								<>
+									The default provider is{" "}
+									<code className="font-mono bg-surface2 px-1 rounded">
+										{defaultProvider.name}
+									</code>{" "}
+									with model <code className="font-mono">{defaultProvider.model}</code>.
+									Keys are entered under AI providers above (or supplied as an
+									env secret) and used <b>server-side only</b> — never shipped
+									to the browser. Requests run through{" "}
+									<code className="font-mono">/api/ai</code> with strict-JSON
+									responses; without a working key a deterministic heuristic
+									engine keeps all AI features functional.
+								</>
+							) : (
+								<>
+									No default AI provider is configured. Add one under AI
+									providers above; requests run server-side only through{" "}
+									<code className="font-mono">/api/ai</code> with strict-JSON
+									responses. Until a key is present, a deterministic heuristic
+									engine keeps all AI features functional.
+								</>
+							)}
 						</p>
 					</div>
 					<div>

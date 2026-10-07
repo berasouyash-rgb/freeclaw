@@ -268,7 +268,7 @@ describe("AdminSettings", () => {
 		render(<AdminSettings />);
 		expect(screen.getByText(/Setup & deployment guide/)).toBeInTheDocument();
 		expect(screen.getByText(/1 · Backend \(Supabase\)/)).toBeInTheDocument();
-		expect(screen.getByText(/2 · AI integration \(Anthropic\)/)).toBeInTheDocument();
+		expect(screen.getByText(/2 · AI integration/)).toBeInTheDocument();
 		expect(screen.getByText(/3 · Admin access/)).toBeInTheDocument();
 		expect(screen.getByText(/4 · Privacy guarantees/)).toBeInTheDocument();
 	});
