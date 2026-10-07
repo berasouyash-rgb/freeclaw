@@ -680,3 +680,86 @@ describe("GET /api/leaderboard — hidden polls and degraded counts", () => {
 		expect(res.body.estimated).toBe(true);
 	});
 });
+
+// ══════════════════════════════════════════════════════════════════
+describe("GET /api/leaderboard — response contract the dashboard reads", () => {
+	// src/lib/dashboard/widgets.tsx reads this payload with NO mapping
+	// layer (PulseStrip stores the raw response per source key). Every
+	// other test in this file stubs the agent tables empty, so ai_activity
+	// rows were never pinned — a field rename would ship green and render
+	// literal "—" rows in the production admin dashboard. Pin the exact
+	// keys the widgets consume on both legs (AI rows + merged rows).
+	async function fetchBoard() {
+		const { default: handler } = await import("../../api/_leaderboard.js");
+		const res = response();
+		await handler({ method: "GET", query: {}, body: {}, headers: {} }, res);
+		return res;
+	}
+
+	it("ai_activity rows carry {kind,label,detail,at} — the keys the widget reads", async () => {
+		tableData["agent_executions"] = [
+			{
+				agent_id: "agent_1",
+				agent_name: "moderator",
+				division: "safety",
+				task: "review post p1",
+				status: "ok",
+				started_at: "2026-10-03T09:00:00.000Z",
+			},
+		];
+		tableData["agent_insights"] = [
+			{
+				agent_id: "scout",
+				insight_type: "trend",
+				reasoning: "library hours requested repeatedly",
+				created_at: "2026-10-04T09:00:00.000Z",
+			},
+		];
+
+		const res = await fetchBoard();
+		expect(res.statusCode).toBe(200);
+		const ai = res.body.ai_activity as Record<string, unknown>[];
+		expect(ai).toHaveLength(2);
+		// Newest first (merged then sorted by `at` desc server-side — the
+		// widget's stable sort trusts this order).
+		expect(ai[0]).toMatchObject({
+			kind: "learning",
+			label: "scout",
+			at: "2026-10-04T09:00:00.000Z",
+		});
+		expect(String(ai[0].detail)).toContain("library hours");
+		expect(ai[1]).toMatchObject({
+			kind: "execution",
+			label: "moderator",
+			at: "2026-10-03T09:00:00.000Z",
+		});
+		expect(String(ai[1].detail)).toContain("review post p1");
+		// The agent_name/count columns exist upstream but are mapped away —
+		// if a row ever leaks them raw the widget contract has changed.
+		expect(ai[0]).not.toHaveProperty("agent_name");
+		expect(ai[0]).not.toHaveProperty("count");
+	});
+
+	it("merged rows expose `title` and `score`, never a `name` field", async () => {
+		tableData["posts"] = [
+			{
+				id: "post_x",
+				title: "Broken window in Science Lab B",
+				type: "problem",
+				category: "Facilities",
+				status: "in_progress",
+				created_at: "2026-07-15T00:00:00Z",
+				admin_reply: null,
+			},
+		];
+		tableData["reactions"] = [{ target_id: "post_x", kind: "support" }];
+
+		const res = await fetchBoard();
+		expect(res.statusCode).toBe(200);
+		const merged = res.body.leaderboard as Record<string, unknown>[];
+		expect(merged).toHaveLength(1);
+		expect(merged[0].title).toBe("Broken window in Science Lab B");
+		expect(typeof merged[0].score).toBe("number");
+		expect(merged[0]).not.toHaveProperty("name");
+	});
+});

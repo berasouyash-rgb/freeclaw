@@ -58,7 +58,29 @@ beforeEach(() => {
 		],
 		category_distribution: { Facilities: 4, Academics: 2 },
 		problems: [{ title: "Broken lift", support: 12 }],
-		leaderboard: [{ name: "anon_a", score: 30 }],
+		// Real /api/leaderboard contract (api/_leaderboard.js): merged rows
+		// are toMerged() output (title, never `name`) and AI rows are aiTask
+		// output (kind/label/detail). Fixing a shape here that the endpoint
+		// never sends is how widget/endpoint drift hides from every test.
+		leaderboard: [
+			{
+				type: "problem",
+				id: "p1",
+				title: "Broken lift",
+				score: 30,
+				category: "Facilities",
+				status: "solved",
+				at: "2026-10-01T09:00:00.000Z",
+			},
+		],
+		ai_activity: [
+			{
+				kind: "execution",
+				label: "moderator",
+				detail: "review post p1 · ok",
+				at: "2026-10-01T09:00:00.000Z",
+			},
+		],
 		emerging_topics: [],
 		priority_trends: {},
 		top_categories: [],
@@ -264,5 +286,90 @@ describe("PulseStrip — curated widgets on the main dashboard", () => {
 		await waitFor(() =>
 			expect(screen.getAllByText(/No data available yet/i).length).toBeGreaterThan(0),
 		);
+	});
+});
+
+// ══════════════════════════════════════════════════════════════════
+describe("leaderboard source of truth — widgets read the API's real contract", () => {
+	// Field-for-field copy of what api/_leaderboard.js actually returns:
+	//   merged rows → toMerged()  = { type, id, title, score, breakdown,
+	//                                 category, status, at }   (never `name`)
+	//   AI rows     → aiTask      = { kind, label, detail, at } (never
+	//                                 `agent_name`/`count`)
+	// A widget reading fields the endpoint never sends renders literal "—"
+	// rows in the production dashboard while every integrity test stays
+	// green — so both drifted widgets are pinned against the real payload.
+	const REAL_LEADERBOARD_PAYLOAD = {
+		leaderboard: [
+			{
+				type: "problem",
+				id: "p1",
+				title: "Broken lift in Block C",
+				score: 42,
+				category: "Facilities",
+				status: "solved",
+				at: "2026-10-01T09:00:00.000Z",
+			},
+			{
+				type: "suggestion",
+				id: "s1",
+				title: "Extend library hours",
+				score: 30,
+				category: "Academics",
+				status: "open",
+				at: "2026-10-02T09:00:00.000Z",
+			},
+		],
+		ai_activity: [
+			{
+				kind: "execution",
+				label: "moderator",
+				detail: "review post p1 · ok",
+				at: "2026-10-03T09:00:00.000Z",
+			},
+			{
+				kind: "learning",
+				label: "scout",
+				detail: "trend noted: library hours",
+				at: "2026-10-04T09:00:00.000Z",
+			},
+		],
+	};
+
+	function ctxWithLeaderboard() {
+		return {
+			data: { leaderboard: REAL_LEADERBOARD_PAYLOAD },
+			loading: {},
+			failed: {},
+			refreshedAt: Date.now(),
+		};
+	}
+
+	it("shows the endpoint's real titles instead of placeholder dashes", () => {
+		const def = WIDGET_BY_ID["top-contributors"];
+		expect(def).toBeDefined();
+		render(<div>{def!.render(ctxWithLeaderboard())}</div>);
+		expect(screen.getByText("Broken lift in Block C")).toBeInTheDocument();
+		expect(screen.getByText("Extend library hours")).toBeInTheDocument();
+		expect(screen.queryAllByText("—")).toHaveLength(0);
+	});
+
+	it("AI-activity shows the endpoint's real agent labels, never dashes", () => {
+		const def = WIDGET_BY_ID["ai-activity"];
+		expect(def).toBeDefined();
+		render(<div>{def!.render(ctxWithLeaderboard())}</div>);
+		expect(screen.getByText("moderator")).toBeInTheDocument();
+		expect(screen.getByText("scout")).toBeInTheDocument();
+		expect(screen.queryAllByText("—")).toHaveLength(0);
+	});
+
+	it("never claims people data this anonymous platform does not serve", () => {
+		// The leaderboard payload contains zero person rows. A widget
+		// titled "Top contributors / People driving the most activity"
+		// over it is a false claim about what the endpoint provides.
+		const def = WIDGET_BY_ID["top-contributors"];
+		expect(def).toBeDefined();
+		expect(def!.name.toLowerCase()).not.toMatch(/contributor|people/);
+		expect(def!.description.toLowerCase()).not.toMatch(/\bpeople\b/);
 	});
 });

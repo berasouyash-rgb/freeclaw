@@ -34,6 +34,7 @@ import {
 	Sparkles,
 	ThumbsUp,
 	TrendingUp,
+	Trophy,
 	Users,
 	Vote,
 } from "lucide-react";
@@ -1069,15 +1070,18 @@ export const WIDGETS: WidgetDef[] = [
 		"cyan",
 	),
 	// ── People ───────────────────────────────────────────────────
+	// NOTE: this widget reads the merged leaderboard array, which serves
+	// CONTENT rows (toMerged: title/score) — the anonymous platform has no
+	// person rows to rank, so the copy must not claim people/contributors.
 	listWidget(
 		"top-contributors",
-		"Top contributors",
-		"People driving the most activity.",
-		"people",
-		Users,
+		"Highest-scoring posts",
+		"Problems, suggestions, and polls with the strongest community score.",
+		"content",
+		Trophy,
 		SOURCES.leaderboard,
 		"leaderboard",
-		"name",
+		"title",
 		"score",
 		"accent",
 	),
@@ -1089,8 +1093,8 @@ export const WIDGETS: WidgetDef[] = [
 		Activity,
 		SOURCES.leaderboard,
 		"ai_activity",
-		"agent_name",
-		"count",
+		"label",
+		"kind",
 		"violet",
 	),
 	// ── System ───────────────────────────────────────────────────
