@@ -21,6 +21,21 @@ function entry(prefix) {
 	return { version, url, ...(notes ? { notes } : {}) };
 }
 
+// Deployed commit marker — lets anyone check staleness in one request
+// (compare against the release branch HEAD). Sourced from the hosting
+// platform's commit env when present; "unknown" otherwise (never blank,
+// so monitors can assert the field exists). Pure build metadata: no auth,
+// no user data, safe to expose.
+function deployedCommit() {
+	const sha = String(
+		process.env.VERCEL_GIT_COMMIT_SHA ||
+			process.env.COMMIT_SHA ||
+			process.env.GIT_COMMIT_SHA ||
+			"",
+	).trim();
+	return sha || "unknown";
+}
+
 export default async function handler(req, res) {
 	cors(res, req);
 	if (req.method === "OPTIONS") return res.status(204).end();
@@ -37,5 +52,5 @@ export default async function handler(req, res) {
 		"Cache-Control",
 		"public, max-age=0, no-cache, s-maxage=60, stale-while-revalidate=60",
 	);
-	return res.status(200).json({ app: "voice-flow", platforms });
+	return res.status(200).json({ app: "voice-flow", platforms, commit: deployedCommit() });
 }

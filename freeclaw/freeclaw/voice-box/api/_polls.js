@@ -212,7 +212,7 @@ export default async function handler(req, res) {
 
 			// Maintenance (stale-archive and orphan repair) runs from an
 			// authenticated worker. A public GET only reads and shapes rows.
-			const results = await attachResults(cleanRows.slice(0, 200));
+			const results = await attachResults(cleanRows.slice(0, 200), true);
 			// Mask author IDs — they are bearer tokens for poll deletion
 			const v = clean(req.query.viewer, 40);
 			const masked = results.map((p) => {

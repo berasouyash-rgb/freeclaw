@@ -37,7 +37,7 @@ describe("GET /api/version", () => {
 		const res = response();
 		await handler(REQ as never, res as never);
 		expect(res.statusCode).toBe(200);
-		expect(res.body).toEqual({ app: "voice-flow", platforms: {} });
+		expect(res.body).toEqual({ app: "voice-flow", platforms: {}, commit: "unknown" });
 	});
 
 	it("publishes per-platform releases from env", async () => {
@@ -54,6 +54,7 @@ describe("GET /api/version", () => {
 		expect(res.statusCode).toBe(200);
 		expect(res.body).toEqual({
 			app: "voice-flow",
+			commit: "unknown",
 			platforms: {
 				android: {
 					version: "2.1.0",
@@ -88,5 +89,24 @@ describe("GET /api/version", () => {
 		const res = response();
 		await handler({ ...REQ, method: "POST" } as never, res as never);
 		expect(res.statusCode).toBe(405);
+	});
+
+	it("always reports the deployed commit so staleness is checkable", async () => {
+		vi.stubEnv("VERCEL_GIT_COMMIT_SHA", "abc123def456abc123def456abc123def456abcd");
+		const { default: handler } = await import("../../api/version.js");
+		const res = response();
+		await handler(REQ as never, res as never);
+		expect(res.statusCode).toBe(200);
+		expect((res.body as { commit: unknown }).commit).toBe(
+			"abc123def456abc123def456abc123def456abcd",
+		);
+	});
+
+	it("reports unknown commit when no SHA env is set", async () => {
+		const { default: handler } = await import("../../api/version.js");
+		const res = response();
+		await handler(REQ as never, res as never);
+		expect(res.statusCode).toBe(200);
+		expect((res.body as { commit: unknown }).commit).toBe("unknown");
 	});
 });

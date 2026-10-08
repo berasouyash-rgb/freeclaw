@@ -415,6 +415,24 @@ describe("GET /api/polls", () => {
 		]);
 	});
 
+	// ── List-path results failure (the "poll totals flap to 0" class) ──
+	// attachResults used to swallow a poll_votes read error on the LIST path
+	// (non-strict) and return total_votes: 0 for every poll — a transient DB
+	// hiccup rendered as "all votes vanished" until the next refresh. The
+	// list path is strict now: the read throws (→ honest 500 via the error
+	// middleware) instead of serving fake zeros.
+	it("throws (no fake zeros) when the list-path results read fails", async () => {
+		state.polls = [makePoll({ id: "poll-1" })];
+		state.poll_votes = [{ poll_id: "poll-1", choices: [0], author_id: "anon-2" }];
+		state.resultsError = new Error("results read failed");
+		const { default: handler } = await import("../../api/_polls.js");
+		const res = response();
+		await expect(
+			handler({ method: "GET", query: {}, body: {}, headers: {} }, res),
+		).rejects.toThrow("results read failed");
+		expect(res.statusCode).toBe(200); // handler never completed a response
+	});
+
 	it("unmasks author_id and sets is_mine when the viewer owns the poll", async () => {
 		state.polls = [makePoll({ author_id: "anon-7" })];
 		state.poll_votes = [];
