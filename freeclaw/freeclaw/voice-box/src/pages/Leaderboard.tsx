@@ -10,6 +10,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router";
 import { api } from "../lib/api";
+import { useRealtime } from "../lib/useRealtime";
 import { STATUS_META, timeAgo } from "../lib/utils";
 
 interface RankedItem {
@@ -170,6 +171,14 @@ export default function Leaderboard() {
 			document.removeEventListener("visibilitychange", tick);
 		};
 	}, [load]);
+
+	// ── Event-driven freshness (realtime wiring) ──
+	// The 30s tick above is the safety net; this makes ranks move the moment
+	// a post/poll/comment lands anywhere, without waiting for the interval.
+	// Silent (no skeletons, no error banners on transient blips) — the same
+	// contract as the tick. Debounced 2s so a burst of events coalesces into
+	// one reload.
+	useRealtime(["posts", "polls", "comments"], () => void load(true), 2_000);
 
 	const shown: RankedItem[] = (() => {
 		if (!data) return [];

@@ -34,6 +34,14 @@ vi.mock("react-router", () => ({
 	),
 }));
 
+// Realtime wiring on the page opens a real channel in jsdom otherwise
+// (undici WebSocket → uncaught Event-class mismatch). The background-tick
+// behaviour under test is unaffected; wiring assertions live in
+// DerivedPages.realtime.test.tsx.
+vi.mock("../lib/useRealtime", () => ({
+	useRealtime: () => {},
+}));
+
 const listRes = {
 	communities: [
 		{

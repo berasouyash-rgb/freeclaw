@@ -171,7 +171,7 @@ BEGIN
     UPDATE public.polls SET updated_at = now()
     WHERE deleted = false AND id IN (
       SELECT p.id FROM public.polls p
-      GROUP BY p.post_id,
+      GROUP BY p.id, p.post_id,
         lower(regexp_replace(COALESCE(p.title, ''), '[^a-z0-9]+', ' ', 'g')),
         p.ptype, p.options::text
       HAVING COUNT(*) >= 1

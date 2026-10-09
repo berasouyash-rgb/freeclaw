@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { api } from "../lib/api";
+import { useRealtime } from "../lib/useRealtime";
 import { STATUS_META } from "../lib/utils";
 
 type InsightsData = {
@@ -119,19 +120,29 @@ export default function Insights() {
 
 	const load = useCallback(async (silent = false) => {
 		try {
-			setError("");
-			if (!silent) setLoading(true);
+			if (!silent) {
+				setError("");
+				setLoading(true);
+			}
 			const norm = normalizeInsights(
 				await api.getSlow<unknown>("/api/insights"),
 			);
 			if (!norm) {
-				setError("Could not load insights — unexpected response.");
-				setData(null);
+				// Unexpected shape: report on an explicit load, but a background
+				// refresh must not wipe a good chart with an error banner.
+				if (!silent) {
+					setError("Could not load insights — unexpected response.");
+					setData(null);
+				}
 			} else {
 				setData(norm);
+				setError("");
 			}
 		} catch (e: unknown) {
-			setError(e instanceof Error ? e.message : "Could not load insights");
+			// Background refresh failing keeps the last-known charts; only the
+			// explicit load reports the failure to the user.
+			if (!silent)
+				setError(e instanceof Error ? e.message : "Could not load insights");
 		}
 		setLoading(false);
 	}, []);
@@ -139,6 +150,11 @@ export default function Insights() {
 	useEffect(() => {
 		load();
 	}, [load]);
+
+	// ── Realtime: insights aggregate posts + comments, so any new post or
+	// comment anywhere should move the charts without a manual reload.
+	// Silent — keeps the current charts rendered on a transient blip.
+	useRealtime(["posts", "comments"], () => void load(true), 3_000);
 
 	const maxDay = data
 		? Math.max(1, ...data.trend.map((t) => t.posts + t.comments))

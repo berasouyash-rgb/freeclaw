@@ -18,7 +18,9 @@ import { Link, useNavigate } from "react-router";
 import { resetTutorial } from "../components/Tutorial";
 import { ConfirmDialog } from "../components/ui";
 import { useApp } from "../contexts/AppContext";
-import { api } from "../lib/api";	import { anonCreatedAt, lsGet } from "../lib/identity";
+import { api } from "../lib/api";
+import { anonCreatedAt, lsGet } from "../lib/identity";
+import { useRealtime } from "../lib/useRealtime";
 import { downloadFile, safeStringify, timeAgo } from "../lib/utils";
 import { SERVER_PII_COPY } from "../lib/privacyCopy";
 import type {
@@ -206,13 +208,26 @@ export default function MyActivity() {
 		error instanceof Error ? error.message : fallback;
 
 	const loadSection = useCallback(
-		async (section: ActivitySection, bookmarkIds: string[] = []) => {
-			setSectionStatus((current) => ({ ...current, [section]: "loading" }));
-			setSectionErrors((current) => {
-				const next = { ...current };
-				delete next[section];
-				return next;
-			});
+		async (
+			section: ActivitySection,
+			bookmarkIds: string[] = [],
+			quiet = false,
+		) => {
+			// Quiet (realtime/background) refreshes keep the last-known content
+			// on screen: no skeleton flip, no error clearing on the way in, and
+			// a transient failure leaves the section as-is instead of replacing
+			// good data with an error state. Explicit loads report normally.
+			if (!quiet) {
+				setSectionStatus((current) => ({
+					...current,
+					[section]: "loading",
+				}));
+				setSectionErrors((current) => {
+					const next = { ...current };
+					delete next[section];
+					return next;
+				});
+			}
 
 			try {
 				switch (section) {
@@ -281,6 +296,16 @@ export default function MyActivity() {
 				}));
 				setSectionStatus((current) => ({ ...current, [section]: "ready" }));
 			} catch (error: unknown) {
+				// Quiet refresh failures are logged for diagnosis but must not
+				// replace a last-known-good section with an error state.
+				if (quiet) {
+					if (typeof console !== "undefined")
+						console.warn(
+							`[MyActivity] quiet refresh failed for "${section}"`,
+							error instanceof Error ? error.message : error,
+						);
+					return;
+				}
 				setSectionStatus((current) => ({ ...current, [section]: "error" }));
 				setSectionErrors((current) => ({
 					...current,
@@ -294,10 +319,10 @@ export default function MyActivity() {
 		[anonId],
 	);
 
-	const loadAll = useCallback(async () => {
+	const loadAll = useCallback(async (quiet = false) => {
 		await Promise.all(
 			ACTIVITY_SECTIONS.filter((section) => section !== "bookmarks").map((section) =>
-				loadSection(section),
+				loadSection(section, [], quiet),
 			),
 		);
 	}, [loadSection]);
@@ -305,6 +330,12 @@ export default function MyActivity() {
 	useEffect(() => {
 		void loadAll();
 	}, [loadAll]);
+
+	// ── Realtime: my posts/comments/polls change elsewhere (status flips,
+	// new comments on my post, poll closures) — refresh silently so the
+	// sections stay current without skeleton-flashing the whole page.
+	// Debounced 2s so a burst coalesces into one refresh.
+	useRealtime(["posts", "comments", "polls"], () => void loadAll(true), 2_000);
 
 	const bookmarkKey = bookmarks.join(",");
 

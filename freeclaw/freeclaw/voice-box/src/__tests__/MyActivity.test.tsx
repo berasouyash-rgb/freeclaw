@@ -33,6 +33,13 @@ const mocks = vi.hoisted(() => ({
 	},
 }));
 
+// The page subscribes for realtime updates; without this mock jsdom would
+// open a real production supabase WebSocket. Wiring assertions live in
+// DerivedPages.realtime.test.tsx.
+vi.mock("../lib/useRealtime", () => ({
+	useRealtime: () => {},
+}));
+
 vi.mock("../lib/api", () => ({
 	api: { get: mocks.get, put: mocks.put },
 }));	vi.mock("../contexts/AppContext", () => ({

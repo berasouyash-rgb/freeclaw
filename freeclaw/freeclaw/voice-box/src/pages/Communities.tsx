@@ -13,6 +13,7 @@ import {
 import { Modal } from "../components/ui";
 import { useApp } from "../contexts/AppContext";
 import { api, hasAdminSession } from "../lib/api";
+import { useRealtime } from "../lib/useRealtime";
 
 export interface CommunityCard {
 	slug: string;
@@ -102,6 +103,13 @@ export default function Communities() {
 			document.removeEventListener("visibilitychange", tick);
 		};
 	}, [load]);
+
+	// ── Realtime: post_count on each card derives from `posts`, so a new post
+	// in any community should bump the count immediately instead of waiting
+	// for the 10s tick. The tick stays as the fallback for community
+	// create/join/leave (settings-KV rows, which carry no realtime events).
+	// The signature guard in load() makes an unchanged list render-free.
+	useRealtime(["posts"], () => void load(true), 2_000);
 
 	const adminOp = async (slug: string, op: "hide" | "unhide" | "delete") => {
 		setBusy(slug);
