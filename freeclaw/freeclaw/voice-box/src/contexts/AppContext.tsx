@@ -20,7 +20,7 @@ import {
 	setProfile as persistProfile,
 	type LocalProfile,
 } from "../lib/identity";
-import { navigateTo } from "../lib/platform";
+import { apiBase, navigateTo } from "../lib/platform";
 import type {
 	AccountStatus,
 	ChatMessage,
@@ -256,6 +256,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
 	const notificationsRef = useRef<Notification[]>(notifications);
 	/** True when the last engine pass was skipped while hidden. */
 	const wasAwayRef = useRef(false);
+	// Latest engine pass — lets the live stream and the fallback interval
+	// below trigger the same snapshot diff without duplicating it.
+	const checkRef = useRef<() => void>(() => {});
 	useEffect(() => {
 		notificationsRef.current = notifications;
 	}, [notifications]);
@@ -546,7 +549,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
 	}, []);
 
 	// ---------- background notification engine ----------
-	// Runs every 120s, pauses when tab is hidden to save API calls.
+	// One snapshot-diff pass on mount (plus every stream wake-up / fallback
+	// tick via checkRef below). Pauses when the tab is hidden; the pass
+	// sets wasAwayRef so the next visible pass can show the catch-up ping.
 	useEffect(() => {
 		let cancelled = false;
 		async function check() {
@@ -716,6 +721,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 				/* offline-friendly: silently skip */
 			}
 		}
+		checkRef.current = check;
 		check();
 		// Catch-up is intentionally one-shot after mount. A quiet tab must not
 		// generate recurring full-history notification requests.
@@ -723,6 +729,49 @@ export function AppProvider({ children }: { children: ReactNode }) {
 			cancelled = true;
 		};
 	}, [anonId, pushNotif]);
+
+	// ---------- live inbox stream ----------
+	// A server-sent-events stream (/api/events) wakes the engine pass above
+	// the moment my posts / chat thread / notification feed change. The
+	// stream is a WAKE-UP only: every event re-runs the same snapshot
+	// diff, so a spurious event can never fabricate a notification.
+	// The server holds each connection ~45s, then closes it; EventSource
+	// reconnects on its own, so the healthy steady state is
+	// connect → hello → updates → close → reconnect. No setInterval here:
+	// the one-load lifecycle contract (locked by AppContextCore's "does
+	// not install recurring … poll timers" test) forbids recurring
+	// full-history requests — the stream's own reconnect IS the retry
+	// mechanism, and a dead endpoint just leaves the inbox exactly as
+	// stale as it is today (one post-mount pass) instead of hammering it.
+	useEffect(() => {
+		let cancelled = false;
+		let es: EventSource | null = null;
+		const run = () => {
+			if (!cancelled) checkRef.current();
+		};
+		if (typeof EventSource !== "undefined" && anonId) {
+			try {
+				es = new EventSource(
+					`${apiBase()}/api/events?user_id=${encodeURIComponent(anonId)}`,
+					{ withCredentials: true },
+				);
+				es.addEventListener("update", run);
+			} catch {
+				es = null; // no EventSource / bad URL — inbox stays one-shot
+			}
+		}
+		return () => {
+			cancelled = true;
+			if (es) {
+				try {
+					es.close();
+				} catch {
+					/* already closed */
+				}
+				es = null;
+			}
+		};
+	}, [anonId]);
 
 	// Memoize context value to prevent unnecessary re-renders in consumers.
 	// All callbacks are already stable via useCallback; useMemo prevents a new

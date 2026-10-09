@@ -42,6 +42,7 @@ import duplicates from "./_duplicates.js";
 import emailTemplates from "./_email-templates.js";
 import errors from "./_errors.js";
 import eventAgents from "./_event-agents.js";
+import eventsStream from "./_events-stream.js";
 import evidence from "./_evidence.js";
 import evidenceScan from "./_evidence-scan.js";
 import dataExport from "./_export.js";
@@ -218,6 +219,10 @@ const routes = {
 	// (every call 404'd, which showed up as "Not found" noise on page load)
 	errors: protect(errors, "errors"),
 	vitals: protect(vitals, "vitals"),
+	// Live inbox wake-ups (SSE). The client EventSource hits this; the
+	// router-contract test requires every /api/* string in src/ to resolve
+	// here, so this entry is load-bearing, not decorative.
+	events: protect(eventsStream, "events"),
 	// Public update feed for the native shells. It used to be missing from this
 	// map, so every APK/EXE update check got a 404 and the in-app update dialog
 	// could never fire. Guarded by tests/api/router-contract.test.ts.
