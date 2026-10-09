@@ -1,4 +1,5 @@
 import {
+	ArrowLeft,
 	EyeOff,
 	Fingerprint,
 	KeyRound,
@@ -8,6 +9,7 @@ import {
 	Smartphone,
 	Trash2,
 } from "lucide-react";
+import { useNavigate } from "react-router";
 import { useApp } from "../contexts/AppContext";
 import { storageWhere } from "../lib/platform";
 import {
@@ -22,6 +24,13 @@ import {
 
 export default function Privacy() {
 	const { anonId } = useApp();
+	const nav = useNavigate();
+	// Deep links land here with no history to go back to — fall home
+	// instead of a dead button (same contract as Terms/Accessibility).
+	const goBack = () => {
+		if (window.history.length > 1) nav(-1);
+		else nav("/");
+	};
 	const ITEMS = [
 		{
 			icon: Server,
@@ -62,6 +71,14 @@ export default function Privacy() {
 
 	return (
 		<div className="max-w-2xl mx-auto">
+			<button
+				type="button"
+				className="btn btn-ghost !px-3 mb-6"
+				onClick={goBack}
+				aria-label="Go back"
+			>
+				<ArrowLeft size={15} /> Back
+			</button>
 			<div className="text-center mb-8 vb-rise">
 				<span className="inline-grid place-items-center w-14 h-14 rounded-2xl bg-accent-soft text-accent mb-3">
 					<ShieldCheck size={28} />
