@@ -5,9 +5,22 @@ proof lives under UNTESTED, never under PASS. Updated 2026-10-10.
 
 ## VERIFIED PASS
 
-- Unit + contract suites on the release tree: frontend 1939/1939 (149 files),
-  API 2121/2121 (187 files) = 4060 green, `tsc -b` 0 (ran inside both
-  release builds), `eslint .` PASS (runtime exit 0).
+- Production deploy (2026-10-10, solved this loop): Vercel CLI deploy from
+  the release tree → `dpl_3grRN2uGBre88bUBXWpcFji47McP` READY, aliased
+  `https://voice-box-psi.vercel.app`; remote build ran `tsc -b && vite
+  build` green (2337 modules, 14.25s). Live probes after alias:
+  `/api/version` reports commit `04dbf12c562c698401583b96d5fd71272571559a`
+  (= the release commit) with `platforms.windows` + `platforms.android`
+  both `2.0.1` and the v2.0.1 GitHub URLs (each URL independently HEAD
+  200, Content-Length = local verified bytes); app shell HTTP 200 with
+  `#root`; `/api/health` returns 403 "Admin only" — the `isAdmin` gate
+  firing correctly, not a fault. The four `LATEST_*` vars are set in
+  Production (added this loop; Secret-typed, proven to reach the
+  function at runtime by the populated feed).
+- Unit + contract suites re-run on the release commit `04dbf12`: frontend
+  1939/1939 (149 files, `full-fe-201.log`) + API 2121/2121 (187 files,
+  `full-api-201.log`) = 4060 green, `tsc -b` 0 (ran inside both release
+  builds), `eslint .` PASS (runtime exit 0).
 - CI through `3e40020`: "CI — Test, Typecheck & Lint" + "E2E Tests" both
   SUCCESS on the push run (2026-10-10 09:50Z); the PR runs on the same
   head also SUCCESS.
@@ -63,22 +76,21 @@ proof lives under UNTESTED, never under PASS. Updated 2026-10-10.
 
 ## KNOWN FAILURES (accepted or user-gated — none blocks the code)
 
-1. Production serves pre-release code (proven: prod 404s on routes HEAD
-   serves; prod last seen at `2096026`). Fix: owner runs
-   `npx vercel --prod`. Nothing fixed is visible until then — including
-   pairing, admin SSE, and every realtime liveness fix.
-2. Update feed empty (`/api/version` returns `platforms:{}`): the four
-   `LATEST_*` env vars are unset, so the in-app updater and the
-   Get-the-app card can never fire. For this release they must point at
-   the v2.0.1 assets.
-3. Vote-count flap report (37→2→0) unconfirmed: fake-zero class killed
+1. Vote-count flap report (37→2→0) unconfirmed: fake-zero class killed
    and proven, but the exact report needs user screenshots to trace.
-4. Single-instance 1,000-user shed (18% 503s on one dev PC): by-design
+2. Single-instance 1,000-user shed (18% 503s on one dev PC): by-design
    load shedding; prod scales per-instance. School-scale rungs all green.
+
+(The two former owner-gated failures — stale production and the empty
+update feed — were SOLVED this loop; see the production-deploy entry
+under VERIFIED PASS for the probes that prove it.)
 
 ## UNTESTED AREAS (do not claim)
 
-- Post-deploy prod smoke + prod E2E (needs owner deploy).
+- Full prod E2E (browser flows against the live alias). Post-deploy API
+  smoke is DONE this loop (`/api/version` freshness + feed, app shell
+  200, health gate 403); what remains untested is interactive E2E on
+  prod, not the deploy itself.
 - 1,000-user load against prod (owner-gated; never run against shared infra
   without explicit approval).
 - Hardware install-smoke of the v2.0.1 EXE/APK (owner-side: install over
@@ -88,13 +100,14 @@ proof lives under UNTESTED, never under PASS. Updated 2026-10-10.
 
 ## Release checklist for the owner
 
-1. `npx vercel --prod` from `voice-box/`, then re-probe `/api/version`
-   (it now reports its commit — one request proves freshness).
-2. Set `LATEST_APK_VERSION=2.0.1` / `LATEST_EXE_VERSION=2.0.1` and the
-   matching release asset URLs (+ notes), redeploy so the feed goes live:
-   `https://github.com/berasouyash-rgb/freeclaw/releases/download/v2.0.1/<asset>`.
-3. Install-smoke both v2.0.1 assets over 2.0.0, then pair a second
+DONE this loop (no action needed): production deploy to
+`voice-box-psi.vercel.app` from the release tree; the four `LATEST_*`
+env vars set to 2.0.1 + the release-asset URLs; `/api/version` re-probed
+(commit `04dbf12…`, platforms populated).
+
+1. Install-smoke both v2.0.1 assets over 2.0.0, then pair a second
    device once via Settings → Account (6-digit code).
-4. Send the vote-flap screenshots if the report still reproduces after 1–3.
-5. Approve the gated migrations 016 + 018 (dropping legacy shared tables
+2. Send the vote-flap screenshots if the report still reproduces after
+   the deployed fixes.
+3. Approve the gated migrations 016 + 018 (dropping legacy shared tables
    from the publication) — still DBA-gated.
