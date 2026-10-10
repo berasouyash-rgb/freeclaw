@@ -99,6 +99,7 @@ function chainFor(table: string, selectArgs: unknown) {
 		lt: vi.fn().mockReturnThis(),
 		order: vi.fn().mockReturnThis(),
 		limit: vi.fn().mockReturnThis(),
+		range: vi.fn().mockReturnThis(),
 		maybeSingle: vi.fn().mockResolvedValue({ data: null, error: null }),
 		single: vi.fn().mockReturnThis(),
 		update: vi.fn().mockReturnThis(),

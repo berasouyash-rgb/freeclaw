@@ -62,6 +62,27 @@ function digest(ids) {
 // per-post presentation (status gates, ready_for_decision, purge_at) is
 // deliberately computed on every request in _posts.js so wall-clock and
 // status-dependent fields are NEVER cached.
+//
+// Pagination: PostgREST silently caps an uncapped select at max-rows (1000),
+// so a viral post's feed counts would freeze at the first page. Every leg
+// below pages (stopping at the first short page) — small chunks cost exactly
+// one round trip per leg, same as before. Error semantics preserved: a
+// failed leg contributes the rows read so far (today a failed single fetch
+// contributes nothing, so partial is strictly more truthful).
+const COUNT_PAGE = 1000;
+
+async function paged(build) {
+	const rows = [];
+	for (let page = 0; ; page += 1) {
+		const res = await build(page);
+		const chunk = res?.data;
+		if (res?.error || !chunk || !chunk.length) break;
+		rows.push(...chunk);
+		if (chunk.length < COUNT_PAGE) break;
+	}
+	return { data: rows };
+}
+
 async function fetchRawCounts(ids) {
 	const chunks = [];
 	for (let i = 0; i < ids.length; i += CHUNK_SIZE)
@@ -69,17 +90,29 @@ async function fetchRawCounts(ids) {
 
 	const results = await Promise.all(
 		chunks.flatMap((chunk) => [
-			supabase
-				.from("reactions")
-				.select("target_id,kind")
-				.in("target_id", chunk),
-			supabase
-				.from("comments")
-				.select("post_id")
-				.in("post_id", chunk)
-				.eq("deleted", false)
-				.eq("hidden", false),
-			supabase.from("polls").select("id,post_id").in("post_id", chunk),
+			paged((page) =>
+				supabase
+					.from("reactions")
+					.select("target_id,kind")
+					.in("target_id", chunk)
+					.range(page * COUNT_PAGE, page * COUNT_PAGE + COUNT_PAGE - 1),
+			),
+			paged((page) =>
+				supabase
+					.from("comments")
+					.select("post_id")
+					.in("post_id", chunk)
+					.eq("deleted", false)
+					.eq("hidden", false)
+					.range(page * COUNT_PAGE, page * COUNT_PAGE + COUNT_PAGE - 1),
+			),
+			paged((page) =>
+				supabase
+					.from("polls")
+					.select("id,post_id")
+					.in("post_id", chunk)
+					.range(page * COUNT_PAGE, page * COUNT_PAGE + COUNT_PAGE - 1),
+			),
 		]),
 	);
 
@@ -117,10 +150,13 @@ async function fetchRawCounts(ids) {
 	const pvMap = {};
 	for (let i = 0; i < pollIds.length; i += CHUNK_SIZE) {
 		const chunk = pollIds.slice(i, i + CHUNK_SIZE);
-		const { data: votes } = await supabase
-			.from("poll_votes")
-			.select("poll_id")
-			.in("poll_id", chunk);
+		const { data: votes } = await paged((page) =>
+			supabase
+				.from("poll_votes")
+				.select("poll_id")
+				.in("poll_id", chunk)
+				.range(page * COUNT_PAGE, page * COUNT_PAGE + COUNT_PAGE - 1),
+		);
 		(votes || []).forEach((v) => {
 			pvMap[v.poll_id] = (pvMap[v.poll_id] || 0) + 1;
 		});

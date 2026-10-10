@@ -143,6 +143,8 @@ function chainFor(table: string): Chain {
 	const chain = {
 		op: "select",
 		filters: [] as Array<[string, unknown]>,
+		rangeFrom: null as number | null,
+		rangeTo: null as number | null,
 		select(_col?: unknown, opts?: unknown) {
 			if ((opts as { count?: string } | undefined)?.count === "exact")
 				this.op = "headCount";
@@ -168,6 +170,11 @@ function chainFor(table: string): Chain {
 			return this;
 		},
 		limit() {
+			return this;
+		},
+		range(from?: unknown, to?: unknown) {
+			if (typeof from === "number") this.rangeFrom = from;
+			if (typeof to === "number") this.rangeTo = to;
 			return this;
 		},
 		maybeSingle() {
@@ -225,7 +232,14 @@ function chainFor(table: string): Chain {
 				fn({ data: null, error: null, count: state.totalCount });
 				return;
 			}
-			fn({ data: rowsFor(table), error: null });
+			// Ranged reads slice (server page faithfulness); fixtures here
+			// are far below the page, so this is a no-op for these tests.
+			const allRows = rowsFor(table);
+			const out =
+				this.rangeFrom !== null && this.rangeTo !== null
+					? allRows.slice(this.rangeFrom, this.rangeTo + 1)
+					: allRows;
+			fn({ data: out, error: null });
 		},
 	};
 	return chain;

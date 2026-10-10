@@ -105,6 +105,7 @@ function chainFor(table: string) {
 		lt: vi.fn().mockReturnThis(),
 		order: vi.fn().mockReturnThis(),
 		limit: vi.fn().mockReturnThis(),
+		range: vi.fn().mockReturnThis(),
 		maybeSingle: vi.fn(async () => {
 			roundTrips.n++;
 			return { data: null, error: null };

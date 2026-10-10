@@ -27,6 +27,8 @@ function matches(row: Record<string, unknown>, conds: Cond[]) {
 
 function builder(table: string) {
 	const conds: Cond[] = [];
+	let rangeF: number | null = null;
+	let rangeT: number | null = null;
 	let updatePayload: Record<string, unknown> | null = null;
 	const rows = () =>
 		((store as Record<string, Record<string, unknown>[] | undefined>)[table] ??
@@ -49,6 +51,11 @@ function builder(table: string) {
 		gte: () => b,
 		order: () => b,
 		limit: () => b,
+		range: (f: number, t: number) => {
+			rangeF = f;
+			rangeT = t;
+			return b;
+		},
 		update: (payload: Record<string, unknown>) => {
 			updatePayload = payload;
 			return b;
@@ -68,11 +75,16 @@ function builder(table: string) {
 			// compares old and new values for notifications/auditing.
 			return { data: row ? { ...row } : null, error: null };
 		},
-		then: (resolve: (v: unknown) => void) =>
-			Promise.resolve({
-				data: rows().filter((r) => matches(r, conds)),
-				error: null,
-			}).then(resolve),
+		then: (resolve: (v: unknown) => void) => {
+			const matched = rows().filter((r) => matches(r, conds));
+			// Ranged reads slice (server page faithfulness); fixtures here
+			// are far below the page, so this is a no-op for these tests.
+			const out =
+				rangeF !== null && rangeT !== null
+					? matched.slice(rangeF, rangeT + 1)
+					: matched;
+			return Promise.resolve({ data: out, error: null }).then(resolve);
+		},
 	};
 	return b;
 }

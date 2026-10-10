@@ -100,6 +100,7 @@ interface Chain {
 	in: () => Chain;
 	order: () => Chain;
 	limit: () => Chain;
+	range: (from?: unknown, to?: unknown) => Chain;
 	maybeSingle: () => Chain;
 	single: () => Chain;
 	update: (patch: unknown) => Chain;
@@ -114,6 +115,8 @@ function chainFor(_table: string): Chain {
 	const chain = {
 		op: "select",
 		filters: [] as Array<[string, unknown]>,
+		rangeFrom: null as number | null,
+		rangeTo: null as number | null,
 		select() {
 			return this;
 		},
@@ -128,6 +131,11 @@ function chainFor(_table: string): Chain {
 			return this;
 		},
 		limit() {
+			return this;
+		},
+		range(from?: unknown, to?: unknown) {
+			if (typeof from === "number") this.rangeFrom = from;
+			if (typeof to === "number") this.rangeTo = to;
 			return this;
 		},
 		maybeSingle() {
@@ -194,7 +202,13 @@ function chainFor(_table: string): Chain {
 			const rows = (state.polls as Array<Record<string, unknown>>).filter((r) =>
 				this.filters.every(([col, val]) => r?.[col] === val),
 			);
-			fn({ data: rows, error: null });
+			// Ranged reads slice (server page faithfulness); fixtures here
+			// are far below the page, so this is a no-op for these tests.
+			const out =
+				this.rangeFrom !== null && this.rangeTo !== null
+					? rows.slice(this.rangeFrom, this.rangeTo + 1)
+					: rows;
+			fn({ data: out, error: null });
 		},
 	};
 	return chain;
