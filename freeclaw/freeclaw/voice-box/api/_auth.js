@@ -564,7 +564,17 @@ export async function rateLimited(table, authorId, seconds, limit) {
 //
 // Returns { ok: true, callerId } or { ok: false, status, error }.
 const SESSION_COOKIE = "vb_session";
-const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
+// Anonymous sessions NEVER expire server-side (continuity demand
+// 2026-10-10: an "ID expired" death orphans every vote, comment and
+// reaction the student made, and version updates correlate with long
+// absences, so expiry always struck on return). Theft protection rests
+// SOLELY on proof-of-possession: the 32-byte cookie token. A record row
+// (live, ancient, any age) with no presented cookie is denied and left
+// untouched — knowing the disclosed id alone never mints, rotates, or
+// revives anything.
+// Cookie Max-Age is 400 days (the most browsers honor); every valid
+// presentation re-issues it, so an active device's cookie never lapses.
+const SESSION_COOKIE_MAX_AGE_S = 400 * 24 * 60 * 60;
 // Ownership is proven EXCLUSIVELY by presenting the session token the server
 // minted for that id — never by the id alone, which is disclosed by design
 // (mentions, URLs). Consequences, all deliberate:
@@ -572,11 +582,12 @@ const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 //     means first contact) mints transparently: onboarding requires it, and
 //     there is nothing to steal on an id the server has never seen (ids carry
 //     ~72 bits of entropy; a victim's future id is unpredictable).
-//   - An id WITH a record row — live or long expired — is NEVER re-minted on
-//     claim. Minting over it would hand the identity to anyone who can read
-//     the id AND lock the real owner out (their valid cookie would then
-//     mismatch). Expired sessions stay dead; the owner starts a fresh
-//     anonymous id client-side while their old content stays published.
+//   - An id WITH a record row — any age, records never expire — is NEVER
+//     re-minted on claim. Minting over it would hand the identity to anyone
+//     who can read the id AND lock the real owner out (their valid cookie
+//     would then mismatch). A device that lost its cookie recovers through
+//     the user's own link code (Settings → link this device), never through
+//     re-minting: old content stays published under the same id.
 //   - The only rotation path is presenting a PREVIOUSLY valid token
 //     (record.th_prev, single slot): the losing side of a concurrent
 //     first-visit mint. A random wrong cookie matches nothing and is denied.
@@ -615,7 +626,7 @@ function readSessionCookie(cookieHeader) {
  * cookie back and every authed call 403s as session_unrecoverable after a
  * working mint. Exported for the desktop-cors regression tests. */
 export function setSessionCookie(res, token, req) {
-	const maxAge = Math.floor(SESSION_TTL_MS / 1000);
+	const maxAge = SESSION_COOKIE_MAX_AGE_S;
 	const proto = String(req?.headers?.["x-forwarded-proto"] || "").toLowerCase();
 	const origin = String(req?.headers?.origin || "");
 	const crossSite =
@@ -673,7 +684,6 @@ async function mintSession(res, req, id, now, prevRecord) {
 	await saveSessionRecord(id, {
 		th: sha256Hex(token),
 		...(prev?.th ? { th_prev: prev.th } : {}),
-		exp: now + SESSION_TTL_MS,
 		created_at: prev?.created_at || new Date(now).toISOString(),
 	});
 	setSessionCookie(res, token, req);
@@ -707,9 +717,6 @@ export async function verifyCallerIdentity(req, res, claimedUserId, opts = {}) {
 		return { ok: false, status: 503, error: "Session service unavailable" };
 	}
 
-	const recordExpired =
-		!record || !record.exp || Number(record.exp) <= now;
-
 	// No record row at all: first contact for this id. Mint transparently —
 	// onboarding requires it, and there is no prior session or data to steal
 	// (ids are client-generated ~72-bit randoms; a victim's future id is
@@ -731,18 +738,17 @@ export async function verifyCallerIdentity(req, res, claimedUserId, opts = {}) {
 		}
 	}
 
-	// A record EXISTS (live or expired) but no cookie was presented. The
-	// caller knows the (disclosed) id without holding the session token, so
-	// this is denied — minting or overwriting here would hand the identity
-	// to any reader of the id and lock the real owner out (their valid
-	// cookie would then mismatch). Exception: a record minted seconds ago
-	// whose Set-Cookie is still in flight — parallel first-load requests
-	// (heartbeat + notifications fired together) otherwise 403 spuriously
-	// before the browser stores the cookie. The window is 20s from FIRST
-	// mint (created_at is inherited, never extended), so established
-	// records never qualify and stolen-ID denial stays intact. Expired
-	// sessions are NOT self-healed: the owner starts a fresh anonymous id
-	// client-side while their old content stays published.
+	// A record EXISTS but no cookie was presented. The caller knows the
+	// (disclosed) id without holding the session token, so this is denied —
+	// minting or overwriting here would hand the identity to any reader of
+	// the id and lock the real owner out (their valid cookie would then
+	// mismatch). Records never expire, so age plays no part in this verdict.
+	// Exception: a record minted seconds ago whose Set-Cookie is still in
+	// flight — parallel first-load requests (heartbeat + notifications fired
+	// together) otherwise 403 spuriously before the browser stores the
+	// cookie. The window is 20s from FIRST mint (created_at is inherited,
+	// never extended), so established records never qualify and stolen-ID
+	// denial stays intact.
 	if (!cookieToken) {
 		const bornAt = Date.parse(record?.created_at || "") || 0;
 		if (bornAt > 0 && now - bornAt <= 20_000)
@@ -750,29 +756,18 @@ export async function verifyCallerIdentity(req, res, claimedUserId, opts = {}) {
 		return {
 			ok: false,
 			status: 403,
-			error: recordExpired
-				? "Session expired. Start a fresh anonymous ID to keep participating — your published posts stay up."
-				: "Invalid session identity",
+			error: "Invalid session identity",
 			code: "session_unrecoverable",
 		};
 	}
 
 	const presentedHash = sha256Hex(cookieToken);
 	if (record?.th && safeStringEqual(presentedHash, record.th)) {
-		// Valid session. Slide the expiry if it lapsed, re-issuing the
-		// cookie so browser Max-Age and server TTL stay in step.
-		if (recordExpired) {
-			try {
-				await saveSessionRecord(id, {
-					...record,
-					exp: now + SESSION_TTL_MS,
-				});
-				setSessionCookie(res, cookieToken, req);
-			} catch (err) {
-				console.error("[auth] session refresh failed:", err?.message || err);
-				return { ok: false, status: 503, error: "Session service unavailable" };
-			}
-		}
+		// Valid session. Re-issue the cookie on every presentation so its
+		// 400-day Max-Age slides forward while the device is active — an
+		// idle return months later still holds a live cookie. No DB write:
+		// there is no expiry left to extend.
+		setSessionCookie(res, cookieToken, req);
 		return { ok: true, callerId: id };
 	}
 
@@ -789,7 +784,6 @@ export async function verifyCallerIdentity(req, res, claimedUserId, opts = {}) {
 				...record,
 				th: sha256Hex(token),
 				th_prev: record.th,
-				exp: now + SESSION_TTL_MS,
 			});
 			setSessionCookie(res, token, req);
 			return { ok: true, callerId: id };

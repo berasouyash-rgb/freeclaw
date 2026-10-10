@@ -610,15 +610,15 @@ this device to the other identity after confirmation. */}
 							{linkError && <p className="text-[11px] text-bad mt-1.5" role="alert">{linkError}</p>}
 </div>
 
-{/* Session recovery: an expired or cleared session cannot
-								be restored server-side (doing so would let anyone
-								claim any ID), so the way back is a fresh ID. Old
-								posts stay published; this device simply stops
-								owning them. */}
+{/* Session recovery: sessions never expire — a dead session means
+								this device lost its proof (cleared data, reinstall). The way
+								back to the SAME id is the link code above; starting fresh
+								abandons the old id (its posts stay published, this device
+								simply stops owning them). */}
 							<ActionRow
 								icon={RotateCcw}
 								label="Start fresh with a new ID"
-								desc="If this device was ever signed out by an expired session, get a working identity again"
+								desc="If this device lost its session data, get a working identity again (prefer your link code above to keep your existing posts and votes)"
 								action="Start fresh"
 								onClick={() => setDialog("resetIdentity")}
 								variant="warning"

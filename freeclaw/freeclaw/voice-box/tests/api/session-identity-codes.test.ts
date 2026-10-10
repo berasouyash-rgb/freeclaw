@@ -16,9 +16,10 @@
 //     (boot-race grace: parallel first-load requests fire before the
 //     minter's Set-Cookie lands; no new cookie is issued so the in-flight
 //     mint stays authoritative)
-//   - expired record + no cookie → 403 "session_unrecoverable", record
-//     untouched. Expired sessions stay dead; the owner starts fresh
-//     client-side while old content stays published.
+//   - old record + no cookie → 403 "session_unrecoverable", record
+//     untouched. Records NEVER expire: age plays no part in the verdict —
+//     denial is by missing proof alone, and the owner recovers through
+//     their own link code, never through re-minting.
 //   - NO record row + no cookie → ok:true with a fresh Set-Cookie
 //     (first-visit onboarding; safe — session rows are never deleted, so
 //     "no record" means first contact, and ids are unpredictable).
@@ -186,16 +187,17 @@ describe("verifyCallerIdentity — 403 codes", () => {
     expect(out.code).toBe("invalid_identity");
   });
 
-  it("refuses an expired record with no cookie and never overwrites it", async () => {
-    // THE FIX for transparent takeover: an expired session used to be
+  it("refuses an old record with no cookie and never overwrites it", async () => {
+    // THE FIX for transparent takeover: an old session used to be
     // silently re-minted to whoever claimed the id — handing the identity
     // over AND locking the real owner out (their valid cookie would then
     // mismatch the attacker's hash). Now the record is left byte-identical
-    // and no cookie is issued.
+    // and no cookie is issued. Records never expire, so this holds at
+    // any age — the denial is by missing proof, not by elapsed time.
     const before = {
       th: sha("old-token"),
       exp: Date.now() - 1000,
-      created_at: new Date(Date.now() - 40 * 86400 * 1000).toISOString(),
+      created_at: new Date(Date.now() - 400 * 86400 * 1000).toISOString(),
     };
     state.settings[`session:${ID}`] = { ...before };
     const out = await verify(req());
@@ -204,6 +206,20 @@ describe("verifyCallerIdentity — 403 codes", () => {
     expect(out.code).toBe("session_unrecoverable");
     expect(state.settings[`session:${ID}`]).toEqual(before);
     expect(state.setCookies).toHaveLength(0);
+  });
+
+  it("never kills a session by age: ancient record + valid cookie still works", async () => {
+    // Continuity demand: no expiration date, ever. A record minted over
+    // a year ago with a long-lapsed exp answers fine while the holder
+    // proves possession — and the cookie is re-issued to slide Max-Age.
+    state.settings[`session:${ID}`] = {
+      th: sha("good-token"),
+      exp: Date.now() - 370 * 86400 * 1000,
+      created_at: new Date(Date.now() - 400 * 86400 * 1000).toISOString(),
+    };
+    const out = await verify(req(COOKIE));
+    expect(out.ok).toBe(true);
+    expect(state.setCookies.some((c) => c.startsWith("vb_session="))).toBe(true);
   });
 
   it("accepts a valid cookie", async () => {

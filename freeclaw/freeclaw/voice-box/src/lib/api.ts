@@ -1,6 +1,6 @@
 /** Thin fetch wrapper for Voice Flow API routes with offline queue for failed writes. */
 
-import { getAnonId } from "./identity";
+import { getAnonId, markIdentityUsed } from "./identity";
 import { apiBase } from "./platform";
 import { flushQueue, queueAction, queuedCount } from "./offline";
 import { errorText } from "./utils";
@@ -66,9 +66,11 @@ export function isSessionDeadError(err: unknown): boolean {
 }
 
 /** Actionable recovery text shown instead of the raw server error when the
- *  session is dead. Names the exact control that fixes it. */
+ *  session is dead. Names the exact controls that fix it. Sessions never
+ *  expire — a dead session means this device lost its proof (cleared data,
+ *  new install without a transfer), never elapsed time. */
 export const SESSION_DEAD_MESSAGE =
-	"Your anonymous session isn't recognized on this device anymore (it may have expired or been cleared). Your published posts stay up — to keep participating, reset your anonymous ID in Settings → Account → Start fresh.";
+	"Your anonymous session isn't recognized on this device anymore (its data was cleared). Your published posts stay up — recover the same ID with your link code in Settings → Account, or reset your anonymous ID there → Start fresh.";
 
 export function hasAdminSession(): boolean {
 	return !!adminToken();
@@ -244,6 +246,14 @@ async function request<T = unknown>(
 		aid = getAnonId() || "";
 		if (aid) headers["x-anon-id"] = aid;
 	} catch { /* identity module not ready */ }
+	// A mutating request issues server-side writes under this identity —
+	// a provisional (pre-hydration) id that owns fresh content must never
+	// be swapped out from under it (see convergeProvisional).
+	if (method !== "GET") {
+		try {
+			markIdentityUsed();
+		} catch { /* ignore */ }
+	}
 	const viewerKey = JSON.stringify([t ?? "", aid]);
 
 	// For GET requests: check cache, deduplicate in-flight

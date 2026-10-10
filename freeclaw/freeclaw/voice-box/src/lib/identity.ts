@@ -11,6 +11,7 @@
  */
 
 import { storeClear, storeGet, storeRemove, storeSet } from "./storage";
+import { storageBackend, storageReady } from "./storage";
 
 const ID_KEY = "vb:anonId";
 const CREATED_KEY = "vb:anonCreated";
@@ -26,6 +27,13 @@ const CREATED_KEY = "vb:anonCreated";
 // Non-critical JSON (queues, prefs) uses memory only so large values never
 // overflow a cookie's size limit.
 const mem = new Map<string, string>();
+
+// Provisional identity (slow-boot discipline): when the device backend is
+// unsettled and no id is readable anywhere, getAnonId mints memory-only.
+// Persisting a guess would overwrite the real id. convergeProvisional
+// settles it once the store is readable.
+let provisionalId: string | null = null;
+let provisionalUsed = false;
 
 function cookieName(key: string): string {
 	// Cookie names cannot contain ':' (RFC 6265 separator) — normalize it away.
@@ -105,8 +113,22 @@ function randomId(): string {
 }
 
 export function getAnonId(): string {
+	// A provisional id minted while the device store was still hydrating
+	// always converges first: hydration may have completed since (the 20s
+	// retry, a slow bridge answering late), and the durable id wins unless
+	// this session already wrote under the provisional one.
+	if (provisionalId) return convergeProvisional();
 	let id = readItem(ID_KEY);
 	if (!id) {
+		if (deviceBackendUnsettled()) {
+			// The durable id may exist but be unreadable yet (slow first
+			// boot after an update). Mint memory-only: persisting now would
+			// overwrite the real id with a temp and orphan every vote,
+			// comment and reaction the student made. convergeProvisional
+			// adopts the durable id (or persists this one) once known.
+			provisionalId = randomId();
+			return provisionalId;
+		}
 		id = randomId();
 		writeItem(ID_KEY, id);
 		writeItem(CREATED_KEY, new Date().toISOString());
@@ -117,10 +139,72 @@ export function getAnonId(): string {
 	return normalized;
 }
 
+/** True while the device store is the backend but its keys are not yet
+ *  readable — the window where minting a durable id would be a guess. */
+function deviceBackendUnsettled(): boolean {
+	try {
+		return storageBackend() === "device" && !storageReady();
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * Settle a provisional id against the now-readable device store. Returns
+ * the id to use from here on. Durable wins unless this session already
+ * wrote under the provisional one (then the provisional stays: switching
+ * would orphan the just-written content AND the durable content — the
+ * newest write wins and the loss is contained to the race window).
+ */
+function convergeProvisional(): string {
+	const current = provisionalId;
+	if (!current) return getAnonId();
+	try {
+		if (!storageReady()) return current;
+		const durable = readItem(ID_KEY);
+		if (durable && durable.toLowerCase() !== current.toLowerCase()) {
+			if (!provisionalUsed) {
+				provisionalId = null;
+				return durable.toLowerCase();
+			}
+			// Used provisional: keep it in memory only, never persist over
+			// the durable id. Next boot returns to the durable id; the few
+			// provisional writes orphan, exactly like today's worst case —
+			// now confined to the race window instead of every slow boot.
+			return current;
+		}
+		if (!durable) {
+			// True first launch on a device backend: the provisional id
+			// becomes the real one, persisted exactly once.
+			writeItem(ID_KEY, current);
+			writeItem(CREATED_KEY, new Date().toISOString());
+			provisionalId = null;
+			return current;
+		}
+		provisionalId = null;
+		return durable.toLowerCase();
+	} catch {
+		return current;
+	}
+}
+
+/**
+ * Marks the current identity as having issued a server-side write this
+ * session. Called by the api layer on every mutating request — lets a
+ * provisional id that already owns fresh content refuse to be swapped
+ * out from under it (see convergeProvisional).
+ */
+export function markIdentityUsed(): void {
+	provisionalUsed = true;
+}
+
 export function resetAnonId(): string {
 	const id = randomId();
 	writeItem(ID_KEY, id);
 	writeItem(CREATED_KEY, new Date().toISOString());
+	// An explicit reset is a settled decision, never provisional.
+	provisionalId = null;
+	provisionalUsed = false;
 	// ownership data belongs to the old ID — clear it
 	for (const k of [
 		"vb:bookmarks",
@@ -191,6 +275,9 @@ export function adoptIdentity(code: string): string | null {
 	const id = parseLinkCode(code);
 	if (!id) return null;
 	writeItem(ID_KEY, id);
+	// An explicit adoption is a settled decision, never provisional.
+	provisionalId = null;
+	provisionalUsed = false;
 	return id;
 }
 
@@ -199,6 +286,8 @@ export function anonCreatedAt(): string {
 }
 
 export function clearAllLocalData() {
+	provisionalId = null;
+	provisionalUsed = false;
 	// Clears the durable store as well — on the native shells that is the
 	// device's own storage, not just the WebView's localStorage, so "reset my
 	// data" is actually complete there.
@@ -214,6 +303,13 @@ export function clearAllLocalData() {
 		/* ignore */
 	}
 	mem.clear();
+}
+
+// ---------- test seam ----------
+/** Reset provisional module state between tests. */
+export function __resetIdentityForTests(): void {
+	provisionalId = null;
+	provisionalUsed = false;
 }
 
 // ---------- typed localStorage helpers ----------
