@@ -370,6 +370,35 @@ describe("POST /api/reactions — optimized toggle contract", () => {
 		).rejects.toThrow("insert blew up");
 	});
 
+	it("concurrent same-identity toggle (23505) succeeds — the reaction is already active", async () => {
+		// Web + app open on one identity fire two toggles in the same instant:
+		// both DELETEs find no row, both INSERT. The unique index
+		// reactions_target_author_kind_uidx turns the loser into a duplicate-key
+		// error, which means the winner already made THIS reaction active —
+		// exactly what toggle-ON wanted — so it must not surface as a 500.
+		deleteResult = [];
+		insertError = Object.assign(
+			new Error(
+				'duplicate key value violates unique constraint "reactions_target_author_kind_uidx"',
+			),
+			{ code: "23505" },
+		);
+		reactionsData = [{ kind: "support", author_id: "anon-1" }];
+		const { default: handler } = await import("../../api/_reactions.js");
+		const res = response();
+		await handler(
+			{ method: "POST", query: {}, body: body(), headers: { "x-anon-id": "anon-1" } },
+			res,
+		);
+
+		expect(res.statusCode).toBe(200);
+		expect(res.body).toEqual({
+			toggled: true,
+			counts: { support: 1 },
+			mine: ["support"],
+		});
+	});
+
 	it("still returns success when the counts query fails after a good toggle", async () => {
 		deleteResult = [];
 		countsError = new Error("counts blew up");

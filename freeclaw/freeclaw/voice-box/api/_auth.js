@@ -1,5 +1,5 @@
 // Shared helpers for Voice Flow API routes (underscore prefix = not exposed as a route)
-import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes, randomInt, timingSafeEqual } from "node:crypto";
 import supabase from "./_db-client.js";
 import { recordPendingDelivery } from "./_notification-delivery.js";
 import { PROFANITY, SLANG } from "./_wordlists.js";
@@ -243,9 +243,37 @@ export async function notifyUser(anonId, type, title, body) {
 				{ onConflict: "key" },
 			);
 	}
+	// Read-back proof: two surfaces acting at once (web + app, same id)
+	// can interleave read→append→upsert so one append silently loses.
+	// Re-read and confirm our entry id landed; a miss means we were
+	// overwritten mid-flight — retry the full flow exactly once.
+	async function stored() {
+		try {
+			const { data } = await supabase
+				.from("settings")
+				.select("value")
+				.eq("key", key)
+				.maybeSingle();
+			const notifications = data?.value?.notifications || [];
+			return notifications.some((n) => n && n.id === entry.id);
+		} catch {
+			return false;
+		}
+	}
 	try {
 		await storeOnce();
-		return true;
+		if (await stored()) return true;
+		notifyFailedCount += 1;
+		console.error("[auth] notifyUser lost update, retrying", { anonId, type });
+		await storeOnce();
+		if (await stored()) return true;
+		// Lost twice in a row: still not dropped — hand to the retry
+		// ledger like any other failed delivery.
+		notifyFailedCount += 1;
+		await recordPendingDelivery(anonId, entry, "notifyUser_lost_update").catch(
+			() => {},
+		);
+		return false;
 	} catch (e) {
 		notifyFailedCount += 1;
 		console.error("[auth] notifyUser failed", { anonId, type, error: e?.message || String(e) });
@@ -730,8 +758,8 @@ export async function verifyCallerIdentity(req, res, claimedUserId, opts = {}) {
 			} catch {
 				prev = null;
 			}
-			await mintSession(res, req, id, now, prev);
-			return { ok: true, callerId: id };
+			const token = await mintSession(res, req, id, now, prev);
+			return { ok: true, callerId: id, sessionToken: token };
 		} catch (err) {
 			console.error("[auth] session mint failed:", err?.message || err);
 			return { ok: false, status: 503, error: "Session service unavailable" };
@@ -768,7 +796,27 @@ export async function verifyCallerIdentity(req, res, claimedUserId, opts = {}) {
 		// idle return months later still holds a live cookie. No DB write:
 		// there is no expiry left to extend.
 		setSessionCookie(res, cookieToken, req);
-		return { ok: true, callerId: id };
+		return { ok: true, callerId: id, sessionToken: cookieToken };
+	}
+
+	// Multi-surface sessions: one anonymous id legitimately lives on
+	// several devices at once (web + app open together, same id, acting
+	// concurrently). Each surface holds its OWN token; all are listed in
+	// record.tokens and every listed token proves possession equally.
+	// Listed only by pairing (identity-link redeem), never by claim —
+	// presenting an unknown token still falls through to denial below.
+	if (Array.isArray(record?.tokens)) {
+		const hit = record.tokens.some(
+			(t) =>
+				t &&
+				typeof t.h === "string" &&
+				t.h.length === presentedHash.length &&
+				safeStringEqual(presentedHash, t.h),
+		);
+		if (hit) {
+			setSessionCookie(res, cookieToken, req);
+			return { ok: true, callerId: id, sessionToken: cookieToken };
+		}
 	}
 
 	// Previous-token recovery — the ONLY rotation path. A presenter holding a
@@ -786,7 +834,7 @@ export async function verifyCallerIdentity(req, res, claimedUserId, opts = {}) {
 				th_prev: record.th,
 			});
 			setSessionCookie(res, token, req);
-			return { ok: true, callerId: id };
+			return { ok: true, callerId: id, sessionToken: token };
 		} catch (err) {
 			console.error("[auth] session rotate failed:", err?.message || err);
 			return { ok: false, status: 503, error: "Session service unavailable" };
@@ -794,6 +842,163 @@ export async function verifyCallerIdentity(req, res, claimedUserId, opts = {}) {
 	}
 
 	return { ok: false, status: 403, error: "Invalid session identity", code: "session_unrecoverable" };
+}
+
+// ─── Cross-surface pairing (one id, many devices) ───────────────
+// A second surface (app next to web, new phone) holds the same anonymous
+// id but no session cookie — and minting on claim would hand the identity
+// to anyone who reads the id. So the surface that PROVES possession mints
+// a short single-purpose claim ticket; the new surface redeems it for its
+// OWN session token, appended to the id's token list. Nobody is rotated,
+// nobody is locked out, concurrent action just works.
+
+/** Claim tickets live 5 minutes and burn on first use. */
+export const CLAIM_TTL_MS = 5 * 60 * 1000;
+/** Max live session tokens per id (surfaces). Oldest drops past the cap. */
+export const MAX_SESSION_TOKENS = 8;
+/** Redeem attempts per code before it burns (brute-force throttle). */
+const CLAIM_MAX_ATTEMPTS = 10;
+
+function claimKey(code) {
+	return `claimticket:${code}`;
+}
+
+/**
+ * Mint a 6-digit pairing code for an id whose session the caller just
+ * proved (call verifyCallerIdentity first). `presenterToken` is the raw
+ * token verify returned — the presented cookie or the one it just minted
+ * (a brand-new surface issues its very first code in the same request).
+ * Returns { ok, code, expires_in } or { ok:false, status, error }.
+ */
+export async function createClaimTicket(anonId, presenterToken) {
+	const id = String(anonId || "").trim().toLowerCase();
+	if (!validAnonId(id)) return { ok: false, status: 403, error: "Invalid session identity" };
+	const presenter = String(presenterToken || "");
+	if (!presenter) return { ok: false, status: 403, error: "Invalid session identity" };
+	for (let i = 0; i < 5; i++) {
+		const code = String(randomInt(0, 1000000)).padStart(6, "0");
+		try {
+			const { data } = await supabase
+				.from("settings")
+				.select("value")
+				.eq("key", claimKey(code))
+				.maybeSingle();
+			if (data) continue; // collision — vanishingly rare, retry
+			const { error } = await supabase.from("settings").upsert(
+				{
+					key: claimKey(code),
+					value: {
+						anon_id: id,
+						issuer_th: sha256Hex(presenter),
+						created_at: new Date().toISOString(),
+						attempts: 0,
+					},
+				},
+				{ onConflict: "key" },
+			);
+			if (error) throw new Error(error.message || "claim store failed");
+			return { ok: true, code, expires_in: Math.floor(CLAIM_TTL_MS / 1000) };
+		} catch (err) {
+			console.error("[auth] claim issue failed:", err?.message || err);
+			return { ok: false, status: 503, error: "Claim service unavailable" };
+		}
+	}
+	return { ok: false, status: 503, error: "Claim service unavailable" };
+}
+
+/** Append a session token hash to an id's token list (capped). */
+async function appendSessionToken(id, tokenHash) {
+	const record = await loadSessionRecord(id);
+	const tokens = Array.isArray(record?.tokens) ? [...record.tokens] : [];
+	if (!tokens.some((t) => t && t.h === tokenHash)) {
+		tokens.push({ h: tokenHash, created_at: new Date().toISOString() });
+		while (tokens.length > MAX_SESSION_TOKENS) tokens.shift();
+	}
+	await saveSessionRecord(id, { ...(record || {}), tokens });
+}
+
+/**
+ * Redeem a pairing code from a NEW surface (no session needed — the code
+ * IS the authorization, shown only on the proven device). On success the
+ * caller adopts `anon_id` AND receives a live session cookie for it, so
+ * both surfaces act concurrently from the first tap. The ticket burns.
+ * Returns { ok, anon_id } or { ok:false, error }.
+ */
+export async function redeemClaimTicket(rawCode, res, req) {
+	const code = String(rawCode || "").replace(/\D/g, "").slice(0, 6);
+	if (code.length !== 6) return { ok: false, error: "Invalid pairing code" };
+	let row = null;
+	try {
+		const { data, error } = await supabase
+			.from("settings")
+			.select("value")
+			.eq("key", claimKey(code))
+			.maybeSingle();
+		if (!error) row = data?.value || null;
+	} catch {
+		return { ok: false, error: "Claim service unavailable" };
+	}
+	if (!row || typeof row !== "object") return { ok: false, error: "Invalid pairing code" };
+	const age = Date.now() - (Date.parse(row.created_at || "") || 0);
+	const burn = async () => {
+		try {
+			await supabase.from("settings").delete().eq("key", claimKey(code));
+		} catch {
+			/* burn is best-effort */
+		}
+	};
+	if (!(age >= 0 && age <= CLAIM_TTL_MS)) {
+		await burn();
+		return { ok: false, error: "Pairing code expired — issue a fresh one" };
+	}
+	const attempts = Number(row.attempts || 0);
+	if (attempts >= CLAIM_MAX_ATTEMPTS) {
+		await burn();
+		return { ok: false, error: "Invalid pairing code" };
+	}
+	const id = String(row.anon_id || "").trim().toLowerCase();
+	if (!validAnonId(id)) {
+		await burn();
+		return { ok: false, error: "Invalid pairing code" };
+	}
+	// The issuer must STILL hold a live session for this id: a code
+	// photographed off a screen keeps working for 5 minutes after the
+	// owner walks away otherwise. Proof-of-possession at redeem time.
+	try {
+		const record = await loadSessionRecord(id);
+		const issuerLive =
+			(record?.th && safeStringEqual(String(row.issuer_th || ""), record.th)) ||
+			(Array.isArray(record?.tokens) &&
+				record.tokens.some((t) => t && t.h === row.issuer_th));
+		if (!issuerLive) {
+			await burn();
+			return { ok: false, error: "Pairing code expired — issue a fresh one" };
+		}
+	} catch {
+		return { ok: false, error: "Claim service unavailable" };
+	}
+	// Count this attempt BEFORE minting so concurrent redeems cannot
+	// overshoot the cap silently; success burns the ticket outright below.
+	try {
+		await supabase
+			.from("settings")
+			.upsert(
+				{ key: claimKey(code), value: { ...row, attempts: attempts + 1 } },
+				{ onConflict: "key" },
+			);
+	} catch {
+		return { ok: false, error: "Claim service unavailable" };
+	}
+	try {
+		const token = randomBytes(32).toString("hex");
+		await appendSessionToken(id, sha256Hex(token));
+		await burn();
+		setSessionCookie(res, token, req);
+		return { ok: true, anon_id: id };
+	} catch (err) {
+		console.error("[auth] claim redeem failed:", err?.message || err);
+		return { ok: false, error: "Claim service unavailable" };
+	}
 }
 
 /**

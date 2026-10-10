@@ -1,4 +1,4 @@
-﻿import {
+import {
 	Accessibility,
 	Activity,
 	ArrowDownToLine,
@@ -438,9 +438,9 @@ export default function Layout() {
 			<div className="flex-1 flex flex-col min-w-0">
 				{/* Topbar */}
 				<header
-					className="sticky top-0 z-40 border-b border-border pt-[env(safe-area-inset-top)]"
-					style={{ background: "var(--vb-bg)" }}
-				>							<div className="flex items-center gap-3 px-4 sm:px-6 h-14" role="banner">
+					className="sticky top-0 z-40 border-b border-border/80 pt-[env(safe-area-inset-top)] bg-surface/85 backdrop-blur-md transition-colors duration-200"
+				>
+					<div className="flex items-center gap-3 px-4 sm:px-6 h-14" role="banner">
 						<button
 							className="lg:hidden btn btn-ghost !p-2"
 							onClick={() => setMobileOpen(true)}
@@ -500,15 +500,16 @@ export default function Layout() {
 						</span>
 						<div className="ml-auto flex items-center gap-1.5">
 							<button
-								className="hidden md:flex items-center gap-2 text-xs text-ink3 border border-border rounded-xl px-3 py-2 hover:border-accent hover:text-accent transition-colors"
+								className="hidden md:flex items-center gap-2 text-xs text-ink3 bg-surface2/60 border border-border/80 rounded-xl px-3 py-1.5 hover:border-accent/40 hover:bg-surface2 hover:text-ink transition-all shadow-xs"
 								onClick={() =>
 									window.dispatchEvent(
 										new KeyboardEvent("keydown", { key: "k", metaKey: true }),
 									)
 								}
 								aria-label="Open command palette"
-							>									<Search size={13} /> Search…{" "}
-									<kbd className="chip !text-[9px] !py-0" aria-label="Command K">⌘K</kbd>
+							>
+								<Search size={13} className="text-ink3" /> Search…{" "}
+								<kbd className="chip !text-[9px] !py-0 !bg-surface3/70 !border-border/60" aria-label="Command K">⌘K</kbd>
 							</button>
 							<Link
 								to="/submit"
@@ -689,12 +690,13 @@ export default function Layout() {
 				>
 					<InstallPrompt />
 					<Outlet />
-				</main>					{/* Mobile bottom nav — 6 tabs: Feed, Search, Submit, Inbox (with badge), Activity, Notifications */}
-					<						nav
-						className="vb-bottomnav lg:hidden fixed bottom-0 inset-x-0 z-40 border-t border-border flex pb-[max(env(safe-area-inset-bottom),0.75rem)]"
-						style={{ background: "var(--vb-surface)" }}
-						aria-label="Mobile navigation"
-					>
+				</main>
+
+				{/* Mobile bottom nav — 6 tabs: Feed, Search, Submit, Inbox (with badge), Activity, Notifications */}
+				<nav
+					className="vb-bottomnav lg:hidden fixed bottom-0 inset-x-0 z-40 border-t border-border/80 flex pb-[max(env(safe-area-inset-bottom),0.75rem)] bg-surface/90 backdrop-blur-xl shadow-lg transition-colors duration-200"
+					aria-label="Mobile navigation"
+				>
 						{[
 							{ to: "/", label: "Feed", icon: Home },
 							{ to: "/search", label: "Search", icon: Search },

@@ -113,7 +113,22 @@ export default async function handler(req, res) {
 				const { error: insError } = await supabase
 					.from("reactions")
 					.insert({ target_id, target_type, author_id, kind });
-				if (insError) throw insError;
+				// Race safety (same model as _polls.js): web + app open on one
+				// identity can fire two toggles in the same instant — both
+				// DELETEs see no row and both INSERT. The unique index
+				// reactions_target_author_kind_uidx turns the loser into a
+				// duplicate-key error, which means the winner already made
+				// THIS exact reaction active — precisely the state a toggle-ON
+				// wanted — so swallow it and report success instead of a 500
+				// the user can do nothing about (the row is already there).
+				// Any other insert error still throws: no fake success.
+				const duplicate =
+					insError &&
+					(insError.code === "23505" ||
+						/duplicate key|unique constraint/i.test(
+							String(insError.message || ""),
+						));
+				if (insError && !duplicate) throw insError;
 			}
 			// The feed's derived counts are behind a 3s/6s stale-while-revalidate
 			// cache (api/_counts.js). Without this, a toggle would stay invisible to

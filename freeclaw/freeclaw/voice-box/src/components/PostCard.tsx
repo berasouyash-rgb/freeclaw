@@ -335,41 +335,42 @@ function PostCardInner({ post, myReactions, onReacted, pollData, myPollVote, onP
 							>
 								<Lock size={11} /> Private · admins only
 							</span>
-						)}							<span className="chip">{post.category}</span>
-							<span
-								className="chip"
-								title={
-									post.type === "suggestion"
-										? "Suggestion — an idea, not a complaint"
-										: post.type === "poll"
-											? "Poll — vote, not a complaint"
-											: "Problem — a complaint needing a fix"
-								}
-							>
-								{post.type === "suggestion"
-									? "Suggestion"
-									: post.type === "poll"
-										? "Poll"
-										: "Problem"}
-							</span>
+						)}
+						<span className="chip">{post.category}</span>
 						<span
-						className="chip"
-						style={{
-							color: status.color,
-							borderColor: `color-mix(in srgb, ${status.color} 27%, transparent)`,
-						}}
+							className="chip"
+							title={
+								post.type === "suggestion"
+									? "Suggestion — an idea, not a complaint"
+									: post.type === "poll"
+										? "Poll — vote, not a complaint"
+										: "Problem — a complaint needing a fix"
+							}
 						>
-						{post.status === "solved" && <CheckCircle2 size={11} />}{" "}
-						{status.label}
+							{post.type === "suggestion"
+								? "Suggestion"
+								: post.type === "poll"
+									? "Poll"
+									: "Problem"}
+						</span>
+						<span
+							className="chip"
+							style={{
+								color: status.color,
+								borderColor: `color-mix(in srgb, ${status.color} 27%, transparent)`,
+							}}
+						>
+							{post.status === "solved" && <CheckCircle2 size={11} />}{" "}
+							{status.label}
 						</span>
 						{post.deleted && (
 							<span
-							className="chip"
-							style={{
-								color: "var(--vb-ink3)",
-								borderColor: "color-mix(in srgb, var(--vb-ink3) 27%, transparent)",
-							}}
-							title="This post was deleted by its author"
+								className="chip"
+								style={{
+									color: "var(--vb-ink3)",
+									borderColor: "color-mix(in srgb, var(--vb-ink3) 27%, transparent)",
+								}}
+								title="This post was deleted by its author"
 							>
 								Deleted by user
 							</span>
@@ -398,9 +399,10 @@ function PostCardInner({ post, myReactions, onReacted, pollData, myPollVote, onP
 					>
 						<h3 className="font-display font-semibold text-[15px] sm:text-base leading-snug break-words group-hover:text-accent transition-colors duration-200">
 							{post.title}
-						</h3>							<p className="text-sm text-ink2 mt-1.5 line-clamp-2 leading-relaxed break-words">
-								{post.description}
-							</p>
+						</h3>
+						<p className="text-sm text-ink2 mt-1.5 line-clamp-2 leading-relaxed break-words">
+							{post.description}
+						</p>
 							{post.ai_summary && (
 								<p className="text-xs text-accent mt-2 flex items-center gap-1.5 bg-accent/5 rounded-lg px-2.5 py-1.5">
 									<Sparkles size={11} className="shrink-0" />

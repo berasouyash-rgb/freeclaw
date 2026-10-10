@@ -222,10 +222,15 @@ export function resetAnonId(): string {
 // Browser localStorage, the APK's native store, and the EXE's userData file
 // are separate silos BY OPERATING-SYSTEM DESIGN — no code can silently share
 // one ID between Chrome and the app on the same phone. The honest bridge is
-// explicit and user-driven: device A shows a short link code, the student
-// types it into device B, and B adopts A's identity (same posts, same votes,
-// same ownership). Anyone holding the code owns the identity, so it is
-// shown only on explicit tap with a warning, never rendered by default.
+// explicit and user-driven: a proven device shows a 6-digit pairing code
+// (a server ticket), the student types it into device B, and the server
+// hands B the same ID *and* a live session for it — both surfaces then act
+// as one identity concurrently (POST /api/identity-link). The VF link code
+// below only ENCODES the id: it is verification (compare across devices),
+// never a session — id knowledge alone must not mint one, or a leaked id
+// would take the identity over. Adopting an id locally (adoptIdentity*)
+// therefore only ever writes storage; the server session is established by
+// pairing (see adoptIdentityById's caller, Settings → pairing redeem).
 const LINK_PREFIX = "VF";
 
 function linkChecksum(payload: string): string {
@@ -266,19 +271,37 @@ export function parseLinkCode(code: string): string | null {
 }
 
 /**
+ * Adopt an identity the SERVER just confirmed via pairing redeem. Same
+ * storage rules as adoptIdentity: the old local id is abandoned, so the
+ * confirm UI must say so before calling this — and by then the response
+ * has already set this device's session cookie for the adopted id.
+ * Returns the adopted id, or null when the server's id is malformed
+ * (nothing changes).
+ */
+export function adoptIdentityById(id: string): string | null {
+	const normalized = String(id || "").trim().toLowerCase();
+	if (!/^anon_[a-z0-9]+$/.test(normalized)) return null;
+	writeItem(ID_KEY, normalized);
+	// An explicit adoption is a settled decision, never provisional.
+	provisionalId = null;
+	provisionalUsed = false;
+	return normalized;
+}
+
+/**
  * Adopt another device's identity (from a verified link code). Returns the
  * adopted id, or null when the code is invalid (nothing changes). The old
  * local id is abandoned: its published content stays up, but this device
  * stops owning it — the confirm UI must say so before calling this.
+ * NOTE: this swaps STORAGE only. A device that adopts an id it has no
+ * session for is denied every write by the server (proof-of-possession),
+ * so the live pairing flow (Settings → /api/identity-link redeem) is the
+ * only path that makes the adopted identity usable.
  */
 export function adoptIdentity(code: string): string | null {
 	const id = parseLinkCode(code);
 	if (!id) return null;
-	writeItem(ID_KEY, id);
-	// An explicit adoption is a settled decision, never provisional.
-	provisionalId = null;
-	provisionalUsed = false;
-	return id;
+	return adoptIdentityById(id);
 }
 
 export function anonCreatedAt(): string {

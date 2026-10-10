@@ -70,7 +70,7 @@ export function isSessionDeadError(err: unknown): boolean {
  *  expire — a dead session means this device lost its proof (cleared data,
  *  new install without a transfer), never elapsed time. */
 export const SESSION_DEAD_MESSAGE =
-	"Your anonymous session isn't recognized on this device anymore (its data was cleared). Your published posts stay up — recover the same ID with your link code in Settings → Account, or reset your anonymous ID there → Start fresh.";
+	"Your anonymous session isn't recognized on this device anymore (its data was cleared). Your published posts stay up — recover the same ID by pairing from Settings → Account, or reset your anonymous ID there → Start fresh.";
 
 export function hasAdminSession(): boolean {
 	return !!adminToken();

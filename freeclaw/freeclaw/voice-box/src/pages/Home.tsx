@@ -1309,23 +1309,25 @@ export default function Home() {
 						<PlusCircle size={15} /> Share an update
 					</Link>
 				</div>
-			)}					<div className="space-y-3 vb-feed-list">
-						{filtered.map((p, i) => (
-							<div
-								key={p.id}
-								className={mobileApp ? "vb-feed-item" : undefined}
-								{...(i === 0 ? { "data-tour": "post-card" } : {})}
-							>
-											<PostCard
-										post={p}
-										myReactions={myReactions[p.id]}
-										pollData={p.linked_poll ? pollsMap[p.linked_poll] ?? null : null}
-										myPollVote={p.linked_poll ? myPollVotes[p.linked_poll] : undefined}
-										onPollVoted={() => fetchPolls(posts)}
-									/>
-							</div>
-						))}
+			)}
+
+			<div className="space-y-3 vb-feed-list">
+				{filtered.map((p, i) => (
+					<div
+						key={p.id}
+						className={mobileApp ? "vb-feed-item" : undefined}
+						{...(i === 0 ? { "data-tour": "post-card" } : {})}
+					>
+						<PostCard
+							post={p}
+							myReactions={myReactions[p.id]}
+							pollData={p.linked_poll ? pollsMap[p.linked_poll] ?? null : null}
+							myPollVote={p.linked_poll ? myPollVotes[p.linked_poll] : undefined}
+							onPollVoted={() => fetchPolls(posts)}
+						/>
 					</div>
+				))}
+			</div>
 
 		{/* Sitewide footer - about, anonymity explainer, real links. */}
 		<SiteFooter />

@@ -34,13 +34,12 @@ import {
 	requestBrowserNotifyPermission,
 	showBrowserNotification,
 } from "../lib/browserNotify";
-import { api } from "../lib/api";
+import { api, isSessionDeadError } from "../lib/api";
 import { sendNotificationEmail } from "../lib/email";
 import {
-	adoptIdentity,
+	adoptIdentityById,
 	createLinkCode,
 	getDisplayName,
-	parseLinkCode,
 	resetAnonId,
 } from "../lib/identity";
 import {
@@ -88,10 +87,61 @@ export default function Settings() {
 
 	// Identity linking: one ID across this student's browser, APK, and EXE.
 	// Storage silos are OS-segregated, so linking is explicit and typed.
+	// Pairing is the live path: a proven session mints a 6-digit code
+	// (5-minute server ticket), and redeeming it hands the other surface
+	// the id AND its own session cookie — both act as one identity at the
+	// same time. The VF link code reveal below is verification only.
+	const [pairCode, setPairCode] = useState("");
+	const [pairBusy, setPairBusy] = useState(false);
 	const [linkRevealed, setLinkRevealed] = useState(false);
 	const [linkInput, setLinkInput] = useState("");
 	const [linkError, setLinkError] = useState("");
 	const photoRef = useRef<HTMLInputElement | null>(null);
+
+	// Issue: this device must hold a live session (the server proves it
+	// before minting the ticket). A session-dead device can't issue — it
+	// is the one that should redeem a code from a healthy device instead.
+	const showPairingCode = async () => {
+		setPairBusy(true);
+		setLinkError("");
+		try {
+			const out = await api.post<{ code?: string }>("/api/identity-link", {
+				action: "issue",
+			});
+			if (!out?.code) throw new Error("no code");
+			setPairCode(out.code);
+		} catch (e) {
+			setLinkError(
+				isSessionDeadError(e)
+					? "This device has no active session to pair FROM — get a pairing code from another device that still holds this ID and type it below."
+					: "Couldn't get a pairing code right now — try again in a moment.",
+			);
+		} finally {
+			setPairBusy(false);
+		}
+	};
+
+	// Redeem input gate: the code is exactly 6 digits (anything else is a
+	// mistype or a VF identity code, which is verification only). The
+	// network call happens after the confirm dialog — a cancelled dialog
+	// must not have touched the server or this device's id.
+	const startPairing = () => {
+		const raw = linkInput.trim();
+		if (/^VF-/i.test(raw)) {
+			setLinkError(
+				"That's an identity code — pairing uses the 6-digit code from Show my pairing code.",
+			);
+			return;
+		}
+		if (!/^\d{6}$/.test(raw)) {
+			setLinkError(
+				"Pairing codes are 6 digits — type the code shown on your other device.",
+			);
+			return;
+		}
+		setLinkError("");
+		setDialog("adoptIdentity");
+	};
 
 	// Notification preferences (stored in localStorage)
 	const [notifPrefs, setNotifPrefs] = useState(() => {
@@ -576,9 +626,12 @@ export default function Settings() {
 								</p>
 							</div>
 
-							{/* Identity linking — one ID on every device. Showing the code is
-explicit (anyone holding it owns this identity); adopting swaps
-this device to the other identity after confirmation. */}
+							{/* Cross-device pairing — the live link. A proven session mints a
+6-digit code (5-minute server ticket); redeeming it on another
+surface returns the same id AND a session cookie, so web + app act
+as one identity concurrently. The VF identity code below is
+verification only: it encodes the id but never establishes a
+session (id knowledge alone must not take the identity over). */}
 <div className="p-4 rounded-xl border border-border bg-surface2/50">
 							<div className="flex items-center gap-2 mb-2">
 								<Shield size={14} className="text-accent" />
@@ -587,38 +640,51 @@ this device to the other identity after confirmation. */}
 								</span>
 							</div>
 							<p className="text-xs text-ink3 mb-2">
-								Your browser, the Android app, and the Windows app each keep a separate ID. To unite them, show the code here and type it on the other device.
+								Your browser, the Android app, and the Windows app each keep a separate ID. To unite them: press Show my pairing code on one device and type that 6-digit code below — both then act as the same identity at the same time.
 							</p>
-							{!linkRevealed ? (
-								<button type="button" className="btn btn-ghost !py-2 !px-4 !text-xs" onClick={() => setLinkRevealed(true)}>
-									Show my link code
+							{!pairCode ? (
+								<button type="button" className="btn btn-ghost !py-2 !px-4 !text-xs" disabled={pairBusy} onClick={() => void showPairingCode()}>
+									{pairBusy ? "Requesting…" : "Show my pairing code"}
 								</button>
 							) : (
-								<div className="rounded-lg bg-bg border border-warn/30 px-3 py-2.5">
-									<p className="font-mono text-sm font-bold tracking-wider text-ink break-all" aria-label="Your identity link code">
-										{createLinkCode(anonId) ?? "Unavailable"}
+								<div className="rounded-lg bg-bg border border-accent/30 px-3 py-2.5">
+									<p className="font-mono text-lg font-bold tracking-[0.3em] text-ink" aria-label="Your pairing code">
+										{pairCode}
 									</p>
-									<p className="text-[11px] text-warn mt-1">Anyone with this code owns your posts and votes. Share it only with yourself.</p>
+									<p className="text-[11px] text-warn mt-1">Valid for 5 minutes. Type it on your other device — whoever enters it joins this identity.</p>
 								</div>
 							)}
 							<div className="flex gap-2 mt-2">
-								<input value={linkInput} onChange={(e) => { setLinkInput(e.target.value); setLinkError(""); }} placeholder="Type a link code, e.g. VF-AB12-CD34-EF" maxLength={40} className="input !py-2 !text-sm flex-1 font-mono" aria-label="Identity link code" />
-								<button type="button" className="btn btn-soft !py-2 !px-4 !text-xs" onClick={() => { const parsed = parseLinkCode(linkInput); if (!parsed) { setLinkError("That code doesn't look right — check each character and try again."); return; } if (parsed === anonId) { setLinkError("That's already this device's ID."); return; } setLinkError(""); setDialog("adoptIdentity"); }}>
-									Link this device
+								<input value={linkInput} onChange={(e) => { setLinkInput(e.target.value); setLinkError(""); }} placeholder="6-digit pairing code" maxLength={6} inputMode="numeric" className="input !py-2 !text-sm flex-1 font-mono" aria-label="Pairing code" />
+								<button type="button" className="btn btn-soft !py-2 !px-4 !text-xs" onClick={startPairing}>
+									Pair this device
 								</button>
 							</div>
 							{linkError && <p className="text-[11px] text-bad mt-1.5" role="alert">{linkError}</p>}
+							{!linkRevealed ? (
+								<button type="button" className="btn btn-ghost !py-2 !px-4 !text-xs mt-2" onClick={() => setLinkRevealed(true)}>
+									Show my identity code
+								</button>
+							) : (
+								<div className="rounded-lg bg-bg border border-warn/30 px-3 py-2.5 mt-2">
+									<p className="font-mono text-sm font-bold tracking-wider text-ink break-all" aria-label="Your identity link code">
+										{createLinkCode(anonId) ?? "Unavailable"}
+									</p>
+									<p className="text-[11px] text-warn mt-1">Verification only — matching codes on two devices mean they share one ID. Linking happens with the pairing code above; keep this one private.</p>
+								</div>
+							)}
 </div>
 
 {/* Session recovery: sessions never expire — a dead session means
 								this device lost its proof (cleared data, reinstall). The way
-								back to the SAME id is the link code above; starting fresh
-								abandons the old id (its posts stay published, this device
-								simply stops owning them). */}
+								back to the SAME id is a pairing code from another device
+								that still holds it (above); starting fresh abandons the
+								old id (its posts stay published, this device simply stops
+								owning them). */}
 							<ActionRow
 								icon={RotateCcw}
 								label="Start fresh with a new ID"
-								desc="If this device lost its session data, get a working identity again (prefer your link code above to keep your existing posts and votes)"
+								desc="If this device lost its session data, get a working identity again (prefer a pairing code from another device above to keep your existing posts and votes)"
 								action="Start fresh"
 								onClick={() => setDialog("resetIdentity")}
 								variant="warning"
@@ -883,21 +949,50 @@ this device to the other identity after confirmation. */}
 			{dialog === "adoptIdentity" && (
 	<ConfirmDialog
 		open
-		title="Link this device to another ID?"
-		message="This device will adopt the linked identity — its posts, votes, and ownership move here. This device's current ID is abandoned (its published content stays up, but unmanaged). This cannot be undone from here."
-		confirmLabel="Link devices"
+		title="Pair this device with that ID?"
+		message="This device will adopt the linked identity — its posts, votes, and ownership move here. This device's current ID is abandoned (its published content stays up, but unmanaged). Both devices then act as one identity at the same time. This cannot be undone from here."
+		confirmLabel="Pair devices"
 		onConfirm={() => {
-			const adopted = adoptIdentity(linkInput);
-			if (!adopted) {
-				setLinkError("That code doesn't look right — check each character and try again.");
-				setDialog(null);
-				return;
-			}
-			setLinkInput("");
-			setLinkRevealed(false);
+			// Redeem is the ONLY adoption that yields a live session: the
+			// server hands back the id together with a Set-Cookie for it.
+			// Close first, then run the network call — cancel means no
+			// request was ever sent and this device's id is untouched.
+			const code = linkInput.trim();
 			setDialog(null);
-			refreshIdentity();
-			toast("Devices linked — one ID everywhere now", "ok");
+			void (async () => {
+				try {
+					const out = await api.post<{ ok?: boolean; anon_id?: string }>(
+						"/api/identity-link",
+						{ action: "redeem", code },
+					);
+					const adopted = out?.anon_id ? adoptIdentityById(out.anon_id) : null;
+					if (!adopted) {
+						setLinkError(
+							"That pairing code didn't work — codes expire after 5 minutes. Show a fresh one on the other device and try again.",
+						);
+						return;
+					}
+					// A ticket issued BEFORE this adoption is bound to the old
+					// id — leaving it visible would let the user link another
+					// surface to an identity this device just abandoned.
+					setPairCode("");
+					setLinkInput("");
+					setLinkRevealed(false);
+					refreshIdentity();
+					toast(
+						adopted === anonId
+							? "This device already uses that ID — session restored"
+							: "Devices linked — one ID everywhere now",
+						"ok",
+					);
+				} catch (e) {
+					setLinkError(
+						e instanceof Error && e.message
+							? e.message
+							: "Pairing failed — check the code and try again.",
+					);
+				}
+			})();
 		}}
 		onClose={() => setDialog(null)}
 	/>
