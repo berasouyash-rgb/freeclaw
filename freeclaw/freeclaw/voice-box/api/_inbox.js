@@ -486,7 +486,7 @@ export async function contextualTriageUpgrade(text, triage) {
 }
 /** File the triage finding as a real report row (never strikes anyone —
  *  target_type "inbox" resolves to no author, so enforceStrike can't fire). */
-export { triageInboxMessage, fileInboxReport, classifyEmotion, generateReply, summarizeThread, isSummaryStale, postIntent, sanitizeDraft, EMOTION_LEXICON };
+export { triageInboxMessage, fileInboxReport, classifyEmotion, generateReply, summarizeThread, isSummaryStale, postIntent, sanitizeDraft, shouldSuggestDraft, EMOTION_LEXICON };
 async function fileInboxReport({ threadId, body, triage }) {
 	const since = new Date(Date.now() - 3600000).toISOString();
 	const { data: existing } = await supabase
@@ -581,6 +581,27 @@ const DRAFT_CATEGORIES = [
 function postIntent(text) {
   const t = String(text || "").toLowerCase();
   return POST_INTENT.some((re) => re.test(t));
+}
+
+/**
+ * Proactive-suggest decision: should this message raise the "generate a
+ * complaint?" nudge? Pure (unit-tested like postIntent/sanitizeDraft).
+ *
+ * True ONLY when a problem was described with NO explicit post-intent words
+ * (explicit intent belongs to the full-draft path), no proposal is open, and
+ * no prior suggestion outcome exists. A null/unknown state fails closed
+ * (never nag blindly); an empty known-clean state decides normally.
+ * Suggesting is not drafting: no content is generated here, so nothing can
+ * be fabricated — the student tap does that explicitly via request_own_draft.
+ */
+function shouldSuggestDraft(isProblem, text, state) {
+  if (!isProblem) return false;
+  if (postIntent(text)) return false;
+  if (!state || typeof state !== "object") return false;
+  if (state.draft_proposal?.status === "proposed") return false;
+  const s = state.draft_suggestion?.status;
+  if (s === "suggested" || s === "dismissed" || s === "accepted") return false;
+  return true;
 }
 
 function sanitizeDraft(parsed) {
@@ -1437,6 +1458,45 @@ export default async function handler(req, res) {
 				return res.status(200).json({ ...result, server_ms: Date.now() - postStart });
 			}
 
+			// ── Student taps Generate on the "generate a complaint?" nudge ──
+			// Ownership proof happens HERE (same gate as accept_own_draft):
+			// the tap is the explicit intent the nudge was waiting for, so
+			// generation runs through the SAME proposeDraft pipeline (with
+			// its dedupe) as every other trigger — never a shadow path.
+			if (!admin && b.action === "request_own_draft") {
+				const caller = await verifyCallerIdentity(req, res, threadId);
+				if (!caller.ok) return res.status(caller.status || 403).json({ error: caller.error, code: caller.code });
+				const { proposal, deduped } = await proposeDraft(threadId, "student-accepted-suggestion");
+				if (!proposal) return res.status(200).json({ ok: true, draft_proposed: false, draft: null, deduped: !!deduped, server_ms: Date.now() - postStart });
+				// Consume the suggestion only on success: a failed generation
+				// leaves it live so the student can retry from the nudge.
+				try {
+					const s = await getThreadState(threadId);
+					await setThreadState(threadId, {
+						...s,
+						draft_suggestion: { status: "accepted", at: new Date().toISOString() },
+					});
+				} catch (suggErr) {
+					console.error("[inbox] suggestion accept-state failed (non-fatal):", suggErr.message);
+				}
+				return res.status(200).json({ ok: true, draft_proposed: true, draft: proposal, deduped: !!deduped, server_ms: Date.now() - postStart });
+			}
+
+			// ── Student taps Not now on the nudge ──
+			// Owner-proofed like every other state mutation here, and
+			// idempotent: dismissing twice (or dismissing with nothing
+			// pending) still succeeds so the client stays simple.
+			if (!admin && b.action === "dismiss_draft_suggestion") {
+				const caller = await verifyCallerIdentity(req, res, threadId);
+				if (!caller.ok) return res.status(caller.status || 403).json({ error: caller.error, code: caller.code });
+				const s = await getThreadState(threadId);
+				await setThreadState(threadId, {
+					...s,
+					draft_suggestion: { status: "dismissed", at: new Date().toISOString() },
+				});
+				return res.status(200).json({ ok: true, server_ms: Date.now() - postStart });
+			}
+
 
 			// ── Owner/admin thread delete: the student clears their own inbox,
 			// an admin clears any thread. Owner threads are keyed by the caller's
@@ -1900,6 +1960,34 @@ export default async function handler(req, res) {
 			}
 		}
 
+		// Proactive suggest: a described problem with NO explicit post-intent
+		// raises the "generate a complaint?" nudge instead of a draft — the
+		// student decides with a tap (request_own_draft), so intent is never
+		// inferred. Same AI gates as auto-propose, same best-effort posture,
+		// at most one live suggestion per thread (dismiss/accept ends it).
+		let draftSuggested = false;
+		try {
+			const suggestState = await getThreadState(threadId).catch(() => null);
+			if (shouldSuggestDraft(triage.isProblem, body, suggestState)) {
+				const prefsSuggest = await getNotifyPrefs(threadId).catch(() => null);
+				const aiOnSuggest = (!prefsSuggest || prefsSuggest.ai_chat_enabled !== false) && (await getInboxAiConfig()).enabled;
+				if (aiOnSuggest) {
+					await setThreadState(threadId, {
+						...(suggestState || {}),
+						draft_suggestion: { status: "suggested", at: new Date().toISOString() },
+					});
+					try {
+						await auditLog("inbox", "draft_suggested", `Thread ${threadId}`);
+					} catch {
+						/* audit is best-effort */
+					}
+					draftSuggested = true;
+				}
+			}
+		} catch (suggestErr) {
+			console.error("[inbox] draft suggest failed (non-fatal):", suggestErr.message);
+		}
+
 			// ── AI-mode gate ─────────────────────────────────────────
 			// The user can turn AI auto-replies off for their own inbox
 			// (notify_prefs.ai_chat_enabled) and admins can disable them
@@ -1937,6 +2025,7 @@ export default async function handler(req, res) {
 					ai_mode: false,
 					triage: triageOut,
 					draft_proposed: false,
+					draft_suggested: false,
 				server_ms: Date.now() - postStart,
 				});
 			}
@@ -2069,6 +2158,7 @@ export default async function handler(req, res) {
 					engine: replyResult.engine || "unknown",
 					triage: triageOut,
 					draft_proposed: draftProposed,
+					draft_suggested: draftSuggested,
 				server_ms: Date.now() - postStart,
 				draft: draftProposal,
 				});
@@ -2118,6 +2208,7 @@ export default async function handler(req, res) {
 					ai_error: aiErr.message,
 					triage: triageOut,
 					draft_proposed: draftProposed,
+					draft_suggested: draftSuggested,
 				server_ms: Date.now() - postStart,
 				draft: draftProposal,
 				});

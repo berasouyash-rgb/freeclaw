@@ -37,7 +37,11 @@ import type { ChatMessage } from "../types";
 interface InboxResponse {
 	messages: ChatMessage[];
 	thread: { thread_id: string; status: string };
-	state?: { agent?: string };
+	state?: {
+		agent?: string;
+		draft_proposal?: { status?: string; title?: string; description?: string; category?: string };
+		draft_suggestion?: { status?: string };
+	};
 	title?: string;
 }
 
@@ -118,6 +122,16 @@ export default function UserChat() {
 	const [pendingDraft, setPendingDraft] = useState<{ title: string; description: string; category: string } | null>(null);
 	const [draftVisibility, setDraftVisibility] = useState<"private" | "public">("private");
 	const [draftBusy, setDraftBusy] = useState(false);
+	// Proactive nudge ("Would you like me to generate a complaint?") shown
+	// when the server suggests a draft for a described problem. Generate
+	// reuses the draft card below (with its private/public choice); Not now
+	// dismisses server-side so the nudge never returns for this thread.
+	const [showNudge, setShowNudge] = useState(false);
+	const [nudgeBusy, setNudgeBusy] = useState(false);
+	// Local Dismiss of the draft card must survive the next load(): the
+	// server proposal stays open until accepted, and load() restores open
+	// proposals (reload-loss fix) — without this the card would resurrect.
+	const draftDismissedRef = useRef(false);
 	const acceptDraftCard = async () => {
 		if (!pendingDraft || draftBusy) return;
 		setDraftBusy(true);
@@ -140,6 +154,55 @@ export default function UserChat() {
 			toast(e instanceof Error ? e.message : "Could not publish — try again", "err");
 		} finally {
 			setDraftBusy(false);
+		}
+	};
+	// Nudge actions: Generate runs the shared server pipeline through an
+	// explicit tap (the draft card takes over from there, with its
+	// private/public choice); Not now dismisses server-side so the nudge
+	// never returns for this thread. Both hide the card instantly; failures
+	// surface honestly and the next load converges from server truth.
+	const generateFromNudge = async () => {
+		if (nudgeBusy) return;
+		setNudgeBusy(true);
+		try {
+			const res = await api.postInbox<{
+				draft_proposed?: boolean;
+				draft?: { title: string; description: string; category: string } | null;
+			}>("/api/inbox", {
+				thread_id: anonId,
+				action: "request_own_draft",
+			});
+			setShowNudge(false);
+			if (res.draft && res.draft.title) {
+				draftDismissedRef.current = false;
+				setPendingDraft({
+					title: res.draft.title,
+					description: res.draft.description,
+					category: res.draft.category,
+				});
+			} else {
+				toast("Couldn't draft that just now — describe it once more?", "err");
+			}
+		} catch (e: unknown) {
+			toast(e instanceof Error ? e.message : "Could not draft — try again", "err");
+		} finally {
+			setNudgeBusy(false);
+		}
+	};
+	const dismissNudge = async () => {
+		if (nudgeBusy) return;
+		setNudgeBusy(true);
+		setShowNudge(false);
+		try {
+			await api.postInbox("/api/inbox", {
+				thread_id: anonId,
+				action: "dismiss_draft_suggestion",
+			});
+		} catch {
+			// Dismiss is idempotent server-side; a failed call simply leaves
+			// the suggestion live, and the next load resurrects the nudge.
+		} finally {
+			setNudgeBusy(false);
 		}
 	};
 	const [readingId, setReadingId] = useState<string | number | null>(null);
@@ -195,6 +258,33 @@ export default function UserChat() {
 			setMessages((prev: ChatMessage[]) => mergeMessages(prev, newMsgs));
 			setThread(data.thread);
 			setChatTitle(data.title ?? null);
+			// Restore an open draft proposal so a reload never loses the card —
+			// unless the student dismissed it locally (the server proposal stays
+			// open until accepted; the next Generate reuses it via dedupe).
+			const openProposal = data.state?.draft_proposal;
+			if (
+				openProposal?.status === "proposed" &&
+				!draftDismissedRef.current &&
+				typeof openProposal.title === "string" &&
+				openProposal.title
+			) {
+				setPendingDraft({
+					title: openProposal.title,
+					description:
+						typeof openProposal.description === "string"
+							? openProposal.description
+							: "",
+					category:
+						typeof openProposal.category === "string"
+							? openProposal.category
+							: "Other",
+				});
+				setShowNudge(false);
+			} else if (!openProposal || openProposal.status !== "proposed") {
+				// Converge the nudge from server truth (covers POST-driven and
+				// reload-driven arrivals alike).
+				setShowNudge(data.state?.draft_suggestion?.status === "suggested");
+			}
 			if (data.state?.agent) {
 				setAgentLabel(
 					data.state.agent === "emotional"
@@ -384,6 +474,7 @@ export default function UserChat() {
 				emotion?: { level?: string };
 				triage?: { reported?: boolean; urgency?: string; private?: boolean };
 				draft_proposed?: boolean;
+				draft_suggested?: boolean;
 				draft?: { title: string; description: string; category: string; private: boolean } | null;
 			}>("/api/inbox", {
 				thread_id: anonId,
@@ -445,6 +536,7 @@ export default function UserChat() {
 				"✏️ I drafted a post from what you asked to share — an admin reviews it before anything is published.",
 			);
 		}
+		if (result.draft_suggested) setShowNudge(true);
 
 		// Then sync with server to catch anything we missed
 			await load();
@@ -696,6 +788,19 @@ export default function UserChat() {
 				</div>
 			)}
 
+			{/* Nudge — "Would you like me to generate a complaint?" Nothing is
+			    drafted until Generate is tapped; Not now dismisses for good. */}
+			{showNudge && !pendingDraft && (
+				<div className="card border-accent/30 p-3.5 mt-3" data-testid="draft-nudge" role="dialog" aria-label="Generate a complaint?">
+					<p className="text-[10px] font-bold uppercase tracking-wider text-accent mb-1.5">Turn this chat into a complaint?</p>
+					<p className="text-xs text-ink2 leading-relaxed">I can draft it from what you described — you review it, choose private or public, and post it. Nothing is published automatically.</p>
+					<div className="flex gap-2 mt-3">
+						<button type="button" disabled={nudgeBusy} onClick={() => void generateFromNudge()} className="btn btn-primary !text-xs flex-1">{nudgeBusy ? "Drafting…" : "Generate complaint"}</button>
+						<button type="button" disabled={nudgeBusy} onClick={() => void dismissNudge()} className="btn btn-ghost !text-xs">Not now</button>
+					</div>
+				</div>
+			)}
+
 			{/* Draft card — Accept publishes with your visibility choice, Dismiss drops it */}
 			{pendingDraft && (
 				<div className="card border-accent/30 p-3.5 mt-3" data-testid="draft-card" role="dialog" aria-label="Suggested post">
@@ -729,7 +834,7 @@ export default function UserChat() {
 					)}
 					<div className="flex gap-2 mt-3">
 						<button type="button" disabled={draftBusy} onClick={() => void acceptDraftCard()} className="btn btn-primary !text-xs flex-1">{draftBusy ? "Posting…" : draftVisibility === "private" ? "Post privately" : "Send for review"}</button>
-						<button type="button" disabled={draftBusy} onClick={() => { setPendingDraft(null); setDraftVisibility("private"); }} className="btn btn-ghost !text-xs">Dismiss</button>
+						<button type="button" disabled={draftBusy} onClick={() => { setPendingDraft(null); draftDismissedRef.current = true; setDraftVisibility("private"); }} className="btn btn-ghost !text-xs">Dismiss</button>
 					</div>
 				</div>
 			)}
