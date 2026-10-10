@@ -172,6 +172,7 @@ interface PostCardProps {
 		counts: Record<string, number>,
 		kind: string,
 		toggled: boolean,
+		mine?: string[],
 	) => void;
 	pollData?: PollData | null;
 	myPollVote?: number[];
@@ -209,6 +210,9 @@ function PostCardInner({ post, myReactions, onReacted, pollData, myPollVote, onP
 	// Skip the reset immediately after a successful POST — onReacted() updates the parent,
 	// which re-renders with new myReactions, but our local state is already reconciled
 	// from the server response. Clearing it here would revert the reaction visually.
+	// The effect also watches post.reactions: later parent row-merges (other users'
+	// reactions arriving through the posts realtime lane) must win over the reconciled
+	// local copy — otherwise a card you reacted to freezes until a full refresh.
 	useEffect(() => {
 		if (postedRef.current) {
 			postedRef.current = false;
@@ -216,7 +220,7 @@ function PostCardInner({ post, myReactions, onReacted, pollData, myPollVote, onP
 		}
 		setLocalMine(null);
 		setLocalCounts(null);
-	}, [myReactions]);
+	}, [myReactions, post.reactions]);
 
 	const status = STATUS_META[post.status] ??
 		STATUS_META.reported ?? { label: "Unknown", color: "var(--vb-ink3)", pct: 0 };
@@ -264,7 +268,11 @@ function PostCardInner({ post, myReactions, onReacted, pollData, myPollVote, onP
 				setLocalCounts(res.counts);
 				setLocalMine(res.mine ?? []);
 				postedRef.current = true;
-				onReacted?.(post.id, res.counts, kind, res.toggled);
+				// Hand the authoritative result to the parent so the list and the
+				// my-map converge immediately (not on the next full refresh).
+				// The 5th arg is the server mine list; callers that ignore args
+				// (e.g. Saved's `() => load()`) are unaffected.
+				onReacted?.(post.id, res.counts, kind, res.toggled, res.mine ?? []);
 			} catch (e: unknown) {
 				// Roll back the optimistic flip
 				setLocalCounts(prevCounts);

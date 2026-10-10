@@ -218,6 +218,82 @@ describe("PostCard", () => {
     });
   });
 
+  describe("live reconciliation (other users' reactions after your toggle)", () => {
+    // Root cause: the card displayed `localCounts || post.reactions` and only
+    // cleared the local copy when `myReactions` changed (full refresh). Home
+    // never passed onReacted, so after your own toggle the card ignored every
+    // later parent row-merge — other users' reactions froze until refresh,
+    // while votes (parent-driven) kept moving.
+    it("shows reactions that arrive from other users after your own toggle", async () => {
+      const onReacted = vi.fn();
+      const { rerender } = render(
+        <PostCard post={makePost()} myReactions={[]} onReacted={onReacted} />,
+      );
+      fireEvent.click(screen.getByLabelText(/Support/));
+      await vi.waitFor(() => {
+        expect(onReacted).toHaveBeenCalled();
+      });
+      // Own toggle reconciled from the mocked server response (5 -> 6).
+      expect(screen.getByLabelText(/Support.*6/)).toBeInTheDocument();
+      // First parent update: the onReacted merge (authoritative 6). The card
+      // keeps showing its reconciled copy — no visual revert.
+      rerender(
+        <PostCard
+          post={makePost({ reactions: { support: 6, disagree: 2 } })}
+          myReactions={["support"]}
+          onReacted={onReacted}
+        />,
+      );
+      expect(screen.getByLabelText(/Support.*6/)).toBeInTheDocument();
+      // Later parent row-merge from another user's reaction (6 -> 9) must win
+      // over the reconciled local copy — the card must not freeze.
+      rerender(
+        <PostCard
+          post={makePost({ reactions: { support: 9, disagree: 2 } })}
+          myReactions={["support"]}
+          onReacted={onReacted}
+        />,
+      );
+      expect(screen.getByLabelText(/Support.*9/)).toBeInTheDocument();
+    });
+
+    it("keeps your active state when the parent merges newer counts", async () => {
+      const onReacted = vi.fn();
+      const { rerender } = render(
+        <PostCard post={makePost()} myReactions={[]} onReacted={onReacted} />,
+      );
+      fireEvent.click(screen.getByLabelText(/Support/));
+      await vi.waitFor(() => {
+        expect(onReacted).toHaveBeenCalled();
+      });
+      rerender(
+        <PostCard
+          post={makePost({ reactions: { support: 9, disagree: 2 } })}
+          myReactions={["support"]}
+          onReacted={onReacted}
+        />,
+      );
+      expect(screen.getByLabelText(/Support/)).toHaveAttribute(
+        "aria-pressed",
+        "true",
+      );
+    });
+
+    it("passes the server mine list through onReacted so the parent stays authoritative", async () => {
+      const onReacted = vi.fn();
+      render(<PostCard post={makePost()} myReactions={[]} onReacted={onReacted} />);
+      fireEvent.click(screen.getByLabelText(/Support/));
+      await vi.waitFor(() => {
+        expect(onReacted).toHaveBeenCalledWith(
+          "post-1",
+          { support: 6 },
+          "support",
+          true,
+          ["support"],
+        );
+      });
+    });
+  });
   describe("bookmarks", () => {
     it("renders bookmark button", () => {
       render(<PostCard post={makePost()} />);

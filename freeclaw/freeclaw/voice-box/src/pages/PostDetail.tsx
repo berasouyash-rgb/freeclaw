@@ -334,9 +334,11 @@ export default function PostDetail() {
 
 	// Freshness signal, not a refetch: the old wiring re-pulled counts on
 	// every reaction/comment event and the linked poll on every vote, so a
-	// busy post rebuilt this page every second or two. Realtime now only
-	// raises a badge; the reader pulls counts + poll with the update
-	// notice. Own reactions and votes stay instant via their optimistic
+	// busy post rebuilt this page every second or two. Content edits still
+	// raise a badge that the reader pulls explicitly — but reaction/comment
+	// touches now ALSO merge counts live through the posts lane below (one
+	// debounced single-row GET), and votes through the zero-debounce poll
+	// lane. Own reactions and votes stay instant via their optimistic
 	// updates, and failures still keep stale-but-correct local state.
 	const { updatesAvailable, markUpdatesAvailable, clearUpdates } =
 		useUpdateSignal();
@@ -369,11 +371,12 @@ export default function PostDetail() {
 	// ── Counts-only live refresh (contract evolution 2026-10-05) ──
 	// Reaction toggles and comment writes touch the parent posts row
 	// (api/_reactions.js, api/_comments.js), but the reactions table itself
-	// is outside the realtime contract — so the counts on this page only
-	// moved on a manual update-notice tap. A posts UPDATE for THIS row now
+	// is outside the realtime contract — so a posts UPDATE for THIS row
 	// schedules one debounced single-row counts+mine merge: no list
 	// reload, no post-object replace (the page never "resets"), no
-	// skeleton. Content edits still surface through the badge, which this
+	// skeleton. The lane runs at vote-lane speed (250ms channel debounce +
+	// 250ms coalesce ≈ 0.5s) so other users' reactions land promptly.
+	// Content edits still surface through the badge, which this
 	// lane keeps raising exactly as before.
 	const livenessTimer = useRef<number | null>(null);
 	useEffect(
@@ -457,7 +460,7 @@ export default function PostDetail() {
 					livenessTimer.current = window.setTimeout(() => {
 						livenessTimer.current = null;
 						void refreshCounts();
-					}, 750);
+					}, 250);
 				}
 			}
 			markUpdatesAvailable();
@@ -465,7 +468,7 @@ export default function PostDetail() {
 		[postId, anonId, p, markUpdatesAvailable, refreshCounts],
 	);
 
-	useRealtime(["posts"], handlePostWithdrawal, 2_000);
+	useRealtime(["posts"], handlePostWithdrawal, 250);
 
 	// ── Vote fast lane (zero debounce). ──
 	// The linked poll is the page's only poll row, and a vote's only signal

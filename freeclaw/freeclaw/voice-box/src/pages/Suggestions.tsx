@@ -15,6 +15,7 @@ import { useApp } from "../contexts/AppContext";
 import { useUpdateSignal } from "../hooks/useUpdateSignal";
 import { Segmented } from "../components/ui";
 import { api } from "../lib/api";
+import { applyServerMine } from "../lib/feedReactionMerge";
 import { postWithdrawal } from "../lib/postWithdrawal";
 import { useRealtime, type RealtimePayload } from "../lib/useRealtime";
 import { STATUS_META, timeAgo, trendingScore } from "../lib/utils";
@@ -99,20 +100,34 @@ export default function Suggestions() {
 		const settled = await Promise.all(
 			ids.map(async (rowId) => {
 				try {
-					const res = await api.getFresh<{ post: PostData }>(
-						`/api/posts?id=${rowId}`,
-					);
-					return res.post ?? null;
+					const res = await api.getFresh<{
+						post: PostData;
+						mine?: string[];
+					}>(`/api/posts?id=${rowId}&viewer=${anonId}`);
+					return { row: res.post ?? null, mine: res.mine, id: rowId };
 				} catch {
-					return null;
+					return { row: null, mine: undefined, id: rowId };
 				}
 			}),
 		);
-		const rows = settled.filter((r): r is PostData => !!r);
+		const rows = settled
+			.map((s) => s.row)
+			.filter((r): r is PostData => !!r);
 		if (rows.length === 0) {
 			markUpdatesAvailable();
 			return;
 		}
+		// Live mine sync (same rule as the Home feed): the by-id lane carries
+		// the viewer's authoritative kinds per row, so another device on this
+		// identity toggling converges here without a full refresh.
+		setMine((prev) => {
+			let next = prev;
+			for (const s of settled) {
+				if (s.row && s.mine !== undefined)
+					next = applyServerMine(next, s.id, s.mine);
+			}
+			return next;
+		});
 		// Suggestions-only list: new rows of another type never join, and
 		// a known card that changed away drops off.
 		setItems((prev) => {
@@ -129,7 +144,7 @@ export default function Suggestions() {
 			}
 			return next;
 		});
-	}, [markUpdatesAvailable]);
+	}, [markUpdatesAvailable, anonId]);
 
 	const scheduleSuggestionFlush = useCallback(() => {
 		if (rowFlushTimer.current !== null) return;

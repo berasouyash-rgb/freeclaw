@@ -33,6 +33,10 @@ import WordCloud from "../components/WordCloud";
 import { useApp } from "../contexts/AppContext";
 import { useCategories } from "../hooks/useCategories";
 import { api } from "../lib/api";
+import {
+	applyServerMine,
+	mergeReactionCounts,
+} from "../lib/feedReactionMerge";
 import { postWithdrawal } from "../lib/postWithdrawal";
 import { apiBase, isMobileApp, isNativeShell } from "../lib/platform";
 import { useRealtime, type RealtimePayload } from "../lib/useRealtime";
@@ -521,6 +525,26 @@ export default function Home() {
 		[applyDelta],
 	);
 
+	// Authoritative merge the instant your own toggle lands: the list carries
+	// the server counts and the my-map carries the server mine list, so the
+	// card never waits for a full refresh — and later realtime row-merges
+	// apply on top of truth instead of under a frozen optimistic copy.
+	// (Single-kind toggles have no opposites to clear, so the server mine
+	// list is applied verbatim rather than recomputed.)
+	const handleReacted = useCallback(
+		(
+			id: string,
+			counts: Record<string, number>,
+			_kind: string,
+			_toggled: boolean,
+			mine?: string[],
+		) => {
+			setPosts((prev) => mergeReactionCounts(prev, id, counts));
+			setMyReactions((prev) => applyServerMine(prev, id, mine ?? []));
+		},
+		[],
+	);
+
 	// Targeted single-poll refresh for realtime vote/poll events: one small
 	// GET merged into pollsMap, never a full feed reload. A failed fetch
 	// keeps the stale poll rather than breaking the feed over one row.
@@ -611,22 +635,36 @@ export default function Home() {
 		const settled = await Promise.all(
 			ids.map(async (rowId) => {
 				try {
-					const res = await api.getFresh<{ post: PostData }>(
-						`/api/posts?id=${rowId}&viewer=${anonId}`,
-					);
-					return res.post ?? null;
+					const res = await api.getFresh<{
+						post: PostData;
+						mine?: string[];
+					}>(`/api/posts?id=${rowId}&viewer=${anonId}`);
+					return { row: res.post ?? null, mine: res.mine, id: rowId };
 				} catch {
-					return null;
+					return { row: null, mine: undefined, id: rowId };
 				}
 			}),
 		);
-		const rows = settled.filter((r): r is PostData => !!r);
+		const rows = settled
+			.map((s) => s.row)
+			.filter((r): r is PostData => !!r);
 		if (rows.length === 0) {
 			// Every row failed (gone or unreachable): the withdrawal path
 			// owns 404s, so degrade to the badge for the rest.
 			markUpdatesAvailable();
 			return;
 		}
+		// Live mine sync: another device on this identity may have toggled
+		// since the map was last fetched — the by-id lane carries the
+		// viewer's authoritative kinds per row, so fold them in here.
+		setMyReactions((prev) => {
+			let next = prev;
+			for (const s of settled) {
+				if (s.row && s.mine !== undefined)
+					next = applyServerMine(next, s.id, s.mine);
+			}
+			return next;
+		});
 		const { feedType: ft, cat: c, statusFilter: sf } = filterRef.current;
 		const matches = (row: PostData) =>
 			(ft === "all" || row.type === ft) &&
@@ -1321,6 +1359,7 @@ export default function Home() {
 						<PostCard
 							post={p}
 							myReactions={myReactions[p.id]}
+							onReacted={handleReacted}
 							pollData={p.linked_poll ? pollsMap[p.linked_poll] ?? null : null}
 							myPollVote={p.linked_poll ? myPollVotes[p.linked_poll] : undefined}
 							onPollVoted={() => fetchPolls(posts)}
