@@ -63,6 +63,7 @@ const tabs: [string, () => Promise<{ default: unknown }>][] = [
 	["SecurityCenter", () => import("../pages/admin/SecurityCenter")],
 	["ActivityStream", () => import("../pages/admin/ActivityStream")],
 	["Reports", () => import("../pages/admin/Reports")],
+	["ReportDeck", () => import("../pages/admin/ReportDeck")],
 	["UnifiedInbox", () => import("../pages/admin/UnifiedInbox")],
 	["ErrorTracking", () => import("../pages/admin/ErrorTracking")],
 	["Logs", () => import("../pages/admin/Logs")],

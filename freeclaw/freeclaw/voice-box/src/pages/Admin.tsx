@@ -40,6 +40,7 @@ import { sha256 } from "../lib/utils";
 // Lazy loaded (all tabs) — wrapped with retryLazy for auto-recovery from chunk failures
 // Dashboard
 const Overview = retryLazy(() => import("./admin/Overview"));
+const ReportDeck = retryLazy(() => import("./admin/ReportDeck"));
 // Content
 const Reports = retryLazy(() => import("./admin/Reports"));
 const PostsTable = retryLazy(() => import("./admin/PostsTable"));
@@ -556,6 +557,11 @@ export default function Admin() {
 						{tab === "dashboard" && (
 							<ErrorBoundary key="dashboard">
 								<Overview />
+							</ErrorBoundary>
+						)}
+						{tab === "presentation" && (
+							<ErrorBoundary key="presentation">
+								<ReportDeck />
 							</ErrorBoundary>
 						)}						{tab === "reports" && (
 							<ErrorBoundary key="reports">

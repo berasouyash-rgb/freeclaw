@@ -7,6 +7,7 @@ import {
 	Inbox,
 	LayoutDashboard,
 	Mail,
+	Presentation,
 	Settings as SettingsIcon,
 	Table2,
 	Tag,
@@ -17,6 +18,7 @@ import type { LucideIcon } from "lucide-react";
 
 export type AdminTabKey =
 	| "dashboard"
+	| "presentation"
 	| "reports"
 	| "posts"
 	| "users"
@@ -56,6 +58,7 @@ export const ADMIN_TAB_GROUPS: AdminTabGroup[] = [
 		title: "Overview",
 		tabs: [
 			{ key: "dashboard", label: "Dashboard", icon: LayoutDashboard },
+			{ key: "presentation", label: "Presentation", icon: Presentation },
 		],
 	},
 	{

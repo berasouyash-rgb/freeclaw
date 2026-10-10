@@ -1398,6 +1398,17 @@ export default function Reports() {
 				</div>
 				<button
 					className="btn btn-ghost !text-[11px] !py-1.5 !px-2.5 rounded-lg"
+					onClick={() =>
+						window.dispatchEvent(
+							new CustomEvent("vb:admin-tab", { detail: "presentation" }),
+						)
+					}
+					title="Open the slide presentation from live data"
+				>
+					📊 Presentation
+				</button>
+				<button
+					className="btn btn-ghost !text-[11px] !py-1.5 !px-2.5 rounded-lg"
 					onClick={() => void refreshAll()}
 					disabled={refreshing}
 				>

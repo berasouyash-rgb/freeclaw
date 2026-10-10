@@ -9,9 +9,10 @@ import {
 } from "../lib/adminTabs";
 
 describe("admin tab registry", () => {
-	it("keeps the complete 14-tab product surface in canonical order", () => {
+	it("keeps the complete 15-tab product surface in canonical order", () => {
 		expect(ADMIN_TAB_KEYS).toEqual([
 			"dashboard",
+			"presentation",
 			"reports",
 			"posts",
 			"users",
@@ -26,7 +27,7 @@ describe("admin tab registry", () => {
 			"ai-systems",
 			"settings",
 		]);
-		expect(ADMIN_TABS).toHaveLength(14);
+		expect(ADMIN_TABS).toHaveLength(15);
 		expect(ADMIN_TAB_GROUPS.map((group) => group.title)).toEqual([
 			"Overview",
 			"Content",
