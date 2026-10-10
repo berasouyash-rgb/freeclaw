@@ -38,7 +38,6 @@ const db = vi.hoisted(() => ({
 
 function chainFor(table: string) {
 	const state = { op: "select", patch: undefined as unknown, filters: [] as Filter[] };
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	const chain: any = {
 		select() {
 			return chain;
