@@ -24,6 +24,11 @@ const verifyCallerMock = vi.fn(async () => ({ ok: true, callerId: "" }));
 let deleteError: Error | null = null;
 let insertError: Error | null = null;
 let countsError: Error | null = null;
+// When true, uncapped counts selects return at most the server's max-rows
+// page (1000), simulating PostgREST truncation. Ranged selects return the
+// requested slice. Lets scale tests prove pagination instead of truncation.
+let enforceCap = false;
+const SERVER_MAX_ROWS = 1000;
 let priorityPatches: Array<Record<string, unknown>> = [];
 
 vi.mock("../../api/_db-client.js", () => ({
@@ -68,8 +73,11 @@ function response() {
 function chainFor(table: string) {
 	const chain: {
 		op: string | null;
+		rangeFrom: number | null;
+		rangeTo: number | null;
 		select(c: string): unknown;
 		eq(): unknown;
+		range(from: number, to: number): unknown;
 		delete(): unknown;
 		insert(): unknown;
 		update(patch?: unknown): unknown;
@@ -77,11 +85,18 @@ function chainFor(table: string) {
 		then(cb: (v: unknown) => void): Promise<unknown>;
 	} = {
 		op: null,
+		rangeFrom: null,
+		rangeTo: null,
 		select(_c: string) {
 			if (!this.op) this.op = "counts";
 			return this;
 		},
 		eq() {
+			return this;
+		},
+		range(from: number, to: number) {
+			this.rangeFrom = from;
+			this.rangeTo = to;
 			return this;
 		},
 		delete() {
@@ -106,9 +121,18 @@ function chainFor(table: string) {
 			if (this.op === "delete") onResolve({ data: deleteResult, error: deleteError });
 			else if (this.op === "insert") onResolve({ data: null, error: insertError });
 			else if (this.op === "update") onResolve({ data: null, error: null });
-			else if (this.op === "counts" && table === "reactions")
-				onResolve({ data: reactionsData, error: countsError });
-			else onResolve({ data: [], error: null });
+			else if (this.op === "counts" && table === "reactions") {
+				if (countsError) {
+					onResolve({ data: reactionsData, error: countsError });
+				} else if (this.rangeFrom !== null && this.rangeTo !== null) {
+					onResolve({
+						data: reactionsData.slice(this.rangeFrom, this.rangeTo + 1),
+						error: null,
+					});
+				} else if (enforceCap) {
+					onResolve({ data: reactionsData.slice(0, SERVER_MAX_ROWS), error: null });
+				} else onResolve({ data: reactionsData, error: countsError });
+			} else onResolve({ data: [], error: null });
 			return Promise.resolve(undefined);
 		},
 	};
@@ -123,6 +147,7 @@ beforeEach(() => {
 	deleteError = null;
 	insertError = null;
 	countsError = null;
+	enforceCap = false;
 	priorityPatches = [];
 	// Drain any leaked one-shot gate denial so a broken gate fails its own
 	// test instead of poisoning the next test's session check.
@@ -473,6 +498,39 @@ describe("POST /api/reactions — optimized toggle contract", () => {
 
 		expect(res.statusCode).toBe(200);
 		expect(priorityPatches).toContainEqual({ priority: "medium" });
+	});
+
+	it("counts past the 1000-row server page: paginates instead of truncating", async () => {
+		// PostgREST silently caps uncapped selects at max-rows (1000). A viral
+		// post must still report exact counts AND the caller's mine list —
+		// truncation drops both (the caller's row sits past the cap here).
+		enforceCap = true;
+		deleteResult = []; // toggle ON a new kind
+		const rows = Array.from({ length: 1200 }, (_, i) => ({
+			kind: "support",
+			author_id: `voter-${i}`,
+		}));
+		rows.push({ kind: "concerned", author_id: "anon-1" });
+		reactionsData = rows;
+
+		const { default: handler } = await import("../../api/_reactions.js");
+		const res = response();
+		await handler(
+			{
+				method: "POST",
+				query: {},
+				body: { ...body(), kind: "concerned" },
+				headers: { "x-anon-id": "anon-1" },
+			},
+			res,
+		);
+
+		expect(res.statusCode).toBe(200);
+		expect(res.body).toEqual({
+			toggled: true,
+			counts: { support: 1200, concerned: 1 },
+			mine: ["concerned"],
+		});
 	});
 
 	it("refuses a toggle when the session gate denies, even with a matching header", async () => {

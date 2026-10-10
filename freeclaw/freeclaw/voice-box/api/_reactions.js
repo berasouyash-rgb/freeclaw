@@ -140,12 +140,31 @@ export default async function handler(req, res) {
 			// bump runs in parallel (different table, independent of the counts).
 			const counts = {};
 			const mine = [];
-			try {
-				const [{ data: rows }] = await Promise.all([
-					supabase
+			// Paginated row fetch: PostgREST silently caps an uncapped select
+			// at max-rows (1000), so a viral post would report truncated
+			// counts AND lose the caller's mine row past the cap. Pages stop
+			// at the first short page — small posts cost exactly one round
+			// trip, same as before. No ORDER BY: rows only feed counters, and
+			// a concurrent toggle mid-pagination self-corrects on the next
+			// toggle recount (same snapshot semantics as the old single read).
+			const fetchAllReactionRows = async () => {
+				const PAGE = 1000;
+				const all = [];
+				for (let page = 0; ; page += 1) {
+					const { data: chunk, error: pageError } = await supabase
 						.from("reactions")
 						.select("kind, author_id")
-						.eq("target_id", target_id),
+						.eq("target_id", target_id)
+						.range(page * PAGE, page * PAGE + PAGE - 1);
+					if (pageError) throw pageError;
+					if (chunk && chunk.length) all.push(...chunk);
+					if (!chunk || chunk.length < PAGE) break;
+				}
+				return all;
+			};
+			try {
+				const [rows] = await Promise.all([
+					fetchAllReactionRows(),
 					target_type === "post" || target_type === "suggestion"
 						? supabase
 								.from("posts")
