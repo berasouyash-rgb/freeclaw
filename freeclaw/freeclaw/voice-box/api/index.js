@@ -67,6 +67,7 @@ import featureHealth from "./_feature-health.js";
 import health from "./_health.js";
 import inbox from "./_inbox.js";
 import insights from "./_insights.js";
+import reportDeck from "./_report-deck.js";
 import keepAlive from "./_keep-alive.js";
 import leaderboard from "./_leaderboard.js";
 import me from "./_me.js";
@@ -216,6 +217,7 @@ const routes = {
 	"feature-health": protect(featureHealth, "feature-health"),
 	saved: protect(saved, "saved"),
 	insights: protect(insights, "insights"),
+	"report-deck": protect(reportDeck, "report-deck"),
 	categories: protect(categories, "categories"),
 	// Client telemetry + operational surfaces that were previously unrouted
 	// (every call 404'd, which showed up as "Not found" noise on page load)

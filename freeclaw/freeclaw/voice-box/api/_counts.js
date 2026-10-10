@@ -71,7 +71,12 @@ function digest(ids) {
 // contributes nothing, so partial is strictly more truthful).
 const COUNT_PAGE = 1000;
 
-async function paged(build) {
+// Paginated fetch shared by report surfaces: every leg stops at the first
+// short page (PostgREST silently caps uncapped selects at max-rows 1000).
+// Small data costs exactly one round trip. A failed leg contributes the rows
+// read so far. build(page) receives the zero-based page and must return the
+// raw { data, error } result object.
+export async function fetchPaged(build) {
 	const rows = [];
 	for (let page = 0; ; page += 1) {
 		const res = await build(page);
@@ -90,14 +95,14 @@ async function fetchRawCounts(ids) {
 
 	const results = await Promise.all(
 		chunks.flatMap((chunk) => [
-			paged((page) =>
+			fetchPaged((page) =>
 				supabase
 					.from("reactions")
 					.select("target_id,kind")
 					.in("target_id", chunk)
 					.range(page * COUNT_PAGE, page * COUNT_PAGE + COUNT_PAGE - 1),
 			),
-			paged((page) =>
+			fetchPaged((page) =>
 				supabase
 					.from("comments")
 					.select("post_id")
@@ -106,7 +111,7 @@ async function fetchRawCounts(ids) {
 					.eq("hidden", false)
 					.range(page * COUNT_PAGE, page * COUNT_PAGE + COUNT_PAGE - 1),
 			),
-			paged((page) =>
+			fetchPaged((page) =>
 				supabase
 					.from("polls")
 					.select("id,post_id")
@@ -150,7 +155,7 @@ async function fetchRawCounts(ids) {
 	const pvMap = {};
 	for (let i = 0; i < pollIds.length; i += CHUNK_SIZE) {
 		const chunk = pollIds.slice(i, i + CHUNK_SIZE);
-		const { data: votes } = await paged((page) =>
+		const { data: votes } = await fetchPaged((page) =>
 			supabase
 				.from("poll_votes")
 				.select("poll_id")
