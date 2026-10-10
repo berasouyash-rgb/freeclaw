@@ -4,7 +4,7 @@
 // on reload by themselves and never enter this path.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const CURRENT = "2.0.0";
+const CURRENT = "2.0.1";
 
 function setShell(kind: "web" | "mobile" | "desktop") {
 	const w = window as unknown as Record<string, unknown>;

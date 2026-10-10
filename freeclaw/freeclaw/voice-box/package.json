@@ -1,7 +1,7 @@
 {
   "name": "voice-box",
   "private": true,
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": "Voice Flow — anonymous school feedback platform for students and administrators.",
   "author": "Voice Flow",
   "license": "UNLICENSED",

@@ -10,7 +10,7 @@ import { showBrowserNotification } from "./browserNotify";
 
 /** Build baked at compile time; override with VITE_APP_VERSION per release. */
 const CURRENT_VERSION: string =
-	(import.meta.env?.VITE_APP_VERSION as string | undefined) || "2.0.0";
+	(import.meta.env?.VITE_APP_VERSION as string | undefined) || "2.0.1";
 
 const LAST_CHECK_KEY = "vb:update:lastCheck";
 const SNOOZE_KEY = "vb:update:snoozeUntil";
