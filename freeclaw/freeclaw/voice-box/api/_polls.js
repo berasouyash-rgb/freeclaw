@@ -33,13 +33,28 @@ export let touchFailureCount = 0;
 async function attachResults(polls, strict = false) {
 	const ids = polls.map((p) => p.id);
 	if (!ids.length) return polls;
-	const { data: votes, error } = await supabase
-		.from("poll_votes")
-		.select("poll_id,choices")
-		.in("poll_id", ids);
+	// Paginated vote fetch: PostgREST silently caps an uncapped select at
+	// max-rows (1000), so a viral poll would report truncated totals. Pages
+	// stop at the first short page — ordinary polls cost exactly one round
+	// trip, same as before. Error semantics preserved: strict throws (the
+	// no-fake-zeros contract), non-strict keeps rows read so far.
+	const PAGE = 1000;
+	const votes = [];
+	for (let page = 0; ; page += 1) {
+		const { data: chunk, error } = await supabase
+			.from("poll_votes")
+			.select("poll_id,choices")
+			.in("poll_id", ids)
+			.range(page * PAGE, page * PAGE + PAGE - 1);
+		if (error) {
+			if (strict) throw error;
+			break;
+		}
+		if (chunk && chunk.length) votes.push(...chunk);
+		if (!chunk || chunk.length < PAGE) break;
+	}
 	// Strict mode is used after a write: a failed results read must not
 	// masquerade as "0 votes" — the vote DID persist, so report the error.
-	if (strict && error) throw error;
 	const map = {};
 	(votes || []).forEach((v) => {
 		map[v.poll_id] = map[v.poll_id] || { total: 0, counts: {} };

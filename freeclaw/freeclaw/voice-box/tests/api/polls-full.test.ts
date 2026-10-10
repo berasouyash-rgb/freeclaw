@@ -27,6 +27,10 @@ const state = {
 	probeError: null as unknown,
 	writeError: null as unknown,
 	resultsError: null as unknown,
+	// Simulates the PostgREST max-rows page (1000): uncapped plain selects
+	// return at most the first page, ranged selects return the slice. Lets
+	// scale tests prove pagination instead of silent truncation.
+	enforceCap: false as boolean,
 	// Race drivers for the concurrent-first-vote (23505) branch. Every
 	// `poll_votes .select("id").maybeSingle()` probe consumes `probeSeq`
 	// first and every insert consumes `insertErrorSeq` first, falling back to
@@ -128,11 +132,14 @@ function response() {
 interface Chain {
 	op: string;
 	selCol: string;
+	rangeFrom: number | null;
+	rangeTo: number | null;
 	select: (col?: unknown, opts?: unknown) => Chain;
 	eq: (col?: unknown, val?: unknown) => Chain;
 	in: (col?: unknown, values?: unknown) => Chain;
 	order: () => Chain;
 	limit: () => Chain;
+	range: (from: number, to: number) => Chain;
 	maybeSingle: () => Chain;
 	single: () => Chain;
 	update: (patch: unknown) => Chain;
@@ -145,6 +152,8 @@ function chainFor(table: string): Chain {
 	const chain = {
 		op: "select",
 		selCol: "",
+		rangeFrom: null as number | null,
+		rangeTo: null as number | null,
 		filters: [] as Array<[string, unknown]>,
 		inFilters: [] as Array<[string, unknown[]]>,
 		select(col?: unknown) {
@@ -165,6 +174,11 @@ function chainFor(table: string): Chain {
 			return this;
 		},
 		limit() {
+			return this;
+		},
+		range(from: number, to: number) {
+			this.rangeFrom = from;
+			this.rangeTo = to;
 			return this;
 		},
 		maybeSingle() {
@@ -300,7 +314,15 @@ function chainFor(table: string): Chain {
 					this.inFilters.every(([key, values]) => values.includes(record[key] as never))
 				);
 			});
-			fn({ data: filteredRows, error: null });
+			// Server pagination faithfulness: ranged reads slice, uncapped
+			// reads stop at max-rows when the cap is enforced. All
+			// pre-existing fixtures are far below the page, so this is a
+			// no-op for them.
+			let out = filteredRows;
+			if (this.rangeFrom !== null && this.rangeTo !== null)
+				out = out.slice(this.rangeFrom, this.rangeTo + 1);
+			else if (state.enforceCap) out = out.slice(0, 1000);
+			fn({ data: out, error: null });
 		},
 	};
 	return chain;
@@ -345,6 +367,7 @@ beforeEach(() => {
 		insertCalls: [],
 		touchError: null,
 		touchReject: null,
+		enforceCap: false,
 		deleteErrors: {},
 		deleteCalls: [],
 	});
@@ -431,6 +454,38 @@ describe("GET /api/polls", () => {
 			handler({ method: "GET", query: {}, body: {}, headers: {} }, res),
 		).rejects.toThrow("results read failed");
 		expect(res.statusCode).toBe(200); // handler never completed a response
+	});
+
+	// ── Scale correctness (the silent-truncation class) ──
+	// PostgREST caps uncapped selects at max-rows (1000). A viral poll must
+	// still report exact totals, not the first page.
+	it("counts votes past the 1000-row server page instead of truncating", async () => {
+		state.enforceCap = true;
+		state.polls = [makePoll({ id: "poll-1" })];
+		state.poll_votes = Array.from({ length: 1500 }, (_, i) => ({
+			poll_id: "poll-1",
+			choices: [i % 2],
+			author_id: `voter-${i}`,
+		}));
+		state.posts = [];
+		const { default: handler } = await import("../../api/_polls.js");
+		const res = response();
+		await handler(
+			{
+				method: "GET",
+				query: { ids: "poll-1" },
+				body: {},
+				headers: { "x-anon-id": "anon-1" },
+			},
+			res,
+		);
+		expect(res.statusCode).toBe(200);
+		const [p] = res.body as Array<{
+			total_votes: number;
+			vote_counts: Record<string, number>;
+		}>;
+		expect(p.total_votes).toBe(1500);
+		expect(p.vote_counts).toEqual({ 0: 750, 1: 750 });
 	});
 
 	it("unmasks author_id and sets is_mine when the viewer owns the poll", async () => {
