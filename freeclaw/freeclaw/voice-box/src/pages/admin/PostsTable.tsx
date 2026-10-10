@@ -37,7 +37,8 @@ import { BULK_CONCURRENCY, mapWithConcurrency } from "../../lib/async";
 import { api } from "../../lib/api";
 import { applyOptimistic, revertOptimistic } from "../../lib/optimistic";
 import { useRealtime } from "../../lib/useRealtime";
-import { useUpdateSignal } from "../../hooks/useUpdateSignal";
+import { useUpdateSignal } from "../../hooks/useUpdateSignal";
+import { useAdminStream } from "../../hooks/useAdminStream";
 import {
 	CATEGORIES,
 	PRIORITY_META,
@@ -367,6 +368,10 @@ export default function PostsTable({
 		markUpdatesAvailable,
 		1_000,
 	);
+	// Admin stream is a no-op extra here (posts are already live on the
+	// anon channel) — kept for uniformity so every admin surface shares
+	// the same two-leg freshness story.
+	useAdminStream(markUpdatesAvailable);
 
 	// Flush parked newcomers to the top of the list (pill click).
 	const showParked = useCallback(() => {

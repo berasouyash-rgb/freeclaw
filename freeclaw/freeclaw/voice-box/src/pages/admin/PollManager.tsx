@@ -6,6 +6,7 @@ import { useApp } from "../../contexts/AppContext";
 import { api } from "../../lib/api";
 import { useRealtime } from "../../lib/useRealtime";
 import { useUpdateSignal } from "../../hooks/useUpdateSignal";
+import { useAdminStream } from "../../hooks/useAdminStream";
 import { timeAgo } from "../../lib/utils";
 import type { PollData } from "../../types";
 
@@ -128,6 +129,9 @@ export default function PollManager() {
 	);
 
 	useRealtime(["polls", "poll_votes"], handlePollLiveness, 1_000);
+	// Admin stream covers what the anon channel cannot (poll_votes has no
+	// anon read): same freshness pill, no extra UX.
+	useAdminStream(markUpdatesAvailable);
 
 	const create = async () => {
 		try {

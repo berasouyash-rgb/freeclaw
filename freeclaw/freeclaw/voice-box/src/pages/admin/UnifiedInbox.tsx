@@ -37,6 +37,7 @@ import UpdateNotice from "../../components/admin/UpdateNotice";
 import DraftProposal, { type DraftProposalData } from "../../components/admin/DraftProposal";
 import { useApp } from "../../contexts/AppContext";
 import { useUpdateSignal } from "../../hooks/useUpdateSignal";
+import { useAdminStream } from "../../hooks/useAdminStream";
 import { api } from "../../lib/api";
 import { renderMarkdown } from "../../lib/markdown";
 import { useRealtime } from "../../lib/useRealtime";
@@ -666,6 +667,9 @@ export default function UnifiedInbox() {
 	}, [active, loadMessages, loadThreads, clearUpdates]);
 
 	useRealtime(["chat_messages", "chat_threads"], markUpdatesAvailable, 1_000);
+	// Admin stream covers what the anon channel cannot (neither table has
+	// anon read): same freshness pill, the 5s peek below stays as fallback.
+	useAdminStream(markUpdatesAvailable);
 
 	// ── Visible-only peek (contract evolution 2026-10-05) ──
 	// chat_messages / chat_threads are outside the anon realtime contract,

@@ -23,6 +23,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "../../lib/api";
 import { useRealtime } from "../../lib/useRealtime";
 import { useUpdateSignal } from "../../hooks/useUpdateSignal";
+import { useAdminStream } from "../../hooks/useAdminStream";
 import UpdateNotice from "../../components/admin/UpdateNotice";
 
 interface ActivityEvent {
@@ -197,6 +198,9 @@ export default function ActivityStream() {
 		markUpdatesAvailable,
 		1_000,
 	);
+	// Admin stream covers what the anon channel cannot (reports have no
+	// anon read; agent tables are not published at all): same pill.
+	useAdminStream(markUpdatesAvailable);
 
 	const filtered = useMemo(() => {
 		let list = events;

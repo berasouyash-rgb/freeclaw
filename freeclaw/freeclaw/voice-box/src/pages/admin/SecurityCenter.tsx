@@ -18,6 +18,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "../../lib/api";
 import { useRealtime } from "../../lib/useRealtime";
 import { useUpdateSignal } from "../../hooks/useUpdateSignal";
+import { useAdminStream } from "../../hooks/useAdminStream";
 import UpdateNotice from "../../components/admin/UpdateNotice";
 
 interface SecurityEvent {
@@ -103,6 +104,9 @@ export default function SecurityCenter() {
 	const { updatesAvailable, markUpdatesAvailable, clearUpdates } =
 		useUpdateSignal();
 	useRealtime(["settings"], markUpdatesAvailable, 1_000);
+	// Settings is not in the shared publication, so the channel above is
+	// a no-op marker — the admin stream is this page's real signal.
+	useAdminStream(markUpdatesAvailable);
 
 	const filtered = useMemo(() => {
 		let list = events;

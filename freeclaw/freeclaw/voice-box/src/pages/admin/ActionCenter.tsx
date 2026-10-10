@@ -11,6 +11,7 @@ import {
 import { useCallback, useEffect, useRef, useState } from "react";
 import UpdateNotice from "../../components/admin/UpdateNotice";
 import { useUpdateSignal } from "../../hooks/useUpdateSignal";
+import { useAdminStream } from "../../hooks/useAdminStream";
 import { api } from "../../lib/api";
 import { useRealtime } from "../../lib/useRealtime";
 import { timeAgo } from "../../lib/utils";
@@ -122,6 +123,9 @@ export default function ActionCenter() {
 		markUpdatesAvailable,
 		1_000,
 	);
+	// Admin stream covers what the anon channel cannot (reports and votes
+	// have no anon read): same freshness pill, no extra UX.
+	useAdminStream(markUpdatesAvailable);
 
 	const handleViewUpdates = async () => {
 		if (await loadSnapshot(true)) clearUpdates();

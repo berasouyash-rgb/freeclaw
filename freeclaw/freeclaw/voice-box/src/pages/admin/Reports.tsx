@@ -28,6 +28,7 @@ import {
 import { useCallback, useEffect, useRef, useState } from "react";
 import UpdateNotice from "../../components/admin/UpdateNotice";
 import { useUpdateSignal } from "../../hooks/useUpdateSignal";
+import { useAdminStream } from "../../hooks/useAdminStream";
 import PostPreviewCard from "../../components/PostPreviewCard";
 import ReportTargetQuote from "../../components/admin/ReportTargetQuote";
 import WorkItem from "../../components/admin/WorkItem";
@@ -748,6 +749,9 @@ export default function Reports() {
 		markUpdatesAvailable,
 		1_000,
 	);
+	// Admin stream covers what the anon channel cannot (reports and votes
+	// have no anon read): same freshness pill, no extra UX.
+	useAdminStream(markUpdatesAvailable);
 
 	// ── Fast queues (reports / pre-review / approvals) ────────────────
 	// These endpoints load once on entry and refresh only through the explicit
