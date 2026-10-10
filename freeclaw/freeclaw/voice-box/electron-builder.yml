@@ -17,6 +17,11 @@ files:
   - electron/icon.png
   - electron/icon.icns
   - package.json
+  - "!node_modules/**"
+  # The shell's main/preload require only `electron` (provided by the
+  # runtime) plus node built-ins; the renderer ships fully bundled in
+  # dist/. Packing node_modules added ~110MB of dead weight (including
+  # Gradle cache pollution inside @capacitor plugin android/ trees).
 extraMetadata:
   main: electron/main.cjs
 win:
