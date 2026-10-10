@@ -42,6 +42,8 @@ export const RETRY_MS = 15_000;
 export const COALESCE_MS = 1_000;
 // Give up faking liveness if the channel never confirms.
 export const SUBSCRIBE_TIMEOUT_MS = 8_000;
+// Server-notification leg cadence (see below): bounded, few reads per hold.
+export const NOTIF_POLL_MS = 10_000;
 
 // Same shape rule as _notifications.js: anon_ prefix + lowercase
 // alphanumeric, 5..40 chars. Rejects settings-key suffix injection.
@@ -100,6 +102,8 @@ export default async function handler(req, res) {
 	let holdTimer = null;
 	let subscribeTimer = null;
 	let coalesceTimer = null;
+	let notifTimer = null;
+	let notifSeen = null;
 	let resolveDone = () => {};
 	const pendingKinds = new Set();
 
@@ -109,6 +113,7 @@ export default async function handler(req, res) {
 		if (holdTimer) clearTimeout(holdTimer);
 		if (subscribeTimer) clearTimeout(subscribeTimer);
 		if (coalesceTimer) clearTimeout(coalesceTimer);
+		if (notifTimer) clearInterval(notifTimer);
 		stopHeartbeat();
 		if (channel) {
 			try {
@@ -143,6 +148,26 @@ export default async function handler(req, res) {
 		if (settled) return;
 		pendingKinds.add(kind);
 		if (!coalesceTimer) coalesceTimer = setTimeout(flushKinds, COALESCE_MS);
+	}
+
+	async function pollNotif() {
+		if (settled) return;
+		try {
+			const { data, error } = await supabase
+				.from("settings")
+				.select("value")
+				.eq("key", `notifications:${userId}`)
+				.maybeSingle();
+			if (settled || error) return;
+			const stamp = data?.value?.updated_at || null;
+			if (notifSeen === null) notifSeen = stamp;
+			else if (stamp !== notifSeen) {
+				notifSeen = stamp;
+				wake("notif");
+			}
+		} catch {
+			/* transient — next tick retries; the realtime legs are unaffected */
+		}
 	}
 
 	// The function must stay alive while the stream is open: resolve only
@@ -185,16 +210,14 @@ export default async function handler(req, res) {
 			},
 			() => wake("chat"),
 		);
-		channel.on(
-			"postgres_changes",
-			{
-				event: "*",
-				schema: "public",
-				table: "settings",
-				filter: `key=eq.notifications:${userId}`,
-			},
-			() => wake("notif"),
-		);
+		// NOTE: no settings binding. Server notifications live in the
+		// settings KV (key notifications:<id>), and settings is NOT in the
+		// shared supabase_realtime publication — a binding there could never
+		// fire, and widening shared publication infrastructure silently is
+		// not something this endpoint does. That leg is covered below by a
+		// bounded short-poll (NOTIF_POLL_MS) instead: at most a few
+		// single-row KV reads per hold, ~10s wake latency on admin-issued
+		// notices, which is fine for their rarity.
 		channel.subscribe((status) => {
 			if (settled) return;
 			if (status === "SUBSCRIBED") {
@@ -220,6 +243,12 @@ export default async function handler(req, res) {
 				cleanup();
 			}
 		}, SUBSCRIBE_TIMEOUT_MS);
+		// Server-notification leg (see NOTE above): re-read the single KV
+		// row and wake on updated_at change. First read establishes the
+		// baseline and never wakes — a notice written before connect is
+		// already in the client's mount-pass snapshot.
+		notifTimer = setInterval(() => void pollNotif(), NOTIF_POLL_MS);
+		void pollNotif();
 	} catch (err) {
 		writer.error("stream setup failed", "STREAM_SETUP");
 		cleanup();

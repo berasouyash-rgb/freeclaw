@@ -9,8 +9,11 @@
 //      A failing verifyCallerIdentity → JSON denial with its status+code,
 //      never a stream.
 //   3. On success the handler emits `hello`, opens ONE realtime channel
-//      with three bindings filtered to this user's rows only, and writes
-//      coalesced `update` wake-ups (never notification content).
+//      with two bindings filtered to this user's rows only (posts,
+//      chat_messages), and writes coalesced `update` wake-ups (never
+//      notification content). Server notices live in the settings KV,
+//      which is NOT in the shared realtime publication — that leg is a
+//      bounded 10s short-poll, never a fake binding.
 //   4. A dead realtime channel closes the stream instead of faking
 //      liveness; client disconnect removes the channel exactly once.
 // ───────────────────────────────────────────────────────────────────
@@ -19,9 +22,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const channelMock = vi.fn();
 const removeChannelMock = vi.fn();
+const fromMock = vi.fn();
 
 vi.mock("../../api/_db-client.js", () => ({
-	default: { from: vi.fn(), channel: channelMock, removeChannel: removeChannelMock },
+	default: { from: fromMock, channel: channelMock, removeChannel: removeChannelMock },
 }));
 vi.mock("../../api/_auth.js", () => ({
 	cors: vi.fn(),
@@ -96,6 +100,18 @@ function channelObject() {
 	return { chan, bindings, getSubCb: () => subCb };
 }
 
+let notifRow: { value?: { updated_at?: string } } | null = null;
+
+function settingsChain() {
+	return {
+		select: () => ({
+			eq: () => ({
+				maybeSingle: async () => ({ data: notifRow, error: null }),
+			}),
+		}),
+	};
+}
+
 beforeEach(() => {
 	vi.resetModules();
 	vi.clearAllMocks();
@@ -107,6 +123,9 @@ beforeEach(() => {
 		ok: true,
 		callerId: "anon_owner",
 	});
+	notifRow = null;
+	(fromMock as ReturnType<typeof vi.fn>).mockReset();
+	(fromMock as ReturnType<typeof vi.fn>).mockImplementation(() => settingsChain());
 });
 
 describe("GET /api/events", () => {
@@ -159,7 +178,7 @@ describe("GET /api/events", () => {
 		expect(channelMock).not.toHaveBeenCalled();
 	});
 
-	it("says hello and subscribes three user-filtered bindings", async () => {
+	it("says hello and subscribes two user-filtered bindings (no settings — not in the publication)", async () => {
 		const { chan, bindings } = channelObject();
 		(channelMock as ReturnType<typeof vi.fn>).mockReturnValue(chan);
 		const { default: handler } = await import("../../api/_events-stream.js");
@@ -173,7 +192,7 @@ describe("GET /api/events", () => {
 		expect(res.writes.some((w) => w.startsWith("retry: "))).toBe(true);
 		expect(res.writes.some((w) => w.startsWith("event: hello"))).toBe(true);
 		expect(channelMock).toHaveBeenCalledOnce();
-		expect(bindings).toHaveLength(3);
+		expect(bindings).toHaveLength(2);
 		const byTable = new Map(bindings.map((b) => [b.filter.table, b.filter]));
 		expect(byTable.get("posts")).toMatchObject({
 			event: "*",
@@ -185,11 +204,9 @@ describe("GET /api/events", () => {
 			schema: "public",
 			filter: "thread_id=eq.anon_owner",
 		});
-		expect(byTable.get("settings")).toMatchObject({
-			event: "*",
-			schema: "public",
-			filter: "key=eq.notifications:anon_owner",
-		});
+		// A settings binding could never fire (table outside the shared
+		// publication) — assert none was opened in its place.
+		expect(byTable.has("settings")).toBe(false);
 
 		listeners.close();
 		await p;
@@ -261,5 +278,38 @@ describe("GET /api/events", () => {
 		await p;
 		expect(removeChannelMock).toHaveBeenCalledTimes(1);
 		expect(res.end).toHaveBeenCalledTimes(1);
+	});
+
+	it("short-polls the server-notice KV: baseline never wakes, a stamp change does", async () => {
+		vi.useFakeTimers();
+		try {
+			notifRow = { value: { updated_at: "t0" } };
+			const { chan, getSubCb } = channelObject();
+			(channelMock as ReturnType<typeof vi.fn>).mockReturnValue(chan);
+			const { default: handler } = await import("../../api/_events-stream.js");
+			const { listeners, req } = request();
+			const res = response();
+			const p = handler(req as never, res as never);
+			// Confirm the subscription so the 8s no-confirm guard never fires
+			// while this test walks the 10s poll ticks.
+			await vi.advanceTimersByTimeAsync(0);
+			getSubCb()!("SUBSCRIBED");
+			await vi.advanceTimersByTimeAsync(10_000);
+			expect(
+				res.writes.filter((w) => w.startsWith("event: update")),
+			).toHaveLength(0);
+			// The row changes → exactly one wake-up carrying kinds ["notif"].
+			notifRow = { value: { updated_at: "t1" } };
+			await vi.advanceTimersByTimeAsync(10_000);
+			await vi.advanceTimersByTimeAsync(1_100);
+			const updates = res.writes.filter((w) => w.startsWith("event: update"));
+			expect(updates).toHaveLength(1);
+			expect(updates[0]).toContain('"notif"');
+
+			listeners.close();
+			await p;
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 });
