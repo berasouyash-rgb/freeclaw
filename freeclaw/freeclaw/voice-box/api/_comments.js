@@ -386,6 +386,22 @@ export default async function handler(req, res) {
 			}
 			if (typeof b.deleted === "boolean") patch.deleted = b.deleted;
 			if (admin && typeof b.hidden === "boolean") patch.hidden = b.hidden;
+			// Resurrection gate: restoring (un-deleting / un-hiding) a comment
+			// on a locked post would plant a visible stray on a post that
+			// claims "comments off". The lock purge deleted everything; the
+			// lock must keep it deleted until the post is unlocked first.
+			if (patch.deleted === false || patch.hidden === false) {
+				const { data: parent } = await supabase
+					.from("posts")
+					.select("locked")
+					.eq("id", cmt.post_id)
+					.maybeSingle();
+				if (parent?.locked === true)
+					return res.status(403).json({
+						error: "Comments are locked on this post — unlock the post before restoring comments.",
+						code: "post_locked",
+					});
+			}
 			const { data, error } = await supabase
 				.from("comments")
 				.update(patch)

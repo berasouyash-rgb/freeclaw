@@ -1146,6 +1146,44 @@ export default async function handler(req, res) {
 				.select()
 				.single();
 			if (error) throw error;
+			// Comment-block enforcement: locking comments purges ALL existing
+			// comments on the post (soft-delete: recoverable, audit-preserving).
+			// A lock that leaves old discussion visible is a lie — readers see
+			// a thread on a post that claims "comments off". NULL-safe: legacy
+			// rows may carry deleted=NULL, so match IS NOT TRUE, not = false.
+			// Failures audit loudly and ride the response — never silently.
+			let commentsPurge = null;
+			if (patch.locked === true && post.locked !== true) {
+				try {
+					const { data: purged, error: purgeError } = await supabase
+						.from("comments")
+						.update({ deleted: true })
+						.eq("post_id", id)
+						.or("deleted.is.null,deleted.eq.false")
+						.select("id");
+					if (purgeError) throw purgeError;
+					const purgedCount = (purged || []).length;
+					commentsPurge = { ok: true, purged: purgedCount };
+					if (purgedCount > 0)
+						await auditLog(
+							"moderation",
+							"lock_purged_comments",
+							`${id}: ${purgedCount} comment(s) removed with lock`,
+						);
+				} catch (err) {
+					commentsPurge = {
+						ok: false,
+						purged: 0,
+						error: err?.message || String(err),
+					};
+					await auditLog(
+						"moderation",
+						"lock_purge_failed",
+						`${id}: ${err?.message || String(err)}`,
+					);
+				}
+				invalidateCounts(); // comment_count drops with the purge
+			}
 			// Owner deletes/restores were invisible to admins (no audit row, no
 			// deleter timestamp beyond updated_at). Record them best-effort so
 			// the admin feed can show which user deleted and when.
@@ -1336,7 +1374,13 @@ export default async function handler(req, res) {
 					}).catch(() => {});
 				}
 			return res.status(200).json(
-				removalVerification ? { ...data, verification: removalVerification } : data,
+				removalVerification || commentsPurge
+					? {
+							...data,
+							...(removalVerification ? { verification: removalVerification } : {}),
+							...(commentsPurge ? { comments_purge: commentsPurge } : {}),
+						}
+					: data,
 			);
 		}
 
