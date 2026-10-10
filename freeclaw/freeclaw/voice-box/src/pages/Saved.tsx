@@ -5,6 +5,7 @@ import { Link } from "react-router";
 import PostCard from "../components/PostCard";
 import { useApp } from "../contexts/AppContext";
 import { api } from "../lib/api";
+import { useRealtime } from "../lib/useRealtime";
 import type { PostData } from "../types";
 
 export default function Saved() {
@@ -13,15 +14,17 @@ export default function Saved() {
 	const [loading, setLoading] = useState(true);
 	const [error, setError] = useState("");
 
-	const load = useCallback(async () => {
+	const load = useCallback(async (silent = false) => {
 		if (bookmarks.length === 0) {
 			setPosts([]);
 			setLoading(false);
 			return;
 		}
 		try {
-			setError("");
-			setLoading(true);
+			if (!silent) {
+				setError("");
+				setLoading(true);
+			}
 			const data = await api.get<PostData[]>(
 				`/api/posts?ids=${bookmarks.slice(0, 100).join(",")}`,
 			);
@@ -32,8 +35,13 @@ export default function Saved() {
 					.map((b) => byId.get(b))
 					.filter((p): p is PostData => Boolean(p)),
 			);
+			// Fresh data means the list is healthy — clear any stale error
+			// whether this was a background refresh or an explicit load.
+			setError("");
 		} catch (e: unknown) {
-			setError(e instanceof Error ? e.message : "Could not load saved posts");
+			// A background refresh failing must not overwrite a good list with
+			// an error banner; only the explicit load reports.
+			if (!silent) setError(e instanceof Error ? e.message : "Could not load saved posts");
 		}
 		setLoading(false);
 	}, [bookmarks]);
@@ -41,6 +49,11 @@ export default function Saved() {
 	useEffect(() => {
 		load();
 	}, [load]);
+
+	// ── Realtime: a saved post that is edited, solved, or withdrawn by its
+	// author elsewhere should reflect here without a manual reload. Silent —
+	// keeps the current list rendered on a transient blip.
+	useRealtime(["posts"], () => void load(true), 2_000);
 
 	const remove = (id: string) => {
 		toggleBookmark(id);

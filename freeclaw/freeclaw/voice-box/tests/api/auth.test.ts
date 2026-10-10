@@ -414,20 +414,18 @@ describe("Auth - Rate Limiter", () => {
 		expect(limiter.check("user:B", 60, 1)).toBe(true); // exceeded but separate
 	});
 
-	it("resets after window expires", () => {
-		// Use very short window
-		limiter.check("user:1", 0.001, 1); // 1ms window
-		expect(limiter.check("user:1", 0.001, 1)).toBe(true); // still within window
+	it("resets after window expires", async () => {
+		// Within-window behavior on a long window — no timing sensitivity.
+		limiter.check("expire:A", 60, 1);
+		expect(limiter.check("expire:A", 60, 1)).toBe(true); // still within window
 
-		// After a small delay
-		return new Promise<void>((resolve) => {
-			setTimeout(() => {
-				const result = limiter.check("user:1", 0.1, 1);
-				// Should allow because 10ms > 1ms window expired
-				expect(result).toBe(true);
-				resolve();
-			}, 10);
-		});
+		// Expiry: short window, then a delay far beyond it opens a fresh bucket.
+		// (The stored windowStart is compared against the current call's
+		// window, so the same short window must be passed again — 150ms of
+		// real delay can never fall inside a 50ms window.)
+		limiter.check("expire:B", 0.05, 1); // 50ms window, count=1
+		await new Promise((r) => setTimeout(r, 150));
+		expect(limiter.check("expire:B", 0.05, 1)).toBe(false); // expired → allow
 	});
 
 	it("tracks count correctly", () => {

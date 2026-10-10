@@ -1,5 +1,5 @@
 /**
- * Shared domain types for Voice Box.
+ * Shared domain types for Voice Flow.
  * Source of truth for all frontend data shapes.
  */
 
@@ -12,7 +12,8 @@ export type PostStatus =
 	| "in_progress"
 	| "waiting"
 	| "solved"
-	| "archived";
+	| "archived"
+	| "pending_review";
 export type Priority = "low" | "medium" | "high" | "critical";
 
 export interface StatusHistoryEntry {
@@ -93,10 +94,18 @@ export interface PollData {
 	expires_at?: string | null;
 	archived?: boolean;
 	deleted?: boolean;
+	hidden?: boolean;
 	total_votes?: number;
 	vote_counts?: Record<number, number>;
 	is_mine?: boolean;
 	created_at?: string;
+	/**
+	 * Row liveness stamp. The vote endpoint bumps it (`api/_polls.js:399`) and
+	 * the realtime UPDATE carries the new value, so it is the freshness key that
+	 * decides between a locally-held poll and a refetched one (see
+	 * `pickNewerPoll` in `components/PollCard.tsx`).
+	 */
+	updated_at?: string;
 }
 
 export interface PollVote {
@@ -129,7 +138,14 @@ export type NotificationKind =
 	| "poll"
 	| "info"
 	| "submitted"
-	| "mention";
+	| "mention"
+	| "warning"
+	| "success"
+	| "suspension"
+	| "suspension_lifted"
+	| "ban"
+	| "unban"
+	| "moderation";
 
 export interface Notification {
 	id: string;

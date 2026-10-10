@@ -12,6 +12,8 @@ import {
 } from "./_observability.js";
 import { buildChain } from "./_providers.js";
 import { getAllCircuitStatus } from "./_reliability.js";
+import { getLoadStats } from "./_load-guard.js";
+import { aiHealthCheck } from "./_ai-health.js";
 
 async function checkTable(tableName) {
 	const start = Date.now();
@@ -96,6 +98,31 @@ export default async function handler(req, res) {
 		const start = Date.now();
 
 		// Run all checks in parallel
+		// Table sizes + row counts for all critical tables
+		const TABLES = [
+			"posts", "comments", "reactions", "polls", "poll_votes",
+			"reports", "users_meta", "settings", "activity_logs",
+			"chat_messages", "agent_conversations", "notifications",
+		];
+		const tableSizes = await Promise.all(
+			TABLES.map(async (t) => {
+				const start = Date.now();
+				try {
+					const { count, error } = await supabase
+						.from(t)
+						.select("*", { count: "exact", head: true });
+					if (error) throw error;
+					return {
+						table: t,
+						rows: count || 0,
+						latency_ms: Date.now() - start,
+					};
+				} catch {
+					return { table: t, rows: -1, latency_ms: Date.now() - start };
+				}
+			}),
+		);
+
 		const [dbCheck, postsCheck, commentsCheck, usersCheck, reportsCheck] =
 			await Promise.all([
 				(async () => {
@@ -108,13 +135,13 @@ export default async function handler(req, res) {
 						return {
 							status: error ? "error" : "ok",
 							latency_ms: Date.now() - t,
-							error: error?.message,
+							error: error?.message ? "unavailable" : undefined,
 						};
 					} catch (e) {
 						return {
 							status: "error",
 							latency_ms: Date.now() - t,
-							error: e.message,
+							error: "unavailable",
 						};
 					}
 				})(),
@@ -146,6 +173,7 @@ export default async function handler(req, res) {
 		const systemHealth = getSystemHealth();
 		const circuitStatus = getAllCircuitStatus();
 		const cacheInfo = cacheStats();
+		const loadInfo = getLoadStats();
 
 		// Determine overall status
 		const checks = {
@@ -155,6 +183,8 @@ export default async function handler(req, res) {
 			users: usersCheck,
 			reports: reportsCheck,
 			llm_providers: llmCheck,
+			ai: aiHealthCheck(),
+			load: { status: loadInfo.shed_total > 0 ? "warning" : "ok", ...loadInfo },
 			errors: {
 				status: errorCount < 10 ? "ok" : "warning",
 				count_last_hour: errorCount,
@@ -174,6 +204,7 @@ export default async function handler(req, res) {
 			status: overallStatus,
 			timestamp: new Date().toISOString(),
 			checks,
+			table_sizes: tableSizes,
 			circuits: circuitStatus,
 			cache: cacheInfo,
 			system: systemHealth,

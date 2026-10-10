@@ -3,6 +3,7 @@
 // Built-in heuristic fallback when no provider is available.
 import { cors, isAdmin } from "./_auth.js";
 import { sanitizeError } from "./_error.js";
+import { logger } from "./_observability.js";
 import { callLLMChain } from "./_providers.js";
 
 function parseJson(text) {
@@ -218,9 +219,7 @@ export default async function handler(req, res) {
 				}
 			}
 
-			console.log(
-				`[ai:analyze] Received ${postList.length} posts, type=${typeof posts}, isArray=${Array.isArray(posts)}`,
-			);
+			logger.info("ai", `Received ${postList.length} posts`, { type: typeof posts, isArray: Array.isArray(posts) });
 
 			if (postList.length === 0) {
 				console.error(
@@ -254,9 +253,7 @@ export default async function handler(req, res) {
 					typeof result.summary === "string" &&
 					result.summary.trim().length > 5;
 				if (summaryOk) {
-					console.log(
-						`[ai:analyze] LLM result accepted (${ai.engine}), summary: ${result.summary.slice(0, 80)}...`,
-					);
+					logger.info("ai", `LLM result accepted`, { engine: ai.engine, summary: result.summary.slice(0, 80) });
 					return res
 						.status(200)
 						.json({

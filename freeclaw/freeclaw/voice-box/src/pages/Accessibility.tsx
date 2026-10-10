@@ -1,5 +1,5 @@
-﻿import { Check, Ear, Eye, Keyboard, Mail, Monitor } from "lucide-react";
-import { Link } from "react-router";
+﻿import { ArrowLeft, Check, Ear, Eye, Keyboard, Mail, Monitor } from "lucide-react";
+import { Link, useNavigate } from "react-router";
 import FadeIn from "../components/FadeIn";
 
 const COMMITMENTS = [
@@ -55,17 +55,35 @@ const STANDARDS = [
 ];
 
 export default function Accessibility() {
+	const nav = useNavigate();
+	// Deep links land here with no history to go back to — fall home
+	// instead of a dead button.
+	const goBack = () => {
+		if (window.history.length > 1) nav(-1);
+		else nav("/");
+	};
 	return (
 		<div className="min-h-screen bg-bg">
 			<section className="relative overflow-hidden">
 				<div className="absolute inset-0 bg-gradient-to-b from-accent/5 via-transparent to-transparent" />
 				<div className="relative max-w-3xl mx-auto px-6 pt-24 pb-16 md:pt-32 md:pb-20 text-center">
 					<FadeIn>
+						<button
+							type="button"
+							className="btn btn-ghost !px-3 mb-6"
+							onClick={goBack}
+							aria-label="Go back"
+						>
+							<ArrowLeft size={15} /> Back
+						</button>
+						<p className="inline-flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-[0.18em] text-accent bg-accent/10 rounded-full px-3 py-1.5 mb-4">
+							WCAG 2.1 AA baseline
+						</p>
 						<h1 className="text-4xl md:text-5xl font-bold text-ink mb-6">
 							Accessibility
 						</h1>
 						<p className="text-lg text-ink2 max-w-xl mx-auto">
-							Voice Box is committed to ensuring digital accessibility for all
+							Voice Flow is committed to ensuring digital accessibility for all
 							users, including those with disabilities.
 						</p>
 					</FadeIn>
@@ -79,7 +97,7 @@ export default function Accessibility() {
 						Our Commitments
 					</h2>
 				</FadeIn>
-				<div className="grid md:grid-cols-2 gap-6">
+				<div className="grid grid-cols-1 md:grid-cols-2 gap-6">
 					{COMMITMENTS.map((c, i) => (
 						<FadeIn key={c.title} delay={i * 0.1}>
 							<div className="card p-6 h-full">
@@ -91,7 +109,7 @@ export default function Accessibility() {
 											key={item}
 											className="flex items-start gap-2 text-sm text-ink2"
 										>
-											<Check className="w-4 h-4 text-emerald-500 mt-0.5 shrink-0" />
+											<Check className="w-4 h-4 text-good mt-0.5 shrink-0" />
 											{item}
 										</li>
 									))}
@@ -169,8 +187,7 @@ export default function Accessibility() {
 							<div key={i} className="card p-4">
 								<div className="flex items-start justify-between mb-1">
 									<h3 className="font-medium text-ink text-sm">{item.issue}</h3>
-									<span
-										className={`text-xs px-2 py-0.5 rounded-full ${item.status === "Resolved" ? "bg-emerald-500/10 text-emerald-500" : "bg-amber-500/10 text-amber-500"}`}
+									<span												className={`text-xs px-2 py-0.5 rounded-full ${item.status === "Resolved" ? "bg-good/10 text-good" : "bg-warn/10 text-warn"}`}
 									>
 										{item.status}
 									</span>
@@ -191,7 +208,7 @@ export default function Accessibility() {
 						Accessibility Feedback
 					</h2>
 					<p className="text-ink2 mb-6">
-						We welcome your feedback on the accessibility of Voice Box. Please
+						We welcome your feedback on the accessibility of Voice Flow. Please
 						let us know if you encounter any barriers.
 					</p>
 					<Link

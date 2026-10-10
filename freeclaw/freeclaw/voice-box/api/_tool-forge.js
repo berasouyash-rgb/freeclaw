@@ -4,8 +4,25 @@
 import { auditLog, cors, isAdmin } from "./_auth.js";
 import supabase from "./_db-client.js";
 import { sanitizeError } from "./_error.js";
+import { assertSafeSelect, runSelectQuery } from "./_agent-chat.js";
 
 const TOOLS_KEY = "forged_tools";
+
+/** Substitute template placeholders with single-quote-escaped values.
+ *  Supports both :key and ${key} forms. Split/join (never RegExp) so a key
+ *  like ".*" cannot become a regex attack, and values can never break out
+ *  of their literal (SQL '' convention). Mirrors _agent-chat.js custom tools.
+ *  The template author owns quoting: "… = '${s}'" + s="o'clock" →
+ *  "… = 'o''clock'". */
+export function substituteTemplate(template, params) {
+	let sql = String(template || "");
+	for (const [key, value] of Object.entries(params || {})) {
+		const safe = String(value ?? "").replace(/'/g, "''");
+		sql = sql.split(`:${key}`).join(safe);
+		sql = sql.split(`\${${key}}`).join(safe);
+	}
+	return sql;
+}
 
 // ─── Tool Storage ─────────────────────────────────────────────────
 export async function listForgedTools() {
@@ -131,6 +148,15 @@ export default async function handler(req, res) {
 			}
 			tool.created_at = tool.created_at || new Date().toISOString();
 			tool.created_by = tool.created_by || "admin";
+			// Least-privilege (spec §6): custom tools are SELECT-only at
+			// REGISTRATION, so a stored template can never become a write path.
+			if (tool.sql_template) {
+				try {
+					assertSafeSelect(tool.sql_template);
+				} catch (e) {
+					return res.status(400).json({ error: String(e?.message || e) });
+				}
+			}
 			await saveForgedTool(tool);
 			await auditLog("tool_forge", "save_tool", `Saved tool: ${tool.name}`);
 			return res.status(200).json({ ok: true, tool });
@@ -154,27 +180,38 @@ export default async function handler(req, res) {
 				return res.status(404).json({ error: `Tool '${name}' not found` });
 
 			if (tool.sql_template) {
-				let query = tool.sql_template;
-				for (const [key, value] of Object.entries(params || {})) {
-					query = query.replace(new RegExp(`:${key}`, "g"), String(value));
+				// Substitute with escaped literals, then gate the SUBSTITUTED
+				// text: arg values cannot smuggle stacked statements or
+				// comments past the registration-time check.
+				const query = substituteTemplate(tool.sql_template, params);
+				try {
+					assertSafeSelect(query);
+				} catch (e) {
+					return res.status(200).json({ ok: false, error: String(e?.message || e) });
+				}
+				// Native RPC first; built-in SELECT interpreter when the
+				// deployment never created exec_sql (same path as execute_sql).
+				try {
+					const { data, error } = await supabase
+						.rpc("exec_sql", { sql: query })
+						.maybeSingle();
+					if (!error) {
+						await auditLog("tool_forge", "execute_tool", `Executed tool: ${name}`);
+						return res.status(200).json({ ok: true, result: data });
+					}
+					if (!/exist|found|PGRST|404|schema/i.test(String(error.message || "")))
+						return res.status(200).json({ ok: false, error: `SQL error: ${error.message}` });
+				} catch (rpcErr) {
+					if (/SQL error/.test(String(rpcErr?.message || "")))
+						return res.status(200).json({ ok: false, error: String(rpcErr.message) });
+					// rpc missing/crashed → interpreter below
 				}
 				try {
-					const { data, error } = await supabase.rpc("execute_sql", { query });
-					if (error)
-						return res.status(200).json({ ok: false, error: error.message });
-					await auditLog(
-						"tool_forge",
-						"execute_tool",
-						`Executed tool: ${name}`,
-					);
-					return res.status(200).json({ ok: true, result: data });
-				} catch (rpcErr) {
-					return res
-						.status(200)
-						.json({
-							ok: false,
-							error: `SQL execution not available: ${rpcErr.message}`,
-						});
+					const rows = await runSelectQuery(query);
+					await auditLog("tool_forge", "execute_tool", `Executed tool: ${name}`);
+					return res.status(200).json({ ok: true, result: rows });
+				} catch (ie) {
+					return res.status(200).json({ ok: false, error: String(ie?.message || ie) });
 				}
 			}
 
@@ -190,6 +227,13 @@ export default async function handler(req, res) {
 				return res.status(400).json({ error: "tools must be an array" });
 			for (const tool of tools) {
 				if (!tool.name || !tool.description) continue;
+				if (tool.sql_template) {
+					try {
+						assertSafeSelect(tool.sql_template);
+					} catch {
+						continue; // skip non-SELECT templates, never store a write path
+					}
+				}
 				tool.created_at = tool.created_at || new Date().toISOString();
 				tool.created_by = tool.created_by || "ai-forge";
 				await saveForgedTool(tool);

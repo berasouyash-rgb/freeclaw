@@ -99,6 +99,7 @@ function Probe() {
 			</button>
 			<button onClick={() => app.markNotifsRead()}>mark-read</button>
 			<button onClick={() => app.clearNotifs()}>clear-notifs</button>
+			<button onClick={() => app.retireNotifsForLink("/x")}>retire</button>
 			<button onClick={() => app.refreshIdentity()}>refresh</button>
 			<button onClick={() => app.toggleBookmark("b1")}>toggle-bookmark</button>
 		</div>
@@ -131,6 +132,20 @@ beforeEach(() => {
 });
 
 describe("AppProvider — core behavior", () => {
+	it("does not install recurring heartbeat or notification poll timers", () => {
+		const intervalSpy = vi.spyOn(globalThis, "setInterval");
+		render(
+			<AppProvider>
+				<Probe />
+			</AppProvider>,
+		);
+
+		const intervals = intervalSpy.mock.calls.map(([, delay]) => delay);
+		expect(intervals).not.toContain(120_000);
+		expect(intervals).not.toContain(180_000);
+		intervalSpy.mockRestore();
+	});
+
 	it("throws when useApp is used outside the provider", () => {
 		expect(() => render(<Probe />)).toThrow(
 			/useApp must be used within <AppProvider>/,
@@ -257,6 +272,41 @@ describe("AppProvider — core behavior", () => {
 		);
 	});
 
+	it("collapses an identical immediate re-push into one notification", async () => {
+		const user = userEvent.setup();
+		render(
+			<AppProvider>
+				<Probe />
+			</AppProvider>,
+		);
+		await user.click(screen.getByRole("button", { name: "push" }));
+		await user.click(screen.getByRole("button", { name: "push" }));
+		await waitFor(() =>
+			expect(screen.getByTestId("notifs")).toHaveTextContent("info:Manual"),
+		);
+		// One entry, not two — a double-fire (double submit, re-mount replay)
+		// must never read as "2 posts are live" for a single event.
+		const parts = (screen.getByTestId("notifs").textContent || "").split("|");
+		expect(parts.filter((p) => p.includes("info:Manual"))).toHaveLength(1);
+	});
+
+	it("retires notices pointing at a deleted post", async () => {
+		const user = userEvent.setup();
+		render(
+			<AppProvider>
+				<Probe />
+			</AppProvider>,
+		);
+		await user.click(screen.getByRole("button", { name: "push" }));
+		await waitFor(() =>
+			expect(screen.getByTestId("notifs")).toHaveTextContent("info:Manual"),
+		);
+		await user.click(screen.getByRole("button", { name: "retire" }));
+		await waitFor(() =>
+			expect(screen.getByTestId("notifs")).not.toHaveTextContent("info:Manual"),
+		);
+	});
+
 	it("merges server-side admin notifications (warning/suspension/ban) into the list", async () => {
 		h.get.mockImplementation((url: string) => {
 			if (url.includes("/api/notifications"))
@@ -287,11 +337,13 @@ describe("AppProvider — core behavior", () => {
 		await waitFor(() =>
 			expect(screen.getByTestId("notifs").textContent).toContain("warning"),
 		);
-		// unread, mapped to info kind with the server title/body
-		expect(screen.getByTestId("notifs").textContent).toContain("[U]info:");
+		// unread, server kind preserved (a warning must stay a warning so the
+		// Notifications page can badge it — flattening to info hid severity
+		// and crashed KIND_META lookups for unmapped kinds).
+		expect(screen.getByTestId("notifs").textContent).toContain("[U]warning:");
 	});
 
-	it("does not duplicate server notifications on re-sync (dedupe by id)", async () => {
+	it("does not re-sync server notifications on visibility change", async () => {
 		let notifCalls = 0;
 		h.get.mockImplementation((url: string) => {
 			if (url.includes("/api/notifications")) {
@@ -324,11 +376,9 @@ describe("AppProvider — core behavior", () => {
 		await waitFor(() =>
 			expect(screen.getByTestId("notifs").textContent).toContain("Suspension lifted"),
 		);
-		// second engine pass (visibility change) returns the same notif → no dup
+		expect(notifCalls).toBe(1);
 		document.dispatchEvent(new Event("visibilitychange"));
-		await waitFor(() => expect(notifCalls).toBeGreaterThanOrEqual(2));
-		const text = screen.getByTestId("notifs").textContent ?? "";
-		expect(text.split("Suspension lifted")).toHaveLength(2); // appears once
+		expect(notifCalls).toBe(1);
 	});
 
 	it("mirrors mark-all-read to the server for admin-issued notifications", async () => {
@@ -446,7 +496,7 @@ describe("AppProvider — core behavior", () => {
 			});
 			expect(screen.getByTestId("toast")).toHaveTextContent("");
 
-			// heartbeat interval fires at 120s → another /api/users beat
+			// A long-open page does not create a second heartbeat request.
 			const usersCallsBefore = h.post.mock.calls.filter(
 				(c) => c[0] === "/api/users",
 			).length;
@@ -456,7 +506,7 @@ describe("AppProvider — core behavior", () => {
 			const usersCallsAfter = h.post.mock.calls.filter(
 				(c) => c[0] === "/api/users",
 			).length;
-			expect(usersCallsAfter).toBeGreaterThan(usersCallsBefore);
+			expect(usersCallsAfter).toBe(usersCallsBefore);
 		} finally {
 			vi.useRealTimers();
 		}
@@ -668,11 +718,97 @@ describe("AppProvider — core behavior", () => {
 		);
 		expect(screen.getByTestId("chat-unread")).toHaveTextContent("1");
 
-		// visibilitychange re-fires beat + check (no duplicate notifs: snapshot matches)
+		// Visibility changes do not trigger another full notification pass.
+		const callsBeforeVisibility = postsCalls;
 		document.dispatchEvent(new Event("visibilitychange"));
-		await waitFor(() => expect(postsCalls).toBeGreaterThanOrEqual(3));
+		await act(async () => {
+			await Promise.resolve();
+		});
+		expect(postsCalls).toBe(callsBeforeVisibility);
 		const notifsAfter = screen.getByTestId("notifs").textContent ?? "";
 		expect(notifsAfter).toContain("solved");
+	});
+
+	it("raises the inbox badge and a notification for AI replies, not just admin ones", async () => {		let chatCalls = 0;
+		h.get.mockImplementation((url: string) => {
+			if (url.includes("/api/saved")) return Promise.resolve({ saved: [] });
+			if (url.includes("/api/posts")) return Promise.resolve([]);
+			if (url.includes("/api/chat")) {
+				chatCalls++;
+				return chatCalls === 1
+					? Promise.resolve({ messages: [] })
+					: Promise.resolve({
+							messages: [{ sender: "ai", read: false }],
+						});
+			}
+			return Promise.resolve({});
+		});
+
+		const user = userEvent.setup();
+		render(
+			<AppProvider>
+				<Probe />
+			</AppProvider>,
+		);
+		await waitFor(() => expect(chatCalls).toBeGreaterThanOrEqual(1));
+
+		await user.click(screen.getByRole("button", { name: "refresh" }));
+		await waitFor(
+			() => {
+				expect(screen.getByTestId("chat-unread")).toHaveTextContent("1");
+				expect(
+					screen.getByTestId("notifs").textContent ?? "",
+				).toContain("New reply in your inbox");
+			},
+			{ timeout: 3000 },
+		);
+	});
+
+	it("pings the device once when updates piled up while the tab was hidden", async () => {
+		const shown: Array<{ title: string }> = [];
+		const Ctor = vi.fn(function (this: unknown, title: string) {
+			shown.push({ title });
+			return this;
+		}) as unknown as typeof Notification;
+		Object.defineProperty(Ctor, "permission", { value: "granted", configurable: true });
+		vi.stubGlobal("Notification", Ctor);
+		const hiddenDesc = Object.getOwnPropertyDescriptor(document, "hidden");
+		Object.defineProperty(document, "hidden", { value: true, configurable: true });
+
+		h.get.mockImplementation((url: string) => {
+			if (url.includes("/api/saved")) return Promise.resolve({ saved: [] });
+			if (url.includes("/api/posts")) return Promise.resolve([]);
+			if (url.includes("/api/chat"))
+				return Promise.resolve({ messages: [{ sender: "ai", read: false }] });
+			return Promise.resolve({});
+		});
+
+		render(
+			<AppProvider>
+				<Probe />
+			</AppProvider>,
+		);
+		// Mount run skips while hidden — nothing shown, nothing raised.
+		await act(async () => {
+			await Promise.resolve();
+		});
+		expect(shown).toHaveLength(0);
+
+		// Return + refresh identity re-runs the check with fresh items waiting.
+		Object.defineProperty(document, "hidden", { value: false, configurable: true });
+		const user = userEvent.setup();
+		await user.click(screen.getByRole("button", { name: "refresh" }));
+		await waitFor(
+			() => {
+				expect(screen.getByTestId("chat-unread")).toHaveTextContent("1");
+			},
+			{ timeout: 3000 },
+		);
+		expect(shown).toHaveLength(1);
+		expect(shown[0]?.title).toMatch(/away|reply|inbox|update/i);
+
+		if (hiddenDesc) Object.defineProperty(document, "hidden", hiddenDesc);
+		vi.unstubAllGlobals();
 	});
 });
 

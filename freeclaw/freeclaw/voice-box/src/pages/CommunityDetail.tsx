@@ -1,7 +1,8 @@
 // ─── Community Detail — one group's discussion feed ──────────────
-import { useCallback, useEffect, useState } from "react";
-import { Link, useParams } from "react-router";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Link, useNavigate, useParams } from "react-router";
 import {
+	AlertTriangle,
 	ArrowLeft,
 	BarChart3,
 	CheckCircle2,
@@ -9,6 +10,7 @@ import {
 	Heart,
 	MessageSquare,
 	Plus,
+	RefreshCw,
 	Send,
 	ThumbsUp,
 	Trash2,
@@ -16,7 +18,7 @@ import {
 	X,
 } from "lucide-react";
 import { useApp } from "../contexts/AppContext";
-import { api, hasAdminSession } from "../lib/api";
+import { api, hasAdminSession, isNotFound } from "../lib/api";
 
 interface CommunityPollOption {
 	id: string;
@@ -81,38 +83,78 @@ function timeAgoShort(iso: string): string {
 
 export default function CommunityDetail() {
 	const { slug = "" } = useParams<{ slug: string }>();
+	const navigate = useNavigate();
 	const { anonId, toast, displayName } = useApp();
 	const isAdmin = hasAdminSession();
 	const [data, setData] = useState<CommunityDetailData | null>(null);
 	const [notFound, setNotFound] = useState(false);
+	/** Non-404 load failure — a different fact from "this community is gone". */
+	const [loadError, setLoadError] = useState("");
 	const [busy, setBusy] = useState(false);
 	const [draft, setDraft] = useState("");
+	// In-flight dedupe keys for fire-and-forget actions (vote/react/comment/
+	// report have no per-button busy state — see handlers below).
+	const inflightRef = useRef<Set<string>>(new Set());
 	const [commentDrafts, setCommentDrafts] = useState<Record<string, string>>({});
 	const [openComments, setOpenComments] = useState<Record<string, boolean>>({});
 	const [pollOpen, setPollOpen] = useState(false);
 	const [pollQuestion, setPollQuestion] = useState("");
 	const [pollOptions, setPollOptions] = useState(["", ""]);
 
-	const load = useCallback(async () => {
+	const load = useCallback(async (quiet = false) => {
 		try {
 			const r = await api.get<CommunityDetailData>(
 				`/api/communities?action=get&slug=${encodeURIComponent(slug)}&anon_id=${anonId}`,
 			);
 			setData(r);
 			setNotFound(false);
-		} catch {
-			setNotFound(true);
+			setLoadError("");
+		} catch (e: unknown) {
+			// Only a 404 means the community actually does not exist. Anything
+			// else (429, timeout, 500) is a failed request and must say so —
+			// otherwise a busy API tells users the group was deleted. A quiet
+			// background tick stays silent on those instead of flashing a
+			// banner every interval over a transient blip.
+			if (isNotFound(e)) {
+				setNotFound(true);
+				setLoadError("");
+				return;
+			}
+			if (!quiet)
+				setLoadError(
+					e instanceof Error ? e.message : "Failed to load community",
+				);
 		}
 	}, [slug, anonId]);
 
 	useEffect(() => {
 		void load();
-		const iv = setInterval(() => void load(), 25000);
-		const onVis = () => !document.hidden && void load();
-		document.addEventListener("visibilitychange", onVis);
+	}, [load]);
+
+	// ── Visible-only quiet tick (contract evolution 2026-10-05) ──
+	// The discussion feed owns no subscription (community tables are
+	// outside the anon realtime contract), so posts, reactions, comments,
+	// and poll votes from another device appeared only after a manual
+	// reload. Every 10s while mounted AND visible (plus on focus/return),
+	// quietly revalidate the whole thread: every mutation already reloads
+	// through load(), so there is no optimistic state a tick could
+	// clobber, and drafts live in separate state the tick never touches.
+	useEffect(() => {
+		const tick = () => {
+			if (
+				typeof document !== "undefined" &&
+				document.visibilityState === "hidden"
+			)
+				return;
+			void load(true);
+		};
+		const id = window.setInterval(tick, 10_000);
+		window.addEventListener("focus", tick);
+		document.addEventListener("visibilitychange", tick);
 		return () => {
-			clearInterval(iv);
-			document.removeEventListener("visibilitychange", onVis);
+			window.clearInterval(id);
+			window.removeEventListener("focus", tick);
+			document.removeEventListener("visibilitychange", tick);
 		};
 	}, [load]);
 
@@ -174,6 +216,12 @@ export default function CommunityDetail() {
 
 	const vote = async (postId: string, optionId: string) => {
 		if (!data) return;
+		// Collapse rapid double-clicks into one request (no busy UI state
+		// here — the key includes the option so changing your vote fast
+		// still goes through, while an identical in-flight vote is dropped).
+		const key = `vote:${postId}:${optionId}`;
+		if (inflightRef.current.has(key)) return;
+		inflightRef.current.add(key);
 		try {
 			await api.post("/api/communities", {
 				action: "vote",
@@ -185,6 +233,8 @@ export default function CommunityDetail() {
 			await load();
 		} catch (e: unknown) {
 			toast(e instanceof Error ? e.message : "Failed to vote", "err");
+		} finally {
+			inflightRef.current.delete(key);
 		}
 	};
 
@@ -228,6 +278,10 @@ export default function CommunityDetail() {
 
 	const react = async (postId: string, kind: string) => {
 		if (!data) return;
+		// Toggle + double-click without this guard flips on then off.
+		const key = `react:${postId}:${kind}`;
+		if (inflightRef.current.has(key)) return;
+		inflightRef.current.add(key);
 		try {
 			await api.post("/api/communities", {
 				action: "react",
@@ -239,6 +293,8 @@ export default function CommunityDetail() {
 			await load();
 		} catch (e: unknown) {
 			toast(e instanceof Error ? e.message : "Failed", "err");
+		} finally {
+			inflightRef.current.delete(key);
 		}
 	};
 
@@ -246,6 +302,11 @@ export default function CommunityDetail() {
 		if (!data) return;
 		const text = (commentDrafts[postId] || "").trim();
 		if (!text) return;
+		// Key includes the text: an identical double-submit collapses, but
+		// a genuinely new message typed fast still sends.
+		const key = `comment:${postId}:${text}`;
+		if (inflightRef.current.has(key)) return;
+		inflightRef.current.add(key);
 		try {
 			await api.post("/api/communities", {
 				action: "comment",
@@ -259,12 +320,17 @@ export default function CommunityDetail() {
 			await load();
 		} catch (e: unknown) {
 			toast(e instanceof Error ? e.message : "Failed", "err");
+		} finally {
+			inflightRef.current.delete(key);
 		}
 	};
 
 	const report = async (postId: string | null) => {
 		if (!data) return;
 		const reason = postId ? "Inappropriate community post" : "Inappropriate community";
+		const key = `report:${postId ?? "community"}`;
+		if (inflightRef.current.has(key)) return;
+		inflightRef.current.add(key);
 		try {
 			await api.post("/api/communities", {
 				action: "report",
@@ -276,6 +342,8 @@ export default function CommunityDetail() {
 			toast("Reported — moderators will review it", "ok");
 		} catch (e: unknown) {
 			toast(e instanceof Error ? e.message : "Failed to report", "err");
+		} finally {
+			inflightRef.current.delete(key);
 		}
 	};
 
@@ -286,7 +354,7 @@ export default function CommunityDetail() {
 			await api.post("/api/communities", { action: "admin", slug: data.slug, op });
 			toast(op === "delete" ? "Community deleted" : op === "hide" ? "Community hidden" : "Community restored", "ok");
 			if (op === "delete") {
-				window.location.href = "/communities";
+				navigate("/communities");
 				return;
 			}
 			await load();
@@ -308,6 +376,34 @@ export default function CommunityDetail() {
 				<Link to="/communities" className="btn btn-primary !text-sm">
 					<ArrowLeft size={15} /> Back to communities
 				</Link>
+			</div>
+		);
+	}
+
+	if (loadError && !data) {
+		return (
+			<div className="max-w-3xl mx-auto px-4 py-16 text-center vb-page-enter">
+				<div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-warn/10 text-warn mb-4">
+					<AlertTriangle size={26} />
+				</div>
+				<h1 className="font-display font-bold text-xl">
+					Couldn't load this community
+				</h1>
+				<p className="text-sm text-ink3 mt-2 mb-5 max-w-sm mx-auto">
+					{loadError} — the community itself is still here, so this is
+					worth retrying.
+				</p>
+				<div className="flex flex-wrap items-center justify-center gap-2">
+					<button
+						className="btn btn-primary !text-sm"
+						onClick={() => void load()}
+					>
+						<RefreshCw size={14} /> Retry
+					</button>
+					<Link to="/communities" className="btn btn-ghost !text-sm">
+						<ArrowLeft size={15} /> Back to communities
+					</Link>
+				</div>
 			</div>
 		);
 	}
@@ -358,6 +454,14 @@ export default function CommunityDetail() {
 						</div>
 					</div>
 					<div className="flex items-center gap-2 flex-shrink-0">
+						<button
+							className="btn btn-ghost !text-sm !py-2"
+							onClick={() => void load()}
+							aria-label="Refresh community"
+							title="Refresh community"
+						>
+							<RefreshCw size={14} /> Refresh
+						</button>
 						{!data.is_member ? (
 							<button className="btn btn-primary !text-sm !py-2" disabled={busy} onClick={() => void joinLeave()}>
 								<Plus size={15} /> Join

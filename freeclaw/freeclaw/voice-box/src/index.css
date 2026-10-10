@@ -30,17 +30,28 @@
   --vb-surface3: #e8e8f1;
   --vb-border: #e4e4ee;
   /* ── Text ─────────────────────────────────────────────────── */
+  /* Contrast contract: every text token below holds WCAG AA (4.5:1) against
+     the WORST surface it can land on — surface3 #e8e8f1 — not just white.
+     `--vb-ink3` previously sat at 2.63:1 there and 3.19:1 on white, which
+     broke the 4.5:1 promise published on /accessibility on every page.
+     Values are derived, not eyeballed: see tests/e2e/a11y-claims.spec.ts,
+     which fails the build if any of these regress. */
   --vb-ink: #171724;
   --vb-ink2: #55556b;
-  --vb-ink3: #8e8ea5;
+  --vb-ink3: #666681; /* 2.63:1 -> 4.56:1 on surface3 */
   /* ── Accent ───────────────────────────────────────────────── */
   --vb-accent: #5652d6;
-  --vb-accent2: #7a6ff0;
+  --vb-accent2: #5c4eed; /* 3.22:1 -> 4.58:1 (was #7a6ff0) */
   --vb-accent-soft: #edecfc;
   /* ── Semantic ─────────────────────────────────────────────── */
-  --vb-good: #16a06a;
-  --vb-warn: #d98a0b;
-  --vb-bad: #dc4b4b;
+  --vb-good: #10774f; /* 2.75:1 -> 4.57:1 (was #16a06a) */
+  --vb-warn: #915c07; /* 2.27:1 -> 4.61:1 (was #d98a0b) */
+  --vb-bad: #c82727; /* 3.35:1 -> 4.57:1 (was #dc4b4b) */
+  /* Text colour for use ON --vb-accent. Must be a token, not a literal
+     `#fff`: the accent flips to a light purple in dark mode, where white
+     text drops to 3.10:1. In dark mode this becomes the dark background,
+     giving 6.19:1 on accent and 8.17:1 on the hover accent. */
+  --vb-on-accent: #ffffff;
   /* ── Shadows (tiered) ────────────────────────────────────── */
   --vb-shadow-xs: 0 1px 2px rgba(0,0,0,0.04);
   --vb-shadow-sm: 0 2px 8px -2px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04);
@@ -69,13 +80,14 @@
   --vb-border: #262637;
   --vb-ink: #f0f0f7;
   --vb-ink2: #a7a7c0;
-  --vb-ink3: #6e6e88;
+  --vb-ink3: #8d8da2; /* 3.01:1 -> 4.58:1 on surface3 (was #6e6e88) */
   --vb-accent: #8b85f5;
   --vb-accent2: #a89dff;
   --vb-accent-soft: #232043;
   --vb-good: #35c68d;
   --vb-warn: #eaa93c;
   --vb-bad: #f06d6d;
+  --vb-on-accent: #0e0e16; /* 6.19:1 on --vb-accent (white would be 3.10:1) */
   /* Dark mode shadows — subtler, more purple-tinted */
   --vb-shadow-xs: 0 1px 2px rgba(0,0,0,0.2);
   --vb-shadow-sm: 0 2px 8px -2px rgba(0,0,0,0.3), 0 1px 2px rgba(0,0,0,0.2);
@@ -84,6 +96,27 @@
   --vb-shadow-xl: 0 16px 48px -12px rgba(0,0,0,0.5), 0 8px 16px rgba(0,0,0,0.25);
   color-scheme: dark;
 }
+
+/* ───────────────────────────────────────────────────────────────────
+   COMPONENT LAYER — deliberate, not decorative.
+
+   Unlayered CSS outranks `@layer utilities` in the cascade. A plain
+   `.btn { display: inline-flex }` sitting outside any layer therefore
+   defeated every responsive display utility: `hidden sm:inline-flex`
+   never hid the button, it only *looked* conditional. That silently
+   broke responsive layout across the whole app — most visibly a 392px
+   minimum content width that made every page scroll sideways on any
+   viewport narrower than ~392px.
+
+   Putting the component rules in the components layer restores the
+   intended precedence: a Tailwind utility always beats component CSS.
+   Theme tokens (@theme, :root, .dark) stay unlayered above so the
+   palette always resolves.
+
+   Guarded by tests/e2e/audit.spec.ts (no route may overflow its
+   viewport) — do not move these rules back out of the layer.
+   ─────────────────────────────────────────────────────────────────── */
+@layer components {
 
 @media (prefers-reduced-motion: no-preference) {
   html { scroll-behavior: smooth; }
@@ -135,7 +168,7 @@ h1,h2,h3,h4 { font-family: var(--font-display); letter-spacing: -0.01em; }
 
 /* Reduce motion for users who prefer it */
 @media (prefers-reduced-motion: reduce) {
-  .vb-rise, .vb-pop, .vb-bar-anim, .vb-trend-bounce, .btn:active:not(:disabled) {
+  .vb-rise, .vb-pop, .vb-bar-anim, .vb-trend-bounce, .vb-burst-ring, .vb-burst-particle, .vb-logo-arcs path, .vb-feed-item, .btn:active:not(:disabled) {
     animation: none !important;
     transform: none !important;
   }
@@ -202,11 +235,13 @@ h1,h2,h3,h4 { font-family: var(--font-display); letter-spacing: -0.01em; }
 ::-webkit-scrollbar-track { background: transparent; }
 
 /* Optimized: GPU-accelerated animations with will-change hints */
-@keyframes vb-rise { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: none; } }
+@keyframes vb-rise { from { opacity: 0; } to { opacity: 1; } }
 @keyframes vb-pop { 0% { transform: scale(.85); } 60% { transform: scale(1.08); } 100% { transform: scale(1); } }
 @keyframes vb-bar { from { width: 0; } }
 @keyframes vb-pulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
-@keyframes vb-shimmer { 0% { background-position: -400px 0; } 100% { background-position: 400px 0; } }
+/* Loading shimmer is a calm opacity pulse — never a left-to-right sweep
+   across the viewport. Used by .skeleton, .vb-shimmer and voice-transcribing. */
+@keyframes vb-shimmer { 0%,100% { opacity: 1; } 50% { opacity: .45; } }
 .vb-shimmer {
   background: linear-gradient(90deg, var(--vb-surface2) 0%, color-mix(in srgb, var(--vb-border) 50%, var(--vb-surface)) 50%, var(--vb-surface2) 100%);
   background-size: 800px 100%;
@@ -218,19 +253,52 @@ h1,h2,h3,h4 { font-family: var(--font-display); letter-spacing: -0.01em; }
 .vb-scale-hover:hover { transform: scale(1.03); box-shadow: var(--vb-shadow-sm); }
 .vb-scale-hover:active { transform: scale(0.97); }
 
-.vb-rise { animation: vb-rise .35s cubic-bezier(.22,.9,.3,1) both; will-change: transform, opacity; }
-.vb-rise-delay-1 { animation: vb-rise .35s cubic-bezier(.22,.9,.3,1) both; animation-delay: .06s; will-change: transform, opacity; }
-.vb-rise-delay-2 { animation: vb-rise .35s cubic-bezier(.22,.9,.3,1) both; animation-delay: .12s; will-change: transform, opacity; }
-.vb-rise-delay-3 { animation: vb-rise .35s cubic-bezier(.22,.9,.3,1) both; animation-delay: .18s; will-change: transform, opacity; }
-.vb-rise-delay-4 { animation: vb-rise .35s cubic-bezier(.22,.9,.3,1) both; animation-delay: .24s; will-change: transform, opacity; }
-.vb-pop { animation: vb-pop .2s ease both; will-change: transform; }
-.vb-bar-anim { animation: vb-bar .7s cubic-bezier(.22,.9,.3,1) both; }
-
-@keyframes vb-trend-bounce {
-  0%, 100% { transform: translateY(0); }
-  50% { transform: translateY(-1.5px); }
+/* Entrance motion is a plain fade — no sliding, no vertical travel.
+   Content appears instantly; only state changes animate. */
+.vb-rise { animation: vb-rise 0.08s linear both; }
+.vb-rise-delay-1, .vb-rise-delay-2, .vb-rise-delay-3, .vb-rise-delay-4, .vb-rise-delay-5 {
+  animation: vb-rise 0.08s linear both;
 }
-.vb-trend-bounce { animation: vb-trend-bounce 1.6s ease-in-out infinite; }
+.vb-pop { animation: vb-pop 0.05s ease both; will-change: transform; }
+
+/* APK-only feed entrance: staggered fade for the first cards, so the list
+   feels alive as it paints. The .vb-feed-item class is only rendered when
+   isMobileApp() — web/desktop never match these selectors. Brief by design
+   (≤0.3s total) with no vertical travel, and killed under
+   prefers-reduced-motion like every other vb-* animation. */
+@media (prefers-reduced-motion: no-preference) {
+  .vb-feed-item { animation: vb-rise 0.16s ease-out both; }
+  .vb-feed-item:nth-child(2) { animation-delay: 0.03s; }
+  .vb-feed-item:nth-child(3) { animation-delay: 0.06s; }
+  .vb-feed-item:nth-child(4) { animation-delay: 0.09s; }
+  .vb-feed-item:nth-child(5) { animation-delay: 0.12s; }
+  .vb-feed-item:nth-child(6) { animation-delay: 0.15s; }
+  .vb-feed-item:nth-child(n+7) { animation-delay: 0.18s; }
+}
+
+/* ---------- Voice logo — radiating sound arcs (opacity/scale only).
+   Static mode (.vb-logo-static) and prefers-reduced-motion render the
+   mark with steady arcs: the identity never depends on motion. */
+.vb-logo-arcs path { opacity: .35; animation: vb-logo-wave 2.2s ease-in-out infinite; transform-box: fill-box; transform-origin: left center; }
+.vb-logo-arcs path:nth-child(2) { animation-delay: .25s; }
+.vb-logo-arcs path:nth-child(3) { animation-delay: .5s; }
+@keyframes vb-logo-wave { 0%,100% { opacity: .3; transform: scale(.92); } 50% { opacity: 1; transform: scale(1.04); } }
+.vb-logo-static .vb-logo-arcs path { animation: none; opacity: .9; }
+
+/* ---------- Support burst — YouTube-like celebration on activation.
+   Ring + 8 radiating particles, transform/opacity only (GPU). Base
+   opacity 0 so prefers-reduced-motion (animation killed above) renders
+   nothing while the count pop still confirms the tap. */
+.vb-burst { position: absolute; inset: 0; pointer-events: none; }
+.vb-burst-ring { position: absolute; left: 50%; top: 50%; width: 10px; height: 10px; margin: -5px 0 0 -5px; border-radius: 50%; border: 2px solid var(--vb-accent); opacity: 0; animation: vb-burst-ring .55s ease-out both; }
+@keyframes vb-burst-ring { 0% { opacity: .9; transform: scale(.4); } 100% { opacity: 0; transform: scale(3.4); } }
+.vb-burst-particle { position: absolute; left: 50%; top: 50%; width: 5px; height: 5px; margin: -2.5px 0 0 -2.5px; border-radius: 50%; background: var(--vb-accent); opacity: 0; animation: vb-burst-fly .6s cubic-bezier(.16,1,.3,1) both; }
+@keyframes vb-burst-fly { 0% { opacity: 1; transform: translate(0, 0) scale(1); } 100% { opacity: 0; transform: translate(var(--tx), var(--ty)) scale(.3); } }
+.vb-bar-anim { animation: vb-bar 0.05s cubic-bezier(.22,.9,.3,1) both; }
+
+/* Trend chip is static — a bouncing arrow communicates nothing and adds
+   constant motion to an otherwise calm page. */
+.vb-trend-bounce { animation: none; }
 
 @keyframes vb-draw { from { stroke-dashoffset: 1; } to { stroke-dashoffset: 0; } }
 .vb-draw { stroke-dasharray: 1; animation: vb-draw 1.2s cubic-bezier(.22,.9,.3,1) both; }
@@ -246,8 +314,8 @@ h1,h2,h3,h4 { font-family: var(--font-display); letter-spacing: -0.01em; }
 
 /* ---------- State-change animations: pipeline slides, text appears ---------- */
 /* Optimized: merged redundant keyframes, shorter durations */
-@keyframes vb-slide-in-right { from { opacity: 0; transform: translateX(14px); } to { opacity: 1; transform: none; } }
-.vb-slide-in { animation: vb-slide-in-right .35s cubic-bezier(.22,.9,.3,1) both; will-change: transform, opacity; }
+@keyframes vb-slide-in-right { from { opacity: 0; } to { opacity: 1; } }
+.vb-slide-in { animation: vb-slide-in-right .12s linear both; }
 
 @keyframes vb-stage-pop-fill {
   from { transform: scale(0.7); opacity: 0; }
@@ -344,21 +412,12 @@ h1,h2,h3,h4 { font-family: var(--font-display); letter-spacing: -0.01em; }
   50% { transform: scaleY(1.05); opacity: 1; }
 }
 
-/* Shimmering status line */
+/* Loading status line — a calm opacity breath in plain ink. It used to be
+   gradient text with a left-to-right background-position sweep, which read
+   as the page reloading every couple of seconds. */
 .vb-loading-label {
-  background: linear-gradient(90deg,
-    color-mix(in srgb, var(--vb-ink3) 55%, transparent) 0%,
-    var(--vb-ink) 50%,
-    color-mix(in srgb, var(--vb-ink3) 55%, transparent) 100%);
-  background-size: 200% 100%;
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
-  animation: vb-loading-shimmer 2.4s linear infinite;
-}
-@keyframes vb-loading-shimmer { to { background-position: 200% 0; } }
-@supports not ((-webkit-background-clip: text)) {
-  .vb-loading-label { color: var(--vb-ink3); background: none; }
+  color: var(--vb-ink3);
+  animation: vb-shimmer 2.4s ease-in-out infinite;
 }
 
 /* Wordmark — gradient sheen across the lockup */
@@ -412,8 +471,8 @@ h1,h2,h3,h4 { font-family: var(--font-display); letter-spacing: -0.01em; }
   opacity: .8;
 }
 @keyframes vb-motive-fade {
-  from { opacity: 0; transform: translateY(8px); filter: blur(4px); }
-  to { opacity: 1; transform: translateY(0); filter: blur(0); }
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 .vb-motive-in {
   animation: vb-motive-fade 0.55s ease both;
@@ -471,8 +530,16 @@ h1,h2,h3,h4 { font-family: var(--font-display); letter-spacing: -0.01em; }
   border-radius: var(--vb-radius-lg);
   box-shadow: var(--vb-shadow-xs);
   transition: border-color var(--vb-duration-normal) var(--vb-ease),
-              box-shadow var(--vb-duration-normal) var(--vb-ease);
-  will-change: transform;
+              box-shadow var(--vb-duration-normal) var(--vb-ease),
+              transform var(--vb-duration-fast) var(--vb-ease);
+}
+.card-hover { transition: border-color var(--vb-duration-normal) var(--vb-ease), box-shadow var(--vb-duration-normal) var(--vb-ease), transform var(--vb-duration-fast) var(--vb-ease); }
+@media (hover: hover) and (pointer: fine) {
+  .card-hover:hover {
+    border-color: color-mix(in srgb, var(--vb-accent) 40%, var(--vb-border));
+    box-shadow: var(--vb-shadow-md);
+    transform: translateY(-2px);
+  }
 }
 
 /* ═══════════════════════════════════════════════════════════════
@@ -483,7 +550,7 @@ h1,h2,h3,h4 { font-family: var(--font-display); letter-spacing: -0.01em; }
    is NOT affected — tokens revert outside this wrapper.
    ═══════════════════════════════════════════════════════════════ */
 .admin-shell {
-  /* Brand violet — the original Voice Box admin accent. The Google-blue
+  /* Brand violet — the original Voice Flow admin accent. The Google-blue
      experiment was reverted after feedback; the enterprise layout/radii/
      shadows remain, but the identity color is back to the brand purple. */
   --vb-accent: #5652d6;
@@ -518,6 +585,14 @@ h1,h2,h3,h4 { font-family: var(--font-display); letter-spacing: -0.01em; }
   border-radius: 6px;
   padding: 7px 10px;
   transition: background-color .12s ease, color .12s ease;
+  min-height: 36px;
+}
+@media (max-width: 767px) {
+  .admin-shell .vb-admin-nav {
+    padding: 10px 12px;
+    min-height: 44px;
+    font-size: 14px;
+  }
 }
 .admin-shell .vb-admin-nav:hover {
   background: var(--vb-surface2);
@@ -555,10 +630,12 @@ h1,h2,h3,h4 { font-family: var(--font-display); letter-spacing: -0.01em; }
   border-color: var(--vb-accent);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--vb-accent) 18%, transparent);
 }
-.card-hover:hover {
-  border-color: var(--vb-accent);
-  box-shadow: var(--vb-shadow-lg);
-  transform: translateY(-2px);
+@media (hover: hover) and (pointer: fine) {
+  .card-hover:hover {
+    border-color: var(--vb-accent);
+    box-shadow: var(--vb-shadow-lg);
+    transform: translateY(-2px);
+  }
 }
 
 .btn {
@@ -569,13 +646,18 @@ h1,h2,h3,h4 { font-family: var(--font-display); letter-spacing: -0.01em; }
               border-color var(--vb-duration-fast) var(--vb-ease),
               color var(--vb-duration-fast) var(--vb-ease),
               box-shadow var(--vb-duration-fast) var(--vb-ease),
-              opacity var(--vb-duration-fast) var(--vb-ease);
+              opacity var(--vb-duration-fast) var(--vb-ease),
+              transform var(--vb-duration-fast) var(--vb-ease);
   white-space: nowrap; position: relative; overflow: hidden;
-  will-change: transform;
+  will-change: transform; user-select: none;
+  -webkit-tap-highlight-color: transparent;
 }
 .btn:active:not(:disabled) { transform: scale(0.97); }
 .btn:disabled { opacity: .5; cursor: not-allowed; }
-.btn-primary { background: var(--vb-accent); color: #fff; box-shadow: var(--vb-shadow-sm), inset 0 1px 0 rgba(255,255,255,0.1); }
+.btn-primary { background: var(--vb-accent); color: var(--vb-on-accent); box-shadow: var(--vb-shadow-sm), inset 0 1px 0 rgba(255,255,255,0.12); }
+/* Text sitting on an accent fill. Use this instead of text-white: the accent
+   flips to a light purple in dark mode, where white text is 3.10:1. */
+.text-on-accent { color: var(--vb-on-accent); }
 .btn-primary:hover:not(:disabled) {
   background: var(--vb-accent2);
   box-shadow: var(--vb-shadow-md), 0 4px 20px -4px color-mix(in srgb, var(--vb-accent) 45%, transparent);
@@ -587,18 +669,43 @@ h1,h2,h3,h4 { font-family: var(--font-display); letter-spacing: -0.01em; }
 .btn-ghost:active:not(:disabled) { transform: scale(0.97); }
 .btn-soft { background: var(--vb-accent-soft); color: var(--vb-accent); }
 .btn-soft:hover:not(:disabled) { filter: brightness(0.94); box-shadow: var(--vb-shadow-xs); }
-.btn-danger { background: rgba(220, 75, 75, 0.10); color: var(--vb-bad); border: 1px solid rgba(220, 75, 75, 0.15); }
-.btn-danger:hover:not(:disabled) { background: rgba(220, 75, 75, 0.18); border-color: rgba(220, 75, 75, 0.3); }
+.btn-danger { background: color-mix(in srgb, var(--vb-bad) 10%, transparent); color: var(--vb-bad); border: 1px solid color-mix(in srgb, var(--vb-bad) 15%, transparent); }
+.btn-danger:hover:not(:disabled) { background: color-mix(in srgb, var(--vb-bad) 18%, transparent); border-color: color-mix(in srgb, var(--vb-bad) 30%, transparent); }
+/* Touch-target floor — the 44x44 promise published on /accessibility.
+   Scoped to `pointer: coarse` on purpose: a mouse-driven desktop keeps its
+   dense rhythm, while a thumb-driven device gets a target it can actually
+   hit. Enforcing this globally instead would bloat every desktop toolbar. */
+@media (pointer: coarse) {
+  button,
+  [role="button"],
+  select,
+  .btn {
+    min-height: 44px;
+    min-width: 44px;
+  }
+}
+
+/* Touch-optimized buttons on mobile: larger hit targets */
+@media (pointer: coarse) {
+  .btn { min-height: 44px; padding: .65rem 1.2rem; }
+  .btn-sm, .btn-xs { min-height: 36px; }
+}
 
 .input {
   width: 100%; background: var(--vb-surface); border: 1.5px solid var(--vb-border);
   border-radius: var(--vb-radius-md); padding: .65rem .9rem; font-size: .9rem; color: var(--vb-ink);
   transition: border-color var(--vb-duration-fast) var(--vb-ease),
-              box-shadow var(--vb-duration-fast) var(--vb-ease);
+              box-shadow var(--vb-duration-fast) var(--vb-ease),
+              background var(--vb-duration-fast) var(--vb-ease);
+  -webkit-appearance: none; appearance: none;
 }
-  .input:focus { outline: 2px solid var(--vb-accent); outline-offset: 2px; border-color: var(--vb-accent); background: var(--vb-surface); }
+  .input:focus { outline: 2px solid var(--vb-accent); outline-offset: 2px; border-color: var(--vb-accent); background: var(--vb-surface); box-shadow: 0 0 0 3px color-mix(in srgb, var(--vb-accent) 10%, transparent); }
 .input:hover:not(:focus) { border-color: color-mix(in srgb, var(--vb-accent) 30%, var(--vb-border)); }
 .input::placeholder { color: var(--vb-ink3); }
+/* Touch-optimized inputs on mobile */
+@media (pointer: coarse) {
+  .input { min-height: 44px; font-size: 16px; /* prevents iOS zoom */ }
+}
 
 .chip {
   display: inline-flex; align-items: center; gap: .3rem;
@@ -639,8 +746,8 @@ h1,h2,h3,h4 { font-family: var(--font-display); letter-spacing: -0.01em; }
 .vb-cleanup-pulse { animation: vb-cleanup-pulse 2s ease-in-out infinite; }
 
 /* ---------- Pagination shimmer ---------- */
-@keyframes vb-page-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
-.vb-page-in { animation: vb-page-in .3s ease both; }
+@keyframes vb-page-in { from { opacity: 0; } to { opacity: 1; } }
+.vb-page-in { animation: vb-page-in 0.08s ease both; }
 
 .tooltip { position: relative; }
 
@@ -650,12 +757,13 @@ h1,h2,h3,h4 { font-family: var(--font-display); letter-spacing: -0.01em; }
    PREMIUM CHAT UI — ChatGPT/Claude-tier animations & styles
    ═══════════════════════════════════════════════════════════════ */
 
-/* Message slide-in */
+/* New message — fades in place. No travel: a message arriving should not
+   slide the conversation, which reads as layout shift, not as content. */
 @keyframes chat-msg-in {
-  from { opacity: 0; transform: translateY(12px) scale(0.98); }
-  to { opacity: 1; transform: none; }
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
-.chat-msg-anim { animation: chat-msg-in .35s cubic-bezier(.22,.9,.3,1) both; }
+.chat-msg-anim { animation: chat-msg-in .18s linear both; }
 
 /* Typing indicator dots */
 @keyframes typing-dot {
@@ -735,16 +843,14 @@ h1,h2,h3,h4 { font-family: var(--font-display); letter-spacing: -0.01em; }
   font-style: italic;
 }
 
-/* Smooth thread sidebar hover */
+/* Smooth thread sidebar hover — color only, no sideways shift */
 .thread-item {
   transition: background .18s ease,
               color .18s ease,
-              border-color .18s ease,
-              transform .18s ease;
+              border-color .18s ease;
 }
 .thread-item:hover {
   background: var(--vb-surface2);
-  transform: translateX(2px);
 }
 .thread-item.active {
   background: var(--vb-accent-soft);
@@ -796,19 +902,19 @@ h1,h2,h3,h4 { font-family: var(--font-display); letter-spacing: -0.01em; }
   box-shadow: 0 8px 25px -8px color-mix(in srgb, var(--vb-accent) 20%, transparent);
 }
 
-/* Smooth panel slide */
+/* Panels fade in place — no horizontal slide across the viewport. */
 @keyframes panel-slide {
-  from { opacity: 0; transform: translateX(24px); }
-  to { opacity: 1; transform: none; }
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
-.panel-slide { animation: panel-slide .4s cubic-bezier(.22,.9,.3,1) both; }
+.panel-slide { animation: panel-slide .16s ease-out both; }
 
-/* Toast notification slide */
+/* Toast notification — fade + subtle settle, not a slide-in */
 @keyframes toast-in {
-  from { opacity: 0; transform: translateX(20px) scale(0.95); }
+  from { opacity: 0; transform: scale(0.97); }
   to { opacity: 1; transform: none; }
 }
-.toast-anim { animation: toast-in .3s cubic-bezier(.22,.9,.3,1) both; }
+.toast-anim { animation: toast-in .18s ease-out both; }
 
 /* Auto-dismiss progress bar */
 @keyframes shrink {
@@ -855,14 +961,16 @@ textarea.moderation-ok {
 }
 
 /* ─── Mobile drawer animations ───────────────────────────────── */
-@keyframes mobile-drawer-in { from { transform: translateX(-100%); } to { transform: translateX(0); } }
+/* Drawer enters with a fade — no horizontal slide anywhere on the platform. */
+@keyframes mobile-drawer-in { from { opacity: 0; } to { opacity: 1; } }
 @keyframes mobile-overlay-in { from { opacity: 0; } to { opacity: 1; } }
 .mobile-drawer-enter { animation: mobile-drawer-in .28s cubic-bezier(.22,.9,.3,1) both; }
 .mobile-overlay-enter { animation: mobile-overlay-in .2s ease both; }
 
 /* ─── Page content transitions ───────────────────────────────── */
-@keyframes page-enter { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
-.vb-page-enter { animation: page-enter .35s cubic-bezier(.22,.9,.3,1) both; }
+/* Routes render immediately; no page-open animation. */
+@keyframes page-enter { from { opacity: 0; } to { opacity: 1; } }
+.vb-page-enter { animation: none; }
 
 /* ═══════════════════════════════════════════════════════════════
    PREMIUM MICRO-INTERACTIONS & POLISH
@@ -1013,19 +1121,8 @@ textarea.moderation-ok {
 }
 
 /* ── Optimized stagger: shorter delay, GPU-accelerated ──────── */
-@keyframes vb-stagger-in {
-  from { opacity: 0; transform: translateY(8px); }
-  to { opacity: 1; transform: none; }
-}
-.vb-stagger > * { animation: vb-stagger-in .2s var(--vb-ease) both; will-change: transform, opacity; }
-.vb-stagger > *:nth-child(1) { animation-delay: 0ms; }
-.vb-stagger > *:nth-child(2) { animation-delay: 20ms; }
-.vb-stagger > *:nth-child(3) { animation-delay: 40ms; }
-.vb-stagger > *:nth-child(4) { animation-delay: 60ms; }
-.vb-stagger > *:nth-child(5) { animation-delay: 80ms; }
-.vb-stagger > *:nth-child(6) { animation-delay: 100ms; }
-.vb-stagger > *:nth-child(7) { animation-delay: 120ms; }
-.vb-stagger > *:nth-child(8) { animation-delay: 140ms; }
+/* Stagger — instant for fast navigation */
+.vb-stagger > * { opacity: 1; }
 
 /* ── Focus ring (accessibility) ──────────────────────────────── */
 .btn:focus-visible, .input:focus-visible, a:focus-visible, button:focus-visible {
@@ -1036,10 +1133,9 @@ textarea.moderation-ok {
 
 /* ── Smooth page transitions ─────────────────────────────────── */
 @keyframes vb-fade-in {
-  from { opacity: 0; transform: translateY(8px); }
-  to { opacity: 1; transform: none; }
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
-.vb-page-enter { animation: vb-fade-in .35s var(--vb-ease) both; }
 
 /* ── Better chip styles ──────────────────────────────────────── */
 .chip {
@@ -1256,11 +1352,7 @@ textarea.moderation-ok {
 /* State treatments */
 .vb3d-card-working .vb3d-card-icon {
   border-color: rgba(52, 211, 153, .7);
-  animation: vb3d-bob 1.5s ease-in-out infinite;
-}
-@keyframes vb3d-bob {
-  0%, 100% { transform: translateY(0); }
-  50% { transform: translateY(-4px); }
+  box-shadow: 0 0 0 3px rgba(52, 211, 153, .12);
 }
 .vb3d-card-verifying .vb3d-card-icon {
   border-color: rgba(251, 191, 36, .7);
@@ -1375,11 +1467,6 @@ html[data-scale="110"] { font-size: 110%; }
   }
   .pb-safe { padding-bottom: max(env(safe-area-inset-bottom), 0px); }
 }
-@media (hover: none) and (pointer: coarse) {
-  .btn:hover, button:hover {
-    transform: none;
-  }
-}
 
 /* ── Mobile UX hardening (touch devices) ───────────────────────
    Fixes the classic mobile pain points:
@@ -1421,4 +1508,1222 @@ html[data-scale="110"] { font-size: 110%; }
 @media (max-width: 640px) {
   h1.font-display { letter-spacing: -0.01em; }
   .card { border-radius: var(--vb-radius-md); }
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   PREMIUM ANIMATIONS — elevated micro-interactions
+   ═══════════════════════════════════════════════════════════════ */
+
+/* Gradient shift for hero elements and 404 — REMOVED. The slow
+   left-to-right background drift was ambient motion with no state to
+   communicate; the hero keeps its static gradient. */
+
+/* Floating bob animation */
+@keyframes vb-float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-8px); }
+}
+
+/* Orbit animation for decorative dots */
+@keyframes vb-orbit {
+  from { transform: rotate(0deg) translateX(60px) rotate(0deg); }
+  to { transform: rotate(360deg) translateX(60px) rotate(-360deg); }
+}
+
+/* Card shimmer removed — caused unreadable colored fills on touch */
+
+/* Smooth page transition wrapper */
+.vb-page-enter {
+  animation: none;
+}
+
+/* Hero gradient refinement — static. The infinite background-position
+   drift was the platform's last left-to-right sweep. */
+.hero-gradient {
+  background: linear-gradient(135deg, #5652d6 0%, #6f63e8 40%, #8a7bf2 70%, #38BDF8 100%);
+}
+
+/* Subtle glow behind primary buttons — desktop only */
+@media (hover: hover) and (pointer: fine) {
+  .btn-primary-glow:hover {
+    box-shadow: var(--vb-shadow-md), 0 0 30px -8px color-mix(in srgb, var(--vb-accent) 40%, transparent);
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   TOUCH DEVICE FIX — prevent :hover getting stuck on tap
+   On mobile/touch, a tapped element stays in :hover state, so hover-only
+   decoration (lifts, rings) would stick around after the finger leaves.
+   NOTE: this must NEVER unset color/background-color/border-color: doing
+   that stripped tapped buttons and posts of their own fill and text color
+   (white-on-purple became dark-on-transparent) — i.e. "every text turns
+   black when I tap". Stuck tints are harmless; unreadable text is not.
+   ═══════════════════════════════════════════════════════════════ */
+@media (hover: none) and (pointer: coarse) {
+  /* No dark flash overlay while the finger is down. */
+  * {
+    -webkit-tap-highlight-color: transparent;
+  }
+  /* Kill stuck hover MOTION and rings globally — covers every Tailwind
+     hover: class. Colors and fills are deliberately left alone. */
+  *:hover {
+    transform: none !important;
+    box-shadow: unset !important;
+  }
+  /* Restore active (press) feedback on interactive elements */
+  .btn:active:not(:disabled) {
+    transform: scale(0.97) !important;
+    opacity: 0.85 !important;
+  }
+  .card-hover:active {
+    transform: scale(0.985) !important;
+  }
+  /* Keep transition-colors working for instant text-color changes
+     only — no background or border transitions on touch */
+  .card,
+  .card * {
+    transition-property: color, opacity !important;
+    transition-duration: 0.15s !important;
+  }
+}
+
+/* ── Magic UI / React Bits animated components ───────────────────── */
+
+/* ShimmerButton sheen is static — no left-to-right sweep anywhere. */
+.animate-shimmer-slide {
+  animation: none;
+}
+
+/* Border beam rotation for BorderBeam */
+@keyframes border-beam-rotate {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+/* Prefers-reduced-motion: disable decorative animations */
+@media (prefers-reduced-motion: reduce) {
+  .animate-shimmer-slide,
+  [style*="border-beam-rotate"] {
+    animation: none !important;
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   PREMIUM DASHBOARD UTILITIES
+   ═══════════════════════════════════════════════════════════════ */
+
+/* ── Glow rings for important metrics ──────────────────────────── */
+.vb-glow-accent {
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--vb-accent) 20%, transparent),
+              0 0 20px -4px color-mix(in srgb, var(--vb-accent) 15%, transparent);
+}
+.vb-glow-good {
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--vb-good) 20%, transparent),
+              0 0 20px -4px color-mix(in srgb, var(--vb-good) 15%, transparent);
+}
+.vb-glow-warn {
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--vb-warn) 20%, transparent),
+              0 0 20px -4px color-mix(in srgb, var(--vb-warn) 15%, transparent);
+}
+.vb-glow-bad {
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--vb-bad) 20%, transparent),
+              0 0 20px -4px color-mix(in srgb, var(--vb-bad) 15%, transparent);
+}
+
+/* ── Premium metric card with hover lift ────────────────────────── */
+.vb-metric-card {
+  position: relative;
+  overflow: hidden;
+  transition: all 0.25s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.vb-metric-card:hover {
+  transform: translateY(-2px);
+  z-index: 1;
+}
+.vb-metric-card::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, var(--vb-accent), transparent);
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+.vb-metric-card:hover::after {
+  opacity: 1;
+}
+
+/* ── Animated number counter pulse ──────────────────────────────── */
+@keyframes vb-count-glow {
+  0% { text-shadow: 0 0 0 transparent; }
+  50% { text-shadow: 0 0 12px color-mix(in srgb, var(--vb-accent) 40%, transparent); }
+  100% { text-shadow: 0 0 0 transparent; }
+}
+.vb-count-animate {
+  animation: vb-count-glow 0.6s ease-out;
+}
+
+/* ── Community health ring glow ─────────────────────────────────── */
+.vb-health-glow {
+  filter: drop-shadow(0 0 8px color-mix(in srgb, var(--vb-accent) 30%, transparent));
+}
+.vb-health-glow-good {
+  filter: drop-shadow(0 0 8px color-mix(in srgb, var(--vb-good) 30%, transparent));
+}
+.vb-health-glow-warn {
+  filter: drop-shadow(0 0 8px color-mix(in srgb, var(--vb-warn) 30%, transparent));
+}
+.vb-health-glow-bad {
+  filter: drop-shadow(0 0 8px color-mix(in srgb, var(--vb-bad) 30%, transparent));
+}
+
+/* ── Subtle gradient backgrounds for section cards ──────────────── */
+.vb-section-gradient {
+  background: linear-gradient(135deg,
+    color-mix(in srgb, var(--vb-surface) 95%, transparent),
+    color-mix(in srgb, var(--vb-surface2) 90%, transparent));
+}
+.vb-section-gradient-accent {
+  background: linear-gradient(135deg,
+    color-mix(in srgb, var(--vb-accent) 3%, var(--vb-surface)),
+    color-mix(in srgb, var(--vb-accent2) 3%, var(--vb-surface)));
+}
+
+/* ── Badge pulse for critical items ─────────────────────────────── */
+@keyframes vb-badge-pulse {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.15); }
+}
+.vb-badge-pulse {
+  animation: vb-badge-pulse 2s ease-in-out infinite;
+}
+
+/* ── Smooth tab transition ──────────────────────────────────────── */
+/* Tab transition — near-instant for fast feel */
+.vb-tab-enter { opacity: 1; }
+@keyframes vb-tab-fade { from { opacity: 0; } to { opacity: 1; } }
+
+/* ── Sidebar nav active indicator ───────────────────────────────── */
+.vb-admin-nav-active::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 25%;
+  bottom: 25%;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: var(--vb-accent);
+  animation: vb-slide-in 0.05s ease-out;
+}
+@keyframes vb-slide-in {
+  from { transform: scaleY(0); }
+  to { transform: scaleY(1); }
+}
+
+/* ── Activity item hover slide ──────────────────────────────────── */
+.vb-activity-item {
+  transition: all 0.2s ease;
+  border-left: 2px solid transparent;
+}
+.vb-activity-item:hover {
+  border-left-color: var(--vb-accent);
+  background: color-mix(in srgb, var(--vb-accent) 3%, transparent);
+}
+
+/* ── Gradient text utility ──────────────────────────────────────── */
+.vb-gradient-text {
+  background: linear-gradient(135deg, var(--vb-accent), var(--vb-accent2));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+.dark .vb-gradient-text {
+  background: linear-gradient(135deg, color-mix(in srgb, var(--vb-accent) 90%, white), var(--vb-accent2));
+  -webkit-background-clip: text;
+  background-clip: text;
+}
+
+/* ── Chart bar hover glow ───────────────────────────────────────── */
+.vb-chart-bar {
+  transition: all 0.2s ease;
+  border-radius: 3px 3px 0 0;
+}
+.vb-chart-bar:hover {
+  filter: brightness(1.2);
+  transform: scaleY(1.02);
+  transform-origin: bottom;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   ULTRA-PREMIUM DASHBOARD — 1000000x
+   ═══════════════════════════════════════════════════════════════ */
+
+/* ── Ambient background for the entire dashboard ────────────────── */
+.vb-dashboard-ambient {
+  position: relative;
+}
+.vb-dashboard-ambient::before {
+  content: '';
+  position: fixed;
+  top: -50%;
+  left: -50%;
+  width: 200%;
+  height: 200%;
+  background:
+    radial-gradient(ellipse at 20% 50%, color-mix(in srgb, var(--vb-accent) 4%, transparent) 0%, transparent 50%),
+    radial-gradient(ellipse at 80% 20%, color-mix(in srgb, var(--vb-accent2) 3%, transparent) 0%, transparent 50%),
+    radial-gradient(ellipse at 50% 80%, color-mix(in srgb, var(--vb-good) 2%, transparent) 0%, transparent 50%);
+  pointer-events: none;
+  z-index: 0;
+  animation: vb-ambient-drift 20s ease-in-out infinite alternate;
+}
+@keyframes vb-ambient-drift {
+  from { transform: translate(0, 0) rotate(0deg); }
+  to { transform: translate(-2%, 1%) rotate(1deg); }
+}
+.vb-dashboard-ambient > * {
+  position: relative;
+  z-index: 1;
+}
+
+/* ── Hero metric card — large, featured ─────────────────────────── */
+.vb-hero-card {
+  position: relative;
+  overflow: hidden;
+  border-radius: 16px;
+  padding: 20px 24px;
+  background: var(--vb-surface);
+  border: 1px solid var(--vb-border);
+  box-shadow: var(--vb-shadow-sm);
+  transition: all 0.35s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.vb-hero-card::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  background: linear-gradient(90deg, var(--vb-accent), var(--vb-accent2));
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+.vb-hero-card::after {
+  content: '';
+  position: absolute;
+  top: -80px;
+  right: -80px;
+  width: 160px;
+  height: 160px;
+  border-radius: 50%;
+  background: radial-gradient(circle, color-mix(in srgb, var(--vb-accent) 6%, transparent), transparent 70%);
+  pointer-events: none;
+  transition: opacity 0.3s ease;
+  opacity: 0;
+}
+.vb-hero-card:hover {
+  transform: translateY(-3px);
+  box-shadow: var(--vb-shadow-lg);
+}
+.vb-hero-card:hover::before {
+  opacity: 1;
+}
+.vb-hero-card:hover::after {
+  opacity: 1;
+}
+.vb-hero-card.vb-hero-danger {
+  border-color: color-mix(in srgb, var(--vb-bad) 25%, var(--vb-border));
+}
+.vb-hero-card.vb-hero-danger::before {
+  background: linear-gradient(90deg, var(--vb-bad), #ff6b6b);
+  opacity: 1;
+}
+.vb-hero-card.vb-hero-danger::after {
+  background: radial-gradient(circle, color-mix(in srgb, var(--vb-bad) 8%, transparent), transparent 70%);
+  opacity: 1;
+}
+.vb-hero-card.vb-hero-warn {
+  border-color: color-mix(in srgb, var(--vb-warn) 25%, var(--vb-border));
+}
+.vb-hero-card.vb-hero-warn::before {
+  background: linear-gradient(90deg, var(--vb-warn), #ffd166);
+  opacity: 1;
+}
+
+/* ── Premium glass card with backdrop blur ──────────────────────── */
+.vb-glass-card {
+  background: color-mix(in srgb, var(--vb-surface) 80%, transparent);
+  backdrop-filter: blur(12px) saturate(1.4);
+  -webkit-backdrop-filter: blur(12px) saturate(1.4);
+  border: 1px solid color-mix(in srgb, var(--vb-border) 60%, transparent);
+  border-radius: 16px;
+  box-shadow: var(--vb-shadow-sm), inset 0 1px 0 color-mix(in srgb, white 5%, transparent);
+}
+
+/* ── Section divider with gradient ──────────────────────────────── */
+.vb-section-divider {
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--vb-border), transparent);
+  margin: 8px 0;
+}
+
+/* ── Animated gradient border for featured items ────────────────── */
+@keyframes vb-border-spin {
+  from { --angle: 0deg; }
+  to { --angle: 360deg; }
+}
+@property --angle {
+  syntax: '<angle>';
+  initial-value: 0deg;
+  inherits: false;
+}
+.vb-gradient-border {
+  position: relative;
+  border: 2px solid transparent;
+  background-origin: border-box;
+  background-clip: padding-box, border-box;
+  animation: vb-border-spin 4s linear infinite;
+  background-image:
+    var(--vb-surface),
+    conic-gradient(from var(--angle), var(--vb-accent), var(--vb-accent2), var(--vb-good), var(--vb-accent));
+}
+
+/* ── Floating label chip ────────────────────────────────────────── */
+.vb-float-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 10px;
+  border-radius: 20px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  background: color-mix(in srgb, var(--vb-accent) 10%, transparent);
+  color: var(--vb-accent);
+  border: 1px solid color-mix(in srgb, var(--vb-accent) 15%, transparent);
+}
+
+/* ── Glass surface for dashboard widgets ────────────────────────── */
+/* Real backdrop blur over a translucent surface, so widgets read as glass
+   against the page background rather than as a painted gradient. */
+.widget-glass {
+  background: color-mix(in srgb, var(--vb-surface) 68%, transparent);
+  backdrop-filter: blur(14px) saturate(1.15);
+  -webkit-backdrop-filter: blur(14px) saturate(1.15);
+}
+
+/* ── Dashboard widgets: phone-home-screen behaviour ─────────────── */
+/* On phones every widget goes full-width (inline grid spans are desktop
+   geometry) and the touch up/down reorder controls appear — HTML5 drag
+   handles don't exist on touchscreens. */
+@media (max-width: 639px) {
+  .vb-widget-wrap {
+    grid-column: span 12 / span 12 !important;
+  }
+}
+@media (pointer: coarse) {
+  .vb-touch-reorder {
+    display: inline-flex !important;
+  }
+}
+
+/* ── Mobile bottom nav: thumb-reach tab bar with safe-area padding ── */
+.vb-bottomnav {
+  padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 0.5rem);
+}
+.vb-bottomnav a {
+  min-height: 44px;
+  min-width: 44px;
+}
+
+/* ── Status dot with pulse ring ─────────────────────────────────── */
+.vb-status-dot {
+  position: relative;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--vb-good);
+}
+.vb-status-dot::after {
+  content: '';
+  position: absolute;
+  inset: -3px;
+  border-radius: 50%;
+  border: 2px solid var(--vb-good);
+  opacity: 0;
+  animation: vb-status-ring 2s ease-out infinite;
+}
+@keyframes vb-status-ring {
+  0% { transform: scale(0.8); opacity: 0.6; }
+  100% { transform: scale(1.8); opacity: 0; }
+}
+
+/* ── Heatmap cell premium ───────────────────────────────────────── */
+.vb-heat-cell {
+  border-radius: 4px;
+  transition: all 0.2s ease;
+  cursor: default;
+}
+.vb-heat-cell:hover {
+  transform: scale(1.15);
+  box-shadow: 0 0 8px color-mix(in srgb, var(--vb-accent) 30%, transparent);
+  z-index: 1;
+}
+
+/* ── Activity timeline connector ────────────────────────────────── */
+.vb-timeline {
+  position: relative;
+  padding-left: 20px;
+}
+.vb-timeline::before {
+  content: '';
+  position: absolute;
+  left: 5px;
+  top: 8px;
+  bottom: 8px;
+  width: 2px;
+  background: linear-gradient(180deg, var(--vb-accent), color-mix(in srgb, var(--vb-accent) 20%, transparent));
+  border-radius: 2px;
+}
+.vb-timeline-dot {
+  position: absolute;
+  left: -20px;
+  top: 10px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--vb-surface);
+  border: 2px solid var(--vb-accent);
+  z-index: 1;
+}
+.vb-timeline-dot::after {
+  content: '';
+  position: absolute;
+  inset: 2px;
+  border-radius: 50%;
+  background: var(--vb-accent);
+}
+
+/* ── Floating number with ambient glow ──────────────────────────── */
+.vb-number-glow {
+  text-shadow: 0 0 20px color-mix(in srgb, var(--vb-accent) 20%, transparent);
+}
+
+/* Card entrance — instant */
+.vb-stagger-enter > * { animation: none; }
+.vb-stagger-enter > *:nth-child(1) { animation-delay: 0ms; }
+.vb-stagger-enter > *:nth-child(2) { animation-delay: 50ms; }
+.vb-stagger-enter > *:nth-child(3) { animation-delay: 100ms; }
+.vb-stagger-enter > *:nth-child(4) { animation-delay: 150ms; }
+.vb-stagger-enter > *:nth-child(5) { animation-delay: 200ms; }
+.vb-stagger-enter > *:nth-child(6) { animation-delay: 250ms; }
+.vb-stagger-enter > *:nth-child(7) { animation-delay: 300ms; }
+.vb-stagger-enter > *:nth-child(8) { animation-delay: 350ms; }
+
+/* ── Sparkline container ────────────────────────────────────────── */
+.vb-sparkline-wrap {
+  position: relative;
+  height: 32px;
+  overflow: hidden;
+  border-radius: 4px;
+}
+.vb-sparkline-wrap::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 60%;
+  background: linear-gradient(to top, color-mix(in srgb, var(--vb-accent) 8%, transparent), transparent);
+  pointer-events: none;
+}
+
+/* ── Chart section premium ──────────────────────────────────────── */
+.vb-chart-section {
+  position: relative;
+  overflow: hidden;
+  border-radius: 16px;
+  padding: 24px;
+  background: var(--vb-surface);
+  border: 1px solid var(--vb-border);
+}
+.vb-chart-section::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 120px;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--vb-accent) 3%, transparent), transparent);
+  pointer-events: none;
+}
+
+/* ── Tab pill premium ───────────────────────────────────────────── */
+.vb-tab-pill {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  border-radius: 10px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--vb-ink3);
+  transition: all 0.2s ease;
+  cursor: pointer;
+  border: 1px solid transparent;
+}
+.vb-tab-pill:hover {
+  color: var(--vb-ink2);
+  background: color-mix(in srgb, var(--vb-surface2) 80%, transparent);
+}
+.vb-tab-pill-active {
+  color: var(--vb-ink) !important;
+  background: var(--vb-surface) !important;
+  border-color: var(--vb-border) !important;
+  box-shadow: var(--vb-shadow-xs);
+}
+
+/* ── Trending item premium ──────────────────────────────────────── */
+.vb-trending-item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  border-radius: 12px;
+  transition: all 0.2s ease;
+  cursor: pointer;
+  border: 1px solid transparent;
+}
+.vb-trending-item:hover {
+  background: color-mix(in srgb, var(--vb-accent) 4%, var(--vb-surface2));
+  border-color: color-mix(in srgb, var(--vb-accent) 15%, transparent);
+}
+
+/* ── Section header premium ─────────────────────────────────────── */
+.vb-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px 12px;
+  border-bottom: 1px solid var(--vb-border);
+}
+.vb-section-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--vb-ink2);
+}
+
+/* ── Category bar premium ───────────────────────────────────────── */
+.vb-cat-bar-track {
+  height: 10px;
+  border-radius: 6px;
+  background: var(--vb-surface2);
+  overflow: hidden;
+  position: relative;
+}
+.vb-cat-bar-fill {
+  height: 100%;
+  border-radius: 6px;
+  background: linear-gradient(90deg, var(--vb-accent), var(--vb-accent2));
+  transition: width 0.6s cubic-bezier(0.22, 1, 0.36, 1);
+  position: relative;
+}
+.vb-cat-bar-fill::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 50%;
+  background: linear-gradient(180deg, rgba(255,255,255,0.15), transparent);
+  border-radius: 6px 6px 0 0;
+}
+
+/* Skeleton premium — static soft sheen, no sweep. (The old duplicate
+   vb-shimmer keyframes used to slide every .skeleton sideways.) */
+.vb-skeleton-premium {
+  position: relative;
+  overflow: hidden;
+  background: var(--vb-surface2);
+  border-radius: 8px;
+}
+.vb-skeleton-premium::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, white 6%, transparent), transparent);
+  animation: vb-shimmer 1.5s ease-in-out infinite;
+}
+
+/* ── Health ring interactive ────────────────────────────────────── */
+.vb-health-ring-interactive {
+  cursor: pointer;
+  transition: all 0.3s ease;
+}
+.vb-health-ring-interactive:hover {
+  transform: scale(1.05);
+  filter: drop-shadow(0 0 16px color-mix(in srgb, var(--vb-accent) 40%, transparent));
+}
+
+/* ── Ambient card glow for system health ────────────────────────── */
+.vb-system-healthy {
+  border-color: color-mix(in srgb, var(--vb-good) 20%, var(--vb-border));
+  background: linear-gradient(135deg, color-mix(in srgb, var(--vb-good) 3%, var(--vb-surface)), var(--vb-surface));
+}
+.vb-system-degraded {
+  border-color: color-mix(in srgb, var(--vb-warn) 20%, var(--vb-border));
+  background: linear-gradient(135deg, color-mix(in srgb, var(--vb-warn) 3%, var(--vb-surface)), var(--vb-surface));
+}
+.vb-system-critical {
+  border-color: color-mix(in srgb, var(--vb-bad) 20%, var(--vb-border));
+  background: linear-gradient(135deg, color-mix(in srgb, var(--vb-bad) 3%, var(--vb-surface)), var(--vb-surface));
+}
+
+/* ── Metric mini sparkline ──────────────────────────────────────── */
+.vb-metric-mini {
+  display: flex;
+  align-items: flex-end;
+  gap: 1px;
+  height: 20px;
+}
+.vb-metric-bar {
+  flex: 1;
+  min-width: 2px;
+  border-radius: 1px 1px 0 0;
+  background: var(--vb-accent);
+  transition: height 0.3s ease;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   WORLD-CLASS ADMIN DASHBOARD — 10,000,000x PREMIUM
+   Enterprise SaaS / Datadog / Vercel Analytics-grade design
+   ═══════════════════════════════════════════════════════════════ */
+
+/* ── Dashboard ambient background — subtle radial glow ──────── */
+.vb-dash-ambient {
+  position: relative;
+}
+.vb-dash-ambient::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background:
+    radial-gradient(ellipse 60% 40% at 15% 20%, color-mix(in srgb, var(--vb-accent) 5%, transparent), transparent),
+    radial-gradient(ellipse 50% 50% at 85% 75%, color-mix(in srgb, var(--vb-accent2) 3%, transparent), transparent);
+  pointer-events: none;
+  z-index: 0;
+}
+.vb-dash-ambient > * { position: relative; z-index: 1; }
+
+/* ── Premium hero metric card — large, featured ─────────────── */
+.vb-hero-card {
+  position: relative;
+  overflow: hidden;
+  border-radius: 14px;
+  padding: 20px 22px;
+  background: var(--vb-surface);
+  border: 1px solid var(--vb-border);
+  box-shadow: var(--vb-shadow-sm);
+  transition: all 0.3s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.vb-hero-card::before {
+  content: '';
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 3px;
+  background: linear-gradient(90deg, var(--vb-accent), var(--vb-accent2));
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+.vb-hero-card::after {
+  content: '';
+  position: absolute;
+  top: -60px; right: -60px;
+  width: 120px; height: 120px;
+  border-radius: 50%;
+  background: radial-gradient(circle, color-mix(in srgb, var(--vb-accent) 6%, transparent), transparent 70%);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+.vb-hero-card:hover {
+  transform: translateY(-3px);
+  box-shadow: var(--vb-shadow-lg);
+  border-color: color-mix(in srgb, var(--vb-accent) 25%, var(--vb-border));
+}
+.vb-hero-card:hover::before { opacity: 1; }
+.vb-hero-card:hover::after { opacity: 1; }
+
+/* ── Premium metric card (small) ─────────────────────────────── */
+.vb-metric-card {
+  position: relative;
+  overflow: hidden;
+  border-radius: 12px;
+  transition: all 0.25s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.vb-metric-card:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--vb-shadow-md);
+  border-color: color-mix(in srgb, var(--vb-accent) 20%, var(--vb-border));
+}
+.vb-metric-card::after {
+  content: '';
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, var(--vb-accent), transparent);
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+.vb-metric-card:hover::after { opacity: 1; }
+
+/* ── Dashboard section card — premium glass + depth ──────────── */
+.vb-dash-section {
+  position: relative;
+  background: var(--vb-surface);
+  border: 1px solid var(--vb-border);
+  border-radius: 14px;
+  box-shadow: var(--vb-shadow-xs);
+  overflow: hidden;
+  transition: box-shadow 0.25s ease, border-color 0.25s ease;
+}
+.vb-dash-section:hover {
+  box-shadow: var(--vb-shadow-sm);
+  border-color: color-mix(in srgb, var(--vb-accent) 12%, var(--vb-border));
+}
+.vb-dash-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 18px 12px;
+  border-bottom: 1px solid var(--vb-border);
+}
+.vb-dash-section-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--vb-ink2);
+}
+.vb-dash-section-icon {
+  width: 24px; height: 24px;
+  border-radius: 6px;
+  display: flex; align-items: center; justify-content: center;
+}
+
+/* ── Chart premium — gradient fills + hover state ────────────── */
+.vb-chart-bar-premium {
+  border-radius: 4px 4px 0 0;
+  transition: all 0.2s ease;
+  position: relative;
+}
+.vb-chart-bar-premium:hover {
+  filter: brightness(1.15);
+  transform: scaleY(1.03);
+  transform-origin: bottom;
+}
+.vb-chart-bar-premium::after {
+  content: '';
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 40%;
+  background: linear-gradient(180deg, rgba(255,255,255,0.18), transparent);
+  border-radius: 4px 4px 0 0;
+  pointer-events: none;
+}
+
+/* ── Category bar premium — with glass sheen ─────────────────── */
+.vb-cat-bar-glass {
+  height: 10px;
+  border-radius: 6px;
+  background: var(--vb-surface2);
+  overflow: hidden;
+}
+.vb-cat-bar-glass-fill {
+  height: 100%;
+  border-radius: 6px;
+  background: linear-gradient(90deg, var(--vb-accent), var(--vb-accent2));
+  position: relative;
+  transition: width 0.6s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.vb-cat-bar-glass-fill::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg, rgba(255,255,255,0.2), transparent 60%);
+  border-radius: 6px;
+}
+
+/* ── System health card — status-aware ───────────────────────── */
+.vb-sys-card {
+  position: relative;
+  border-radius: 12px;
+  padding: 14px 16px;
+  border: 1px solid var(--vb-border);
+  background: var(--vb-surface);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  transition: all 0.25s ease;
+  overflow: hidden;
+}
+.vb-sys-card::before {
+  content: '';
+  position: absolute;
+  top: 0; left: 0; bottom: 0;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  transition: background 0.3s ease;
+}
+.vb-sys-card--ok { border-color: color-mix(in srgb, var(--vb-good) 15%, var(--vb-border)); }
+.vb-sys-card--ok::before { background: var(--vb-good); }
+.vb-sys-card--ok:hover { border-color: color-mix(in srgb, var(--vb-good) 30%, var(--vb-border)); }
+.vb-sys-card--warn { border-color: color-mix(in srgb, var(--vb-warn) 15%, var(--vb-border)); }
+.vb-sys-card--warn::before { background: var(--vb-warn); }
+.vb-sys-card--down { border-color: color-mix(in srgb, var(--vb-bad) 15%, var(--vb-border)); }
+.vb-sys-card--down::before { background: var(--vb-bad); }
+.vb-sys-card:hover { box-shadow: var(--vb-shadow-sm); }
+
+/* ── Status pulse dot — animated ring ────────────────────────── */
+.vb-pulse-ring {
+  position: relative;
+  width: 10px; height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.vb-pulse-ring::before {
+  content: '';
+  position: absolute;
+  inset: -4px;
+  border-radius: 50%;
+  animation: vb-pulse-ring-anim 2s ease-out infinite;
+}
+.vb-pulse-ring--ok { background: var(--vb-good); }
+.vb-pulse-ring--ok::before { border: 2px solid var(--vb-good); }
+.vb-pulse-ring--warn { background: var(--vb-warn); }
+.vb-pulse-ring--warn::before { border: 2px solid var(--vb-warn); animation-duration: 1.2s; }
+.vb-pulse-ring--down { background: var(--vb-bad); }
+.vb-pulse-ring--down::before { border: 2px solid var(--vb-bad); animation-duration: 0.8s; }
+@keyframes vb-pulse-ring-anim {
+  0% { transform: scale(0.8); opacity: 0.7; }
+  100% { transform: scale(2); opacity: 0; }
+}
+
+/* ── Activity timeline — connector dots ──────────────────────── */
+.vb-act-timeline {
+  position: relative;
+  padding-left: 16px;
+}
+.vb-act-timeline::before {
+  content: '';
+  position: absolute;
+  left: 4px; top: 12px; bottom: 12px;
+  width: 1.5px;
+  background: linear-gradient(180deg, var(--vb-accent) 0%, color-mix(in srgb, var(--vb-accent) 10%, transparent) 100%);
+  border-radius: 2px;
+}
+.vb-act-dot {
+  position: absolute;
+  left: -16px; top: 10px;
+  width: 9px; height: 9px;
+  border-radius: 50%;
+  border: 2px solid var(--vb-surface);
+  background: var(--vb-good);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--vb-good) 20%, transparent);
+  z-index: 1;
+}
+
+/* ── Heatmap cell — hover glow ───────────────────────────────── */
+.vb-heat-cell-premium {
+  border-radius: 5px;
+  transition: all 0.2s ease;
+  cursor: default;
+}
+.vb-heat-cell-premium:hover {
+  transform: scale(1.2);
+  box-shadow: 0 0 10px color-mix(in srgb, var(--vb-accent) 30%, transparent);
+  z-index: 1;
+}
+
+/* ── Pipeline bar premium — glossy stacked ──────────────────── */
+.vb-pipeline-bar {
+  height: 8px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: var(--vb-surface2);
+  position: relative;
+}
+.vb-pipeline-bar > div {
+  height: 100%;
+  transition: width 0.6s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.vb-pipeline-bar > div:first-child { border-radius: 999px 0 0 999px; }
+.vb-pipeline-bar > div:last-child { border-radius: 0 999px 999px 0; }
+
+/* ── Health breakdown interactive ─────────────────────────────── */
+.vb-health-bar {
+  height: 6px;
+  border-radius: 4px;
+  background: var(--vb-surface2);
+  overflow: hidden;
+}
+.vb-health-bar-fill {
+  height: 100%;
+  border-radius: 4px;
+  transition: width 0.7s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* ── Trending item premium ───────────────────────────────────── */
+.vb-trending-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--vb-border);
+  transition: background 0.15s ease;
+}
+.vb-trending-row:last-child { border-bottom: none; }
+.vb-trending-row:hover {
+  background: color-mix(in srgb, var(--vb-accent) 3%, var(--vb-surface));
+}
+
+/* ── Engagement progress bar ─────────────────────────────────── */
+.vb-eng-bar {
+  height: 3px;
+  border-radius: 2px;
+  background: var(--vb-surface2);
+  overflow: hidden;
+}
+.vb-eng-bar-fill {
+  height: 100%;
+  border-radius: 2px;
+  background: linear-gradient(90deg, var(--vb-accent), var(--vb-accent2));
+  transition: width 0.5s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* ── Premium header strip ────────────────────────────────────── */
+.vb-header-strip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.vb-header-brand {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.vb-header-icon {
+  width: 48px; height: 48px;
+  border-radius: 14px;
+  background: linear-gradient(135deg, var(--vb-accent), var(--vb-accent2));
+  display: flex; align-items: center; justify-content: center;
+  box-shadow: 0 4px 16px -4px color-mix(in srgb, var(--vb-accent) 40%, transparent);
+  position: relative;
+}
+.vb-header-live {
+  position: absolute;
+  bottom: -2px; right: -2px;
+  width: 16px; height: 16px;
+  border-radius: 50%;
+  background: var(--vb-good);
+  border: 2.5px solid var(--vb-surface);
+  display: flex; align-items: center; justify-content: center;
+}
+.vb-header-live::after {
+  content: '';
+  width: 5px; height: 5px;
+  border-radius: 50%;
+  background: white;
+}
+
+/* Dash stagger — instant for fast navigation */
+.vb-dash-stagger > * { animation: none; }
+
+/* ── Number glow — premium value display ─────────────────────── */
+.vb-num-glow {
+  text-shadow: 0 0 24px color-mix(in srgb, var(--vb-accent) 15%, transparent);
+}
+
+/* ── Skeleton premium — soft tint with a calm opacity breath ─────── */
+/* The old vb-sk-shimmer keyframes swept the gradient left-to-right forever,
+   which on the admin dashboard read as a constant reload. */
+.vb-skeleton-prem {
+  background: color-mix(in srgb, var(--vb-border) 30%, var(--vb-surface));
+  animation: vb-shimmer 1.8s ease-in-out infinite;
+  border-radius: 8px;
+}
+
+/* ── Live dot animation ──────────────────────────────────────── */
+@keyframes vb-live-glow {
+  0%, 100% { opacity: 1; box-shadow: 0 0 0 0 color-mix(in srgb, var(--vb-good) 50%, transparent); }
+  50% { opacity: 0.6; box-shadow: 0 0 8px 2px color-mix(in srgb, var(--vb-good) 30%, transparent); }
+}
+.vb-live-glow { animation: vb-live-glow 2s ease-in-out infinite; }
+
+/* ── Tooltip hover card ──────────────────────────────────────── */
+.vb-hover-tip {
+  position: relative;
+}
+.vb-hover-tip::after {
+  content: attr(data-tip);
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%) translateY(4px);
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: var(--vb-ink);
+  color: var(--vb-bg);
+  font-size: 10px;
+  font-weight: 600;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  transition: all 0.15s ease;
+  z-index: 50;
+}
+.vb-hover-tip:hover::after {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   COMMAND CENTER CALM SURFACE
+   The admin console is an operations surface, not a promotional
+   landing page. Keep hierarchy in type, borders, and whitespace;
+   remove ambient movement, glass blur, glow, and gradient text.
+   ═══════════════════════════════════════════════════════════════ */
+[data-admin-console="true"] .vb-dashboard-ambient::before,
+[data-admin-console="true"] .vb-dash-ambient::before,
+[data-admin-console="true"] .vb-glass-card,
+[data-admin-console="true"] .widget-glass,
+[data-admin-console="true"] .glass-card,
+[data-admin-console="true"] .glass-strong {
+  background: var(--vb-surface);
+  border-color: var(--vb-border);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  box-shadow: var(--vb-shadow-xs);
+}
+
+[data-admin-console="true"] .vb-gradient-text {
+  background: none;
+  color: var(--vb-ink);
+  -webkit-background-clip: border-box;
+  background-clip: border-box;
+  -webkit-text-fill-color: currentColor;
+}
+
+[data-admin-console="true"] .vb-hero-card,
+[data-admin-console="true"] .vb-metric-card,
+[data-admin-console="true"] .vb-dash-section,
+[data-admin-console="true"] .vb-chart-section,
+[data-admin-console="true"] .vb-sys-card {
+  border-radius: var(--vb-radius-md);
+  box-shadow: var(--vb-shadow-xs);
+  transition: border-color 0.15s ease, background-color 0.15s ease;
+}
+
+[data-admin-console="true"] .vb-hero-card::before,
+[data-admin-console="true"] .vb-hero-card::after,
+[data-admin-console="true"] .vb-metric-card::after,
+[data-admin-console="true"] .vb-chart-bar-premium::after,
+[data-admin-console="true"] .vb-cat-bar-glass-fill::after,
+[data-admin-console="true"] .vb-pulse-ring::before,
+[data-admin-console="true"] .vb-status-dot::after {
+  display: none;
+  content: none;
+}
+
+[data-admin-console="true"] .vb-hero-card:hover,
+[data-admin-console="true"] .vb-metric-card:hover,
+[data-admin-console="true"] .vb-dash-section:hover,
+[data-admin-console="true"] .vb-chart-section:hover,
+[data-admin-console="true"] .vb-sys-card:hover,
+[data-admin-console="true"] .vb-health-ring-interactive:hover,
+[data-admin-console="true"] .vb-heat-cell:hover,
+[data-admin-console="true"] .vb-heat-cell-premium:hover {
+  transform: none;
+  box-shadow: var(--vb-shadow-xs);
+  filter: none;
+}
+
+[data-admin-console="true"] .vb-header-icon {
+  background: var(--vb-accent);
+  box-shadow: none;
+}
+
+[data-admin-console="true"] .vb-number-glow,
+[data-admin-console="true"] .vb-num-glow,
+[data-admin-console="true"] .vb-health-glow,
+[data-admin-console="true"] .vb-health-glow-good,
+[data-admin-console="true"] .vb-health-glow-warn,
+[data-admin-console="true"] .vb-health-glow-bad {
+  text-shadow: none;
+  filter: none;
+}
+
+[data-admin-console="true"] .vb-live-glow,
+[data-admin-console="true"] .vb-badge-pulse,
+[data-admin-console="true"] .vb-bar-anim,
+[data-admin-console="true"] .vb-skeleton-prem,
+[data-admin-console="true"] .vb-skeleton-premium::after {
+  animation: none;
+}
+
+[data-admin-console="true"] .vb-section-gradient,
+[data-admin-console="true"] .vb-section-gradient-accent,
+[data-admin-console="true"] .vb-cat-bar-fill,
+[data-admin-console="true"] .vb-cat-bar-glass-fill,
+[data-admin-console="true"] .vb-eng-bar-fill,
+[data-admin-console="true"] .vb-system-healthy,
+[data-admin-console="true"] .vb-system-degraded,
+[data-admin-console="true"] .vb-system-critical {
+  background: var(--vb-surface);
+}
+
+[data-admin-console="true"] .vb-cat-bar-fill,
+[data-admin-console="true"] .vb-cat-bar-glass-fill,
+[data-admin-console="true"] .vb-eng-bar-fill {
+  background: var(--vb-accent);
+}
+
+[data-admin-console="true"] .vb-gradient-border {
+  border: 1px solid var(--vb-border);
+  background: var(--vb-surface);
+  animation: none;
+}
+
+[data-admin-console="true"] .vb-tab-pill-active {
+  background: var(--vb-surface2) !important;
+  box-shadow: none;
+}
+
+} /* end @layer components */
+
+
+.vb-orb { position: relative; width: 120px; height: 120px; flex-shrink: 0; }
+/* ── Typewriter caret (AI message reveal) ──────── */
+.vb-caret {
+  display: inline-block; width: 2px; height: 1em; margin-left: 2px;
+  vertical-align: -0.15em; background: var(--vb-accent);
+  animation: vb-caret-blink 1s steps(2, start) infinite;
+}
+@keyframes vb-caret-blink { 0%,100% { opacity: 1; } 50% { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) {
+  .vb-caret { animation: none !important; opacity: 1; }
 }

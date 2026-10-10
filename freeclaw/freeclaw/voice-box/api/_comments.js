@@ -11,11 +11,15 @@ import {
 	maskProfanity,
 	rateLimited,
 	rateLimitResponse,
+	verifyCallerIdentity,
 } from "./_auth.js";
 import supabase from "./_db-client.js";
 import { sanitizeError } from "./_error.js";
-import { EVENT_TYPES, emitEvent } from "./_events.js";
-import { serverModerate } from "./_moderation.js";
+import { invalidateCounts } from "./_counts.js";
+import { EVENT_TYPES, emitEventAndBridge } from "./_events.js";
+import { recordSafetyRepost, checkSafetyRepost } from "./_moderation.js";
+import { evaluateContentDeep } from "./_safety-pipeline.js";
+import { strikeSlangAbuse } from "./_reports.js";
 
 export default async function handler(req, res) {
 	cors(res, req);
@@ -63,8 +67,17 @@ export default async function handler(req, res) {
 				.order("created_at", { ascending: false });
 			if (post_id) q = q.eq("post_id", post_id);
 			if (author) q = q.eq("author_id", clean(author, 40));
-			// Public listings exclude hidden AND soft-deleted comments
-			if (!admin) q = q.eq("hidden", false).eq("deleted", false);
+			// Public listings exclude hidden AND soft-deleted comments. When a
+			// viewer identifies themselves, the hidden filter moves into the JS
+			// self-view filter below so the author's OWN hidden row can still be
+			// returned — a moderation hide must not vanish from their thread with
+			// no explanation (posts solved the same hole with isSelfView).
+			// Soft-deleted rows stay DB-excluded either way.
+			const selfId = clean(viewer, 40);
+			if (!admin) {
+				q = q.eq("deleted", false);
+				if (!selfId) q = q.eq("hidden", false);
+			}
 
 			// Support cursor pagination for ALL query types (post_id, author, general)
 			// The artifact filter runs in JS AFTER this SQL limit, so fetch a wide
@@ -82,7 +95,19 @@ export default async function handler(req, res) {
 			// Full-site zero-fuzz: hide test/fuzz comment bodies on every surface,
 			// admin included (mirrors _search.js, which already filters comment
 			// bodies). Rows stay intact in the DB; they are only hidden.
-			const cleanRows = (data || []).filter((c) => !isTestArtifact(c.body));
+			let cleanRows = (data || []).filter((c) => !isTestArtifact(c.body));
+
+			// Author self-view: with a viewer present the DB did NOT exclude
+			// hidden rows, so drop everyone else's here — server-side, before
+			// any response. Only the viewer's OWN hidden comments survive
+			// (flagged `hidden` + `is_mine` for the client to render as held);
+			// soft-deleted rows never self-show. The paginated `total` below
+			// still counts public rows only, so the honest count never moves.
+			if (!admin && selfId) {
+				cleanRows = cleanRows.filter(
+					(c) => !c.deleted && (!c.hidden || c.author_id === selfId),
+				);
+			}
 
 			// Strangers may not read comments on a private post (owner can).
 			if (
@@ -107,7 +132,7 @@ export default async function handler(req, res) {
 						author_id:
 							admin || is_mine || c.author_id === "ADMIN"
 								? c.author_id
-								: c.author_id.slice(0, 9) + "…",
+								: c.author_id.slice(0, 9) + "...",
 					};
 				});
 				let totalQ = supabase
@@ -130,7 +155,7 @@ export default async function handler(req, res) {
 					author_id:
 						admin || is_mine || c.author_id === "ADMIN"
 							? c.author_id
-							: c.author_id.slice(0, 9) + "…",
+							: c.author_id.slice(0, 9) + "...",
 				};
 			});
 			return res.status(200).json(masked);
@@ -138,8 +163,18 @@ export default async function handler(req, res) {
 
 		if (req.method === "POST") {
 			const b = req.body || {};
-			const author_id = clean(b.author_id, 40);
+			// P0 SECURITY FIX: Derive author_id from x-anon-id header, NOT from client body
+			const headerId = clean(req.headers["x-anon-id"] || "", 40);
 			const is_admin_msg = b.is_admin === true && (await isAdmin(req));
+			const author_id = headerId || (is_admin_msg ? "ADMIN" : "");
+			if (!author_id)
+				return res.status(403).json({ error: "Missing session identity (x-anon-id header)" });
+			// Session binding: the header claim must match a live session.
+			// Header-only auth let anyone knowing an id comment as them.
+			if (!is_admin_msg) {
+				const caller = await verifyCallerIdentity(req, res, author_id);
+				if (!caller.ok) return res.status(caller.status || 403).json({ error: caller.error, code: caller.code });
+			}
 			if (!is_admin_msg) {
 				const gate = await checkUser(author_id);
 				if (!gate.ok) return res.status(403).json({ error: gate.error });
@@ -151,31 +186,65 @@ export default async function handler(req, res) {
 					);
 				}
 			}
-			const body = maskProfanity(clean(b.body, 500));
-			if (body.length < 2)
+			// Moderate the RAW text and store the masked text: masking first
+			// would blind serverModerate (a masked slur no longer matches
+			// SLURS and would publish instead of blocking).
+			const rawBody = clean(b.body, 500);
+			if (rawBody.length < 2)
 				return res.status(400).json({ error: "Comment is too short." });
-			// Server-side PII/safety gate — comments can leak addresses, phones, emails too.
+			// Safety repost guard (see _posts.js): previously removed content
+			// can't return with trivial changes; attempts feed repeat-offender evidence.
+			const repost = await checkSafetyRepost(supabase, rawBody);
+			if (repost.blocked) {
+				await auditLog(
+					"moderation",
+					"comment_repost_blocked",
+					`${author_id}: ${rawBody.slice(0, 60)} [rule=${repost.rule} attempts=${repost.attempts}]`,
+				);
+				return res.status(403).json({
+					error: "This content was previously removed for safety reasons and cannot be reposted.",
+					code: "SAFETY_REPOST_BLOCKED",
+				});
+			}
+			// Server-side PII/safety gate — verdict from the unified safety
+			// pipeline (same blocked set the old inline check computed).
 			if (!is_admin_msg) {
-				const mod = serverModerate("", body);
-				// Weak privacy signals (room-level addresses, PIN codes) also block
-				// comments — unlike posts they have no pending_review queue to hold them.
-				if (mod.blocked || mod.flags.some((f) => f.type === "privacy_weak")) {
-					const isPII = mod.flags.some(
+				// DEEP path: deterministic gates + deterministic contextual scan
+				// PLUS a real model judging meaning (bounded ~10s, skips when
+				// already blocked). The model catches what no list can —
+				// politely-phrased threats, unnamed targets, contextual PII —
+				// and can only ADD flags, never clear the floor.
+				const decision = await evaluateContentDeep(rawBody, "direct", null, {
+					taskKey: "comments.write",
+				});
+				if (decision.blocked) {
+					const isPII = decision.flags.some(
 						(f) => f.type === "privacy" || f.type === "privacy_weak",
 					);
 					await auditLog(
 						"moderation",
 						"comment_blocked",
-						`${author_id}: ${body.slice(0, 60)} [${mod.flags.map((f) => f.type).join(", ")}]`,
+						`${author_id}: ${rawBody.slice(0, 60)} [${decision.flags.map((f) => f.type).join(", ")}]`,
 					);
+					await recordSafetyRepost(
+						supabase,
+						rawBody,
+						(decision.flags[0] || {}).type || "policy",
+					);
+					// Slang auto-strike (same rule as posts).
+					if (decision.flags.some((f) => f.type === "profanity")) {
+						await strikeSlangAbuse(author_id, "comment", rawBody);
+					}
 					return res.status(403).json({
 						error: isPII
 							? "Personal information detected (address, phone, or email). This is an anonymous platform — please remove personal details."
-							: "This comment violates our safety guidelines and cannot be posted.",
-						code: isPII ? "PII_BLOCKED" : "CONTENT_BLOCKED",
+							: decision.message,
+						code: isPII ? "PII_BLOCKED" : decision.code,
 					});
 				}
 			}
+			// Store the masked text; every gate above already ran on the raw text.
+			const body = maskProfanity(rawBody);
 			// Respect locked posts + private-post ownership in ONE lookup
 			const { data: post } = await supabase
 				.from("posts")
@@ -193,6 +262,44 @@ export default async function handler(req, res) {
 				post.author_id !== author_id
 			)
 				return res.status(403).json({ error: "Not authorized" });
+			// Idempotent submit (mirrors the posts 90s twin rule): double-tap
+			// past the client cooldown, retry-after-timeout, and offline-queue
+			// flush can deliver the same comment twice with both copies passing
+			// moderation. Same author + same post + same thread (parent_id) +
+			// exact normalized body within 90s returns the original row
+			// (200 + deduped:true) instead of a visible twin. Deleted/hidden
+			// twins are skipped (a fresh repost after delete is legitimate);
+			// empty normalized bodies never match.
+			const normalizeCommentBody = (s) =>
+				String(s || "")
+					.toLowerCase()
+					.replace(/[^a-z0-9\s]/g, "")
+					.replace(/\s+/g, " ")
+					.trim();
+			const normalizedBody = normalizeCommentBody(body);
+			const CTWIN_MS = 90000;
+			const twinCutoff = Date.now() - CTWIN_MS;
+			const parentKey = b.parent_id ? clean(b.parent_id, 60) : null;
+			const { data: recentComments } = await supabase
+				.from("comments")
+				.select("id,post_id,parent_id,body,created_at,deleted,hidden")
+				.eq("author_id", author_id)
+				.eq("post_id", clean(b.post_id, 60))
+				.gte("created_at", new Date(twinCutoff).toISOString())
+				.order("created_at", { ascending: false })
+				.limit(10);
+			const twin = (recentComments || []).find(
+				(c) =>
+					!c.deleted &&
+					!c.hidden &&
+					(c.parent_id || null) === parentKey &&
+					Number(Date.parse(c.created_at || 0)) > twinCutoff &&
+					normalizeCommentBody(c.body || "") === normalizedBody &&
+					normalizedBody !== "",
+			);
+			if (twin) {
+				return res.status(200).json({ ...twin, deduped: true });
+			}
 			const row = {
 				id: `cmt_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`,
 				post_id: clean(b.post_id, 60),
@@ -214,11 +321,12 @@ export default async function handler(req, res) {
 				.update({ updated_at: new Date().toISOString() })
 				.eq("id", row.post_id);
 			// Emit event for event-triggered agents
-			emitEvent(EVENT_TYPES.COMMENT_CREATED, {
+			emitEventAndBridge(EVENT_TYPES.COMMENT_CREATED, {
 				comment_id: data.id,
 				post_id: row.post_id,
 				author_id: row.author_id,
 			}).catch(() => {});
+			invalidateCounts(); // comment_count is cached in api/_counts.js
 			return res.status(201).json(data);
 		}
 
@@ -233,20 +341,33 @@ export default async function handler(req, res) {
 			const admin = await isAdmin(req);
 			// 'ADMIN' comments may only be edited by verified admins — a plain user
 			// could otherwise spoof author_id='ADMIN' (a public constant) to edit them.
+			// P0 SECURITY FIX: Derive caller identity from x-anon-id header, not client body
+			const callerId = clean(req.headers["x-anon-id"] || "", 40);
 			const isOwner =
-				b.author_id && b.author_id !== "ADMIN" && b.author_id === cmt.author_id;
+				callerId && callerId !== "ADMIN" && callerId === cmt.author_id;
+			// Session binding: the header claim must match a live session
+			// before ownership is even compared. (Admins bypass inside the
+			// gate, like everywhere else.)
+			if (!admin) {
+				const caller = await verifyCallerIdentity(req, res, callerId || "!");
+				if (!caller.ok) return res.status(caller.status || 403).json({ error: caller.error, code: caller.code });
+			}
 			if (!isOwner && !admin)
 				return res.status(403).json({ error: "Not authorized" });
 			const patch = {};
 			if (b.body !== undefined) {
-				patch.body = maskProfanity(clean(b.body, 500));
+				// Moderate raw, store masked (see POST path above).
+				patch.rawBody = clean(b.body, 500);
 				patch.edited = true;
 			}
-			// Re-moderate edited comments — never let PII leak through an edit either.
-			if (patch.body !== undefined) {
-				const mod = serverModerate("", patch.body);
-				if (mod.blocked || mod.flags.some((f) => f.type === "privacy_weak")) {
-					const isPII = mod.flags.some(
+			// Re-moderate edited comments — verdict from the unified safety
+			// pipeline (same blocked set; edit-specific 403 wording kept).
+			if (patch.rawBody !== undefined) {
+				const decision = await evaluateContentDeep(patch.rawBody, "direct", null, {
+					taskKey: "comments.edit",
+				});
+				if (decision.blocked) {
+					const isPII = decision.flags.some(
 						(f) => f.type === "privacy" || f.type === "privacy_weak",
 					);
 					return res.status(403).json({
@@ -257,8 +378,30 @@ export default async function handler(req, res) {
 					});
 				}
 			}
+			// Mask for storage only after the raw text passes moderation.
+			// rawBody must never reach the database.
+			if (patch.rawBody !== undefined) {
+				patch.body = maskProfanity(patch.rawBody);
+				delete patch.rawBody;
+			}
 			if (typeof b.deleted === "boolean") patch.deleted = b.deleted;
 			if (admin && typeof b.hidden === "boolean") patch.hidden = b.hidden;
+			// Resurrection gate: restoring (un-deleting / un-hiding) a comment
+			// on a locked post would plant a visible stray on a post that
+			// claims "comments off". The lock purge deleted everything; the
+			// lock must keep it deleted until the post is unlocked first.
+			if (patch.deleted === false || patch.hidden === false) {
+				const { data: parent } = await supabase
+					.from("posts")
+					.select("locked")
+					.eq("id", cmt.post_id)
+					.maybeSingle();
+				if (parent?.locked === true)
+					return res.status(403).json({
+						error: "Comments are locked on this post — unlock the post before restoring comments.",
+						code: "post_locked",
+					});
+			}
 			const { data, error } = await supabase
 				.from("comments")
 				.update(patch)
@@ -267,6 +410,7 @@ export default async function handler(req, res) {
 				.single();
 			if (error) throw error;
 			if (admin && !isOwner) await auditLog("admin", "moderate_comment", b.id);
+			invalidateCounts(); // edit/hide/soft-delete all change comment_count
 			return res.status(200).json(data);
 		}
 
@@ -275,9 +419,19 @@ export default async function handler(req, res) {
 				return res.status(403).json({ error: "Admin only" });
 			const id = req.body?.id || req.query?.id;
 			if (!id) return res.status(400).json({ error: "Missing id" });
-			const { error } = await supabase.from("comments").delete().eq("id", id);
+			// Prove the delete landed: an unparsed/missing id used to no-op and
+			// still return ok:true, so the row "came back" on reload (same flaw
+			// class as the posts hard-delete route before removal verification).
+			const { data: removed, error } = await supabase
+				.from("comments")
+				.delete()
+				.eq("id", id)
+				.select("id");
 			if (error) throw error;
+			if (!removed || removed.length === 0)
+				return res.status(404).json({ error: "Comment not found" });
 			await auditLog("admin", "hard_delete_comment", String(id));
+			invalidateCounts();
 			return res.status(200).json({ ok: true });
 		}
 

@@ -1,0 +1,9 @@
+{
+  "publication": "supabase_realtime",
+  "anonSelectTables": ["posts", "comments", "polls"],
+  "publicRowPredicates": {
+    "posts": "deleted = false AND hidden = false AND COALESCE(visibility, 'public') = 'public' AND status <> 'pending_review'",
+    "comments": "deleted = false AND hidden = false AND EXISTS (SELECT 1 FROM public.posts p WHERE p.id = comments.post_id AND p.deleted = false AND p.hidden = false AND COALESCE(p.visibility, 'public') = 'public' AND p.status <> 'pending_review')",
+    "polls": "deleted = false"
+  }
+}

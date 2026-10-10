@@ -461,7 +461,10 @@ export default async function handler(req, res) {
 				return res.status(200).json({ ok: true, already: true });
 
 			if (b.action === "dismiss") {
-				await supabase
+				// The status write must be proven: an unchecked update left the
+				// suggestion PENDING on the server while the UI removed it and
+				// the audit trail claimed an admin had dismissed it.
+				const { error: dismissErr } = await supabase
 					.from("agent_suggestions")
 					.update({
 						status: "dismissed",
@@ -469,6 +472,7 @@ export default async function handler(req, res) {
 						outcome: "Dismissed by admin — no action was taken.",
 					})
 					.eq("id", b.id);
+				if (dismissErr) throw dismissErr;
 				await auditLog(
 					"admin",
 					"agent_dismiss",
@@ -626,7 +630,12 @@ export default async function handler(req, res) {
 					outcome = `Approved by admin — applied ${sug.kind} on ${sug.target_id} (${p.from || "—"} → ${String(p.to || targetStatus).slice(0, 60)})`;
 				}
 
-				await supabase
+				// The moderation action above has ALREADY been applied at this
+				// point (and that write is checked). This records the approval.
+				// Unchecked, a failure left the suggestion PENDING while the
+				// action was live — the admin was told it was approved, the list
+				// still offered it, and re-applying could duplicate the action.
+				const { error: approveErr } = await supabase
 					.from("agent_suggestions")
 					.update({
 						status: "approved",
@@ -634,6 +643,7 @@ export default async function handler(req, res) {
 						outcome,
 					})
 					.eq("id", b.id);
+				if (approveErr) throw approveErr;
 				await auditLog(
 					"admin",
 					"agent_approve",

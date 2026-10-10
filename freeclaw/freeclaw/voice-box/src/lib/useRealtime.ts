@@ -1,5 +1,10 @@
 import { useEffect, useRef } from "react";
-import supabase from "./supabase";
+import realtimeContract from "./realtimeContract.json";
+// Type-only: the realtime client module (@supabase/supabase-js, ~169KB) must
+// NOT be a static import — it would join the boot chunk parsed before first
+// paint. It is loaded via dynamic import() inside the hook effect instead,
+// so the chunk downloads and parses after paint. Type-only imports erase.
+import type supabaseDefault from "./supabase";
 
 /**
  * Global Realtime subscription manager.
@@ -16,11 +21,23 @@ import supabase from "./supabase";
  * This reduces 11 channels → ~5 unique table groups on a typical page.
  */
 
-/** Payload from Supabase Realtime postgres_changes or polling fallback */
+/** Payload from a Supabase Realtime postgres_changes event. */
 export interface RealtimePayload {
 	eventType?: string;
 	[key: string]: unknown;
 }
+
+/**
+ * Tables the `supabase_realtime` publication actually carries AND the anon key
+ * is allowed to read (see api/migrations/006_restore_anon_realtime.sql).
+ * Channels for anything else (agent_*, settings, vitals, …) can never deliver:
+ * the Realtime server drops them on RLS/publication checks. Do not open a
+ * dead channel or start a replacement polling loop; the page keeps its
+ * bounded snapshot until an explicit refresh.
+ */
+export const REALTIME_TABLES = new Set<string>(
+	realtimeContract.anonSelectTables,
+);
 
 type ChangeCallback = (table: string, payload: RealtimePayload) => void;
 
@@ -28,138 +45,161 @@ interface Subscriber {
 	callback: ChangeCallback;
 	debounceMs: number;
 	timer: ReturnType<typeof setTimeout> | null;
+	/** When the current burst started — the max-wait anchor. */
+	burstStartedAt: number | null;
 }
 
+/**
+ * Ceiling on how long a burst may delay a refresh.
+ *
+ * A pure debounce (reset the timer on every event) is fine for a click, but
+ * for a live feed it is a starvation bug: if rows keep arriving faster than
+ * the debounce window, the timer is reset before it ever fires and the
+ * callback never runs. Admins saw the list update once during a quiet gap and
+ * then silently stop. A burst must still coalesce, so we keep the debounce —
+ * we just guarantee a flush no later than this.
+ */
+const MAX_BURST_WAIT_MS = 10_000;
+
+type RealtimeClient = NonNullable<typeof supabaseDefault>;
+
 interface ChannelEntry {
-	// null when the Supabase client is unavailable (bad/missing env config) —
-	// the entry then runs in polling-only mode so the app never loses updates.
-	channel: ReturnType<NonNullable<typeof supabase>["channel"]> | null;
+	// null when the Supabase client is unavailable (bad/missing env config) or
+	// when the requested tables are not in the public Realtime allowlist.
+	channel: ReturnType<RealtimeClient["channel"]> | null;
 	subscribers: Map<number, Subscriber>;
-	realtimeConnected: boolean;
-	poll: ReturnType<typeof setInterval> | null;
-	lastEventAt: number;
-	stalenessCheck: ReturnType<typeof setInterval> | null;
-	visibilityHandler: (() => void) | null;
+	// The resolved client that owns this entry's channel — removeChannel must
+	// go to the same instance that created it.
+	client: RealtimeClient | null;
 }
 
 let nextId = 0;
 const registry = new Map<string, ChannelEntry>();
 
-function getOrCreate(key: string): ChannelEntry {
+/** Tables already warned about — one dev-time warning each, not one per render. */
+const warnedTables = new Set<string>();
+
+/**
+ * Split a subscription into the tables that can actually deliver.
+ *
+ * A mixed set like ["posts", "reactions"] used to open NO channel at all:
+ * the allowlist gate rejected the whole key, so the valid tables silently
+ * lost realtime too (the home feed's reaction/comment deltas, the
+ * suggestions board, the admin badges). Now the allowed subset subscribes
+ * normally and the rest are skipped with a one-time dev warning.
+ *
+ * Order is canonicalized (sorted) so ["posts","comments"] and
+ * ["comments","posts"] share one channel instead of opening two.
+ */
+function liveTables(tables: string[]): string[] {
+	const out: string[] = [];
+	const seen = new Set<string>();
+	for (const t of tables) {
+		if (!REALTIME_TABLES.has(t)) {
+			if (!warnedTables.has(t)) {
+				warnedTables.add(t);
+				if (typeof console !== "undefined")
+					console.warn(
+						`[realtime] "${t}" is outside the anon realtime contract ` +
+							`(no publication / no anon read) — no events will arrive ` +
+							`for it; allowed tables in the same call still subscribe.`,
+					);
+			}
+			continue;
+		}
+		if (!seen.has(t)) {
+			seen.add(t);
+			out.push(t);
+		}
+	}
+	return out.sort();
+}
+
+function getOrCreate(key: string, supabase: RealtimeClient | null): ChannelEntry {
 	let entry = registry.get(key);
 	if (entry) return entry;
 
-	const channel = supabase ? supabase.channel(`rt-${key}`) : null;
+	const tables = key.split(",");
+	// Defense in depth: useRealtime() already partitions to allowed tables,
+	// so a disallowed name here means a programming error — refuse the whole
+	// channel rather than open a half-specified one. Tables outside the
+	// realtime publication (or with no anon read policy) can never deliver
+	// events. Do not open a dead channel; the page keeps its bounded snapshot
+	// until an explicit refresh.
+	const channel =
+		supabase && tables.every((t) => REALTIME_TABLES.has(t))
+			? supabase.channel(`rt-${key}`)
+			: null;
 	entry = {
 		channel,
 		subscribers: new Map(),
-		realtimeConnected: false,
-		poll: null,
-		lastEventAt: Date.now(),
-		stalenessCheck: null,
-		visibilityHandler: null,
+		client: supabase,
 	};
 
-	const startPolling = () => {
-		if (entry!.poll) return;
-		// Load-safe polling: 30s cadence. Supabase Realtime remains the instant
-		// path; polling exists only as a safety net, so it must never multiply
-		// into a per-client request storm when the feed is calm.
-		entry!.poll = setInterval(() => {
-			// Never poll in a hidden tab — the user can't see updates anyway.
-			// This saves API calls (and Vercel function invocations) on background tabs.
-			if (document.hidden) return;
-			// Defensive: split always returns at least one string, so the ?? fallback
-			// can never fire — kept for type safety under future key changes.
-			/* v8 ignore next -- @preserve */
-			const firstTable = key.split(",")[0] ?? "";
-			for (const [, sub] of entry!.subscribers) {
-				sub.callback(firstTable, { eventType: "POLL" });
-			}
-		}, 30_000);
-	};
+	// No fallback polling or visibility refresh is started here. The page
+	// lifecycle contract is one bounded read per visit; a failed/quiet
+	// Realtime channel must not silently turn into recurring full refetches.
+	// Consumers expose explicit refresh actions when fresh data is required.
 
-	const stopPolling = () => {
-		if (entry!.poll) {
-			clearInterval(entry!.poll);
-			entry!.poll = null;
-		}
-	};
-
-	// Fire an immediate refresh when the tab becomes visible again, so users
-	// never wait for the next 10s tick after switching back.
-	// NOTE: like the fallback POLL tick, this intentionally refreshes only the
-	// FIRST table in the key — every consumer either ignores the `table` arg or
-	// relies on `chat_messages` being first, so this matches existing semantics.
-	const onVisibility = () => {
-		if (document.hidden || entry!.subscribers.size === 0) return;
-		// Defensive: split always returns at least one string, so the ?? fallback
-		// can never fire — kept for type safety under future key changes.
-		/* v8 ignore next -- @preserve */
-		const firstTable = key.split(",")[0] ?? "";
-		// Route through the same per-subscriber debounce used by realtime events
-		// so visibility bursts coalesce consistently with other update paths.
-		for (const [, sub] of entry!.subscribers) {
-			if (sub.timer) clearTimeout(sub.timer);
-			sub.timer = setTimeout(
-				() => sub.callback(firstTable, { eventType: "VISIBLE" }),
-				sub.debounceMs,
-			);
-		}
-	};
-	entry.visibilityHandler = onVisibility;
-	document.addEventListener("visibilitychange", onVisibility);
-
-	// Wire up postgres_changes for each table in the key — skipped entirely when
-	// there is no Supabase client; the polling fallback below covers that mode.
+	// Wire up postgres_changes for each table in the key. If no channel is
+	// available, the subscriber simply receives no events until an explicit
+	// page refresh; it does not start a replacement polling loop.
 	if (channel) {
 		for (const table of key.split(",")) {
 			channel.on(
 				"postgres_changes",
 				{ event: "*", schema: "public", table },
 				(payload) => {
-					entry!.lastEventAt = Date.now();
+					const now = Date.now();
 					// Notify ALL subscribers for this table, each with their OWN debounce
 					// timer (per-subscriber timers guarantee every subscriber fires — a
 					// shared map would let the last-writer win and drop earlier subscribers).
 					for (const [, sub] of entry!.subscribers) {
-						if (sub.timer) clearTimeout(sub.timer);
-						sub.timer = setTimeout(
-							() => sub.callback(table, payload),
-							sub.debounceMs,
-						);
+						// debounceMs <= 0 means "no debounce": deliver this event NOW.
+						// A trailing timer coalesces a synchronous burst down to its LAST
+						// payload, so ids A, B, C arriving together would refresh only C —
+						// the two other rows stay stale until the next unrelated event.
+						// The vote fast lane (poll counts must land inside 100ms) needs
+						// every id, so it passes 0 and batches in its own handler.
+						// Every production call site passes 1000–2000ms, so the debounced
+						// paths below are unchanged.
+						if (sub.debounceMs <= 0) {
+							sub.callback(table, payload);
+							continue;
+						}
+						if (sub.timer) {
+							// Max-wait: a burst that has already run longer than the
+							// ceiling flushes NOW instead of pushing the timer again.
+							// Without this, continuous activity starves the callback
+							// forever and the list silently stops updating.
+							if (
+								sub.burstStartedAt !== null &&
+								now - sub.burstStartedAt >= MAX_BURST_WAIT_MS
+							) {
+								clearTimeout(sub.timer);
+								sub.timer = null;
+								sub.burstStartedAt = null;
+								sub.callback(table, payload);
+								continue;
+							}
+							clearTimeout(sub.timer);
+						} else {
+							sub.burstStartedAt = now;
+						}
+						sub.timer = setTimeout(() => {
+							sub.timer = null;
+							sub.burstStartedAt = null;
+							sub.callback(table, payload);
+						}, sub.debounceMs);
 					}
 				},
 			);
 		}
 
-		channel.subscribe((status: string) => {
-			entry!.realtimeConnected = status === "SUBSCRIBED";
-			if (entry!.realtimeConnected) {
-				entry!.lastEventAt = Date.now();
-				stopPolling();
-			}
-			if (!entry!.realtimeConnected && !entry!.poll) {
-				startPolling();
-			}
-		});
-	} else {
-		// No realtime client → fall back to polling immediately.
-		startPolling();
+		// Subscribe activates the shared channel. Status is intentionally not
+		// converted into polling or visibility refreshes by this layer.
+		channel.subscribe(() => undefined);
 	}
-
-	// Staleness detection: only fall back to polling after a LONG quiet period
-	// (2 minutes). A calm feed is healthy, not stale — restarting polls on every
-	// 30s of silence turned 100 open tabs into a permanent request storm.
-	entry.stalenessCheck = setInterval(() => {
-		if (document.hidden) return;
-		if (
-			entry!.realtimeConnected &&
-			Date.now() - entry!.lastEventAt > 120_000
-		) {
-			startPolling();
-		}
-	}, 10000);
 
 	registry.set(key, entry);
 	return entry;
@@ -175,19 +215,13 @@ function removeSubscriber(id: number, key: string) {
 	// so per-subscriber timers never leak regardless of order.
 	const sub = entry.subscribers.get(id);
 	if (sub?.timer) clearTimeout(sub.timer);
+	if (sub) sub.burstStartedAt = null;
 	entry.subscribers.delete(id);
 	// Last subscriber gone → tear down the channel
 	if (entry.subscribers.size === 0) {
-		if (entry.poll) clearInterval(entry.poll);
-		// stalenessCheck/visibilityHandler are always set by getOrCreate, so these
-		// conditions never evaluate false — guards kept for defensive clarity.
-		/* v8 ignore else -- @preserve */
-		if (entry.stalenessCheck) clearInterval(entry.stalenessCheck);
-		/* v8 ignore else -- @preserve */
-		if (entry.visibilityHandler)
-			document.removeEventListener("visibilitychange", entry.visibilityHandler);
-		// No channel exists in polling-only mode (bad env config) — nothing to remove.
-		if (supabase && entry.channel) supabase.removeChannel(entry.channel);
+		// No channel exists when the client is unavailable or the tables are
+		// outside the public Realtime allowlist; there is nothing to remove.
+		if (entry.client && entry.channel) entry.client.removeChannel(entry.channel);
 		registry.delete(key);
 	}
 }
@@ -197,18 +231,28 @@ function removeSubscriber(id: number, key: string) {
  * Calls `onChange` (debounced) whenever any row changes.
  * Cleans up the channel on unmount — no leaks, no duplicate listeners.
  *
+ * Only tables in the anon realtime contract (posts, comments, polls) can
+ * deliver; any others in the list are skipped with a dev-time warning while
+ * the allowed subset subscribes normally. A list with NO allowed table
+ * opens nothing.
+ *
  * Multiple components subscribing to the same tables share a single
  * Supabase channel, reducing WebSocket connections and bandwidth.
  *
- * Polling fallback activates when:
- * 1. The Realtime channel fails to connect (immediate fallback), OR
- * 2. The channel reports SUBSCRIBED but no events arrive for 15s (staleness detection)
- * This ensures updates arrive even when Supabase Realtime is connected but silent.
+ * Realtime failures and quiet channels are intentionally not converted into
+ * recurring polling. Pages keep their current snapshot until an explicit
+ * refresh or route re-entry, matching the one-load lifecycle contract.
+ *
+ * @param debounceMs Trailing debounce applied per subscriber, coalescing a
+ *   burst into one call with the LAST payload. A max-wait ceiling keeps a
+ *   sustained stream from starving the callback. Pass `0` to opt out and
+ *   receive EVERY event immediately — required when the payload carries a
+ *   per-row id that must not be dropped (see the poll-vote fast lane).
  */
 export function useRealtime(
 	tables: string[],
 	onChange: (table: string, payload: RealtimePayload) => void,
-	debounceMs = 400,
+	debounceMs = 250,
 ) {
 	const cbRef = useRef(onChange);
 	cbRef.current = onChange;
@@ -220,20 +264,41 @@ export function useRealtime(
 	if (idRef.current === null) idRef.current = nextId++;
 
 	useEffect(() => {
+		// Partition here (not at render): the subscription key is derived
+		// state, and the dev warning for skipped tables is a side effect.
+		// Re-split from `key` (already a dep) so no extra dep is needed;
+		// table names never contain commas, so the split is lossless.
+		const liveKey = liveTables(key === "" ? [] : key.split(",")).join(",");
+		if (!liveKey) return;
 		const id = idRef.current!;
-		const entry = getOrCreate(key);
-		entry.subscribers.set(id, {
-			// Fire through the ref: the callback identity changes every render,
-			// but this subscriber record is created once per [key, debounceMs].
-			// Reading cbRef.current at dispatch time means realtime events always
-			// invoke the LATEST closure instead of a stale first-render snapshot.
-			callback: (table, payload) => cbRef.current(table, payload),
-			debounceMs,
-			timer: null,
-		});
+		// The realtime client module is loaded asynchronously (dynamic
+		// import) so its ~169KB stays out of the boot chunk. Subscription
+		// attaches when the load resolves — one microtask later in tests,
+		// after paint in production. Unmounting first cancels the attach.
+		let cancelled = false;
+		void import("./supabase")
+			.then((m) => {
+				if (cancelled) return;
+				const entry = getOrCreate(liveKey, m.default);
+				entry.subscribers.set(id, {
+					// Fire through the ref: the callback identity changes every render,
+					// but this subscriber record is created once per [key, debounceMs].
+					// Reading cbRef.current at dispatch time means realtime events always
+					// invoke the LATEST closure instead of a stale first-render snapshot.
+					callback: (table, payload) => cbRef.current(table, payload),
+					debounceMs,
+					timer: null,
+					burstStartedAt: null,
+				});
+			})
+			// A failed chunk load must never surface as an unhandled rejection
+			// (or silently leave realtime detached): the page keeps its bounded
+			// snapshot until an explicit refresh, matching the lifecycle contract.
+			.catch(() => {});
 
 		return () => {
-			removeSubscriber(id, key);
+			cancelled = true;
+			removeSubscriber(id, liveKey);
 		};
 	}, [key, debounceMs]);
 }

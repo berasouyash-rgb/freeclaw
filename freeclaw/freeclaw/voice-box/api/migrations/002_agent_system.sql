@@ -1,4 +1,4 @@
--- Voice Box v2.0 Agent System Migration
+-- Voice Flow v2.0 Agent System Migration
 -- Creates tables for agent execution tracking, activity logging, and system metrics
 
 -- 1. Agent execution log — every agent run creates a row

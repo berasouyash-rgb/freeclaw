@@ -8,9 +8,13 @@
 
 import { describe, expect, it } from "vitest";
 import {
+	commentBlockMessage,
 	getModerationSummary,
 	isBlocked,
+	isBlockedByServer,
 	moderateContent,
+	normalizePrePubResult,
+	submitBlockMessage,
 } from "../lib/moderation";
 
 describe("Frontend Moderation - Basic Detection", () => {
@@ -55,7 +59,7 @@ describe("Frontend Moderation - Basic Detection", () => {
 		const result = moderateContent("I am going to dox you");
 		expect(
 			result.flags.some(
-				(f) => f.category === "dangerous" && f.severity === "high",
+				(f) => f.category === "coercion" && f.severity === "high",
 			),
 		).toBe(true);
 	});
@@ -64,7 +68,7 @@ describe("Frontend Moderation - Basic Detection", () => {
 		const result = moderateContent("Pay me or I will expose your secrets");
 		expect(
 			result.flags.some(
-				(f) => f.category === "dangerous" && f.severity === "critical",
+				(f) => f.category === "coercion" && f.severity === "critical",
 			),
 		).toBe(true);
 	});
@@ -76,6 +80,27 @@ describe("Frontend Moderation - Basic Detection", () => {
 				(f) => f.category === "dangerous" && f.severity === "high",
 			),
 		).toBe(true);
+	});
+
+	it("flags hot-pics solicitation as critical, matching the server gate", () => {
+		for (const text of [
+			"User requests hot photos of Shaksi Piry",
+			"priyya pic hot phots",
+		]) {
+			const result = moderateContent(text);
+			expect(
+				result.flags.some(
+					(f) => f.category === "dangerous" && f.severity === "critical",
+				),
+			).toBe(true);
+		}
+	});
+
+	it("leaves innocent hot/food language alone", () => {
+		const result = moderateContent("hot lunch served fresh every day");
+		expect(
+			result.flags.some((f) => f.severity === "critical"),
+		).toBe(false);
 	});
 });
 
@@ -356,6 +381,166 @@ describe("Frontend Moderation - isBlocked", () => {
 		const result = moderateContent("The food needs improvement");
 		expect(isBlocked(result)).toBe(false);
 	});
+
+	it("blocks directed self-harm and school abuse like the server gate", () => {
+		for (const t of [
+			"kys, nobody likes you",
+			"go kill yourself, bully",
+			"you are a chutiya",
+			"that senior is a pervert",
+			"stfu, nobody is listening",
+			"shut up",
+		]) {
+			expect(isBlocked(moderateContent(t))).toBe(true);
+		}
+	});
+});
+
+describe("Frontend Moderation - client/server parity (live feedback must match the publish verdict)", () => {
+	it("blocks perpetrator coercion like the server", () => {
+		for (const t of [
+			"Pay me 500 or I'll leak your photos everywhere",
+			"Do what I say or else you will regret it",
+			"I will publish your phone number tomorrow morning",
+			"Send me the money otherwise I will post your address in the group",
+		]) {
+			expect(isBlocked(moderateContent(t))).toBe(true);
+		}
+	});
+
+	it("never blocks victim reports (server holds them for review)", () => {
+		for (const t of [
+			"Someone is blackmailing me for money, please help",
+			"He threatened to leak my photos if I don't pay",
+		]) {
+			const r = moderateContent(t);
+			expect(isBlocked(r)).toBe(false);
+			expect(r.flags.length).toBeGreaterThan(0);
+		}
+	});
+
+	it("holds ambiguous photo threats instead of blocking", () => {
+		const r = moderateContent("I will share your photo from the fest tomorrow");
+		expect(isBlocked(r)).toBe(false);
+	});
+
+	it("blocks leaked credentials like the server", () => {
+		for (const t of [
+			"my password: hunter2hunter",
+			"api_key = ak_live_9876543210abcdef",
+			"token: xyz9876543210qwerty",
+			"key sk-abcdefghijklmnopqrstuvwx here",
+		]) {
+			expect(isBlocked(moderateContent(t))).toBe(true);
+		}
+	});
+
+	it("publishes plain words without values", () => {
+		for (const t of [
+			"I forgot my password, how do I reset it",
+			"secret santa gifts are due Friday",
+			"Pay the mess fee before Friday or lose your seat",
+			"The water cooler near Block B has been broken for a week",
+			"Give me the book, then I'll tell you the answer tomorrow",
+		]) {
+			expect(isBlocked(moderateContent(t))).toBe(false);
+		}
+	});
+
+	it("blocks then-I'll extortion phrasing", () => {
+		expect(
+			isBlocked(
+				moderateContent("If you don't pay, I'll expose your photos to the class"),
+			),
+		).toBe(true);
+	});
+});
+
+describe("Frontend Moderation - comment-surface gate (isBlockedByServer mirrors api/_comments.js)", () => {
+	it("blocks PII comments — comments have no review queue, server 403s any privacy flag", () => {
+		for (const t of [
+			"email me at john.doe@example.com",
+			"my number is 123-456-7890",
+			"i live at 123 Main Street",
+		]) {
+			const r = moderateContent(t);
+			expect(
+				r.flags.some((f) => f.category === "privacy"),
+			).toBe(true);
+			expect(isBlockedByServer(r)).toBe(true);
+			expect(commentBlockMessage(r)).toBe(
+				"Personal information detected (address, phone, or email). This is an anonymous platform — please remove personal details.",
+			);
+		}
+	});
+
+	it("blocks critical content with the generic safety message", () => {
+		const r = moderateContent("I will kill you");
+		expect(isBlockedByServer(r)).toBe(true);
+		expect(commentBlockMessage(r)).toBe(
+			"This comment violates our safety guidelines and cannot be posted.",
+		);
+	});
+
+	it("blocks plain profanity — no stars are published (school zero-tolerance)", () => {
+		const r = moderateContent("This is fucking ridiculous");
+		expect(isBlockedByServer(r)).toBe(true);
+		expect(isBlocked(r)).toBe(true);
+	});
+
+	it("blocks slang — remove the word and resubmit", () => {
+		for (const t of ["this assignment sucks", "what a dumb idea"]) {
+			const r = moderateContent(t);
+			expect(isBlockedByServer(r)).toBe(true);
+		}
+	});
+
+	it("does not block clean comments", () => {
+		expect(
+			isBlockedByServer(moderateContent("Great points, thanks for sharing")),
+		).toBe(false);
+	});
+});
+
+describe("Frontend Moderation - Submit-surface gate (submitBlockMessage mirrors api/_posts.js + api/_polls.js)", () => {
+	it("post PII → api/_posts.js PII 403 wording, byte-identical", () => {
+		const r = moderateContent("my number is 123-456-7890");
+		expect(isBlockedByServer(r)).toBe(true);
+		expect(submitBlockMessage(r, "post")).toBe(
+			"Personal information detected (address, phone, or email). This is an anonymous platform — please remove all personal details and try again.",
+		);
+	});
+
+	it("post critical content → api/_posts.js CONTENT 403 wording, byte-identical", () => {
+		const r = moderateContent("I will kill you");
+		expect(isBlockedByServer(r)).toBe(true);
+		expect(submitBlockMessage(r, "post")).toBe(
+			"This content violates our safety guidelines and cannot be published. If you are in crisis, please contact a counselor or call a crisis hotline.",
+		);
+	});
+
+	it("poll PII → api/_polls.js PII 403 wording (reuses comment PII text)", () => {
+		const r = moderateContent("email me at john.doe@example.com");
+		expect(isBlockedByServer(r)).toBe(true);
+		expect(submitBlockMessage(r, "poll")).toBe(
+			"Personal information detected (address, phone, or email). This is an anonymous platform — please remove personal details.",
+		);
+	});
+
+	it("poll critical content → api/_polls.js CONTENT 403 wording, byte-identical", () => {
+		const r = moderateContent("I will kill you");
+		expect(isBlockedByServer(r)).toBe(true);
+		expect(submitBlockMessage(r, "poll")).toBe(
+			"This poll violates our safety guidelines and cannot be published.",
+		);
+	});
+
+	it("post and poll PII wording differ exactly as the two routes do", () => {
+		const r = moderateContent("my number is 123-456-7890");
+		expect(submitBlockMessage(r, "post")).not.toBe(
+			submitBlockMessage(r, "poll"),
+		);
+	});
 });
 
 describe("Frontend Moderation - getModerationSummary", () => {
@@ -394,5 +579,159 @@ describe("Frontend Moderation - Scoring", () => {
 		const result = moderateContent("Fuck you bitch");
 		expect(result.score).toBeLessThanOrEqual(100);
 		expect(result.score).toBeGreaterThan(0);
+	});
+});
+
+describe("Frontend Moderation - evasion parity (client gate must match the server 403)", () => {
+	it("blocks full-width evasion like the server NFKC gate", () => {
+		for (const t of [
+			"this canteen food ｓｕｃｋｓ",
+			"this hostel is ｓｈｉｔ",
+			"he called me a ｆａｇｇｏｔ in class",
+		]) {
+			expect(isBlocked(moderateContent(t))).toBe(true);
+		}
+	});
+
+	it("blocks leet evasion with the server substitution map", () => {
+		for (const t of [
+			"this hostel is sh1t",
+			"shut up you b!tch",
+			"this canteen food suck5",
+		]) {
+			expect(isBlocked(moderateContent(t))).toBe(true);
+		}
+	});
+
+	it("does not flag ordinary words containing leet characters", () => {
+		for (const t of [
+			"win7 update broke my laptop",
+			"class 5 homework is on page 10",
+			"room 101 is locked",
+			"I got an a+ in maths",
+		]) {
+			expect(isBlocked(moderateContent(t))).toBe(false);
+		}
+	});
+
+	it("flags zero-width splitter evasion like the server strip", () => {
+		expect(isBlocked(moderateContent("sh\u200bit happens here"))).toBe(true);
+	});
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// normalizePrePubResult — the /api/pre-publish trust boundary
+// ═══════════════════════════════════════════════════════════════════
+// The advisory verdict comes from an LLM pipeline behind a lambda: it can
+// arrive partial, degraded, proxied, or from an older deploy. The submit
+// page renders every field, so ONE missing field used to throw during
+// render and unmount the whole page. The only safe rule is that the page
+// never sees the raw body:
+//   - every field it reads is the right type, and
+//   - nothing is coerced toward reassurance (a check that did not run is
+//     NOT a pass; an unreadable decision is NOT "safe").
+describe("normalizePrePubResult - untrusted verdict shapes", () => {
+	it("round-trips a complete, well-formed verdict", () => {
+		const verdict = normalizePrePubResult({
+			decision: "revision",
+			reason: "Looks like spam",
+			risk_score: 45,
+			review_id: "rev_1",
+			checks: {
+				privacy: { pass: true, issues: [] },
+				safety: { pass: true, issues: [] },
+				spam: { pass: false, issues: ["promotional tone"] },
+				quality: { pass: true, issues: [] },
+			},
+			analysis: {
+				llm_analyzed: true,
+				estimated_resolution_time: "2d",
+			},
+		});
+
+		expect(verdict.decision).toBe("revision");
+		expect(verdict.reason).toBe("Looks like spam");
+		expect(verdict.risk_score).toBe(45);
+		expect(verdict.review_id).toBe("rev_1");
+		expect(verdict.checks?.spam).toEqual({
+			pass: false,
+			issues: ["promotional tone"],
+		});
+		expect(verdict.analysis?.llm_analyzed).toBe(true);
+		expect(verdict.analysis?.estimated_resolution_time).toBe("2d");
+	});
+
+	it("keeps only the checks the server actually reported", () => {
+		const verdict = normalizePrePubResult({
+			decision: "high_risk",
+			reason: "pii",
+			risk_score: 90,
+			checks: { privacy: { pass: false } },
+		});
+
+		// A check that never ran must not be rendered as a green pass…
+		expect(Object.keys(verdict.checks ?? {})).toEqual(["privacy"]);
+		// …and a missing `issues` list is an empty list, not a crash.
+		expect(verdict.checks?.privacy).toEqual({ pass: false, issues: [] });
+	});
+
+	it("never reports a check as passing unless the server said so", () => {
+		const verdict = normalizePrePubResult({
+			checks: {
+				privacy: { issues: ["phone number"] },
+				safety: { pass: "yes", issues: [] },
+			},
+		});
+
+		expect(verdict.checks?.privacy?.pass).toBe(false);
+		expect(verdict.checks?.safety?.pass).toBe(false);
+	});
+
+	it("omits `checks` entirely when the server reported none", () => {
+		const verdict = normalizePrePubResult({ decision: "safe", risk_score: 0 });
+		expect(verdict.checks).toBeUndefined();
+	});
+
+	it("does not invent a decision — an unknown or absent one reads as empty", () => {
+		expect(normalizePrePubResult({ risk_score: 0 }).decision).toBe("");
+		expect(
+			normalizePrePubResult({ decision: "APPROVED", risk_score: 0 }).decision,
+		).toBe("APPROVED");
+	});
+
+	it("clamps an out-of-range or unreadable risk score to a usable number", () => {
+		expect(normalizePrePubResult({ risk_score: 240 }).risk_score).toBe(100);
+		expect(normalizePrePubResult({ risk_score: -30 }).risk_score).toBe(0);
+		expect(normalizePrePubResult({ risk_score: "55" }).risk_score).toBe(55);
+		// NaN must never reach the render: it prints as "NaN/100" and an
+		// invalid CSS width.
+		expect(normalizePrePubResult({ risk_score: "high" }).risk_score).toBe(0);
+		expect(normalizePrePubResult({}).risk_score).toBe(0);
+	});
+
+	it("survives a body that is not an object at all", () => {
+		for (const raw of [null, undefined, "nope", 42, [], true]) {
+			const verdict = normalizePrePubResult(raw);
+			expect(verdict.decision).toBe("");
+			expect(verdict.reason).toBe("");
+			expect(verdict.risk_score).toBe(0);
+			expect(verdict.checks).toBeUndefined();
+			expect(verdict.analysis).toBeUndefined();
+		}
+	});
+
+	it("drops non-string entries from an issues list", () => {
+		const verdict = normalizePrePubResult({
+			checks: { safety: { pass: false, issues: ["ok", 7, null, { a: 1 }] } },
+		});
+		expect(verdict.checks?.safety?.issues).toEqual(["ok"]);
+	});
+
+	it("coerces analysis fields to their types", () => {
+		const verdict = normalizePrePubResult({
+			analysis: { llm_analyzed: "yes", estimated_resolution_time: 5 },
+		});
+		expect(verdict.analysis?.llm_analyzed).toBe(false);
+		expect(verdict.analysis?.estimated_resolution_time).toBeUndefined();
 	});
 });

@@ -22,10 +22,12 @@ const mocks = vi.hoisted(() => ({
 	get: vi.fn(),
 	getFresh: vi.fn(),
 	captureException: vi.fn(),
+	getClient: vi.fn(),
 }));
 
 vi.mock("@sentry/react", () => ({
 	captureException: mocks.captureException,
+	getClient: mocks.getClient,
 }));
 
 vi.mock("../lib/api", () => ({
@@ -161,8 +163,11 @@ describe("ErrorTracking — health", () => {
 		// 'Degraded' appears for the overall platform badge AND the api_latency
 		// check row — scope to the platform-health card
 		const card = screen.getByText("Platform health").closest(".card") as HTMLElement;
+		// The heading renders BEFORE the health fetch resolves (skeletons
+		// first) — wait for a data row, otherwise these sync assertions race
+		// the fetch and flake under CI load.
+		expect(await within(card).findByText(/820ms · v2\.0\.0/)).toBeInTheDocument();
 		expect(within(card).getAllByText("Degraded").length).toBeGreaterThan(0);
-		expect(within(card).getByText(/820ms · v2\.0\.0/)).toBeInTheDocument();
 	});
 
 	it("shows subsystem checks with per-check status badges", async () => {
@@ -170,7 +175,10 @@ describe("ErrorTracking — health", () => {
 		renderPage();
 		expect(await screen.findByText("Subsystem checks")).toBeInTheDocument();
 		const sub = screen.getByText("Subsystem checks").closest(".card") as HTMLElement;
-		expect(within(sub).getByText("database")).toBeInTheDocument();
+		// Heading is visible while the checks are still skeletons — await the
+		// first data row (all rows arrive in one state update, so the rest
+		// can stay sync).
+		expect(await within(sub).findByText("database")).toBeInTheDocument();
 		expect(within(sub).getByText("providers")).toBeInTheDocument();
 		expect(within(sub).getByText("api latency")).toBeInTheDocument();
 		// healthy + ok + degraded badges
@@ -182,12 +190,14 @@ describe("ErrorTracking — health", () => {
 		seed();
 		renderPage();
 		expect(await screen.findByText("Runtime (server instance)")).toBeInTheDocument();
-		expect(screen.getByText("120")).toBeInTheDocument(); // RSS
-		expect(screen.getByText("80")).toBeInTheDocument(); // heap used
-		expect(screen.getByText("3600")).toBeInTheDocument(); // uptime s
 		const runtime = screen
 			.getByText("Runtime (server instance)")
 			.closest(".card") as HTMLElement;
+		// Same race as above: heading first, data rows after the fetch —
+		// await the first row before the sync assertions.
+		expect(await within(runtime).findByText("120")).toBeInTheDocument(); // RSS
+		expect(within(runtime).getByText("80")).toBeInTheDocument(); // heap used
+		expect(within(runtime).getByText("3600")).toBeInTheDocument(); // uptime s
 		expect(within(runtime).getByText("production")).toBeInTheDocument();
 		expect(within(runtime).getByText(/us-east/)).toBeInTheDocument();
 		expect(within(runtime).getByText(/v20\.11\.0/)).toBeInTheDocument();
@@ -213,9 +223,9 @@ describe("ErrorTracking — health", () => {
 		renderPage();
 		await screen.findByText("Platform health");
 
-		fireEvent.click(screen.getByText("View raw health JSON"));
+		fireEvent.click(await screen.findByText("View raw health JSON"));
 		expect(
-			screen.getByText(/"response_time_ms": 820/),
+			await screen.findByText(/"response_time_ms": 820/),
 		).toBeInTheDocument();
 	});
 });
@@ -272,6 +282,9 @@ describe("ErrorTracking — error events + Sentry", () => {
 
 	it("sends a test error to Sentry on the button click", async () => {
 		seed();
+		mocks.getClient.mockReturnValue({
+			getOptions: () => ({ dsn: "https://x@sentry.io/1" }),
+		});
 		renderPage();
 		await screen.findByText("Platform health");
 
@@ -285,6 +298,24 @@ describe("ErrorTracking — error events + Sentry", () => {
 			"Test error sent to Sentry ✓",
 			"ok",
 		);
+	});
+
+	it("refuses to claim a send when Sentry has no DSN", async () => {
+		seed();
+		mocks.getClient.mockReturnValue({
+			getOptions: () => ({ dsn: undefined }),
+		});
+		renderPage();
+		await screen.findByText("Platform health");
+
+		fireEvent.click(screen.getByRole("button", { name: /Send test error/ }));
+		await waitFor(() => {
+			expect(mocks.toast).toHaveBeenCalledWith(
+				"Sentry DSN is not configured — nothing was sent.",
+				"err",
+			);
+		});
+		expect(mocks.captureException).not.toHaveBeenCalled();
 	});
 
 	it("shows 'never' for the last test error before any send", async () => {
@@ -301,7 +332,7 @@ describe("ErrorTracking — error events + Sentry", () => {
 
 		fireEvent.click(screen.getByRole("button", { name: /Refresh all/ }));
 		await waitFor(() => {
-			expect(mocks.get).toHaveBeenCalledTimes(2); // initial + refresh
+			expect(mocks.get).toHaveBeenCalledTimes(4); // initial(3) + refresh frontend-errors
 		});
 		expect(mocks.getFresh).toHaveBeenCalledTimes(2);
 		expect(global.fetch).toHaveBeenCalledTimes(2);

@@ -1,17 +1,13 @@
-import * as Sentry from "@sentry/react";
 import {
 	Activity,
 	AlertTriangle,
-	Bug,
 	Check,
 	Clock,
-	RefreshCw,
 	XCircle,
 } from "lucide-react";
-import { useState } from "react";
 import FadeIn from "../components/FadeIn";
 
-const SERVICES = [
+const STATIC_SERVICES = [
 	{ name: "Web Application", status: "operational", uptime: 99.98 },
 	{ name: "API Gateway", status: "operational", uptime: 99.97 },
 	{ name: "AI Processing", status: "operational", uptime: 99.95 },
@@ -20,7 +16,7 @@ const SERVICES = [
 	{ name: "Email Notifications", status: "operational", uptime: 99.94 },
 ];
 
-const INCIDENTS = [
+const STATIC_INCIDENTS = [
 	{
 		date: "2026-01-15",
 		title: "Scheduled Maintenance",
@@ -72,18 +68,7 @@ function StatusBadge({ status }: { status: string }) {
 }
 
 export default function StatusPage() {
-	const [lastChecked, setLastChecked] = useState(new Date());
-	const [checking, setChecking] = useState(false);
-
-	const refresh = () => {
-		setChecking(true);
-		setTimeout(() => {
-			setLastChecked(new Date());
-			setChecking(false);
-		}, 1000);
-	};
-
-	const allOperational = SERVICES.every((s) => s.status === "operational");
+	const allOperational = STATIC_SERVICES.every((s) => s.status === "operational");
 
 	return (
 		<div className="min-h-screen bg-bg">
@@ -94,18 +79,16 @@ export default function StatusPage() {
 						<h1 className="text-4xl md:text-5xl font-bold text-ink mb-4">
 							System Status
 						</h1>
-						<div className="flex items-center justify-center gap-2 text-ink2 text-sm">
-							<span>Last checked: {lastChecked.toLocaleTimeString()}</span>
-							<button
-								onClick={refresh}
-								disabled={checking}
-								className="p-1 hover:bg-surface rounded transition-colors"
-							>
-								<RefreshCw
-									className={`w-3.5 h-3.5 ${checking ? "animate-spin" : ""}`}
-								/>
-							</button>
-						</div>
+						<div className="mx-auto max-w-2xl space-y-2 text-ink2 text-sm">
+						<p className="font-medium text-ink">
+							Static snapshot — not a live health check.
+						</p>
+						<p>
+							This page shows illustrative service history and incidents from
+							the status-page dataset; it does not fetch current production
+							availability.
+						</p>
+					</div>
 					</FadeIn>
 				</div>
 			</section>
@@ -124,14 +107,14 @@ export default function StatusPage() {
 							)}
 							<h2 className="text-xl font-bold text-ink">
 								{allOperational
-									? "All Systems Operational"
-									: "Some Systems Experiencing Issues"}
+									? "Snapshot: No Recorded Outages"
+									: "Snapshot: Recorded Issues"}
 							</h2>
 						</div>
 						<p className="text-sm text-ink2">
 							{allOperational
-								? "All services are running normally."
-								: "We are investigating affected services."}
+								? "The snapshot contains no recorded service outages. Verify current availability through the operator health dashboard."
+								: "The snapshot contains recorded service issues. Verify current availability through the operator health dashboard."}
 						</p>
 					</div>
 				</FadeIn>
@@ -144,7 +127,7 @@ export default function StatusPage() {
 				</FadeIn>
 				<FadeIn>
 					<div className="card divide-y divide-border/50">
-						{SERVICES.map((s) => (
+						{STATIC_SERVICES.map((s) => (
 							<div
 								key={s.name}
 								className="flex items-center justify-between px-6 py-4"
@@ -169,7 +152,7 @@ export default function StatusPage() {
 			<section className="max-w-4xl mx-auto px-6 pb-16">
 				<FadeIn className="mb-6">
 					<h2 className="text-lg font-bold text-ink">
-						Uptime History (90 days)
+						Illustrative Uptime History (90 days)
 					</h2>
 				</FadeIn>
 				<FadeIn>
@@ -194,11 +177,11 @@ export default function StatusPage() {
 			{/* Incidents */}
 			<section className="max-w-4xl mx-auto px-6 pb-10">
 				<FadeIn className="mb-6">
-					<h2 className="text-lg font-bold text-ink">Past Incidents</h2>
+					<h2 className="text-lg font-bold text-ink">Illustrative Past Incidents</h2>
 				</FadeIn>
 				<FadeIn>
 					<div className="space-y-4">
-						{INCIDENTS.map((inc) => (
+						{STATIC_INCIDENTS.map((inc) => (
 							<div key={inc.title} className="card p-6">
 								<div className="flex items-start justify-between mb-2">
 									<div>
@@ -216,45 +199,7 @@ export default function StatusPage() {
 				</FadeIn>
 			</section>
 
-			{/* Sentry Test */}
-			<section className="max-w-4xl mx-auto px-6 pb-16">
-				<FadeIn className="mb-6">
-					<h2 className="text-lg font-bold text-ink flex items-center gap-2">
-						<Bug size={18} /> Sentry Error Tracking
-					</h2>
-				</FadeIn>
-				<FadeIn>
-					<div className="card p-6">
-						<p className="text-sm text-ink2 mb-4">
-							Sentry is configured and capturing production errors. Click the
-							button below to send a test error and verify it appears in your
-							Sentry dashboard.
-						</p>
-						<button
-							onClick={() => {
-								Sentry.captureException(
-									new Error("This is a test error from Voice Box status page!"),
-								);
-							}}
-							className="btn btn-danger flex items-center gap-2"
-						>
-							<Bug size={14} /> Break the world — send test error to Sentry
-						</button>
-						<p className="text-xs text-ink3 mt-3">
-							Check your Sentry dashboard at{" "}
-							<a
-								href="https://sentry.io"
-								target="_blank"
-								rel="noopener noreferrer"
-								className="text-accent hover:underline"
-							>
-								sentry.io
-							</a>
-							.
-						</p>
-					</div>
-				</FadeIn>
-			</section>
+
 		</div>
 	);
 }

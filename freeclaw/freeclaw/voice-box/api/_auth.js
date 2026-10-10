@@ -1,5 +1,8 @@
-// Shared helpers for Voice Box API routes (underscore prefix = not exposed as a route)
+// Shared helpers for Voice Flow API routes (underscore prefix = not exposed as a route)
+import { createHash, randomBytes, randomInt, timingSafeEqual } from "node:crypto";
 import supabase from "./_db-client.js";
+import { recordPendingDelivery } from "./_notification-delivery.js";
+import { PROFANITY, SLANG } from "./_wordlists.js";
 
 // ─── isAdmin() cache: avoid DB query on every request ─────────────
 const _adminTokenCache = new Map(); // token → { valid: boolean, expiresAt: number }
@@ -10,11 +13,17 @@ const ADMIN_CACHE_MAX_ENTRIES = 1000;
 
 function cacheAdminToken(token, valid, now) {
 	if (_adminTokenCache.size >= ADMIN_CACHE_MAX_ENTRIES) {
+		// Drop expired entries first to reclaim space.
 		for (const [k, v] of _adminTokenCache) {
-			// Drop expired first; if none expired, evict oldest insertion.
 			if (v.expiresAt <= now) _adminTokenCache.delete(k);
-			else if (_adminTokenCache.size >= ADMIN_CACHE_MAX_ENTRIES)
-				break;
+		}
+		// If still full (no expired entries), evict oldest insertions
+		// until there is room. Map preserves insertion order, so the
+		// first key is always the oldest.
+		while (_adminTokenCache.size >= ADMIN_CACHE_MAX_ENTRIES) {
+			const oldest = _adminTokenCache.keys().next();
+			if (oldest.done) break;
+			_adminTokenCache.delete(oldest.value);
 		}
 	}
 	_adminTokenCache.set(token, { valid, expiresAt: now + ADMIN_CACHE_TTL_MS });
@@ -30,27 +39,51 @@ export function invalidateAdminTokenCache() {
 const _rateLimitState = new Map();
 
 // Allowed origins for CORS — production domain + Vercel preview + localhost dev
+// plus native shells: Electron loads over file:// (Origin "null"/absent),
+// legacy Capacitor schemes (capacitor://localhost / ionic://localhost), and
+// modern Capacitor (v7 default: androidScheme=https, hostname=localhost, so
+// the APK fetches with Origin: https://localhost — verified in
+// node_modules/@capacitor/android CapConfig.java). Without these the
+// desktop/mobile apps boot but every API call dies as "Failed to fetch".
 const ALLOWED_ORIGINS = [
+	"https://voice-box.vercel.app",
 	"https://voice-box-psi.vercel.app",
 	"https://voice-box-ballyvisiontutorial-hues-projects.vercel.app",
 	"http://localhost:5173",
 	"http://localhost:4173",
 	"http://localhost:3000",
+	"https://localhost",
+	"http://localhost",
+	"capacitor://localhost",
+	"ionic://localhost",
 ];
+
+// Origins that carry no meaningful host but are the app itself (Electron
+// file:// sends `Origin: null` or no Origin at all). Echoed back so the
+// browser/Electron CORS check passes with credentials.
+function isNativeOrigin(origin) {
+	if (!origin) return true; // no Origin header: curl, Electron file:// GET, same-origin
+	if (origin === "null") return true; // Electron file:// fetch
+	if (origin === "file://") return true;
+	return false;
+}
 
 export function cors(res, req) {
 	const origin = req?.headers?.origin || "";
-	const allowed = ALLOWED_ORIGINS.includes(origin)
-		? origin
-		: ALLOWED_ORIGINS[0];
-	res.setHeader("Access-Control-Allow-Origin", allowed);
+	if (origin && (ALLOWED_ORIGINS.includes(origin) || isNativeOrigin(origin))) {
+		res.setHeader("Access-Control-Allow-Origin", origin === "null" ? "null" : origin || "null");
+	} else if (!origin) {
+		// file:// / curl with no Origin: answer with null so credentialed
+		// cross-origin fetches from the desktop shell still pass the check.
+		res.setHeader("Access-Control-Allow-Origin", "null");
+	}
 	res.setHeader(
 		"Access-Control-Allow-Methods",
 		"GET, POST, PUT, DELETE, OPTIONS",
 	);
 	res.setHeader(
 		"Access-Control-Allow-Headers",
-		"Content-Type, Authorization, X-Admin-Token",
+		"Content-Type, Authorization, X-Admin-Token, x-anon-id, x-request-id, x-vercel-cron-secret, x-cron-secret",
 	);
 	res.setHeader("Access-Control-Allow-Credentials", "true");
 	res.setHeader("Vary", "Origin");
@@ -84,6 +117,45 @@ export async function isAdmin(req) {
 	cacheAdminToken(token, valid, now);
 	return valid;
 }
+
+/**
+ * Authorize a SCHEDULED/CRON invocation.
+ *
+ * Shared so every cron route enforces the SAME rule instead of some
+ * copying it and some (incident-cron) forgetting entirely. Accepts, in
+ * order: a constant-time-verified `CRON_SECRET` (Vercel sends it as
+ * `Authorization: Bearer <CRON_SECRET>`; x-vercel-cron-secret and
+ * x-cron-secret are also accepted for other schedulers), then a real
+ * admin session.
+ *
+ * Header PRESENCE is never authentication — the value is compared
+ * constant-time against the server-side secret.
+ */
+export async function isCronAuthorized(req) {
+	let authorized = false;
+	const authHeader = String(req?.headers?.["authorization"] || "");
+	const bearerToken = authHeader.startsWith("Bearer ")
+		? authHeader.slice(7)
+		: null;
+	const presented =
+		req?.headers?.["x-vercel-cron-secret"] ||
+		req?.headers?.["x-cron-secret"] ||
+		bearerToken;
+	const expected = process.env.CRON_SECRET;
+	if (presented && expected) {
+		const a = Buffer.from(String(presented));
+		const b = Buffer.from(String(expected));
+		authorized = a.length === b.length && timingSafeEqual(a, b);
+	}
+	if (!authorized) authorized = await isAdmin(req);
+	return authorized;
+}
+
+/** Standard 401 body for a cron route that failed {@link isCronAuthorized}. */
+export const CRON_UNAUTHORIZED_BODY = {
+	error:
+		"Unauthorized - requires valid Authorization: Bearer CRON_SECRET, x-vercel-cron-secret, or x-admin-token",
+};
 
 /** Check whether an anonymous user is allowed to write (not banned / suspended) */
 export async function checkUser(authorId) {
@@ -136,25 +208,28 @@ export async function ensureUser(authorId) {
 /** Push an in-app notification to a user (same store the _notifications.js API reads).
  *  Used by the report auto-strike path, admin user actions, and pre-publish review
  *  so warnings/ban/strike popups reach the user immediately, not on the next
- *  heartbeat. Single canonical copy — do not re-implement per-file. */
+ *  heartbeat. Single canonical copy — do not re-implement per-file.
+ *  Returns true on success, false when the notification could not be stored. */
+export let notifyFailedCount = 0;
 export async function notifyUser(anonId, type, title, body) {
-	if (!anonId || anonId === "anonymous" || anonId === "ADMIN") return;
-	try {
-		const key = `notifications:${anonId}`;
+	if (!anonId || anonId === "anonymous" || anonId === "ADMIN") return true;
+	const key = `notifications:${anonId}`;
+	const entry = {
+		id: `notif_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
+		type,
+		title,
+		body,
+		read: false,
+		created_at: new Date().toISOString(),
+	};
+	async function storeOnce() {
 		const { data } = await supabase
 			.from("settings")
 			.select("value")
 			.eq("key", key)
 			.maybeSingle();
 		const notifications = data?.value?.notifications || [];
-		notifications.unshift({
-			id: `notif_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
-			type,
-			title,
-			body,
-			read: false,
-			created_at: new Date().toISOString(),
-		});
+		notifications.unshift(entry);
 		await supabase
 			.from("settings")
 			.upsert(
@@ -167,19 +242,85 @@ export async function notifyUser(anonId, type, title, body) {
 				},
 				{ onConflict: "key" },
 			);
+	}
+	// Read-back proof: two surfaces acting at once (web + app, same id)
+	// can interleave read→append→upsert so one append silently loses.
+	// Re-read and confirm our entry id landed; a miss means we were
+	// overwritten mid-flight — retry the full flow exactly once.
+	async function stored() {
+		try {
+			const { data } = await supabase
+				.from("settings")
+				.select("value")
+				.eq("key", key)
+				.maybeSingle();
+			const notifications = data?.value?.notifications || [];
+			return notifications.some((n) => n && n.id === entry.id);
+		} catch {
+			return false;
+		}
+	}
+	try {
+		await storeOnce();
+		if (await stored()) return true;
+		notifyFailedCount += 1;
+		console.error("[auth] notifyUser lost update, retrying", { anonId, type });
+		await storeOnce();
+		if (await stored()) return true;
+		// Lost twice in a row: still not dropped — hand to the retry
+		// ledger like any other failed delivery.
+		notifyFailedCount += 1;
+		await recordPendingDelivery(anonId, entry, "notifyUser_lost_update").catch(
+			() => {},
+		);
+		return false;
 	} catch (e) {
-		console.error("notifyUser error:", e.message);
+		notifyFailedCount += 1;
+		console.error("[auth] notifyUser failed", { anonId, type, error: e?.message || String(e) });
+		// One immediate retry of the FULL read+append flow for transient blips.
+		// Never blind-overwrite with a single-item array — that would drop history.
+		try {
+			await storeOnce();
+			return true;
+		} catch (e2) {
+			console.error("[auth] notifyUser retry failed", { anonId, type, error: e2?.message || String(e2) });
+			// Both immediate attempts failed. Hand the delivery to the bounded,
+			// independently-verified retry ledger instead of dropping it. Best
+			// effort: if the DB is fully down this write fails too, which is
+			// honest — nothing is recorded that did not actually happen.
+			await recordPendingDelivery(anonId, entry, "notifyUser_write_failed").catch(
+				() => {},
+			);
+			return false;
+		}
 	}
 }
 
-/** Append to the audit / activity log */
+/** Append to the audit / activity log. Returns true on success. */
+export let auditFailedCount = 0;
 export async function auditLog(actor, action, detail) {
 	try {
-		await supabase
+		// PostgREST reports a rejected insert through the returned `{ error }`
+		// — it never throws. Ignoring it meant this function returned `true`
+		// for rows that never landed, so callers believed the audit succeeded
+		// and `auditFailedCount` could never move.
+		const { error } = await supabase
 			.from("activity_logs")
 			.insert({ actor, action, detail: String(detail || "").slice(0, 500) });
-	} catch {
-		/* non-fatal */
+		if (error) {
+			auditFailedCount += 1;
+			console.error("[auth] auditLog failed", {
+				actor,
+				action,
+				error: error.message || String(error),
+			});
+			return false;
+		}
+		return true;
+	} catch (err) {
+		auditFailedCount += 1;
+		console.error("[auth] auditLog failed", { actor, action, error: err?.message || String(err) });
+		return false;
 	}
 }
 
@@ -192,51 +333,8 @@ export function clean(str, max = 2000) {
 		.slice(0, max);
 }
 
-const PROFANITY = [
-	"fuck",
-	"fucking",
-	"fucked",
-	"fucker",
-	"fucks",
-	"motherfucker",
-	"shit",
-	"shitting",
-	"shitty",
-	"bullshit",
-	"dipshit",
-	"bitch",
-	"bitches",
-	"bitchy",
-	"asshole",
-	"assholes",
-	"arsehole",
-	"bastard",
-	"bastards",
-	"cunt",
-	"cunts",
-	"twat",
-	"dick",
-	"dicks",
-	"dickhead",
-	"dickheads",
-	"slut",
-	"sluts",
-	"whore",
-	"whores",
-	"cock",
-	"cocks",
-	"prick",
-	"pussy",
-	"pussies",
-	"wanker",
-	"wankers",
-	"tosser",
-	"tossers",
-	"retard",
-	"retarded",
-	"retards",
-	"bollocks",
-];
+// Re-exported so existing importers keep working; canonical home is _wordlists.js.
+export { PROFANITY, SLANG };
 
 const SLURS = [
 	"nigger",
@@ -355,6 +453,54 @@ export function moderateContent(text) {
 		}
 	}
 
+	// Slang/insult abuse — still masked by maskProfanity wherever masking
+	// applies (private surfaces, legacy rows, LLM redaction). Public
+	// write surfaces block it outright via serverModerate instead.
+	for (const w of SLANG) {
+		const regex = new RegExp(`\\b${w}\\b`, "gi");
+		if (regex.test(masked)) {
+			flags.push({ category: "slang", word: w, severity: "medium" });
+			masked = masked.replace(regex, (m) => m[0] + "*".repeat(m.length - 1));
+		}
+	}
+
+	// Leet/obfuscation evasion (sh1t, b!tch, a$$, 5lut…) — normalize each token's
+	// common substitutions, then re-test the profanity + slur lists token by
+	// token. A hit means deliberate evasion, so it masks at the same severity
+	// as the base word — and only the offending token is masked.
+	const leetNorm = (tok) =>
+		tok
+			.toLowerCase()
+			.replace(/1/g, "i")
+			.replace(/3/g, "e")
+			.replace(/4/g, "a")
+			.replace(/5/g, "s")
+			.replace(/0/g, "o")
+			.replace(/\$/g, "s")
+			.replace(/@/g, "a")
+			.replace(/!/g, "i")
+			.replace(/\+/g, "t")
+			.replace(/7/g, "t");
+	const profSet = new Set(PROFANITY.map((w) => w.toLowerCase()));
+	const slurSet = new Set(SLURS.map((w) => w.toLowerCase()));
+	masked = masked
+		.split(/(\s+)/)
+		.map((tok) => {
+			if (/^\s+$/.test(tok)) return tok;
+			const norm = leetNorm(tok.replace(/^[^a-z0-9$@!+]+|[^a-z0-9$@!+]+$/gi, ""));
+			if (!norm || norm === tok.toLowerCase()) return tok;
+			if (slurSet.has(norm)) {
+				flags.push({ category: "hate_speech", word: `${norm} (obfuscated)`, severity: "critical" });
+				return tok[0] + "*".repeat(Math.max(tok.length - 1, 1));
+			}
+			if (profSet.has(norm)) {
+				flags.push({ category: "profanity", word: `${norm} (obfuscated)`, severity: "high" });
+				return tok[0] + "*".repeat(Math.max(tok.length - 1, 1));
+			}
+			return tok;
+		})
+		.join("");
+
 	// Dangerous content (self-harm, violence, threats, weapons, drugs, blackmail, doxxing)
 	for (const { pattern, severity } of DANGEROUS) {
 		if (pattern.test(masked)) {
@@ -433,4 +579,451 @@ export async function rateLimited(table, authorId, seconds, limit) {
 		}
 	}
 	return currentCount >= limit;
+}
+
+// ─── Session-based caller verification ──────────────────────────
+// AUDIT FIX #1: DB-backed HttpOnly cookie session.
+//
+// The x-anon-id header is the claimed-id SOURCE, never proof of
+// possession — anyone can read someone's id off a shared screen. Proof
+// is the vb_session cookie: a 32-byte random token whose sha256 hash is
+// stored server-side (settings KV `session:<id>`), so the token itself
+// never touches the database.
+//
+// Returns { ok: true, callerId } or { ok: false, status, error }.
+const SESSION_COOKIE = "vb_session";
+// Anonymous sessions NEVER expire server-side (continuity demand
+// 2026-10-10: an "ID expired" death orphans every vote, comment and
+// reaction the student made, and version updates correlate with long
+// absences, so expiry always struck on return). Theft protection rests
+// SOLELY on proof-of-possession: the 32-byte cookie token. A record row
+// (live, ancient, any age) with no presented cookie is denied and left
+// untouched — knowing the disclosed id alone never mints, rotates, or
+// revives anything.
+// Cookie Max-Age is 400 days (the most browsers honor); every valid
+// presentation re-issues it, so an active device's cookie never lapses.
+const SESSION_COOKIE_MAX_AGE_S = 400 * 24 * 60 * 60;
+// Ownership is proven EXCLUSIVELY by presenting the session token the server
+// minted for that id — never by the id alone, which is disclosed by design
+// (mentions, URLs). Consequences, all deliberate:
+//   - A brand-new id (NO record row — session rows are never deleted, so this
+//     means first contact) mints transparently: onboarding requires it, and
+//     there is nothing to steal on an id the server has never seen (ids carry
+//     ~72 bits of entropy; a victim's future id is unpredictable).
+//   - An id WITH a record row — any age, records never expire — is NEVER
+//     re-minted on claim. Minting over it would hand the identity to anyone
+//     who can read the id AND lock the real owner out (their valid cookie
+//     would then mismatch). A device that lost its cookie recovers through
+//     the user's own link code (Settings → link this device), never through
+//     re-minting: old content stays published under the same id.
+//   - The only rotation path is presenting a PREVIOUSLY valid token
+//     (record.th_prev, single slot): the losing side of a concurrent
+//     first-visit mint. A random wrong cookie matches nothing and is denied.
+
+function sha256Hex(value) {
+	return createHash("sha256").update(value).digest("hex");
+}
+
+/** Timing-safe comparison of two hex/ascii digests of equal length. */
+function safeStringEqual(a, b) {
+	const bufA = Buffer.from(String(a));
+	const bufB = Buffer.from(String(b));
+	if (bufA.length !== bufB.length || bufA.length === 0) return false;
+	return timingSafeEqual(bufA, bufB);
+}
+
+function readSessionCookie(cookieHeader) {
+	if (!cookieHeader || typeof cookieHeader !== "string") return null;
+	for (const part of cookieHeader.split(";")) {
+		const eq = part.indexOf("=");
+		if (eq === -1) continue;
+		if (part.slice(0, eq).trim() !== SESSION_COOKIE) continue;
+		const raw = part.slice(eq + 1).trim();
+		try {
+			return decodeURIComponent(raw);
+		} catch {
+			return raw;
+		}
+	}
+	return null;
+}
+
+/** Set the session cookie. Secure only when the request arrived over HTTPS.
+ * Cross-site shells (Electron file:// with Origin null/absent, Capacitor in
+ * any scheme) need SameSite=None + Secure or the browser never sends the
+ * cookie back and every authed call 403s as session_unrecoverable after a
+ * working mint. Exported for the desktop-cors regression tests. */
+export function setSessionCookie(res, token, req) {
+	const maxAge = SESSION_COOKIE_MAX_AGE_S;
+	const proto = String(req?.headers?.["x-forwarded-proto"] || "").toLowerCase();
+	const origin = String(req?.headers?.origin || "");
+	const crossSite =
+		!origin ||
+		origin === "null" ||
+		origin === "file://" ||
+		origin === "https://localhost" ||
+		origin === "http://localhost" ||
+		origin.startsWith("capacitor://") ||
+		origin.startsWith("ionic://");
+	// SameSite=None requires Secure, and Secure cookies are rejected over
+	// plain http — so None is only used when the request actually arrived
+	// over https (Vercel prod). Localhost http keeps Lax (dev only).
+	const useNone = crossSite && proto === "https";
+	const attrs = [
+		`${SESSION_COOKIE}=${token}`,
+		"HttpOnly",
+		"Path=/",
+		useNone ? "SameSite=None" : "SameSite=Lax",
+		`Max-Age=${maxAge}`,
+	];
+	if (proto === "https") attrs.push("Secure");
+	res.setHeader("Set-Cookie", attrs.join("; "));
+}
+
+function sessionKey(id) {
+	return `session:${id}`;
+}
+
+async function loadSessionRecord(id) {
+	const { data, error } = await supabase
+		.from("settings")
+		.select("value")
+		.eq("key", sessionKey(id))
+		.maybeSingle();
+	if (error) throw new Error(error.message || "session lookup failed");
+	return data?.value || null;
+}
+
+async function saveSessionRecord(id, record) {
+	const { error } = await supabase
+		.from("settings")
+		.upsert({ key: sessionKey(id), value: record }, { onConflict: "key" });
+	if (error) throw new Error(error.message || "session write failed");
+}
+
+/** Mint a fresh token, persist its hash, hand the cookie to the client. */
+async function mintSession(res, req, id, now, prevRecord) {
+	const token = randomBytes(32).toString("hex");
+	// Preserve the prior hash (single slot) so the losing side of a
+	// concurrent first-visit double-mint can still prove itself via th_prev.
+	// created_at is inherited, never extended: the boot-race carve-out below
+	// keys off FIRST creation, so concurrent mints cannot stretch the window.
+	const prev = prevRecord && typeof prevRecord === "object" ? prevRecord : null;
+	await saveSessionRecord(id, {
+		th: sha256Hex(token),
+		...(prev?.th ? { th_prev: prev.th } : {}),
+		created_at: prev?.created_at || new Date(now).toISOString(),
+	});
+	setSessionCookie(res, token, req);
+	return token;
+}
+
+export async function verifyCallerIdentity(req, res, claimedUserId, opts = {}) {
+	// Admins bypass caller verification — they act on behalf of the system
+	if (await isAdmin(req)) return { ok: true, callerId: claimedUserId };
+
+	const headerId = (req.headers["x-anon-id"] || "").toString().trim().toLowerCase();
+	const id = String(claimedUserId || "").trim().toLowerCase();
+
+	// Header missing or malformed → cannot even identify the caller → deny
+	if (!headerId || !validAnonId(headerId))
+		return { ok: false, status: 403, error: "Invalid session identity", code: "invalid_identity" };
+
+	// Header must match the claimed user_id (cheap pre-check; the cookie
+	// below is what actually proves possession of this identity)
+	if (headerId !== id)
+		return { ok: false, status: 403, error: "Cannot operate on another user's data", code: "invalid_identity" };
+
+	const now = Date.now();
+	const cookieToken = readSessionCookie(req.headers?.cookie);
+
+	let record;
+	try {
+		record = await loadSessionRecord(id);
+	} catch (err) {
+		console.error("[auth] session lookup failed:", err?.message || err);
+		return { ok: false, status: 503, error: "Session service unavailable" };
+	}
+
+	// No record row at all: first contact for this id. Mint transparently —
+	// onboarding requires it, and there is no prior session or data to steal
+	// (ids are client-generated ~72-bit randoms; a victim's future id is
+	// unpredictable). The mint re-reads first so a concurrent double-mint
+	// preserves the loser's hash as th_prev instead of silently orphaning it.
+	if (!record) {
+		try {
+			let prev = null;
+			try {
+				prev = await loadSessionRecord(id);
+			} catch {
+				prev = null;
+			}
+			const token = await mintSession(res, req, id, now, prev);
+			return { ok: true, callerId: id, sessionToken: token };
+		} catch (err) {
+			console.error("[auth] session mint failed:", err?.message || err);
+			return { ok: false, status: 503, error: "Session service unavailable" };
+		}
+	}
+
+	// A record EXISTS but no cookie was presented. The caller knows the
+	// (disclosed) id without holding the session token, so this is denied —
+	// minting or overwriting here would hand the identity to any reader of
+	// the id and lock the real owner out (their valid cookie would then
+	// mismatch). Records never expire, so age plays no part in this verdict.
+	// Exception: a record minted seconds ago whose Set-Cookie is still in
+	// flight — parallel first-load requests (heartbeat + notifications fired
+	// together) otherwise 403 spuriously before the browser stores the
+	// cookie. The window is 20s from FIRST mint (created_at is inherited,
+	// never extended), so established records never qualify and stolen-ID
+	// denial stays intact.
+	if (!cookieToken) {
+		const bornAt = Date.parse(record?.created_at || "") || 0;
+		if (bornAt > 0 && now - bornAt <= 20_000)
+			return { ok: true, callerId: id };
+		return {
+			ok: false,
+			status: 403,
+			error: "Invalid session identity",
+			code: "session_unrecoverable",
+		};
+	}
+
+	const presentedHash = sha256Hex(cookieToken);
+	if (record?.th && safeStringEqual(presentedHash, record.th)) {
+		// Valid session. Re-issue the cookie on every presentation so its
+		// 400-day Max-Age slides forward while the device is active — an
+		// idle return months later still holds a live cookie. No DB write:
+		// there is no expiry left to extend.
+		setSessionCookie(res, cookieToken, req);
+		return { ok: true, callerId: id, sessionToken: cookieToken };
+	}
+
+	// Multi-surface sessions: one anonymous id legitimately lives on
+	// several devices at once (web + app open together, same id, acting
+	// concurrently). Each surface holds its OWN token; all are listed in
+	// record.tokens and every listed token proves possession equally.
+	// Listed only by pairing (identity-link redeem), never by claim —
+	// presenting an unknown token still falls through to denial below.
+	if (Array.isArray(record?.tokens)) {
+		const hit = record.tokens.some(
+			(t) =>
+				t &&
+				typeof t.h === "string" &&
+				t.h.length === presentedHash.length &&
+				safeStringEqual(presentedHash, t.h),
+		);
+		if (hit) {
+			setSessionCookie(res, cookieToken, req);
+			return { ok: true, callerId: id, sessionToken: cookieToken };
+		}
+	}
+
+	// Previous-token recovery — the ONLY rotation path. A presenter holding a
+	// token the server itself minted earlier for this id (the losing side of
+	// a concurrent first-visit double-mint) is re-issued a fresh token, and
+	// th_prev advances so a replayed older token can never rotate twice. A
+	// random wrong cookie matches neither hash and is denied: unlike the old
+	// 60s grace window, mere knowledge of the id buys nothing here.
+	if (record?.th_prev && safeStringEqual(presentedHash, record.th_prev)) {
+		try {
+			const token = randomBytes(32).toString("hex");
+			await saveSessionRecord(id, {
+				...record,
+				th: sha256Hex(token),
+				th_prev: record.th,
+			});
+			setSessionCookie(res, token, req);
+			return { ok: true, callerId: id, sessionToken: token };
+		} catch (err) {
+			console.error("[auth] session rotate failed:", err?.message || err);
+			return { ok: false, status: 503, error: "Session service unavailable" };
+		}
+	}
+
+	return { ok: false, status: 403, error: "Invalid session identity", code: "session_unrecoverable" };
+}
+
+// ─── Cross-surface pairing (one id, many devices) ───────────────
+// A second surface (app next to web, new phone) holds the same anonymous
+// id but no session cookie — and minting on claim would hand the identity
+// to anyone who reads the id. So the surface that PROVES possession mints
+// a short single-purpose claim ticket; the new surface redeems it for its
+// OWN session token, appended to the id's token list. Nobody is rotated,
+// nobody is locked out, concurrent action just works.
+
+/** Claim tickets live 5 minutes and burn on first use. */
+export const CLAIM_TTL_MS = 5 * 60 * 1000;
+/** Max live session tokens per id (surfaces). Oldest drops past the cap. */
+export const MAX_SESSION_TOKENS = 8;
+/** Redeem attempts per code before it burns (brute-force throttle). */
+const CLAIM_MAX_ATTEMPTS = 10;
+
+function claimKey(code) {
+	return `claimticket:${code}`;
+}
+
+/**
+ * Mint a 6-digit pairing code for an id whose session the caller just
+ * proved (call verifyCallerIdentity first). `presenterToken` is the raw
+ * token verify returned — the presented cookie or the one it just minted
+ * (a brand-new surface issues its very first code in the same request).
+ * Returns { ok, code, expires_in } or { ok:false, status, error }.
+ */
+export async function createClaimTicket(anonId, presenterToken) {
+	const id = String(anonId || "").trim().toLowerCase();
+	if (!validAnonId(id)) return { ok: false, status: 403, error: "Invalid session identity" };
+	const presenter = String(presenterToken || "");
+	if (!presenter) return { ok: false, status: 403, error: "Invalid session identity" };
+	for (let i = 0; i < 5; i++) {
+		const code = String(randomInt(0, 1000000)).padStart(6, "0");
+		try {
+			const { data } = await supabase
+				.from("settings")
+				.select("value")
+				.eq("key", claimKey(code))
+				.maybeSingle();
+			if (data) continue; // collision — vanishingly rare, retry
+			const { error } = await supabase.from("settings").upsert(
+				{
+					key: claimKey(code),
+					value: {
+						anon_id: id,
+						issuer_th: sha256Hex(presenter),
+						created_at: new Date().toISOString(),
+						attempts: 0,
+					},
+				},
+				{ onConflict: "key" },
+			);
+			if (error) throw new Error(error.message || "claim store failed");
+			return { ok: true, code, expires_in: Math.floor(CLAIM_TTL_MS / 1000) };
+		} catch (err) {
+			console.error("[auth] claim issue failed:", err?.message || err);
+			return { ok: false, status: 503, error: "Claim service unavailable" };
+		}
+	}
+	return { ok: false, status: 503, error: "Claim service unavailable" };
+}
+
+/** Append a session token hash to an id's token list (capped). */
+async function appendSessionToken(id, tokenHash) {
+	const record = await loadSessionRecord(id);
+	const tokens = Array.isArray(record?.tokens) ? [...record.tokens] : [];
+	if (!tokens.some((t) => t && t.h === tokenHash)) {
+		tokens.push({ h: tokenHash, created_at: new Date().toISOString() });
+		while (tokens.length > MAX_SESSION_TOKENS) tokens.shift();
+	}
+	await saveSessionRecord(id, { ...(record || {}), tokens });
+}
+
+/**
+ * Redeem a pairing code from a NEW surface (no session needed — the code
+ * IS the authorization, shown only on the proven device). On success the
+ * caller adopts `anon_id` AND receives a live session cookie for it, so
+ * both surfaces act concurrently from the first tap. The ticket burns.
+ * Returns { ok, anon_id } or { ok:false, error }.
+ */
+export async function redeemClaimTicket(rawCode, res, req) {
+	const code = String(rawCode || "").replace(/\D/g, "").slice(0, 6);
+	if (code.length !== 6) return { ok: false, error: "Invalid pairing code" };
+	let row = null;
+	try {
+		const { data, error } = await supabase
+			.from("settings")
+			.select("value")
+			.eq("key", claimKey(code))
+			.maybeSingle();
+		if (!error) row = data?.value || null;
+	} catch {
+		return { ok: false, error: "Claim service unavailable" };
+	}
+	if (!row || typeof row !== "object") return { ok: false, error: "Invalid pairing code" };
+	const age = Date.now() - (Date.parse(row.created_at || "") || 0);
+	const burn = async () => {
+		try {
+			await supabase.from("settings").delete().eq("key", claimKey(code));
+		} catch {
+			/* burn is best-effort */
+		}
+	};
+	if (!(age >= 0 && age <= CLAIM_TTL_MS)) {
+		await burn();
+		return { ok: false, error: "Pairing code expired — issue a fresh one" };
+	}
+	const attempts = Number(row.attempts || 0);
+	if (attempts >= CLAIM_MAX_ATTEMPTS) {
+		await burn();
+		return { ok: false, error: "Invalid pairing code" };
+	}
+	const id = String(row.anon_id || "").trim().toLowerCase();
+	if (!validAnonId(id)) {
+		await burn();
+		return { ok: false, error: "Invalid pairing code" };
+	}
+	// The issuer must STILL hold a live session for this id: a code
+	// photographed off a screen keeps working for 5 minutes after the
+	// owner walks away otherwise. Proof-of-possession at redeem time.
+	try {
+		const record = await loadSessionRecord(id);
+		const issuerLive =
+			(record?.th && safeStringEqual(String(row.issuer_th || ""), record.th)) ||
+			(Array.isArray(record?.tokens) &&
+				record.tokens.some((t) => t && t.h === row.issuer_th));
+		if (!issuerLive) {
+			await burn();
+			return { ok: false, error: "Pairing code expired — issue a fresh one" };
+		}
+	} catch {
+		return { ok: false, error: "Claim service unavailable" };
+	}
+	// Count this attempt BEFORE minting so concurrent redeems cannot
+	// overshoot the cap silently; success burns the ticket outright below.
+	try {
+		await supabase
+			.from("settings")
+			.upsert(
+				{ key: claimKey(code), value: { ...row, attempts: attempts + 1 } },
+				{ onConflict: "key" },
+			);
+	} catch {
+		return { ok: false, error: "Claim service unavailable" };
+	}
+	try {
+		const token = randomBytes(32).toString("hex");
+		await appendSessionToken(id, sha256Hex(token));
+		await burn();
+		setSessionCookie(res, token, req);
+		return { ok: true, anon_id: id };
+	} catch (err) {
+		console.error("[auth] claim redeem failed:", err?.message || err);
+		return { ok: false, error: "Claim service unavailable" };
+	}
+}
+
+/**
+ * Client IP for rate-limit keys (#11): x-real-ip when a proxy sets it,
+ * otherwise the RIGHTMOST X-Forwarded-For hop (appended by the nearest
+ * trusted proxy — the leftmost hops are client-controlled and spoofable),
+ * otherwise the direct socket address. Never the raw header verbatim.
+ */
+export function clientIp(req) {
+	const real = String(req?.headers?.["x-real-ip"] || "").trim();
+	if (real) return real;
+	const xff = String(req?.headers?.["x-forwarded-for"] || "").trim();
+	if (xff) {
+		const hops = xff.split(",").map((h) => h.trim()).filter(Boolean);
+		if (hops.length) return hops[hops.length - 1];
+	}
+	return req?.socket?.remoteAddress || "unknown";
+}
+
+// Shared anon_id format validation (matches checkUser + users_meta)
+function validAnonId(id) {
+	return (
+		typeof id === "string" &&
+		id.length >= 5 &&
+		id.length <= 40 &&
+		/^anon_[a-z0-9]+$/.test(id)
+	);
 }

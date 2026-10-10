@@ -19,9 +19,10 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
-/** Load .env then .env.local into process.env (first-set wins, .env.local
- *  overrides .env). Mirrors how Vercel injects env vars for serverless
- *  functions so the API sees the same config locally. */
+/** Load .env then .env.local into process.env (.env.local wins over .env,
+ *  real process env wins over both). Mirrors how Vercel injects env vars
+ *  for serverless functions so the API sees the same config locally. */
+const _originalEnv = new Set(Object.keys(process.env));
 function loadEnvFiles(root) {
 	for (const file of [".env", ".env.local"]) {
 		const p = join(root, file);
@@ -38,7 +39,7 @@ function loadEnvFiles(root) {
 			const eq = t.indexOf("=");
 			if (eq <= 0) continue;
 			const key = t.slice(0, eq).trim();
-			if (process.env[key] !== undefined) continue; // env.local wins over .env
+			if (_originalEnv.has(key)) continue; // real env wins over files
 			let value = t.slice(eq + 1).trim();
 			// Strip matching quotes ("..." or '...')
 			if (

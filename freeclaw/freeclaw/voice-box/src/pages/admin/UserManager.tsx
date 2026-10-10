@@ -9,12 +9,19 @@ import {
 	ShieldAlert,
 	X,
 } from "lucide-react";
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ConfirmDialog, PromptDialog } from "../../components/ui";
 import { useApp } from "../../contexts/AppContext";
 import { useInfiniteScroll } from "../../hooks/useInfiniteScroll";
 import { api } from "../../lib/api";
-import { fmtDate, timeAgo } from "../../lib/utils";
+import {
+	fmtDate,
+	isTestAccount,
+	PRESENCE_META,
+	presenceTier,
+	timeAgo,
+} from "../../lib/utils";
+import type { PresenceTier } from "../../lib/utils";
 import type { CommentData, PostData } from "../../types";
 
 interface UserSummary {
@@ -61,6 +68,8 @@ export default function UserManager() {
 	const [dialog, setDialog] = useState<{
 		kind: "warn" | "spam" | "ban";
 	} | null>(null);
+	// Monotonic id of the latest detail request (see openDetail race guard).
+	const detailReqRef = useRef(0);
 
 	const fetchUsers = useCallback(
 		async ({ cursor, limit }: { cursor: string | null; limit: number }) => {
@@ -68,6 +77,7 @@ export default function UserManager() {
 				action: "users",
 				cursor,
 				limit,
+				search: query.trim() || undefined,
 			});
 			return {
 				data: result.data || [],
@@ -75,7 +85,7 @@ export default function UserManager() {
 				total: result.total || 0,
 			};
 		},
-		[],
+		[query],
 	);
 
 	const {
@@ -88,21 +98,91 @@ export default function UserManager() {
 		reset,
 	} = useInfiniteScroll<UserSummary>(fetchUsers, { limit: 30 });
 
+	// Debounced search — reset results when query changes
+	const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined);	useEffect(() => {
+		clearTimeout(debounceRef.current);
+		debounceRef.current = setTimeout(() => {
+			reset();
+		}, 300);
+		return () => clearTimeout(debounceRef.current);
+	}, [query, reset]);
+
+	// Cross-tab handoff: the Feed drawer ("Author controls") drops the
+	// author's id here so suspend / warn / ban is one click away.
+	useEffect(() => {
+		try {
+			const target = sessionStorage.getItem("vb:adminUserTarget");
+			if (target) {
+				sessionStorage.removeItem("vb:adminUserTarget");
+				setQuery(target);
+			}
+		} catch {
+			/* session storage unavailable — search stays manual */
+		}
+	}, []);
+
+	// Lock background scroll while the detail drawer is open — without
+	// this, scrolling the drawer chains into the page behind it.
+	useEffect(() => {
+		if (!detail && !detailLoading) return;
+		const prev = document.body.style.overflow;
+		document.body.style.overflow = "hidden";
+		return () => {
+			document.body.style.overflow = prev;
+		};
+	}, [detail, detailLoading]);
+
+	const USERSCOPE_KEY = "vb:userscope";
+	const [presenceFilter, setPresenceFilter] = useState<"all" | PresenceTier>(() => {
+		try {
+			const raw = localStorage.getItem(USERSCOPE_KEY);
+			if (raw) {
+				const parsed = JSON.parse(raw) as { filter?: string; hideTests?: boolean };
+				if (parsed.filter === "now" || parsed.filter === "hour" || parsed.filter === "today") return parsed.filter;
+			}
+		} catch { /* corrupted scope resets to All */ }
+		return "all";
+	});
+	const [hideTests, setHideTests] = useState<boolean>(() => {
+		try {
+			const raw = localStorage.getItem(USERSCOPE_KEY);
+			if (raw) return (JSON.parse(raw) as { hideTests?: boolean }).hideTests === true;
+		} catch { /* corrupted scope resets */ }
+		return false;
+	});
+	useEffect(() => {
+		try {
+			localStorage.setItem(USERSCOPE_KEY, JSON.stringify({ filter: presenceFilter, hideTests }));
+		} catch { /* private mode: scope simply doesn't persist */ }
+	}, [presenceFilter, hideTests]);
+	// Ticker only re-renders so presence tiers decay honestly between
+	// explicit Refreshes — it fetches nothing.
+	const [nowTick, setNowTick] = useState(() => Date.now());
+	useEffect(() => {
+		const iv = window.setInterval(() => setNowTick(Date.now()), 60_000);
+		return () => window.clearInterval(iv);
+	}, []);
+
 	const openDetail = async (anonId: string) => {
+		// Race guard: rapid A→B clicks must never show A's slower response
+		// in B's drawer. Only the latest request may write state.
+		const req = ++detailReqRef.current;
 		setDetailLoading(true);
 		try {
-			setDetail(
-				await api.post<UserDetail>("/api/admin", {
-					action: "user_detail",
-					anon_id: anonId,
-				}),
-			);
+			const d = await api.post<UserDetail>("/api/admin", {
+				action: "user_detail",
+				anon_id: anonId,
+			});
+			if (detailReqRef.current !== req) return;
+			setDetail(d);
 		} catch (e: unknown) {
+			if (detailReqRef.current !== req) return;
 			toast(
 				e instanceof Error ? e.message : "Failed to load user detail",
 				"err",
 			);
 		}
+		if (detailReqRef.current !== req) return;
 		setDetailLoading(false);
 	};
 
@@ -121,25 +201,74 @@ export default function UserManager() {
 		}
 	};
 
-	const filtered = users
-		.filter(
-			(u) =>
-				!query || u.anon_id.toLowerCase().includes(query.trim().toLowerCase()),
-		)
-		.sort((a, b) => +new Date(b.last_seen || 0) - +new Date(a.last_seen || 0));
+	// Server-side search handles filtering; client-side sort by last_seen.
+	// NOTE: spread before sort — Array.sort() sorts in place and must never
+	// mutate the hook's state array (missed renders + order glitches).
+	const tierOf = (u: { last_seen?: string }) => presenceTier(u.last_seen, nowTick);
+	const testCount = users.filter((u) => isTestAccount(u.anon_id)).length;
+	const isActiveReader = (u: { banned?: boolean; suspended_until?: string | null }) =>
+		!u.banned && !(u.suspended_until && new Date(u.suspended_until) > new Date(nowTick));
+	const presenceCounts = { now: 0, hour: 0, today: 0 };
+	for (const u of users) {
+		if (!isActiveReader(u)) continue;
+		const t = tierOf(u);
+		if (t === "now") presenceCounts.now += 1;
+		else if (t === "hour") presenceCounts.hour += 1;
+		else if (t === "today") presenceCounts.today += 1;
+	}
+	const filtered = [...users]
+		.filter((u) => !hideTests || !isTestAccount(u.anon_id))
+		.filter((u) => presenceFilter === "all" || tierOf(u) === presenceFilter)
+		.sort(
+			(a, b) => +new Date(b.last_seen || 0) - +new Date(a.last_seen || 0),
+		);
 	const meta = detail?.meta;
 
 	return (
-		<div>
+		<div className="vb-tab-enter">
 			<div className="flex items-center justify-between mb-1">
-				<h1 className="font-display font-bold text-xl">
-					Anonymous user management
+				<h1 className="flex items-center gap-2 font-display font-bold text-2xl tracking-tight">
+					<span className="vb-gradient-text">User Management</span>
 				</h1>
-				<span className="text-xs text-ink3">{total} total</span>
+				<span className="text-xs text-ink3 bg-surface2 px-2.5 py-1 rounded-full font-medium">{total} total</span>
 			</div>
 			<p className="text-xs text-ink3 mb-4">
 				Only anonymous browser IDs are visible — no personal data exists
 				anywhere in the system.
+			</p>
+			<div className="flex flex-wrap items-center gap-1.5 mb-1" role="group" aria-label="Presence filter">
+				{(
+					[
+						{ key: "all", label: `All (${users.length})` },
+						{ key: "now", label: `🟢 Now (${presenceCounts.now})` },
+						{ key: "hour", label: `🟡 Hour (${presenceCounts.hour})` },
+						{ key: "today", label: `⚪ Today (${presenceCounts.today})` },
+				] as const
+				).map((pill) => (
+					<button
+						key={pill.key}
+						type="button"
+						onClick={() => setPresenceFilter(pill.key)}
+						aria-pressed={presenceFilter === pill.key}
+						className={`chip !text-[11px] ${presenceFilter === pill.key ? "!border-accent !text-accent" : ""}`}
+					>
+						{pill.label}
+					</button>
+				))}
+				{testCount > 0 && (
+					<button
+						type="button"
+						onClick={() => setHideTests((v) => !v)}
+						aria-pressed={hideTests}
+						className="chip !text-[11px]"
+						title="Load-test residue rows (anon_loadtest_*)"
+					>
+						{hideTests ? `Show test accounts (${testCount})` : `Hide test accounts (${testCount})`}
+					</button>
+				)}
+			</div>
+			<p className="text-[11px] text-ink3 mb-4">
+				Presence as of last refresh ({new Date(nowTick).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}) — tiers decay without refetching.
 			</p>
 			<div className="relative mb-4 max-w-md">
 				<Search
@@ -161,7 +290,9 @@ export default function UserManager() {
 					))}
 				</div>
 			) : (
-				<div className="card overflow-x-auto">
+				<div>
+					{/* Table — always visible, scroll on small screens */}
+					<div className="card overflow-x-auto">
 					<table className="w-full text-sm min-w-[640px]">
 						<thead>
 							<tr className="text-left text-[11px] uppercase text-ink3 border-b border-border">
@@ -172,6 +303,7 @@ export default function UserManager() {
 								<th className="px-2 py-3">Strikes</th>
 								<th className="px-2 py-3">Spam</th>
 								<th className="px-2 py-3">Status</th>
+								<th className="px-2 py-3">Presence</th>
 							</tr>
 						</thead>
 						<tbody>
@@ -203,16 +335,27 @@ export default function UserManager() {
 											</span>
 										)}
 									</td>
+								<td className="px-2 py-3 text-xs whitespace-nowrap">
+									{(() => {
+										const t = tierOf(u);
+										const m = PRESENCE_META[t];
+										return (
+											<span title={`Last seen ${u.last_seen || "never"}`}>
+												<span aria-hidden style={{ display: "inline-block", width: 8, height: 8, borderRadius: 9999, background: m.color, marginRight: 6 }} />{" "}
+												{m.label}
+											</span>
+										);
+									})()}
+								</td>
 								</tr>
 							))}
 							{filtered.length === 0 && (
 								<tr>
 									<td
-										colSpan={7}
+										colSpan={8}
 										className="px-4 py-8 text-center text-ink3 text-xs"
-									>
-										No users found.
-									</td>
+									>										{query.trim() ? `No users match "${query.trim()}"` : "No users found."}
+										</td>
 								</tr>
 							)}
 						</tbody>
@@ -229,6 +372,7 @@ export default function UserManager() {
 							All {total} users loaded
 						</p>
 					)}
+					</div>
 				</div>
 			)}
 
@@ -238,7 +382,7 @@ export default function UserManager() {
 						className="absolute inset-0 bg-black/40"
 						onClick={() => setDetail(null)}
 					/>
-					<div className="relative w-full max-w-lg bg-surface h-full overflow-y-auto p-5 vb-rise">
+					<div className="relative w-full max-w-lg bg-surface h-full overflow-y-auto overscroll-contain p-5 vb-rise">
 						{detailLoading || !meta ? (
 							<div className="space-y-3">
 								{[1, 2, 3].map((i) => (
@@ -282,14 +426,13 @@ export default function UserManager() {
 								<div className="grid grid-cols-2 gap-2 mb-4">
 									<button
 										className="btn btn-soft !text-xs col-span-2"
-										onClick={() => {
-											sessionStorage.setItem(
-												"vb:adminChatTarget",
-												meta.anon_id,
-											);
-											window.dispatchEvent(
-												new CustomEvent("vb:admin-tab", { detail: "inbox" }),
-											);
+										onClick={() => {												sessionStorage.setItem(
+													"vb:adminChatTarget",
+													meta.anon_id,
+												);
+												window.dispatchEvent(
+													new CustomEvent("vb:admin-tab", { detail: "inbox" }),
+												);
 										}}
 									>
 										<MessageSquare size={13} /> Message this user
@@ -317,14 +460,20 @@ export default function UserManager() {
 											Suspend {d}d
 										</button>
 									))}
-									<button
+									{meta.suspended_until && new Date(meta.suspended_until) > new Date() && (
+
+										<button
 										className="btn btn-soft !text-xs"
 										onClick={() =>
 											updateUser(meta.anon_id, { suspend_days: 0 })
 										}
 									>
-										<RotateCcw size={13} /> Lift suspension
-									</button>
+
+											<RotateCcw size={13} /> Lift suspension
+
+										</button>
+
+									)}
 									{meta.banned ? (
 										<button
 											className="btn btn-soft !text-xs"

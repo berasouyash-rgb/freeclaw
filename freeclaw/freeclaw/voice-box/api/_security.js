@@ -2,6 +2,7 @@
 // CSP headers, prompt injection detection, abuse prevention,
 // input sanitization, and request security validation.
 import { log } from "./_audit.js";
+import { clientIp } from "./_auth.js";
 
 // ─── Content Security Policy ────────────────────────────────────
 // Strict CSP for API responses — no inline scripts, no eval, no remote styles
@@ -106,40 +107,68 @@ export function detectPromptInjection(text) {
 }
 
 // ─── Abuse Prevention ───────────────────────────────────────────
-// Track request patterns per IP to detect abuse
-const _abuseTracker = new Map(); // ip → { requests: [], blocked: boolean, blockedUntil: number }
+// Track request patterns per identity (user ID when available, IP fallback).
+// Key: composite of "identity:ip" — shared-NAT users get per-user buckets;
+// anonymous users fall back to IP-only key so they don't share one bucket.
+const _abuseTracker = new Map(); // key → { timestamps: number[], errors: number[], blocked: boolean, blockedUntil: number }
 
+// Disable test: disable this limiter for 24h → a scripted client can hammer
+// every endpoint unthrottled (measured: the app itself costs ~10 API calls per
+// page view, so bursts of fast navigation are normal, not abusive).
+// Policy (measured against real usage):
+//   - 120/min per identity ≈ 12 rapid full page loads in a minute. Fast
+//     navigation (feed → post → back → next post, ~10 calls each) stays under
+//     it; only nonstop hammering trips it. Kept.
+//   - 2000/h meant ~16 page loads/min sustained for a whole hour — reachable
+//     by a genuinely engaged user or an admin dashboard open all day
+//     (realtime refreshes count). Raised to 3600/h (~60/min sustained) so
+//     legitimate power users don't get locked out mid-session; the per-minute
+//     limit still caps bursts, so abuse protection is unchanged.
 export const ABUSE_LIMITS = {
-	maxRequestsPerMinute: 120,
-	maxRequestsPerHour: 2000,
+	maxRequestsPerMinute: 120, // per identity
+	maxRequestsPerHour: 3600, // per identity (~60/min sustained; was 2000)
 	maxErrorsPerMinute: 20,
-	blockDurationMs: 300_000, // 5 minutes
+	blockDurationMs: 30_000, // 30 seconds (down from 5 minutes)
 	maxRequestSize: 500_000, // 500KB
 };
 
 /**
- * Check if an IP is exhibiting abuse patterns.
+ * Build a rate-limit key from identity + IP.
+ * If identity is provided, key is "identity:ip" (per-user even behind NAT).
+ * If identity is null/empty, key is just IP (anonymous fallback).
+ */
+function _rateLimitKey(ip, identity) {
+	const safeIp = ip || "unknown";
+	if (identity && typeof identity === "string" && identity.trim()) {
+		return `id:${identity.trim().toLowerCase()}:${safeIp}`;
+	}
+	return `ip:${safeIp}`;
+}
+
+/**
+ * Check if a requester is exhibiting abuse patterns.
+ * @param {string} ip - Client IP
+ * @param {string|null} identity - User identity (anon_id / author_id) when available
  * Returns { allowed: boolean, reason: string, retryAfter: number }
  */
-export function checkAbuse(ip) {
-	if (!ip) return { allowed: true, reason: null, retryAfter: 0 };
-
+export function checkAbuse(ip, identity = null) {
 	const now = Date.now();
-	const tracker = _abuseTracker.get(ip);
+	const key = _rateLimitKey(ip, identity);
+	const tracker = _abuseTracker.get(key);
 
 	// Check if currently blocked
 	if (tracker?.blocked && tracker.blockedUntil > now) {
 		return {
 			allowed: false,
-			reason: "IP temporarily blocked due to abuse",
+			reason: "Temporarily rate limited",
 			retryAfter: Math.ceil((tracker.blockedUntil - now) / 1000),
 		};
 	}
 
-	// Initialize tracker
+	// Initialize tracker (or reset window after 1 hour)
 	if (!tracker || now - (tracker.windowStart || 0) > 3600000) {
-		_abuseTracker.set(ip, {
-			requests: [],
+		_abuseTracker.set(key, {
+			timestamps: [],
 			errors: [],
 			blocked: false,
 			blockedUntil: 0,
@@ -147,21 +176,37 @@ export function checkAbuse(ip) {
 		});
 	}
 
-	const t = _abuseTracker.get(ip);
-	t.requests.push(now);
+	const t = _abuseTracker.get(key);
+	t.timestamps.push(now);
 
-	// Prune old entries (keep last hour only)
-	t.requests = t.requests.filter((ts) => now - ts < 3600000);
-	t.errors = t.errors.filter((ts) => now - ts < 3600000);
+	// Sliding window: keep only last hour of timestamps (O(1) amortized via head index)
+	// For small arrays (<500 entries) filter is faster than binary search
+	if (t.timestamps.length > 100) {
+		const cutoff = now - 3600000;
+		let i = 0;
+		while (i < t.timestamps.length && t.timestamps[i] < cutoff) i++;
+		if (i > 0) t.timestamps.splice(0, i);
+	}
+
+	if (t.errors.length > 100) {
+		const cutoff = now - 3600000;
+		let i = 0;
+		while (i < t.errors.length && t.errors[i] < cutoff) i++;
+		if (i > 0) t.errors.splice(0, i);
+	}
 
 	// Check rate limits
-	const lastMinute = t.requests.filter((ts) => now - ts < 60000).length;
-	const lastHour = t.requests.length;
+	const lastMinute = t.timestamps.filter((ts) => now - ts < 60000).length;
+	const lastHour = t.timestamps.length;
 
 	if (lastMinute > ABUSE_LIMITS.maxRequestsPerMinute) {
 		t.blocked = true;
 		t.blockedUntil = now + ABUSE_LIMITS.blockDurationMs;
-		log.security("rate_limit_abuse", { ip, requests_per_minute: lastMinute });
+		log.security("rate_limit_abuse", {
+			ip,
+			identity: identity || null,
+			requests_per_minute: lastMinute,
+		});
 		return {
 			allowed: false,
 			reason: "Rate limit exceeded",
@@ -172,7 +217,11 @@ export function checkAbuse(ip) {
 	if (lastHour > ABUSE_LIMITS.maxRequestsPerHour) {
 		t.blocked = true;
 		t.blockedUntil = now + ABUSE_LIMITS.blockDurationMs;
-		log.security("hourly_limit_abuse", { ip, requests_per_hour: lastHour });
+		log.security("hourly_limit_abuse", {
+			ip,
+			identity: identity || null,
+			requests_per_hour: lastHour,
+		});
 		return {
 			allowed: false,
 			reason: "Hourly rate limit exceeded",
@@ -186,9 +235,9 @@ export function checkAbuse(ip) {
 /**
  * Record an error for abuse tracking.
  */
-export function recordError(ip) {
-	if (!ip) return;
-	const t = _abuseTracker.get(ip);
+export function recordError(ip, identity = null) {
+	const key = _rateLimitKey(ip, identity);
+	const t = _abuseTracker.get(key);
 	if (!t) return;
 	t.errors.push(Date.now());
 
@@ -196,8 +245,24 @@ export function recordError(ip) {
 	if (lastMinute > ABUSE_LIMITS.maxErrorsPerMinute) {
 		t.blocked = true;
 		t.blockedUntil = Date.now() + ABUSE_LIMITS.blockDurationMs;
-		log.security("error_abuse", { ip, errors_per_minute: lastMinute });
+		log.security("error_abuse", {
+			ip,
+			identity: identity || null,
+			errors_per_minute: lastMinute,
+		});
 	}
+}
+
+/**
+ * Read a caller identity from the already-parsed body.
+ * Raw streams are intentionally not consumed here; the bounded parser owns
+ * stream reads and must run before abuse checks use an identity.
+ */
+export async function peekBodyIdentity(req) {
+	if (req.method === "GET" || req.method === "HEAD") return null;
+	const body = req.body;
+	if (!body || typeof body !== "object" || Buffer.isBuffer(body)) return null;
+	return body.anon_id || body.author_id || body.user_id || null;
 }
 
 // ─── Input Sanitization ─────────────────────────────────────────
@@ -243,13 +308,23 @@ export function validateRequestSize(req) {
 // ─── Security Middleware for Gateway ────────────────────────────
 /**
  * Comprehensive security check to run at the start of every request.
+ * @param {Request} req - Incoming request
+ * @param {string|null} identity - User identity (anon_id) when available
  * Returns { ok: boolean, status: number, error: string }
  */
-export function securityCheck(req) {
-	const ip = req.headers["x-forwarded-for"]?.split(",")[0]?.trim() || "unknown";
+export function securityCheck(req, identity = null) {
+	const ip = clientIp(req);
 
-	// 1. Check abuse patterns
-	const abuseCheck = checkAbuse(ip);
+	// Accept identity from header for GET requests too (load-test / client identification)
+	if (!identity) {
+		const headerId = req.headers["x-anon-id"];
+		if (headerId && typeof headerId === "string" && headerId.trim()) {
+			identity = headerId.trim();
+		}
+	}
+
+	// 1. Check abuse patterns — keyed on identity when available
+	const abuseCheck = checkAbuse(ip, identity);
 	if (!abuseCheck.allowed) {
 		return {
 			ok: false,
@@ -282,13 +357,13 @@ export function cleanupAbuseTracker() {
 	if (now - _lastCleanup < CLEANUP_INTERVAL) return;
 	_lastCleanup = now;
 
-	for (const [ip, tracker] of _abuseTracker) {
+	for (const [key, tracker] of _abuseTracker) {
 		// Remove entries older than 1 hour with no recent activity
 		if (
-			tracker.requests.length === 0 &&
+			tracker.timestamps.length === 0 &&
 			(!tracker.blocked || tracker.blockedUntil < now)
 		) {
-			_abuseTracker.delete(ip);
+			_abuseTracker.delete(key);
 		}
 	}
 }
@@ -471,6 +546,7 @@ export default {
 	detectPromptInjection,
 	checkAbuse,
 	recordError,
+	peekBodyIdentity,
 	sanitizeInput,
 	validateRequestSize,
 	securityCheck,

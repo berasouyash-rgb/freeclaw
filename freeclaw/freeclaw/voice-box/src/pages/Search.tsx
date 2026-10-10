@@ -6,15 +6,18 @@ import {
 	MessageCircle,
 	MessageSquare,
 	Search as SearchIcon,
+	User,
+	X,
 } from "lucide-react";
-import { useCallback, useMemo, useState } from "react";
-import { Link } from "react-router";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { ReactNode } from "react";
+import { Link, useSearchParams } from "react-router";
 import { useCategories } from "../hooks/useCategories";
-import { api } from "../lib/api";
-import { CAT_EMOJI, PRIORITY_META, STATUS_META, timeAgo } from "../lib/utils";
+import { api, hasAdminSession } from "../lib/api";
+import { CAT_EMOJI, STATUS_META, timeAgo } from "../lib/utils";
 
 type SearchResult = {
-	type: "post" | "comment" | "poll";
+	type: "post" | "comment" | "poll" | "user";
 	id: string;
 	title?: string;
 	body?: string;
@@ -22,7 +25,7 @@ type SearchResult = {
 	post_id?: string;
 	category?: string;
 	status?: string;
-	priority?: string;
+	tags?: string[];
 	ptype?: string;
 	created_at: string;
 	relevance_score?: number;
@@ -33,20 +36,53 @@ const TYPE_OPTIONS = [
 	{ value: "posts", label: "Posts" },
 	{ value: "comments", label: "Comments" },
 	{ value: "polls", label: "Polls" },
+	{ value: "users", label: "Users" },
 ];
+
+// A result row is a link only when it has somewhere to go: user rows
+// resolve to the admin console, which is a dead-end login gate for
+// non-admins — render them as plain rows instead.
+function RowShell({
+	to,
+	className,
+	children,
+}: {
+	to: string | null;
+	className?: string;
+	children: ReactNode;
+}) {
+	if (to) {
+		return (
+			<Link to={to} className={className}>
+				{children}
+			</Link>
+		);
+	}
+	return <div className={className}>{children}</div>;
+}
 
 export default function Search() {
 	const categories = useCategories();
-	const [q, setQ] = useState("");
+	const [params] = useSearchParams();
+	const [q, setQ] = useState(params.get("q") ?? "");
+	// Hashtag chips link here as /search?q=%23tag — adopt the URL query on
+	// arrival (and on back/forward) so the link actually searches.
+	useEffect(() => {
+		const v = params.get("q") ?? "";
+		setQ((prev) => (prev === v ? prev : v));
+	}, [params]);
 	const [type, setType] = useState("all");
 	const [category, setCategory] = useState("all");
 	const [status, setStatus] = useState("all");
-	const [priority, setPriority] = useState("all");
 	const [results, setResults] = useState<SearchResult[]>([]);
 	const [total, setTotal] = useState(0);
 	const [loading, setLoading] = useState(false);
 	const [error, setError] = useState("");
 	const [searched, setSearched] = useState(false);
+	// Monotonic run id: debounced keystrokes fire overlapping requests and
+	// a slow earlier response must never overwrite newer results (stale
+	// results for the wrong query).
+	const runSeqRef = useRef(0);
 
 	const run = useCallback(
 		async (
@@ -55,20 +91,18 @@ export default function Search() {
 				type: string;
 				category: string;
 				status: string;
-				priority: string;
-			}>,
+		}>,
 		) => {
+			const seq = ++runSeqRef.current;
 			const params = new URLSearchParams();
 			const query = (overrides?.q ?? q).trim();
 			const t = overrides?.type ?? type;
 			const c = overrides?.category ?? category;
 			const s = overrides?.status ?? status;
-			const p = overrides?.priority ?? priority;
 			if (query) params.set("q", query);
 			if (t !== "all") params.set("type", t);
 			if (c !== "all") params.set("category", c);
 			if (s !== "all") params.set("status", s);
-			if (p !== "all") params.set("priority", p);
 			params.set("viewer", "");
 			setLoading(true);
 			setError("");
@@ -77,50 +111,81 @@ export default function Search() {
 				const data = await api.get<{ results: SearchResult[]; total: number }>(
 					`/api/search?${params.toString()}`,
 				);
+				if (seq !== runSeqRef.current) return; // superseded by a newer run
 				setResults(data.results || []);
 				setTotal(data.total || 0);
 			} catch (e: unknown) {
+				if (seq !== runSeqRef.current) return;
 				setError(e instanceof Error ? e.message : "Search failed");
 				setResults([]);
 				setTotal(0);
 			}
 			setLoading(false);
 		},
-		[q, type, category, status, priority],
+		[q, type, category, status],
 	);
 
+	const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+
+	// Debounced instant search — fires 300ms after the user stops typing
+	useEffect(() => {
+		if (!q.trim()) {
+			setResults([]);
+			setTotal(0);
+			setSearched(false);
+			return;
+		}
+		clearTimeout(debounceRef.current);
+		debounceRef.current = setTimeout(() => run(undefined), 300);
+		return () => clearTimeout(debounceRef.current);
+	}, [q, run]);
+
+	// Keyboard shortcut: / focuses the search input
+	useEffect(() => {
+		const h = (e: KeyboardEvent) => {
+			if (e.key === "/" && document.activeElement?.tagName !== "INPUT") {
+				e.preventDefault();
+				document.getElementById("advanced-search-input")?.focus();
+			}
+		};
+		window.addEventListener("keydown", h);
+		return () => window.removeEventListener("keydown", h);
+	}, []);
+
 	const onSubmit = () => {
-		if (q.trim().length >= 1) run();
+		clearTimeout(debounceRef.current);
+		if (q.trim().length >= 1) run(undefined);
 	};
 
 	const filterChange = (
-		key: "type" | "category" | "status" | "priority",
+		key: "type" | "category" | "status",
 		setter: (v: string) => void,
 		v: string,
 	) => {
 		setter(v);
-		// run() is memoized on state, so the just-set value is stale — pass it explicitly
-		if (q.trim().length >= 1) run({ [key]: v }).catch(() => {});
-	};
-
-	const typeLabel = (r: SearchResult) =>
-		r.type === "poll"
-			? r.ptype === "ranked"
+		clearTimeout(debounceRef.current);
+		debounceRef.current = setTimeout(() => run({ [key]: v }).catch((err: unknown) => { console.error("[search] background refresh failed", { error: err instanceof Error ? err.message : String(err) }); }), 200);
+	};const typeLabel = (r: SearchResult) =>
+	r.type === "poll"
+		? r.ptype === "ranked"
 				? "Ranked poll"
 				: "Poll"
-			: r.type === "comment"
-				? "Comment"
+		: r.type === "comment"
+			? "Comment"
+			: r.type === "user"
+				? "User"
 				: "Post";
 
-	const breakdown = useMemo(() => {
-		const counts = { posts: 0, comments: 0, polls: 0 };
-		for (const r of results) {
-			if (r.type === "post") counts.posts += 1;
-			else if (r.type === "comment") counts.comments += 1;
-			else counts.polls += 1;
-		}
-		return counts;
-	}, [results]);
+const breakdown = useMemo(() => {
+	const counts = { posts: 0, comments: 0, polls: 0, users: 0 };
+	for (const r of results) {
+		if (r.type === "post") counts.posts += 1;
+		else if (r.type === "comment") counts.comments += 1;
+		else if (r.type === "user") counts.users += 1;
+		else counts.polls += 1;
+	}
+	return counts;
+}, [results]);
 
 	// Insights-style stat tiles — only after a successful search with matches.
 	const tiles =
@@ -149,6 +214,12 @@ export default function Search() {
 						value: breakdown.polls,
 						icon: BarChart3,
 						sub: "active polls",
+					},
+					{
+						label: "Users",
+						value: breakdown.users,
+						icon: User,
+						sub: "user profiles",
 					},
 				]
 			: [];
@@ -199,15 +270,36 @@ export default function Search() {
 						className="absolute left-3 top-1/2 -translate-y-1/2 text-ink3"
 						aria-hidden
 					/>
-					<input
-						id="advanced-search-input"
-						className="input !pl-9 !py-2.5"
-						placeholder="Search everything…"
-						value={q}
-						onChange={(e) => setQ(e.target.value)}
-						onKeyDown={(e) => e.key === "Enter" && onSubmit()}
-						aria-label="Search everything"
-					/>
+					<div className="relative">
+						<input
+							id="advanced-search-input"
+							className="input !pl-9 !py-2.5 !pr-16"
+							placeholder="Search everything… (press /)"
+							value={q}
+							onChange={(e) => setQ(e.target.value)}
+							onKeyDown={(e) => e.key === "Enter" && onSubmit()}
+							aria-label="Search everything"
+						/>
+						<div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1">
+							{q && (
+								<button
+									type="button"
+									onClick={() => {
+										setQ("");
+										setResults([]);
+										setSearched(false);
+									}}
+									className="text-ink3 hover:text-ink transition-colors"
+									aria-label="Clear search"
+								>
+									<X size={14} />
+								</button>
+							)}
+							<kbd className="hidden sm:inline-flex items-center gap-0.5 text-[9px] font-semibold text-ink3 border border-border rounded px-1 py-px">
+								/
+							</kbd>
+						</div>
+					</div>
 				</div>
 				<div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
 					<select
@@ -250,21 +342,7 @@ export default function Search() {
 							</option>
 						))}
 					</select>
-					<select
-						className="input !py-2 text-sm"
-						value={priority}
-						onChange={(e) =>
-							filterChange("priority", setPriority, e.target.value)
-						}
-						aria-label="Filter by priority"
-					>
-						<option value="all">All priorities</option>
-						{Object.entries(PRIORITY_META).map(([k, v]) => (
-							<option key={k} value={k}>
-								{v.label}
-							</option>
-						))}
-					</select>
+
 				</div>
 				<button
 					className="btn btn-primary w-full"
@@ -293,7 +371,7 @@ export default function Search() {
 			{error && (
 				<div className="card p-6 text-center">
 					<p className="text-bad font-medium text-sm">{error}</p>
-					<button className="btn btn-soft mt-3" onClick={() => run()}>
+					<button className="btn btn-soft mt-3" onClick={() => run(undefined)}>
 						Retry
 					</button>
 				</div>
@@ -319,29 +397,39 @@ export default function Search() {
 								? `/post/${r.id}`
 								: r.type === "comment"
 									? `/post/${r.post_id}`
-									: "/polls";
+									: r.type === "user"
+										? hasAdminSession()
+											? "/admin"
+											: null
+										: "/polls";
 						const title =
 							r.type === "post"
 								? r.title
 								: r.type === "poll"
 									? r.title
-									: r.body;
+									: r.type === "user"
+										? r.id
+										: r.body;
 						const sub =
 							r.type === "post"
-								? `${CAT_EMOJI[r.category || ""] || "📌"} ${r.category || ""} · ${STATUS_META[r.status || ""]?.label || r.status} · ${PRIORITY_META[r.priority || ""]?.label || r.priority}`
+								? `${CAT_EMOJI[r.category || ""] || "📌"} ${r.category || ""} · ${STATUS_META[r.status || ""]?.label || r.status}`
 								: r.type === "comment"
 									? "Comment on a post"
-									: r.ptype === "ranked"
-										? "Ranked poll"
-										: "Poll";
+									: r.type === "user"
+										? `${r.description || "User"} · ${timeAgo(r.created_at)}`
+										: r.ptype === "ranked"
+											? "Ranked poll"
+											: "Poll";
 						const Icon =
 							r.type === "post"
 								? FileText
 								: r.type === "comment"
 									? MessageCircle
-									: BarChart3;
+									: r.type === "user"
+										? User
+										: BarChart3;
 						return (
-							<Link
+							<RowShell
 								key={`${r.type}-${r.id}`}
 								to={href}
 								className="card card-hover p-4 block vb-rise"
@@ -367,7 +455,7 @@ export default function Search() {
 										</p>
 									</div>
 								</div>
-							</Link>
+							</RowShell>
 						);
 					})}
 				</div>

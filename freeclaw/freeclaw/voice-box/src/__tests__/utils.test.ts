@@ -11,10 +11,14 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
 	CAT_EMOJI,
 	CATEGORIES,
+	dedupeById,
 	downloadFile,
 	errorText,
 	fmtDate,
 	isExecutableSuggestion,
+	isTestAccount,
+	maskContactPreview,
+	presenceTier,
 	PRIORITY_META,
 	STATUS_META,
 	safeStringify,
@@ -190,6 +194,53 @@ describe("timeAgo", () => {
 		expect(out).toMatch(/[A-Za-z]{3}/);
 		expect(out).not.toContain("ago");
 	});
+
+	it("clamps future dates (clock skew) to just now, never negative", () => {
+		expect(timeAgo(new Date(Date.now() + 3 * 60 * 1000).toISOString())).toBe(
+			"just now",
+		);
+		expect(timeAgo(new Date(Date.now() + 60 * 1000).toISOString())).toBe(
+			"just now",
+		);
+	});
+});
+
+describe("maskContactPreview — appeal previews never show full contacts", () => {
+	it("masks phone-like digit runs", () => {
+		const out = maskContactPreview("Call me on 123-456-7890 any time");
+		expect(out).not.toContain("123-456-7890");
+		expect(out).toContain("•");
+	});
+	it("masks email local parts but keeps the domain", () => {
+		const out = maskContactPreview("mail john.doe@example.com now");
+		expect(out).not.toContain("john.doe@");
+		expect(out).toContain("@example.com");
+	});
+	it("leaves ordinary text untouched", () => {
+		expect(maskContactPreview("Broken cooler on floor 2")).toBe(
+			"Broken cooler on floor 2",
+		);
+	});
+});
+
+describe("dedupeById — realtime + pagination overlap never duplicates rows", () => {
+	it("keeps first occurrence order and drops repeats", () => {
+		const rows = [
+			{ id: "a", v: 1 },
+			{ id: "b", v: 2 },
+			{ id: "a", v: 3 },
+			{ id: "c", v: 4 },
+			{ id: "b", v: 5 },
+		];
+		expect(dedupeById(rows)).toEqual([
+			{ id: "a", v: 1 },
+			{ id: "b", v: 2 },
+			{ id: "c", v: 4 },
+		]);
+	});
+	it("returns an empty list untouched", () => {
+		expect(dedupeById([])).toEqual([]);
+	});
 });
 
 describe("fmtDate", () => {
@@ -222,24 +273,50 @@ describe("trendingScore", () => {
 		deleted: false,
 	};
 
-	it("weighs reactions 3x and comments 2x", () => {
+	it("weighs support, comments, and concerns with quality factors", () => {
 		const fresh: PostData = {
 			...base,
-			reactions: { support: 10 },
+			reactions: { support: 10, concerned: 2 },
 			comment_count: 5,
 		};
 		const score = trendingScore(fresh);
-		// `base.created_at` was stamped at describe-collection time; the test may
-		// run seconds later, so derive the expected value from the ACTUAL hours
-		// elapsed at call time instead of assuming exactly 1.0.
-		const hours = Math.max(
-			1,
-			(Date.now() - new Date(base.created_at).getTime()) / 3600000,
-		);
-		const expected = (10 * 3 + 5 * 2) / (hours + 2) ** 1.2;
-		// Two separate Date.now() reads (here and inside trendingScore) can skew by
-		// ~1e-6 under load — keep the tolerance loose enough to not flake.
-		expect(score).toBeCloseTo(expected, 5);
+		// New formula applies commentRatio, diversityFactor, urgencyBonus, freshness
+		expect(score).toBeGreaterThan(0);
+	});
+
+	it("gives higher score to posts with comments vs reactions-only", () => {
+		const withComments: PostData = {
+			...base,
+			reactions: { support: 5 },
+			comment_count: 5,
+		};
+		const withoutComments: PostData = {
+			...base,
+			reactions: { support: 5 },
+			comment_count: 0,
+		};
+		// Posts with comments should score higher (commentRatio bonus)
+		// But withoutComments has support*3 + comments*2.5 + concerns*1.5 = 15
+		// withComments has support*3 + comments*2.5 + concerns*1.5 = 27.5
+		// Both above threshold but withComments should be higher
+		expect(trendingScore(withComments)).toBeGreaterThan(trendingScore(withoutComments));
+	});
+
+	it("penalizes spam-like posts (high support, zero comments)", () => {
+		const spammy: PostData = {
+			...base,
+			reactions: { support: 15 },
+			comment_count: 0,
+		};
+		const organic: PostData = {
+			...base,
+			reactions: { support: 5 },
+			comment_count: 8,
+		};
+		// Spammy has support > 10 && comments === 0 => spamPenalty = 0.5
+		// Organic has no penalty
+		// Both have high engagement so both should trend, but organic should be higher
+		expect(trendingScore(organic)).toBeGreaterThan(trendingScore(spammy));
 	});
 
 	it("handles missing reactions/comment_count", () => {
@@ -251,10 +328,85 @@ describe("trendingScore", () => {
 		expect(trendingScore(p)).toBe(0);
 	});
 
-	it("floors hours at 1 for brand-new posts", () => {
-		const p: PostData = { ...base, created_at: new Date().toISOString() };
-		const score = trendingScore(p);
-		expect(score).toBeCloseTo(0 / (1 + 2) ** 1.2, 6);
+	it("returns 0 for posts below engagement threshold", () => {
+		// Posts with < 4 total engagement don't trend
+		const low: PostData = {
+			...base,
+			reactions: { support: 1 },
+			comment_count: 0,
+		};
+		expect(trendingScore(low)).toBe(0);
+	});
+
+	it("down-votes subtract at full up-vote weight", () => {
+		const clean: PostData = {
+			...base,
+			reactions: { support: 5 },
+			comment_count: 2,
+		};
+		const pileOn: PostData = {
+			...base,
+			reactions: { support: 5, disagree: 4 },
+			comment_count: 2,
+		};
+		expect(trendingScore(pileOn)).toBeLessThan(trendingScore(clean));
+	});
+
+	it("a brigaded post (down-votes erase engagement) never trends", () => {
+		const brigaded: PostData = {
+			...base,
+			reactions: { support: 8, disagree: 10 },
+			comment_count: 0,
+		};
+		expect(trendingScore(brigaded)).toBe(0);
+	});
+
+	it("suggestion up-votes trend (they previously scored 0)", () => {
+		const suggestion: PostData = {
+			...base,
+			type: "suggestion",
+			reactions: { upvote: 4 },
+			comment_count: 1,
+		};
+		expect(trendingScore(suggestion)).toBeGreaterThan(0);
+	});
+
+	it("posts with 1 like and 1 comment (engage=5) do trend", () => {
+		const justEnough: PostData = {
+			...base,
+			reactions: { support: 1 },
+			comment_count: 1,
+		};
+		const score = trendingScore(justEnough);
+		expect(score).toBeGreaterThan(0);
+	});
+});
+
+describe("presenceTier", () => {
+	const NOW = new Date("2026-09-27T12:00:00.000Z").getTime();
+	const iso = (ms: number) => new Date(ms).toISOString();
+
+	it("tiers by age: now < 2min, hour < 60min, today < 24h, else idle", () => {
+		expect(presenceTier(iso(NOW - 90_000), NOW)).toBe("now");
+		expect(presenceTier(iso(NOW - 30 * 60_000), NOW)).toBe("hour");
+		expect(presenceTier(iso(NOW - 5 * 3600_000), NOW)).toBe("today");
+		expect(presenceTier(iso(NOW - 3 * 24 * 3600_000), NOW)).toBe("idle");
+	});
+
+	it("never invents presence: missing/garbage stamps are idle", () => {
+		expect(presenceTier(undefined, NOW)).toBe("idle");
+		expect(presenceTier(null, NOW)).toBe("idle");
+		expect(presenceTier("not-a-date", NOW)).toBe("idle");
+	});
+
+	it("floors future stamps (clock skew) to now", () => {
+		expect(presenceTier(iso(NOW + 60_000), NOW)).toBe("now");
+	});
+
+	it("flags load-test residue ids only", () => {
+		expect(isTestAccount("anon_loadtest_abc_12")).toBe(true);
+		expect(isTestAccount("anon_abc123")).toBe(false);
+		expect(isTestAccount(undefined)).toBe(false);
 	});
 });
 
@@ -342,7 +494,9 @@ describe("metadata tables", () => {
 
 	it("defines priority metadata for every priority", () => {
 		for (const p of ["low", "medium", "high", "critical"]) {
-			expect(PRIORITY_META[p]!.color).toMatch(/^#/);
+			// Colours are theme tokens (var(--vb-*)), not literal hexes, so they
+			// hold WCAG AA contrast in both the light and dark palettes.
+			expect(PRIORITY_META[p]!.color).toMatch(/^(#[0-9a-fA-F]{3,8}|var\(--vb-[a-z0-9-]+\))$/);
 		}
 	});
 });

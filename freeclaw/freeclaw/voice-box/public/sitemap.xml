@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url><loc>https://voice-box-psi.vercel.app/</loc><lastmod>2026-10-04</lastmod><changefreq>daily</changefreq><priority>1.0</priority></url>
+  <url><loc>https://voice-box-psi.vercel.app/board</loc><lastmod>2026-10-04</lastmod><changefreq>daily</changefreq><priority>0.9</priority></url>
+  <url><loc>https://voice-box-psi.vercel.app/polls</loc><lastmod>2026-10-04</lastmod><changefreq>daily</changefreq><priority>0.8</priority></url>
+  <url><loc>https://voice-box-psi.vercel.app/suggestions</loc><lastmod>2026-10-04</lastmod><changefreq>daily</changefreq><priority>0.8</priority></url>
+  <url><loc>https://voice-box-psi.vercel.app/leaderboard</loc><lastmod>2026-10-04</lastmod><changefreq>daily</changefreq><priority>0.7</priority></url>
+  <url><loc>https://voice-box-psi.vercel.app/communities</loc><lastmod>2026-10-04</lastmod><changefreq>daily</changefreq><priority>0.7</priority></url>
+  <url><loc>https://voice-box-psi.vercel.app/faq</loc><lastmod>2026-10-04</lastmod><changefreq>weekly</changefreq><priority>0.8</priority></url>
+  <url><loc>https://voice-box-psi.vercel.app/about</loc><lastmod>2026-10-04</lastmod><changefreq>monthly</changefreq><priority>0.7</priority></url>
+  <url><loc>https://voice-box-psi.vercel.app/contact</loc><lastmod>2026-10-04</lastmod><changefreq>monthly</changefreq><priority>0.6</priority></url>
+  <url><loc>https://voice-box-psi.vercel.app/download</loc><lastmod>2026-10-04</lastmod><changefreq>weekly</changefreq><priority>0.7</priority></url>
+  <url><loc>https://voice-box-psi.vercel.app/terms</loc><lastmod>2026-10-04</lastmod><changefreq>yearly</changefreq><priority>0.3</priority></url>
+  <url><loc>https://voice-box-psi.vercel.app/privacy</loc><lastmod>2026-10-04</lastmod><changefreq>yearly</changefreq><priority>0.3</priority></url>
+  <url><loc>https://voice-box-psi.vercel.app/accessibility</loc><lastmod>2026-10-04</lastmod><changefreq>yearly</changefreq><priority>0.3</priority></url>
+  <url><loc>https://voice-box-psi.vercel.app/status</loc><lastmod>2026-10-04</lastmod><changefreq>daily</changefreq><priority>0.5</priority></url>
+  <url><loc>https://voice-box-psi.vercel.app/changelog</loc><lastmod>2026-10-04</lastmod><changefreq>weekly</changefreq><priority>0.5</priority></url>
+</urlset>

@@ -1,13 +1,17 @@
-﻿import { Suspense, useCallback, useState } from "react";
-import { BrowserRouter, Route, Routes } from "react-router";
+﻿import { Suspense } from "react";
+import { BrowserRouter, HashRouter, Route, Routes } from "react-router";
 import { PageContextProvider } from "./components/admin/PageContext";
-import ErrorBoundary from "./components/ErrorBoundary";
+import ErrorBoundary, { LoadingSpinner } from "./components/ErrorBoundary";
 import Layout from "./components/Layout";
-import Preloader from "./components/preloader/Preloader";
+import Seo from "./components/Seo";
 import { AppProvider } from "./contexts/AppContext";
+import ToastHost from "./components/ToastHost";
+import { isNativeShell } from "./lib/platform";
 import { retryLazy } from "./lib/retryLazy";
-import Home from "./pages/Home";
 import NotFound from "./pages/NotFound";
+
+// Lazy-load the Home page to reduce initial bundle size (~50KB+ gzipped)
+const Home = retryLazy(() => import("./pages/Home"));
 
 // Code-split non-critical pages — wrapped with retryLazy to auto-recover
 // from chunk load failures (3 retries with exponential backoff)
@@ -32,6 +36,7 @@ const Terms = retryLazy(() => import("./pages/Terms"));
 const StatusPage = retryLazy(() => import("./pages/StatusPage"));
 const Changelog = retryLazy(() => import("./pages/Changelog"));
 const Accessibility = retryLazy(() => import("./pages/Accessibility"));
+const Download = retryLazy(() => import("./pages/Download"));
 const Settings = retryLazy(() => import("./pages/Settings"));
 const Notifications = retryLazy(() => import("./pages/Notifications"));
 
@@ -40,291 +45,87 @@ const Admin = retryLazy(() => import("./pages/Admin"));
 
 const PageFallback = (
 	<div className="min-h-[60vh] grid place-items-center">
-		<div className="skeleton w-48 h-8" />
+		<LoadingSpinner text="Loading page…" motiveOff />
 	</div>
 );
 
-// Wrapper to add ErrorBoundary around each Suspense section so
-// one page crashing doesn't take down the entire app
-function SuspendWithRetry({ children }: { children: React.ReactNode }) {
+// Wrapper to add ErrorBoundary around each route section so
+// one page crashing doesn't take down the entire app. (Suspense for
+// code-split chunks is composed at each call site.)
+function WithPageBoundary({ children }: { children: React.ReactNode }) {
 	return <ErrorBoundary>{children}</ErrorBoundary>;
 }
 
-/**
- * The cinematic boot plays at most ONCE per browser tab session.
- * Persisting the flag in sessionStorage means HMR full reloads, stale-chunk
- * recovery reloads, and plain refreshes never replay the film — the boot
- * experience belongs to a fresh session, not to every reload. A brand-new
- * tab still gets the full experience.
- */
-const PRELOADER_DONE_KEY = "vb:preloader-played";
-
-function readPreloaderDone(): boolean {
-	try {
-		return sessionStorage.getItem(PRELOADER_DONE_KEY) === "1";
-	} catch {
-		return false; // storage unavailable — play the boot film as normal
-	}
+// One place composing Boundary + Suspense — every lazy route gets both
+// without repeating the wrapper JSX 24 times.
+function PageRoute({ El }: { El: React.ComponentType }) {
+	return (
+		<WithPageBoundary>
+			<Suspense fallback={PageFallback}>
+				<El />
+			</Suspense>
+		</WithPageBoundary>
+	);
 }
 
+// Marketing & Legal pages — rendered outside the Layout shell.
+const PUBLIC_ROUTES = [
+	{ path: "/about", El: About },
+	{ path: "/contact", El: Contact },
+	{ path: "/terms", El: Terms },
+	{ path: "/status", El: StatusPage },
+	{ path: "/changelog", El: Changelog },
+	{ path: "/accessibility", El: Accessibility },
+];
+
+// App pages — rendered inside the Layout shell.
+const APP_ROUTES = [
+	{ path: "/", El: Home },
+	{ path: "/submit", El: Submit },
+	{ path: "/post/:id", El: PostDetail },
+	{ path: "/polls", El: Polls },
+	{ path: "/suggestions", El: Suggestions },
+	{ path: "/leaderboard", El: Leaderboard },
+	{ path: "/communities", El: Communities },
+	{ path: "/communities/:slug", El: CommunityDetail },
+	{ path: "/board", El: SolvingBoard },
+	{ path: "/activity", El: MyActivity },
+	{ path: "/saved", El: Saved },
+	{ path: "/search", El: Search },
+	{ path: "/insights", El: Insights },
+	{ path: "/privacy", El: Privacy },
+	{ path: "/faq", El: Faq },
+	{ path: "/chat", El: UserChat },
+	{ path: "/settings", El: Settings },
+	{ path: "/notifications", El: Notifications },
+	{ path: "/download", El: Download },
+];
+
+/**
+ * Direct Boot — the real application mounts immediately. No cinematic boot
+ * layer and no session gate: the app is interactive on first paint. Failures
+ * surface through ErrorBoundary / main.tsx's fatal screen; chunk-load
+ * failures self-heal via retryLazy.
+ */
 export default function App() {
-	const [preloaderDone, setPreloaderDone] =
-		useState<boolean>(readPreloaderDone);
-
-	const finishBoot = useCallback(() => {
-		try {
-			sessionStorage.setItem(PRELOADER_DONE_KEY, "1");
-		} catch {
-			/* storage unavailable — film simply plays again on the next load */
-		}
-		setPreloaderDone(true);
-	}, []);
-
+	// Native shells load over file:// (Electron) or a custom scheme
+	// (Capacitor) with no server rewrites — hash routing keeps every
+	// route working there. Web keeps clean BrowserRouter URLs.
+	const ShellRouter = isNativeShell() ? HashRouter : BrowserRouter;
 	return (
 		<ErrorBoundary>
-			{/* Premium boot layer — unmounts for real on finish so its GPU/timer
-          resources are fully released. Session-guarded: once played in this
-          tab it never replays on reloads. The app mounts beneath it and
-          becomes interactive the moment real readiness flips to READY. */}
-			{!preloaderDone && <Preloader onFinish={finishBoot} />}
 			<AppProvider>
-				<BrowserRouter>
+				<ShellRouter>
 					<Routes>
-						{/* Marketing & Legal pages — no Layout wrapper */}
-						<Route
-							path="/about"
-							element={
-								<SuspendWithRetry>
-									<Suspense fallback={PageFallback}>
-										<About />
-									</Suspense>
-								</SuspendWithRetry>
-							}
-						/>
-						<Route
-							path="/contact"
-							element={
-								<SuspendWithRetry>
-									<Suspense fallback={PageFallback}>
-										<Contact />
-									</Suspense>
-								</SuspendWithRetry>
-							}
-						/>
-						<Route
-							path="/terms"
-							element={
-								<SuspendWithRetry>
-									<Suspense fallback={PageFallback}>
-										<Terms />
-									</Suspense>
-								</SuspendWithRetry>
-							}
-						/>
-						<Route
-							path="/status"
-							element={
-								<SuspendWithRetry>
-									<Suspense fallback={PageFallback}>
-										<StatusPage />
-									</Suspense>
-								</SuspendWithRetry>
-							}
-						/>
-						<Route
-							path="/changelog"
-							element={
-								<SuspendWithRetry>
-									<Suspense fallback={PageFallback}>
-										<Changelog />
-									</Suspense>
-								</SuspendWithRetry>
-							}
-						/>
-						<Route
-							path="/accessibility"
-							element={
-								<SuspendWithRetry>
-									<Suspense fallback={PageFallback}>
-										<Accessibility />
-									</Suspense>
-								</SuspendWithRetry>
-							}
-						/>
+						{PUBLIC_ROUTES.map(({ path, El }) => (
+							<Route key={path} path={path} element={<PageRoute El={El} />} />
+						))}
 
 						{/* App pages — with Layout wrapper */}
 						<Route element={<Layout />}>
-							<Route path="/" element={<Home />} />
-							<Route
-								path="/submit"
-								element={
-									<SuspendWithRetry>
-										<Suspense fallback={PageFallback}>
-											<Submit />
-										</Suspense>
-									</SuspendWithRetry>
-								}
-							/>
-							<Route
-								path="/post/:id"
-								element={
-									<SuspendWithRetry>
-										<Suspense fallback={PageFallback}>
-											<PostDetail />
-										</Suspense>
-									</SuspendWithRetry>
-								}
-							/>
-							<Route
-								path="/polls"
-								element={
-									<SuspendWithRetry>
-										<Suspense fallback={PageFallback}>
-											<Polls />
-										</Suspense>
-									</SuspendWithRetry>
-								}
-							/>
-							<Route
-								path="/suggestions"
-								element={
-									<SuspendWithRetry>
-										<Suspense fallback={PageFallback}>
-											<Suggestions />
-										</Suspense>
-									</SuspendWithRetry>
-								}
-							/>
-							<Route
-								path="/leaderboard"
-								element={
-									<SuspendWithRetry>
-										<Suspense fallback={PageFallback}>
-											<Leaderboard />
-										</Suspense>
-									</SuspendWithRetry>
-								}
-							/>
-							<Route
-								path="/communities"
-								element={
-									<SuspendWithRetry>
-										<Suspense fallback={PageFallback}>
-											<Communities />
-										</Suspense>
-									</SuspendWithRetry>
-								}
-							/>
-							<Route
-								path="/communities/:slug"
-								element={
-									<SuspendWithRetry>
-										<Suspense fallback={PageFallback}>
-											<CommunityDetail />
-										</Suspense>
-									</SuspendWithRetry>
-								}
-							/>
-							<Route
-								path="/board"
-								element={
-									<SuspendWithRetry>
-										<Suspense fallback={PageFallback}>
-											<SolvingBoard />
-										</Suspense>
-									</SuspendWithRetry>
-								}
-							/>
-							<Route
-								path="/activity"
-								element={
-									<SuspendWithRetry>
-										<Suspense fallback={PageFallback}>
-											<MyActivity />
-										</Suspense>
-									</SuspendWithRetry>
-								}
-							/>
-							<Route
-								path="/saved"
-								element={
-									<SuspendWithRetry>
-										<Suspense fallback={PageFallback}>
-											<Saved />
-										</Suspense>
-									</SuspendWithRetry>
-								}
-							/>
-							<Route
-								path="/search"
-								element={
-									<SuspendWithRetry>
-										<Suspense fallback={PageFallback}>
-											<Search />
-										</Suspense>
-									</SuspendWithRetry>
-								}
-							/>
-							<Route
-								path="/insights"
-								element={
-									<SuspendWithRetry>
-										<Suspense fallback={PageFallback}>
-											<Insights />
-										</Suspense>
-									</SuspendWithRetry>
-								}
-							/>
-							<Route
-								path="/privacy"
-								element={
-									<SuspendWithRetry>
-										<Suspense fallback={PageFallback}>
-											<Privacy />
-										</Suspense>
-									</SuspendWithRetry>
-								}
-							/>
-							<Route
-								path="/faq"
-								element={
-									<SuspendWithRetry>
-										<Suspense fallback={PageFallback}>
-											<Faq />
-										</Suspense>
-									</SuspendWithRetry>
-								}
-							/>
-							<Route
-								path="/chat"
-								element={
-									<SuspendWithRetry>
-										<Suspense fallback={PageFallback}>
-											<UserChat />
-										</Suspense>
-									</SuspendWithRetry>
-								}
-							/>
-							<Route
-								path="/settings"
-								element={
-									<SuspendWithRetry>
-										<Suspense fallback={PageFallback}>
-											<Settings />
-										</Suspense>
-									</SuspendWithRetry>
-								}
-							/>
-							<Route
-								path="/notifications"
-								element={
-									<SuspendWithRetry>
-										<Suspense fallback={PageFallback}>
-											<Notifications />
-										</Suspense>
-									</SuspendWithRetry>
-								}
-							/>
+							{APP_ROUTES.map(({ path, El }) => (
+								<Route key={path} path={path} element={<PageRoute El={El} />} />
+							))}
 						</Route>
 
 						{/* Admin — code-split, PageContext wrapped, with own ErrorBoundary */}
@@ -336,7 +137,7 @@ export default function App() {
 										<Suspense
 											fallback={
 												<div className="min-h-screen grid place-items-center bg-bg">
-													<div className="skeleton w-64 h-32" />
+													<LoadingSpinner text="Loading admin…" motiveOff />
 												</div>
 											}
 										>
@@ -350,7 +151,10 @@ export default function App() {
 						{/* 404 */}
 						<Route path="*" element={<NotFound />} />
 					</Routes>
-				</BrowserRouter>
+					{/* Per-route title + canonical + 404 noindex (SEO) */}
+					<Seo />
+					<ToastHost />
+				</ShellRouter>
 			</AppProvider>
 		</ErrorBoundary>
 	);
