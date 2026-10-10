@@ -1,7 +1,7 @@
 ﻿import { Suspense } from "react";
 import { BrowserRouter, HashRouter, Route, Routes } from "react-router";
 import { PageContextProvider } from "./components/admin/PageContext";
-import ErrorBoundary from "./components/ErrorBoundary";
+import ErrorBoundary, { LoadingSpinner } from "./components/ErrorBoundary";
 import Layout from "./components/Layout";
 import Seo from "./components/Seo";
 import { AppProvider } from "./contexts/AppContext";
@@ -45,7 +45,7 @@ const Admin = retryLazy(() => import("./pages/Admin"));
 
 const PageFallback = (
 	<div className="min-h-[60vh] grid place-items-center">
-		<div className="skeleton w-48 h-8" role="status" aria-label="Loading page…" />
+		<LoadingSpinner text="Loading page…" motiveOff />
 	</div>
 );
 
@@ -137,7 +137,7 @@ export default function App() {
 										<Suspense
 											fallback={
 												<div className="min-h-screen grid place-items-center bg-bg">
-													<div className="skeleton w-64 h-32" />
+													<LoadingSpinner text="Loading admin…" motiveOff />
 												</div>
 											}
 										>
