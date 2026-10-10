@@ -45,6 +45,18 @@ describe("patchMainActivity", () => {
 		);
 	});
 
+	it("adds an onCreate override to the minimal subclass template", () => {
+		const minimal = `package app.voicebox;\n\nimport com.getcapacitor.BridgeActivity;\n\npublic class MainActivity extends BridgeActivity {}\n`;
+		const out = patchMainActivity(minimal);
+		expect(out).toContain("protected void onCreate(android.os.Bundle savedInstanceState)");
+		expect(out).toContain("setAcceptThirdPartyCookies");
+		expect(out.indexOf("super.onCreate(savedInstanceState);")).toBeLessThan(
+			out.indexOf("setAcceptThirdPartyCookies"),
+		);
+		// Idempotent on the generated form too.
+		expect(patchMainActivity(out)).toBe(out);
+	});
+
 	it("fails loudly when the template has no super.onCreate anchor", () => {
 		expect(() =>
 			patchMainActivity("package x;\npublic class MainActivity {}\n"),

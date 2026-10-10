@@ -2,7 +2,7 @@ import { ArrowDownToLine, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { lsGet, lsSet } from "../lib/identity";
 import { apiBase, isNativeShell } from "../lib/platform";
-import { detectDevicePlatform, pickDownload } from "../pages/Download";
+import { detectDevicePlatform, pickDownload } from "../lib/download";
 
 export type InstallPromptKind = "native" | "ios" | null;
 

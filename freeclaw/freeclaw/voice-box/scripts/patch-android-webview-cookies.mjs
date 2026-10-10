@@ -23,6 +23,11 @@ import { join, resolve } from "node:path";
 
 export const MARKER = "voice-flow-webview-cookies";
 const SUPER_ON_CREATE = "super.onCreate(savedInstanceState);";
+// Minimal `cap add` output has no onCreate at all — just an empty
+// BridgeActivity subclass. Recognized exactly (nothing else qualifies),
+// so the script still refuses to guess on foreign shapes.
+const MINIMAL_SUBCLASS_RE =
+	/public\s+class\s+MainActivity\s+extends\s+BridgeActivity\s*\{\s*\}/;
 
 const COOKIE_BLOCK = [
 	`        // ${MARKER}: the session cookie (vb_session) is third-party`,
@@ -37,6 +42,14 @@ const COOKIE_BLOCK = [
 	"        }",
 ].join("\n");
 
+const ON_CREATE_OVERRIDE = [
+	"    @Override",
+	"    protected void onCreate(android.os.Bundle savedInstanceState) {",
+	`        ${SUPER_ON_CREATE}`,
+	COOKIE_BLOCK,
+	"    }",
+].join("\n");
+
 /**
  * Insert the cookie-acceptance block after super.onCreate(). Pure — operates
  * on source text only. Idempotent: a source already carrying the marker is
@@ -46,13 +59,22 @@ const COOKIE_BLOCK = [
 export function patchMainActivity(source) {
 	if (source.includes(MARKER)) return source;
 	const anchor = source.indexOf(SUPER_ON_CREATE);
-	if (anchor === -1) {
-		throw new Error(
-			`patch-android-webview-cookies: no "${SUPER_ON_CREATE}" anchor found — refusing to guess where the WebView exists`,
+	if (anchor !== -1) {
+		const insertAt = anchor + SUPER_ON_CREATE.length;
+		return `${source.slice(0, insertAt)}\n${COOKIE_BLOCK}${source.slice(insertAt)}`;
+	}
+	// Minimal template: no onCreate to anchor to. Add the override with the
+	// cookie block inside it — same calls, same order, fully-qualified
+	// Bundle so no import edit is needed.
+	if (MINIMAL_SUBCLASS_RE.test(source)) {
+		return source.replace(
+			MINIMAL_SUBCLASS_RE,
+			(m) => m.replace(/\{\s*\}$/, "{\n" + ON_CREATE_OVERRIDE + "\n}"),
 		);
 	}
-	const insertAt = anchor + SUPER_ON_CREATE.length;
-	return `${source.slice(0, insertAt)}\n${COOKIE_BLOCK}${source.slice(insertAt)}`;
+	throw new Error(
+		`patch-android-webview-cookies: no "${SUPER_ON_CREATE}" anchor found — refusing to guess where the WebView exists`,
+	);
 }
 
 function findMainActivities(dir, out = []) {

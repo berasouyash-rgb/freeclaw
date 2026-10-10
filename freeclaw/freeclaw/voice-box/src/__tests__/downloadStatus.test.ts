@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { detectDevicePlatform, pickDownload } from "../pages/Download";
+import { detectDevicePlatform, pickDownload } from "../lib/download";
 import { statusLabel } from "../pages/PostDetail";
 
 describe("detectDevicePlatform", () => {
