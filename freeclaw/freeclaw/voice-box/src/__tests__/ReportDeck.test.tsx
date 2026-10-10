@@ -93,7 +93,7 @@ describe("ReportDeck section selection", () => {
 		await waitFor(() => {
 			expect(mocks.buildPptx).toHaveBeenCalledTimes(1);
 		});
-		const [, sections] = mocks.buildPptx.mock.calls[0] as [
+		const [, sections] = mocks.buildPptx.mock.calls[0] as unknown as [
 			unknown,
 			string[],
 		];

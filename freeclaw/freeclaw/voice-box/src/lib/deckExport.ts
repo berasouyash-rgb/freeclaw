@@ -124,12 +124,12 @@ function complaintsSlide(pres: Pres, spec: DeckSpec): void {
 		if (spec.top_supported.length > 0) {
 			slide.addTable(
 				[
-					["Title", "Category", "Status", "Score"],
+					[{ text: "Title" }, { text: "Category" }, { text: "Status" }, { text: "Score" }],
 					...spec.top_supported.slice(0, 8).map((p) => [
-						p.title ?? "(untitled)",
-						p.category ?? "Other",
-						p.status ?? "open",
-						String(p.score ?? 0),
+						{ text: p.title ?? "(untitled)" },
+						{ text: p.category ?? "Other" },
+						{ text: p.status ?? "open" },
+						{ text: String(p.score ?? 0) },
 					]),
 				],
 				{ x: 0.5, y: 1.4, w: 7.4, fontSize: 10, color: INK },
