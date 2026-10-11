@@ -238,10 +238,17 @@ export default function UserChat() {
 	const loaderTimerRef = useRef<number | null>(null);
 	const mountedRef = useRef(true);
 	useEffect(() => {
+		// Remounts must re-arm: StrictMode (dev/E2E) runs this cleanup
+		// spuriously, and without re-arming + nulling the timer ref the
+		// next holdLoaderForFullStory() early-returns on the stale ref and
+		// the loader sticks forever on fast responses.
+		mountedRef.current = true;
 		return () => {
 			mountedRef.current = false;
-			if (loaderTimerRef.current !== null)
+			if (loaderTimerRef.current !== null) {
 				window.clearTimeout(loaderTimerRef.current);
+				loaderTimerRef.current = null;
+			}
 		};
 	}, []);
 
