@@ -26,6 +26,7 @@ import { buildPptx } from "../../lib/deckExport";
 import {
 	DECK_SECTIONS,
 	DEFAULT_SECTIONS,
+	NARRATION_KEYS,
 	buildSlides,
 	filterSections,
 	isEmptySpec,
@@ -233,38 +234,6 @@ function Hero({ value, label, delay = 0 }: { value: number; label: string; delay
 }
 
 /** Plain-language explainer lines, computed from the same live numbers. */
-function explainers(spec: DeckSpec) {
-	const t = spec.totals;
-	const topCat = spec.by_category[0];
-	const topPoll = spec.top_polls[0];
-	const weeks = spec.solved_by_week.slice(-8);
-	const lastW = weeks[weeks.length - 1];
-	const prevW = weeks[weeks.length - 2];
-	const rate = t.posts > 0 ? Math.round((t.solved / t.posts) * 100) : 0;
-	return {
-		cover: `${t.posts} posts in scope, ${t.open} still open. Resolution rate ${rate}%.`,
-		complaints:
-			topCat && t.open > 0
-				? `${topCat.category} holds ${topCat.open} of ${t.open} open items (${Math.round((topCat.open / t.open) * 100)}%) — fix this category first.`
-				: "No open complaints right now.",
-		feed: `${t.solved} of ${t.posts} posts resolved (${rate}%). The ring is the share done.`,
-		reports:
-			t.reports_open > 0
-				? `${t.reports_open} report${t.reports_open === 1 ? " needs" : "s need"} a human decision; ${t.reports_resolved} already resolved.`
-				: "The moderation queue is clear.",
-		polls:
-			topPoll && t.votes > 0
-				? `“${topPoll.title}” leads with ${topPoll.total} of ${t.votes} votes (${Math.round((topPoll.total / t.votes) * 100)}%).`
-				: "No votes cast yet — feature the polls to start participation.",
-		trends:
-			lastW && prevW
-				? `Last week: ${lastW.solved} solved vs ${prevW.solved} the week before.`
-				: lastW
-					? `Last week: ${lastW.solved} solved.`
-					: "No resolutions recorded yet.",
-		actions: `${spec.recommendations.length} recommended move${spec.recommendations.length === 1 ? "" : "s"}, each labeled with the rule that fired.`,
-	};
-}
 
 export default function ReportDeck() {
 	const { toast } = useApp();
@@ -274,6 +243,16 @@ export default function ReportDeck() {
 	const [selected, setSelected] = useState<SectionKey[]>([...DEFAULT_SECTIONS]);
 	const [index, setIndex] = useState(0);
 	const [exporting, setExporting] = useState(false);
+	const [aiNotes, setAiNotes] = useState<Record<string, string> | null>(null);
+	const [aiEngine, setAiEngine] = useState<string | null>(null);
+	const [narrating, setNarrating] = useState(false);
+	const [promptText, setPromptText] = useState("");
+
+	const TONE_PRESETS = [
+		{ label: "Assembly", prompt: "For a school assembly, upbeat and short" },
+		{ label: "Parents tone", prompt: "For parents, reassuring tone" },
+		{ label: "Staff briefing", prompt: "For a staff briefing, direct and action-focused" },
+	];
 
 	const load = useCallback(async () => {
 		setLoading(true);
@@ -323,15 +302,44 @@ export default function ReportDeck() {
 		if (!spec || exporting) return;
 		setExporting(true);
 		try {
-			await buildPptx(spec, filterSections(selected));
+			await buildPptx(spec, filterSections(selected), undefined, aiNotes ?? undefined);
 			toast("Presentation downloaded — exactly the pages you ticked", "ok");
 		} catch (e: unknown) {
 			toast(`PPT export failed: ${errorText(e)}`, "err");
 		}
 		setExporting(false);
-	}, [spec, selected, exporting, toast]);
+	}, [spec, selected, exporting, aiNotes, toast]);
 
-	const expl = spec ? explainers(spec) : null;
+	const doNarrate = useCallback(async () => {
+		if (!spec || narrating) return;
+		setNarrating(true);
+		try {
+			const prompt = promptText.trim();
+			const r = await api.post<{ engine?: string; notes?: Record<string, string> }>(
+				"/api/ai",
+				{ task: "narrate", brief: spec, ...(prompt ? { prompt } : {}) },
+			);
+			const okNotes =
+				r?.notes &&
+				NARRATION_KEYS.every(
+					(k) => typeof r.notes?.[k] === "string" && (r.notes[k]?.length ?? 0) > 0,
+				);
+			if (r?.engine && r.engine !== "rules" && okNotes) {
+				setAiNotes(r.notes as Record<string, string>);
+				setAiEngine(r.engine);
+				toast(`Narrated by ${r.engine}`, "ok");
+			} else {
+				setAiNotes(null);
+				setAiEngine(null);
+				toast("AI unavailable — rule notes kept", "err");
+			}
+		} catch (e: unknown) {
+			toast(`AI narration failed: ${errorText(e)} — rule notes kept`, "err");
+		}
+		setNarrating(false);
+	}, [spec, narrating, promptText, toast]);
+
+	const expl = spec ? (aiNotes ?? spec.narrations) : null;
 
 	return (
 		<div>
@@ -368,6 +376,15 @@ export default function ReportDeck() {
 					</button>
 					<button
 						type="button"
+						className="btn btn-soft !text-xs"
+						onClick={() => void doNarrate()}
+						disabled={!spec || narrating}
+						title="Rewrite the presenter notes with the configured AI provider — rule notes stay until it answers"
+					>
+						{narrating ? "Narrating…" : "Narrate with AI"}
+					</button>
+					<button
+						type="button"
 						className="btn btn-primary !text-xs"
 						onClick={() => void doExport()}
 						disabled={!spec || exporting}
@@ -379,7 +396,7 @@ export default function ReportDeck() {
 
 			{/* ── Page picker ── */}
 			<div className="glass-card rounded-2xl p-4 mb-5 print:hidden">
-				<div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+				<div className="flex items-center justify-between mb-1 flex-wrap gap-2">
 					<p className="font-mono text-[11px] font-semibold uppercase tracking-[0.18em] text-ink3">
 						Pages in this deck
 					</p>
@@ -404,6 +421,40 @@ export default function ReportDeck() {
 						>
 							Clear
 						</button>
+					</div>
+				</div>
+				<p className="font-mono text-[10px] uppercase tracking-[0.18em] text-ink3 mb-3">
+					{aiEngine ? `Narrated by ${aiEngine}` : "Rule notes"}
+				</p>
+				{/* ── "Simply type how it should be" — the presenter's
+				    direction travels with the narrate request; rule notes
+				    stay until the chain answers. */}
+				<div className="mb-3">
+					<label
+						htmlFor="deck-prompt"
+						className="block text-[11px] font-semibold text-ink2 mb-1.5"
+					>
+						Describe this presentation
+					</label>
+					<input
+						id="deck-prompt"
+						className="input !text-xs"
+						placeholder="e.g. For parents, reassuring tone — focus on canteen and safety"
+						value={promptText}
+						onChange={(e) => setPromptText(e.target.value)}
+						maxLength={500}
+					/>
+					<div className="flex flex-wrap gap-1.5 mt-2">
+						{TONE_PRESETS.map((p) => (
+							<button
+								key={p.label}
+								type="button"
+								className="btn btn-ghost !text-[11px] !py-1 !px-2.5 rounded-full"
+								onClick={() => setPromptText(p.prompt)}
+							>
+								{p.label}
+							</button>
+						))}
 					</div>
 				</div>
 				<div className="grid grid-cols-2 sm:grid-cols-3 gap-2">

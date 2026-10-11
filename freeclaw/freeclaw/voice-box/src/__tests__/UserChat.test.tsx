@@ -1179,3 +1179,53 @@ describe("UserChat — visible auto-peek", () => {
 		20000,
 	);
 });
+
+describe("UserChat — starter chips invite the first message", () => {
+	function renderEmpty() {
+		mocks.get.mockResolvedValueOnce({
+			messages: [],
+			thread: { thread_id: "anon-test", status: "open" },
+		});
+		mocks.getFresh.mockResolvedValueOnce({
+			messages: [],
+			thread: { thread_id: "anon-test", status: "open" },
+		});
+		renderPage();
+	}
+
+	it("offers starters when the conversation is empty", async () => {
+		renderEmpty();
+		expect(await screen.findByText("No messages yet")).toBeInTheDocument();
+		for (const label of [
+			"Help me write a complaint",
+			"What can you help with?",
+			"I feel unsafe",
+		]) {
+			expect(screen.getByRole("button", { name: label })).toBeInTheDocument();
+		}
+	});
+
+	it("a chip fills the composer for review — it never sends on its own", async () => {
+		renderEmpty();
+		const chip = await screen.findByRole("button", {
+			name: "Help me write a complaint",
+		});
+		fireEvent.click(chip);
+		expect(screen.getByLabelText("Chat message")).toHaveValue(
+			"I need help writing a complaint about ",
+		);
+		// Filling is not sending: the pipeline sees nothing until Send.
+		expect(mocks.postInbox).not.toHaveBeenCalled();
+		expect(mocks.post).not.toHaveBeenCalled();
+	});
+
+	it("hides the starters once messages exist", async () => {
+		renderPage();
+		await waitFor(() =>
+			expect(screen.getByText("Hello! How can I help?")).toBeTruthy(),
+		);
+		expect(
+			screen.queryByRole("button", { name: "Help me write a complaint" }),
+		).not.toBeInTheDocument();
+	});
+});

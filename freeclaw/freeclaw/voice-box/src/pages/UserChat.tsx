@@ -34,6 +34,16 @@ import {
 } from "../lib/speech";
 import type { ChatMessage } from "../types";
 
+// Starter chips for the empty inbox — one tap fills the composer for
+// review; nothing sends until the student taps Send. They route into
+// the existing agent pipeline (drafting help, capabilities, safety),
+// so the AI gets engaged instead of facing a blank box.
+const STARTER_CHIPS = [
+	{ label: "Help me write a complaint", fill: "I need help writing a complaint about " },
+	{ label: "What can you help with?", fill: "What can you help me with?" },
+	{ label: "I feel unsafe", fill: "I feel unsafe and need help" },
+];
+
 interface InboxResponse {
 	messages: ChatMessage[];
 	thread: { thread_id: string; status: string };
@@ -708,6 +718,20 @@ export default function UserChat() {
 							Send a message to reach the support team anonymously. Our AI
 							responds instantly.
 						</p>
+						{/* Starter chips — one tap fills the box for review;
+						    nothing sends until Send is tapped. */}
+						<div className="flex flex-wrap justify-center gap-2 mt-4" role="group" aria-label="Start with">
+							{STARTER_CHIPS.map((chip) => (
+								<button
+									key={chip.label}
+									type="button"
+									onClick={() => setText(chip.fill)}
+									className="btn btn-ghost !text-xs !rounded-full vb-pop"
+								>
+									{chip.label}
+								</button>
+							))}
+						</div>
 					</div>
 				)}
 				{messages.map((m) => (

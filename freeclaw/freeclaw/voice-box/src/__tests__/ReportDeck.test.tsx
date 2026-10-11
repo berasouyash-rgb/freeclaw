@@ -113,8 +113,7 @@ describe("ReportDeck section selection", () => {
 	});
 });
 
-describe("ReportDeck honesty", () => {
-	it("renders an honest empty on an empty database — no fabricated numbers", async () => {
+describe("ReportDeck honesty", () => {	it("renders an honest empty on an empty database — no fabricated numbers", async () => {
 		mocks.getSlow.mockResolvedValueOnce(emptySpec());
 		renderDeck();
 		expect(await screen.findByText(/No data yet/i)).toBeInTheDocument();
@@ -136,5 +135,126 @@ describe("ReportDeck honesty", () => {
 		expect(
 			screen.getByRole("button", { name: /Previous slide/i }),
 		).toBeInTheDocument();
+	});
+});
+
+describe("ReportDeck presenter notes", () => {
+	it("renders the spec's rule notes under each slide", async () => {
+		mocks.getSlow.mockResolvedValueOnce(cannedSpec());
+		renderDeck();
+		expect(
+			await screen.findByText(/fix this category first/i),
+		).toBeInTheDocument();
+		expect(screen.getByText(/Rule notes/i)).toBeInTheDocument();
+	});
+
+	it("Narrate with AI swaps in engine-labeled notes", async () => {
+		mocks.getSlow.mockResolvedValueOnce(cannedSpec());
+		mocks.post.mockResolvedValueOnce({
+			engine: "test:test-model",
+			notes: {
+				cover: "AI cover line.",
+				complaints: "AI complaints line.",
+				feed: "AI feed line.",
+				reports: "AI reports line.",
+				polls: "AI polls line.",
+				trends: "AI trends line.",
+				actions: "AI actions line.",
+			},
+		});
+		renderDeck();
+		await screen.findByText(/fix this category first/i);
+		fireEvent.click(screen.getByRole("button", { name: /Narrate with AI/i }));
+		expect(await screen.findByText(/AI complaints line/)).toBeInTheDocument();
+		expect(screen.getByText(/Narrated by test:test-model/i)).toBeInTheDocument();
+	});
+
+	it("keeps rule notes and says so when AI is unavailable", async () => {
+		mocks.getSlow.mockResolvedValueOnce(cannedSpec());
+		mocks.post.mockResolvedValueOnce({ engine: "rules", notes: {} });
+		renderDeck();
+		await screen.findByText(/fix this category first/i);
+		fireEvent.click(screen.getByRole("button", { name: /Narrate with AI/i }));
+		await waitFor(() => {
+			expect(mocks.toast).toHaveBeenCalledWith(
+				expect.stringMatching(/AI unavailable/i),
+				"err",
+			);
+		});
+		expect(screen.getByText(/fix this category first/i)).toBeInTheDocument();
+	});
+
+	it("keeps rule notes when narration fails outright", async () => {
+		mocks.getSlow.mockResolvedValueOnce(cannedSpec());
+		mocks.post.mockRejectedValueOnce(new Error("down"));
+		renderDeck();
+		await screen.findByText(/fix this category first/i);
+		fireEvent.click(screen.getByRole("button", { name: /Narrate with AI/i }));
+		await waitFor(() => {
+			expect(mocks.toast).toHaveBeenCalledWith(
+				expect.stringMatching(/narration failed/i),
+				"err",
+			);
+		});
+		expect(screen.getByText(/fix this category first/i)).toBeInTheDocument();
+	});
+
+	it("exports the narrated notes as PPT speaker notes", async () => {
+		const aiNotes = {
+			cover: "AI cover line.",
+			complaints: "AI complaints line.",
+			feed: "AI feed line.",
+			reports: "AI reports line.",
+			polls: "AI polls line.",
+			trends: "AI trends line.",
+			actions: "AI actions line.",
+		};
+		mocks.getSlow.mockResolvedValueOnce(cannedSpec());
+		mocks.post.mockResolvedValueOnce({ engine: "test:test-model", notes: aiNotes });
+		renderDeck();
+		await screen.findByText(/fix this category first/i);
+		fireEvent.click(screen.getByRole("button", { name: /Narrate with AI/i }));
+		await screen.findByText(/AI complaints line/);
+		fireEvent.click(screen.getByRole("button", { name: /Export PPT/ }));
+		await waitFor(() => {
+			expect(mocks.buildPptx).toHaveBeenCalledTimes(1);
+		});
+		const args = mocks.buildPptx.mock.calls[0] as unknown as [
+			unknown,
+			string[],
+			unknown?,
+			Record<string, string>?,
+		];
+		expect(args[3]).toEqual(aiNotes);
+	});
+
+	it("sends the typed presentation prompt with the narrate request", async () => {
+		mocks.getSlow.mockResolvedValueOnce(cannedSpec());
+		mocks.post.mockResolvedValueOnce({ engine: "rules", notes: {} });
+		renderDeck();
+		await screen.findByText(/fix this category first/i);
+		fireEvent.change(screen.getByLabelText(/Describe this presentation/i), {
+			target: { value: "For parents, reassuring tone" },
+		});
+		fireEvent.click(screen.getByRole("button", { name: /Narrate with AI/i }));
+		await waitFor(() => {
+			expect(mocks.post).toHaveBeenCalledWith(
+				"/api/ai",
+				expect.objectContaining({
+					task: "narrate",
+					prompt: "For parents, reassuring tone",
+				}),
+			);
+		});
+	});
+
+	it("a tone preset fills the prompt box", async () => {
+		mocks.getSlow.mockResolvedValueOnce(cannedSpec());
+		renderDeck();
+		await screen.findByText(/fix this category first/i);
+		fireEvent.click(screen.getByRole("button", { name: /Parents tone/i }));
+		expect(screen.getByLabelText(/Describe this presentation/i)).toHaveValue(
+			"For parents, reassuring tone",
+		);
 	});
 });

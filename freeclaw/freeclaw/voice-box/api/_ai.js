@@ -5,6 +5,7 @@ import { cors, isAdmin } from "./_auth.js";
 import { sanitizeError } from "./_error.js";
 import { logger } from "./_observability.js";
 import { callLLMChain } from "./_providers.js";
+import { NARRATION_KEYS, buildNarrations } from "./_report-deck.js";
 
 function parseJson(text) {
 	try {
@@ -16,6 +17,17 @@ function parseJson(text) {
 	} catch {
 		return null;
 	}
+}
+
+/** Every slide key present, each a short non-blank string. */
+function validNotes(notes) {
+	if (!notes || typeof notes !== "object") return false;
+	return NARRATION_KEYS.every(
+		(k) =>
+			typeof notes[k] === "string" &&
+			notes[k].trim().length > 0 &&
+			notes[k].length <= 280,
+	);
 }
 
 /** Call LLM via the shared provider chain. Returns parsed JSON or null. */
@@ -477,6 +489,51 @@ export default async function handler(req, res) {
 						? "No votes yet — share the poll to gather opinions."
 						: `"${opt}" leads with ${pct}% of ${total} vote${total !== 1 ? "s" : ""}${pct >= 70 ? " — a strong consensus." : pct >= 50 ? " — a clear majority." : " — opinions are split."}`,
 			});
+		}
+
+		if (task === "narrate") {
+			if (!(await isAdmin(req)))
+				return res.status(403).json({ error: "Admin only" });
+			// The brief is identity-free aggregates (the deck spec) — never
+			// raw user rows. Raw LLM text returns notes only; it never
+			// mutates state and never reaches a number the rules computed.
+			const brief =
+				req.body && typeof req.body.brief === "object" ? req.body.brief : {};
+			// The presenter's typed direction ("for parents, reassuring").
+			// Capped and string-only: anything else is ignored, never pasted.
+			const prompt =
+				typeof req.body?.prompt === "string"
+					? req.body.prompt.slice(0, 500)
+					: "";
+			const ruleNotes = buildNarrations(brief);			const capped = {
+				totals: brief?.totals || {},
+				by_category: (brief?.by_category || []).slice(0, 8),
+				by_status: brief?.by_status || [],
+				top_supported: (brief?.top_supported || []).slice(0, 8).map((p) => ({
+					title: p?.title,
+					category: p?.category,
+					status: p?.status,
+					score: p?.score,
+				})),
+				top_polls: (brief?.top_polls || []).slice(0, 5),
+				solved_by_week: (brief?.solved_by_week || []).slice(-8),
+				recommendations: (brief?.recommendations || []).map((r) => ({
+					rule: r?.rule,
+					text: String(r?.text || "").slice(0, 200),
+				})),
+			};
+			let ai = null;
+			try {
+				ai = await callLLMJson(
+					"You are a presentation coach for a school assembly. For each of the 7 slides (cover, complaints, feed, reports, polls, trends, actions), write ONE presenter sentence of at most 25 words. Use ONLY numbers and titles present in the brief — never invent totals, percents, or titles.",
+					`Deck brief JSON:\n${JSON.stringify(capped)}${prompt ? `\n\nPresenter request: ${prompt}` : ""}\n\nReturn JSON: {"notes": {"cover": string, "complaints": string, "feed": string, "reports": string, "polls": string, "trends": string, "actions": string}}`,
+				);
+			} catch {
+				ai = null;
+			}
+			if (ai?.result && validNotes(ai.result.notes))
+				return res.status(200).json({ engine: ai.engine, notes: ai.result.notes });
+			return res.status(200).json({ engine: "rules", notes: ruleNotes });
 		}
 
 		return res.status(400).json({ error: "Unknown task" });
