@@ -34,8 +34,7 @@ function weekKey(iso) {
  * unit-testable without I/O, and every entry names its rule so the admin
  * sees WHY, not just what. Thresholds are deliberately round and documented.
  */
-export function buildRecommendations(ctx) {
-	const out = [];
+export function buildRecommendations(ctx) {	const out = [];
 	const open = ctx.openPosts || [];
 	const live = ctx.livePosts || [];
 	// R1 — a single category dominates the open queue (≥30%, ≥3 open).
@@ -81,6 +80,69 @@ export function buildRecommendations(ctx) {
 		});
 	}
 	return out;
+}
+
+export const NARRATION_KEYS = [
+	"cover",
+	"complaints",
+	"feed",
+	"reports",
+	"polls",
+	"trends",
+	"actions",
+];
+
+/**
+ * Deterministic presenter notes — one sentence per slide, computed from
+ * the same aggregates the charts render. Single source of truth: the
+ * deck viewer renders these, the AI narrate task falls back to these,
+ * and the PPT speaker notes quote these. Total function: malformed
+ * aggregates yield honest empty-state lines, never throws, never NaN.
+ */
+export function buildNarrations(agg) {
+	const src = agg && typeof agg === "object" ? agg : {};
+	const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
+	const t = src.totals && typeof src.totals === "object" ? src.totals : {};
+	const posts = num(t.posts);
+	const open = num(t.open);
+	const solved = num(t.solved);
+	const repOpen = num(t.reports_open);
+	const repDone = num(t.reports_resolved);
+	const votes = num(t.votes);
+	const cats = Array.isArray(src.by_category) ? src.by_category : [];
+	const polls = Array.isArray(src.top_polls) ? src.top_polls : [];
+	const weeks = Array.isArray(src.solved_by_week)
+		? src.solved_by_week.slice(-8)
+		: [];
+	const recs = Array.isArray(src.recommendations) ? src.recommendations : [];
+	const rate = posts > 0 ? Math.round((solved / posts) * 100) : 0;
+	const lead = cats[0] || null;
+	const leadPoll = polls[0] || null;
+	const lastW = weeks[weeks.length - 1] || null;
+	const prevW = weeks[weeks.length - 2] || null;
+	return {
+		cover: `${posts} posts in scope, ${open} still open. Resolution rate ${rate}%.`,
+		complaints:
+			lead && open > 0
+				? `${String(lead.category ?? "Top category")} holds ${num(lead.open)} of ${open} open items (${Math.round((num(lead.open) / open) * 100)}%) — fix this category first.`
+				: "No open complaints right now.",
+		feed: `${solved} of ${posts} posts resolved (${rate}%). The ring is the share done.`,
+		reports:
+			repOpen > 0
+				? `${repOpen} report${repOpen === 1 ? " needs" : "s need"} a human decision; ${repDone} already resolved.`
+				: "The moderation queue is clear.",
+		polls:
+			leadPoll && votes > 0
+				? `“${String(leadPoll.title ?? "(untitled)")}” leads with ${num(leadPoll.total)} of ${votes} votes (${Math.round((num(leadPoll.total) / votes) * 100)}%).`
+				: "No votes cast yet — feature the polls to start participation.",
+		trends:
+			lastW && prevW
+				? `Last week: ${num(lastW.solved)} solved vs ${num(prevW.solved)} the week before.`
+				: lastW
+					? `Week of ${String(lastW.week ?? "?")}: ${num(lastW.solved)} solved.`
+					: "No resolutions recorded yet.",
+		actions: `${recs.length} recommended move${recs.length === 1 ? "" : "s"}, each labeled with the rule that fired.`,
+	};
 }
 
 export default async function handler(req, res) {
@@ -203,25 +265,35 @@ export default async function handler(req, res) {
 			quietPolls,
 		});
 
+		const totals = {
+			posts: live.length,
+			open: open.length,
+			solved: solved.length,
+			reports_open: reports.filter((r) => r.status !== "resolved").length,
+			reports_resolved: reports.filter((r) => r.status === "resolved").length,
+			polls: polls.length,
+			votes: Object.values(pvMap).reduce((n, v) => n + v, 0),
+		};
 		return res.status(200).json({
 			version: DECK_VERSION,
 			generated_at: new Date().toISOString(),
 			window: POST_WINDOW,
-			totals: {
-				posts: live.length,
-				open: open.length,
-				solved: solved.length,
-				reports_open: reports.filter((r) => r.status !== "resolved").length,
-				reports_resolved: reports.filter((r) => r.status === "resolved").length,
-				polls: polls.length,
-				votes: Object.values(pvMap).reduce((n, v) => n + v, 0),
-			},
+			totals,
 			by_category,
 			by_status,
 			top_supported,
 			top_polls,
 			solved_by_week,
 			recommendations,
+			narrations: buildNarrations({
+				totals,
+				by_category,
+				by_status,
+				top_supported,
+				top_polls,
+				solved_by_week,
+				recommendations,
+			}),
 		});
 	} catch (err) {
 		return sanitizeError(res, err, "report-deck");

@@ -13,7 +13,7 @@ import { buildPptx } from "../lib/deckExport";
 import { cannedSpec, emptySpec } from "./deckSpecFixture";
 
 function stubPres() {
-	const slides: { texts: string[][]; tables: unknown[]; charts: unknown[] }[] =
+	const slides: { texts: string[][]; tables: unknown[]; charts: unknown[]; notes: string[] }[] =
 		[];
 	const pres = {
 		slides,
@@ -24,6 +24,7 @@ function stubPres() {
 				texts: [] as string[][],
 				tables: [] as unknown[],
 				charts: [] as unknown[],
+				notes: [] as string[],
 				addText: vi.fn((t: string | { text: string }[]) => {
 					s.texts.push(
 						typeof t === "string" ? [t] : t.map((r) => r.text),
@@ -33,6 +34,9 @@ function stubPres() {
 					s.tables.push(rows);
 				}),
 				addShape: vi.fn(),
+				addNotes: vi.fn((note: string) => {
+					s.notes.push(note);
+				}),
 				addChart: vi.fn((_type: unknown, _data: unknown) => {
 					s.charts.push([_type, _data]);
 				}),
@@ -98,5 +102,26 @@ describe("buildPptx section selection", () => {
 		expect(pres.addSlide).toHaveBeenCalledTimes(7);
 		const allText = pres.slides.flatMap((s) => s.texts.flat()).join("\n");
 		expect(allText).not.toMatch(/NaN|undefined/);
+	});
+
+	it("attaches the rule narrations as speaker notes on every slide", async () => {
+		const pres = stubPres();
+		await buildPptx(cannedSpec(), ["complaints", "polls"], () => pres as never);
+		expect(pres.slides).toHaveLength(3);
+		for (const s of pres.slides) {
+			expect(s.notes).toHaveLength(1);
+		}
+		expect(pres.slides[1]!.notes[0]).toMatch(/fix this category first/);
+		expect(pres.slides[2]!.notes[0]).toMatch(/Canteen menu/);
+	});
+
+	it("prefers the narrated override for speaker notes when given", async () => {
+		const pres = stubPres();
+		await buildPptx(cannedSpec(), ["polls"], () => pres as never, {
+			polls: "AI polls line.",
+		});
+		expect(pres.slides[1]!.notes).toEqual(["AI polls line."]);
+		// Untouched slides keep their rule notes.
+		expect(pres.slides[0]!.notes[0]).toMatch(/posts in scope/);
 	});
 });

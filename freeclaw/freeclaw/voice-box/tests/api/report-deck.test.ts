@@ -221,6 +221,7 @@ describe("GET /api/report-deck", () => {
 			top_polls: Array<{ id: string; total: number }>;
 			solved_by_week: Array<{ week: string; solved: number }>;
 			recommendations: Array<{ rule: string; text: string }>;
+			narrations: Record<string, string>;
 		};
 		expect(body.version).toBe(1);
 		// p5 is a fuzz artifact: excluded from every number.
@@ -258,5 +259,42 @@ describe("GET /api/report-deck", () => {
 			res.body as { recommendations: Array<{ rule: string }> }
 		).recommendations.map((r) => r.rule);
 		expect(rules).toContain("resolution-rate");
+	});
+
+	it("ships deterministic presenter narrations for all seven slides", async () => {
+		seed();
+		const res = await get(true);
+		const body = res.body as { narrations: Record<string, string> };
+		expect(Object.keys(body.narrations).sort()).toEqual([
+			"actions",
+			"complaints",
+			"cover",
+			"feed",
+			"polls",
+			"reports",
+			"trends",
+		]);
+		// Exact strings from the seeded numbers — never LLM prose.
+		expect(body.narrations.cover).toBe(
+			"5 posts in scope, 4 still open. Resolution rate 20%.",
+		);
+		expect(body.narrations.complaints).toBe(
+			"Transport holds 2 of 4 open items (50%) — fix this category first.",
+		);
+		expect(body.narrations.polls).toContain("Fix the bus?");
+		expect(body.narrations.actions).toContain("3 recommended moves");
+		for (const text of Object.values(body.narrations)) {
+			expect(typeof text).toBe("string");
+			expect(text.length).toBeGreaterThan(5);
+			expect(text).not.toMatch(/NaN|undefined/);
+		}
+	});
+
+	it("narrates the honest empty spec without fabricating numbers", async () => {
+		const res = await get(true);
+		const body = res.body as { narrations: Record<string, string> };
+		expect(body.narrations.complaints).toBe("No open complaints right now.");
+		expect(body.narrations.polls).toContain("No votes cast yet");
+		expect(body.narrations.trends).toBe("No resolutions recorded yet.");
 	});
 });

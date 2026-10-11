@@ -38,6 +38,12 @@ export const DECK_SECTIONS: DeckSectionMeta[] = [
 
 export const DEFAULT_SECTIONS: SectionKey[] = DECK_SECTIONS.map((s) => s.key);
 
+/** Slide keys with presenter notes, cover first (mirrors the API). */
+export const NARRATION_KEYS: SlideKey[] = [
+	"cover",
+	...DECK_SECTIONS.map((s) => s.key),
+];
+
 const KNOWN = new Set<string>(DECK_SECTIONS.map((s) => s.key));
 
 /**
@@ -88,6 +94,8 @@ export interface DeckSpec {
 	top_polls: { id: string; title: string; total: number }[];
 	solved_by_week: { week: string; solved: number }[];
 	recommendations: { rule: string; text: string }[];
+	/** Deterministic presenter notes, one per slide — shipped by the spec. */
+	narrations: Record<SlideKey, string>;
 }
 
 export interface SlideDef {

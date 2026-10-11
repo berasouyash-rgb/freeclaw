@@ -58,6 +58,16 @@ export function cannedSpec(): DeckSpec {
 			{ rule: "category-dominance", text: "Facilities dominates the queue." },
 			{ rule: "quiet-polls", text: "Feature the quiet polls." },
 		],
+		narrations: {
+			cover: "10 posts in scope, 7 still open. Resolution rate 30%.",
+			complaints:
+				"Facilities holds 4 of 7 open items (57%) — fix this category first.",
+			feed: "3 of 10 posts resolved (30%). The ring is the share done.",
+			reports: "4 reports need a human decision; 2 already resolved.",
+			polls: "\u201cCanteen menu\u201d leads with 6 of 9 votes (67%).",
+			trends: "Last week: 2 solved vs 1 the week before.",
+			actions: "2 recommended moves, each labeled with the rule that fired.",
+		},
 	};
 }
 
@@ -81,5 +91,14 @@ export function emptySpec(): DeckSpec {
 		top_polls: [],
 		solved_by_week: [],
 		recommendations: [{ rule: "steady", text: "Nothing to report yet." }],
+		narrations: {
+			cover: "0 posts in scope, 0 still open. Resolution rate 0%.",
+			complaints: "No open complaints right now.",
+			feed: "0 of 0 posts resolved (0%). The ring is the share done.",
+			reports: "The moderation queue is clear.",
+			polls: "No votes cast yet — feature the polls to start participation.",
+			trends: "No resolutions recorded yet.",
+			actions: "1 recommended move, each labeled with the rule that fired.",
+		},
 	};
 }

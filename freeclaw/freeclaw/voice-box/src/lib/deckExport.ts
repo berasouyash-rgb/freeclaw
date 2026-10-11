@@ -89,7 +89,7 @@ function chartOf(pres: Pres): {
 	};
 }
 
-function coverSlide(pres: Pres, spec: DeckSpec): void {
+function coverSlide(pres: Pres, spec: DeckSpec, note?: string): void {
 	const t = spec.totals;
 	const slide = pres.addSlide();
 	slide.background = { color: BG };
@@ -111,10 +111,11 @@ function coverSlide(pres: Pres, spec: DeckSpec): void {
 			`${t.reports_open ?? 0} reports pending · ${t.polls ?? 0} polls · ${t.votes ?? 0} votes`,
 		{ x: 0.5, y: 3.9, w: 12.33, h: 0.5, fontSize: 14, color: MUTED },
 	);
+	if (note) slide.addNotes(note);
 	footer(slide, spec);
 }
 
-function complaintsSlide(pres: Pres, spec: DeckSpec): void {
+function complaintsSlide(pres: Pres, spec: DeckSpec, note?: string): void {
 	const slide = pres.addSlide();
 	slide.background = { color: BG };
 	title(slide, `Top complaints (${spec.totals.open ?? 0} open)`);
@@ -148,10 +149,11 @@ function complaintsSlide(pres: Pres, spec: DeckSpec): void {
 			);
 		}
 	}
+	if (note) slide.addNotes(note);
 	footer(slide, spec);
 }
 
-function feedSlide(pres: Pres, spec: DeckSpec): void {
+function feedSlide(pres: Pres, spec: DeckSpec, note?: string): void {
 	const slide = pres.addSlide();
 	slide.background = { color: BG };
 	title(
@@ -176,10 +178,11 @@ function feedSlide(pres: Pres, spec: DeckSpec): void {
 			{ x: 7.0, y: 1.4, w: 5.8, h: 4.4, fontSize: 14, color: INK },
 		);
 	}
+	if (note) slide.addNotes(note);
 	footer(slide, spec);
 }
 
-function reportsSlide(pres: Pres, spec: DeckSpec): void {
+function reportsSlide(pres: Pres, spec: DeckSpec, note?: string): void {
 	const slide = pres.addSlide();
 	slide.background = { color: BG };
 	title(slide, `Reports — ${spec.totals.reports_open ?? 0} need review`);
@@ -201,10 +204,11 @@ function reportsSlide(pres: Pres, spec: DeckSpec): void {
 			color: open > 0 ? ACCENT : ACCENT2,
 		});
 	}
+	if (note) slide.addNotes(note);
 	footer(slide, spec);
 }
 
-function pollsSlide(pres: Pres, spec: DeckSpec): void {
+function pollsSlide(pres: Pres, spec: DeckSpec, note?: string): void {
 	const slide = pres.addSlide();
 	slide.background = { color: BG };
 	title(slide, `Polls — ${spec.totals.votes ?? 0} votes`);
@@ -229,10 +233,11 @@ function pollsSlide(pres: Pres, spec: DeckSpec): void {
 			{ x: 0.5, y: 5.9, w: 12.33, h: 1.0 },
 		);
 	}
+	if (note) slide.addNotes(note);
 	footer(slide, spec);
 }
 
-function trendsSlide(pres: Pres, spec: DeckSpec): void {
+function trendsSlide(pres: Pres, spec: DeckSpec, note?: string): void {
 	const slide = pres.addSlide();
 	slide.background = { color: BG };
 	title(slide, "Resolution trend");
@@ -250,10 +255,11 @@ function trendsSlide(pres: Pres, spec: DeckSpec): void {
 			{ x: 0.5, y: 1.4, w: 12.33, h: 4.4 },
 		);
 	}
+	if (note) slide.addNotes(note);
 	footer(slide, spec);
 }
 
-function actionsSlide(pres: Pres, spec: DeckSpec): void {
+function actionsSlide(pres: Pres, spec: DeckSpec, note?: string): void {
 	const slide = pres.addSlide();
 	slide.background = { color: BG };
 	title(slide, `Recommended actions (${spec.recommendations.length})`);
@@ -264,28 +270,33 @@ function actionsSlide(pres: Pres, spec: DeckSpec): void {
 		})),
 		{ x: 0.5, y: 1.4, w: 12.33, h: 5.2 },
 	);
+	if (note) slide.addNotes(note);
 	footer(slide, spec);
 }
 
 /**
  * Build and save the PPTX for exactly `sections` (cover always first).
  * An empty pick falls back to the full deck — never a blank file.
+ * `notes` overrides the spec's rule narrations as speaker notes
+ * (the narrated set after "Narrate with AI"); every slide carries one.
  */
 export async function buildPptx(
 	spec: DeckSpec,
 	sections: readonly string[],
 	createPres: PresFactory = defaultFactory,
+	notes?: Record<string, string>,
 ): Promise<void> {
 	const picked = filterSections(sections);
+	const say: Record<string, string> = { ...spec.narrations, ...notes };
 	const pres = await createPres();
 	pres.layout = "LAYOUT_WIDE";
-	coverSlide(pres, spec);
+	coverSlide(pres, spec, say.cover);
 	const want = new Set<SectionKey>(picked.length ? picked : [...DEFAULT_SECTIONS]);
-	if (want.has("complaints")) complaintsSlide(pres, spec);
-	if (want.has("feed")) feedSlide(pres, spec);
-	if (want.has("reports")) reportsSlide(pres, spec);
-	if (want.has("polls")) pollsSlide(pres, spec);
-	if (want.has("trends")) trendsSlide(pres, spec);
-	if (want.has("actions")) actionsSlide(pres, spec);
+	if (want.has("complaints")) complaintsSlide(pres, spec, say.complaints);
+	if (want.has("feed")) feedSlide(pres, spec, say.feed);
+	if (want.has("reports")) reportsSlide(pres, spec, say.reports);
+	if (want.has("polls")) pollsSlide(pres, spec, say.polls);
+	if (want.has("trends")) trendsSlide(pres, spec, say.trends);
+	if (want.has("actions")) actionsSlide(pres, spec, say.actions);
 	await pres.writeFile({ fileName: `school-report-${spec.generated_at.slice(0, 10)}.pptx` });
 }
