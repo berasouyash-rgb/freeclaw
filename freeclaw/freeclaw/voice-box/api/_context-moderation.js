@@ -45,6 +45,12 @@ const CATEGORY_FLAGS = {
 	hate: "hate_speech",
 	"sexual-content": "explicit",
 	sexual: "explicit",
+	// Model-emitted vulgarity: the judge phrases what no list contains as
+	// profanity/slang. Maps into the zero-tolerance family (never a new
+	// row): high/critical blocks via school-zero-tolerance, mild/moderate
+	// falls through to review-grade handling below — never silently dropped.
+	profanity: "profanity",
+	slang: "profanity",
 	blackmail: "coercion",
 	extortion: "coercion",
 	coercion: "coercion",
@@ -202,9 +208,15 @@ export async function contextualModerationDeep(
 		source: "context-model",
 	}));
 	const out = { flags, context: result, model_used: modelUsed, timedOut };
-	deepCache.set(cacheKey, { at: Date.now(), result: out });
-	if (deepCache.size > DEEP_CACHE_MAX) {
-		deepCache.delete(deepCache.keys().next().value);
+	// Never cache a verdict the model did not actually render (timeout,
+	// outage, unparsable output, trivial skip): caching it would whitelist
+	// the text for 5 minutes without any judgment. Honest verdicts
+	// (model_used) cache exactly as before.
+	if (modelUsed) {
+		deepCache.set(cacheKey, { at: Date.now(), result: out });
+		if (deepCache.size > DEEP_CACHE_MAX) {
+			deepCache.delete(deepCache.keys().next().value);
+		}
 	}
 	return out;
 }

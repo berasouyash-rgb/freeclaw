@@ -540,6 +540,15 @@ Judge MEANING AND CONTEXT, not keywords. The same word is not the same act:
   (an older person soliciting private contact with a student), blackmail or
   extortion ("pay or I share the photo"), and posting someone else's private
   information are high or critical — never mild.
+- Sexual content has its own verdicts, never "mild profanity", never neutral:
+  gratuitous sexual material, solicitation, or pornographic description
+  ("sex sex sex") is sexual-content, high or critical. An adult soliciting
+  private contact with a student, especially with secrecy ("don't tell your
+  parents"), is sexual-content, critical. A student REPORTING sexual harm
+  ("he touched me in the corridor, I want to report him") is reported-abuse
+  — held for a human, never auto-blocked. Neutral health or anatomy
+  discussion without explicit detail ("we need better health education")
+  is neutral, not sexual-content.
 
 Reply with ONLY a JSON object, no prose, no markdown:
 {"severity":"none|mild|moderate|high|critical","categories":["..."],
@@ -549,7 +558,7 @@ severity: none = harmless · mild = rude or venting · moderate = needs a look �
 high = harassment/bullying/threat · critical = danger to life or immediate safety.
 Allowed category tokens: self-harm, threat, targeted-harassment, bullying,
 reported-abuse, distress, anxiety, sadness, anger, profanity, slang, privacy,
-positive, neutral.
+sexual-content, sexual, positive, neutral.
 Keep one short explanation sentence. Never invent facts not in the message.
 Never quote personal details (names, addresses, numbers, handles) in the
 explanation — describe the finding, e.g. "contains a phone number".`;
