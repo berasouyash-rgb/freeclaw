@@ -701,6 +701,25 @@ async function saveSessionRecord(id, record) {
 	if (error) throw new Error(error.message || "session write failed");
 }
 
+/** Merge one displaced hash into a bounded token list (deduped, oldest
+ * drops past the cap). Same entry shape and cap as pairing surfaces. */
+function mergeTokenList(list, hash, now) {
+	const seen = new Set();
+	const out = [];
+	const entries = Array.isArray(list) ? list : [];
+	for (const t of [
+		...entries,
+		{ h: hash, created_at: new Date(now).toISOString() },
+	]) {
+		if (!t || typeof t !== "object" || typeof t.h !== "string") continue;
+		if (seen.has(t.h)) continue;
+		seen.add(t.h);
+		out.push(t);
+	}
+	while (out.length > MAX_SESSION_TOKENS) out.shift();
+	return out;
+}
+
 /** Mint a fresh token, persist its hash, hand the cookie to the client. */
 async function mintSession(res, req, id, now, prevRecord) {
 	const token = randomBytes(32).toString("hex");
@@ -709,10 +728,35 @@ async function mintSession(res, req, id, now, prevRecord) {
 	// created_at is inherited, never extended: the boot-race carve-out below
 	// keys off FIRST creation, so concurrent mints cannot stretch the window.
 	const prev = prevRecord && typeof prevRecord === "object" ? prevRecord : null;
+	// N-way storms (4-6 parallel first-loads) evict early losers past the
+	// single th_prev slot. Preserve every displaced hash in the bounded
+	// token list (verified by the existing tokens check, no verification
+	// change): merge onto a FRESH read so a sibling mint's tokens are never
+	// clobbered — last-writer-wins can only drop a preserved hash (today's
+	// behavior), never downgrade th (always our own fresh hash). First mint
+	// (no prev) pays no extra read and writes the identical shape as before.
+	let mergedTokens = null;
+	if (prev?.th) {
+		try {
+			const fresh = await loadSessionRecord(id);
+			mergedTokens = mergeTokenList(
+				Array.isArray(fresh?.tokens)
+					? fresh.tokens
+					: Array.isArray(prev.tokens)
+						? prev.tokens
+						: [],
+				prev.th,
+				now,
+			);
+		} catch {
+			mergedTokens = null;
+		}
+	}
 	await saveSessionRecord(id, {
 		th: sha256Hex(token),
 		...(prev?.th ? { th_prev: prev.th } : {}),
 		created_at: prev?.created_at || new Date(now).toISOString(),
+		...(mergedTokens ? { tokens: mergedTokens } : {}),
 	});
 	setSessionCookie(res, token, req);
 	return token;
