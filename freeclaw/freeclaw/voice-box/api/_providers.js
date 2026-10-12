@@ -59,7 +59,9 @@ function anthropicCompat(name, baseUrl, defaultModel, envKey) {
 
 // ─── Provider Registry (50+) ──────────────────────────────────────
 // Categories: major, chinese, cloud, inference, self-hosted, custom
-const PROVIDER_DEFS = {
+// Exported so the real-import pin (tests/api/provider-models-pinning.test.ts)
+// can assert no probed-dead model id survives as a default.
+export const PROVIDER_DEFS = {
 	// ── Major ──────────────────────────────────────────────────────
 	openai: openaiCompat(
 		"OpenAI",
@@ -84,7 +86,9 @@ const PROVIDER_DEFS = {
 	groq: openaiCompat(
 		"Groq",
 		"https://api.groq.com/openai/v1/",
-		"llama-3.3-70b-versatile",
+		// llama-3.3-70b-versatile returns 404 (does not exist) — probed
+		// 2026-10-12. openai/gpt-oss-120b returned 200 with the app key.
+		"openai/gpt-oss-120b",
 		"GROQ_API_KEY",
 	),
 	deepseek: openaiCompat(

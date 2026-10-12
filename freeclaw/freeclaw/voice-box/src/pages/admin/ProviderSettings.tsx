@@ -52,29 +52,27 @@ const PROVIDER_COLORS: Record<string, string> = {
 	cerebras: "#FF5722",
 };
 
-const DEFAULT_MODELS: Record<string, string[]> = {
+// Exported so the pin (src/__tests__/ProviderSettings.test.tsx) can assert the
+// admin "suggested models" dropdown never offers a probed-dead model id.
+export const DEFAULT_MODELS: Record<string, string[]> = {
 	openai: ["gpt-4o", "gpt-4o-mini", "gpt-4.1", "o3-mini"],
 	anthropic: ["claude-sonnet-4-6", "claude-opus-4", "claude-haiku-3.5"],
 	// gemini-2.5-flash was shut down Oct 2026 / 404s for new users — offer the
 	// current stable lineup instead.
 	gemini: ["gemini-3.5-flash", "gemini-3.1-pro", "gemini-2.5-flash-lite"],
-	nvidia: [
-		"meta/llama-3.1-70b-instruct",
-		"meta/llama-3.1-405b-instruct",
-		"mistralai/mistral-large-2-instruct",
-		"google/gemma-2-27b-it",
-	],
+	// All prior suggestions (meta/llama-3.1-*, mistral-large-2, gemma-2-27b)
+	// return 410/404 on the NIM endpoint — probed 2026-10-12. Offer only the
+	// nemotron models that returned 200.
+	nvidia: ["nvidia/nemotron-3-super-120b-a12b", "nvidia/nemotron-3-ultra-550b-a55b"],
 	mistral: [
 		"mistral-large-latest",
 		"mistral-medium-latest",
 		"mistral-small-latest",
 	],
 	deepseek: ["deepseek-chat", "deepseek-reasoner"],
-	groq: [
-		"llama-3.3-70b-versatile",
-		"llama-3.1-8b-instant",
-		"mixtral-8x7b-32768",
-	],
+	// llama-3.3-70b-versatile / llama-3.1-8b-instant → 404, mixtral-8x7b-32768
+	// → 400 decommissioned (probed 2026-10-12). Both gpt-oss ids returned 200.
+	groq: ["openai/gpt-oss-120b", "openai/gpt-oss-20b"],
 	xai: ["grok-3", "grok-2"],
 };
 
