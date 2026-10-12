@@ -28,7 +28,7 @@
 // If the realtime subscription never confirms, the stream closes early
 // instead of faking liveness — the client reconnects and the 120s loop
 // covers the gap.
-import { cors, verifyCallerIdentity } from "./_auth.js";
+import { clientIp, cors, rateLimitResponse, verifyCallerIdentity } from "./_auth.js";
 import supabase from "./_db-client.js";
 import { createSSEWriter, startHeartbeat } from "./_streaming.js";
 
@@ -56,6 +56,31 @@ function validAnonId(id) {
 	);
 }
 
+// Concurrent-stream ceiling per source address (env-tunable). Every open
+// stream pins a serverless invocation until the hold expires, and the
+// claimed id cannot bound it (anon ids are self-mintable) — key on the
+// source address instead. The default is generous: a school NAT hosts
+// many real listeners; the cap exists only to stop one source pinning
+// unbounded invocations.
+const IP_STREAM_CAP = Math.max(
+	1,
+	Number(process.env.VB_SSE_IP_CONCURRENCY) || 25,
+);
+const ipStreamCounts = new Map();
+
+function takeStreamSlot(ip) {
+	const n = ipStreamCounts.get(ip) || 0;
+	if (n >= IP_STREAM_CAP) return false;
+	ipStreamCounts.set(ip, n + 1);
+	return true;
+}
+
+function releaseStreamSlot(ip) {
+	const n = (ipStreamCounts.get(ip) || 0) - 1;
+	if (n <= 0) ipStreamCounts.delete(ip);
+	else ipStreamCounts.set(ip, n);
+}
+
 export default async function handler(req, res) {
 	cors(res, req);
 	if (req.method === "OPTIONS") return res.status(204).end();
@@ -70,16 +95,28 @@ export default async function handler(req, res) {
 	if (!validAnonId(userId))
 		return res.status(400).json({ error: "Invalid user_id" });
 
+	// Take a slot from this source's concurrency budget BEFORE auth: a
+	// flood of unauthenticated reconnects must stay bounded too.
+	const sourceIp = clientIp(req);
+	if (!takeStreamSlot(sourceIp))
+		return rateLimitResponse(
+			res,
+			30,
+			"Too many live streams from this network.",
+		);
+
 	// EventSource cannot send x-anon-id. The query value takes its place as
 	// the CLAIMED id; verifyCallerIdentity still demands the session cookie
 	// as PROOF before anything streams.
 	req.headers = req.headers || {};
 	req.headers["x-anon-id"] = userId;
 	const caller = await verifyCallerIdentity(req, res, userId);
-	if (!caller.ok)
+	if (!caller.ok) {
+		releaseStreamSlot(sourceIp);
 		return res
 			.status(caller.status || 403)
 			.json({ error: caller.error, code: caller.code });
+	}
 
 	// Auth passed (this may have set/refreshed the session cookie above).
 	// From here on failures are SSE `error` events, never JSON — headers
@@ -110,6 +147,7 @@ export default async function handler(req, res) {
 	function cleanup() {
 		if (settled) return;
 		settled = true;
+		releaseStreamSlot(sourceIp);
 		if (holdTimer) clearTimeout(holdTimer);
 		if (subscribeTimer) clearTimeout(subscribeTimer);
 		if (coalesceTimer) clearTimeout(coalesceTimer);

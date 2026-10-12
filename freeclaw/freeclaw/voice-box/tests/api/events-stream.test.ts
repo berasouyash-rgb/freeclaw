@@ -38,6 +38,7 @@ vi.mock("../../api/_auth.js", () => ({
 	rateLimitResponse: vi.fn((res) =>
 		res.status(429).json({ error: "rate limited" }),
 	),
+	clientIp: vi.fn(() => "203.0.113.7"),
 	verifyCallerIdentity: vi.fn(),
 }));
 vi.mock("../../api/_error.js", () => ({
@@ -310,6 +311,62 @@ describe("GET /api/events", () => {
 			await p;
 		} finally {
 			vi.useRealTimers();
+		}
+	});
+
+	it("caps concurrent streams per network source and frees the slot on close", async () => {
+		process.env.VB_SSE_IP_CONCURRENCY = "3";
+		try {
+			const { chan } = channelObject();
+			(channelMock as ReturnType<typeof vi.fn>).mockReturnValue(chan);
+			const { default: handler } = await import("../../api/_events-stream.js");
+			const flush = async () => {
+				await Promise.resolve();
+				await new Promise((r) => setTimeout(r, 0));
+			};
+
+			// Three admitted streams — the configured per-source cap…
+			const held: Array<{ p: Promise<void>; close: () => void }> = [];
+			for (let i = 0; i < 3; i++) {
+				const { listeners, req } = request();
+				const res = response();
+				const p = handler(req as never, res as never);
+				await flush();
+				expect(res.writes.some((w) => w.startsWith("event: hello"))).toBe(true);
+				held.push({ p, close: () => listeners.close() });
+			}
+			expect(channelMock).toHaveBeenCalledTimes(3);
+
+			// …the fourth stream from the same source is refused before
+			// auth or realtime: no stream, no channel, plain 429.
+			const blocked = request();
+			const blockedRes = response();
+			await handler(blocked.req as never, blockedRes as never);
+			expect(blockedRes.statusCode).toBe(429);
+			expect(blockedRes.writes.some((w) => w.startsWith("event: hello"))).toBe(
+				false,
+			);
+			expect(channelMock).toHaveBeenCalledTimes(3);
+
+			// Closing a stream releases its slot for the next one.
+			held[0].close();
+			await held[0].p;
+			const again = request();
+			const againRes = response();
+			const pAgain = handler(again.req as never, againRes as never);
+			await flush();
+			expect(againRes.writes.some((w) => w.startsWith("event: hello"))).toBe(
+				true,
+			);
+			expect(channelMock).toHaveBeenCalledTimes(4);
+
+			// Drain every open stream so module state stays clean.
+			held[1].close();
+			held[2].close();
+			again.listeners.close();
+			await Promise.all([held[1].p, held[2].p, pAgain]);
+		} finally {
+			delete process.env.VB_SSE_IP_CONCURRENCY;
 		}
 	});
 });

@@ -265,7 +265,13 @@ export default async function handler(req, res) {
 					typeof result.summary === "string" &&
 					result.summary.trim().length > 5;
 				if (summaryOk) {
-					logger.info("ai", `LLM result accepted`, { engine: ai.engine, summary: result.summary.slice(0, 80) });
+					// Log LENGTH, never content: the summary is derived from
+					// student feedback (names, rooms, incidents) and must not
+					// reach log sinks.
+					logger.info("ai", `LLM result accepted`, {
+						engine: ai.engine,
+						summary_chars: result.summary.length,
+					});
 					return res
 						.status(200)
 						.json({
@@ -275,8 +281,11 @@ export default async function handler(req, res) {
 						});
 				}
 				console.warn(
-					"[ai:analyze] LLM result invalid — summary:",
-					result.summary,
+					"[ai:analyze] LLM result invalid — summary type/length:",
+					typeof result.summary,
+					typeof result.summary === "string"
+						? result.summary.length
+						: "n/a",
 				);
 			} else {
 				console.warn("[ai:analyze] LLM returned no result");
