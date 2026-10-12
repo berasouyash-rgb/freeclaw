@@ -24,6 +24,7 @@ vi.mock("../../api/_auth.js", () => ({
 	cors: vi.fn(),
 	clean: (s: unknown, max = 2000) => String(s ?? "").slice(0, max),
 	isAdmin: vi.fn().mockResolvedValue(false),
+	clientIp: vi.fn((req: { headers?: Record<string, string> }) => req?.headers?.["x-forwarded-for"] || "test-ip"),
 	checkUser: vi.fn().mockResolvedValue({ ok: true }),
 	ensureUser: vi.fn(),
 	auditLog: vi.fn(),

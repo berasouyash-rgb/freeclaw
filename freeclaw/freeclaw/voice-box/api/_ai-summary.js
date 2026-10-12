@@ -11,7 +11,7 @@
 // when the content is long enough to benefit from AI summarization.
 // ═══════════════════════════════════════════════════════════════════
 
-import { cors, rateLimited, clean } from "./_auth.js";
+import { clientIp, cors, rateLimited, rateLimitResponse, clean } from "./_auth.js";
 import supabase from "./_db-client.js";
 
 const NVIDIA_API_KEY = process.env.NVIDIA_API_KEY || "";
@@ -88,7 +88,10 @@ function suggestCategory(title, description) {
 export default async function handler(req, res) {
   cors(res, req);
   if (req.method === "OPTIONS") return res.status(204).end();
-  if (!rateLimited(req, res, "ai-summary", 20)) return;
+  // Throttle: 20 summaries/min per IP. Uses the shared (table, author,
+  // seconds, limit) helper with the client IP as the author key.
+  if (await rateLimited("ai-summary", clientIp(req), 60, 20))
+    return rateLimitResponse(res, 60, "Too many summary requests. Please slow down.");
 
   if (req.method !== "POST") {
     return res.status(405).json({ error: "POST only" });

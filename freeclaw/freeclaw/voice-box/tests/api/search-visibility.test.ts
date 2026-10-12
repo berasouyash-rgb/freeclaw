@@ -203,6 +203,10 @@ vi.mock("../../api/_auth.js", () => ({
 	cors: vi.fn(),
 	clean: (s: unknown, max = 2000) => String(s ?? "").slice(0, max),
 	isAdmin: vi.fn(async () => state.admin),
+	clientIp: vi.fn((req: { headers?: Record<string, string> }) => req?.headers?.["x-forwarded-for"] || "test-ip"),
+	rateLimitResponse: vi.fn((res, retry) =>
+		res.status(429).json({ error: "Too many searches", retry }),
+	),
 }));
 
 function response() {

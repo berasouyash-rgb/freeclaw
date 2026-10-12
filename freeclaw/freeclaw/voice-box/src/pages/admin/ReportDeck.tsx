@@ -16,13 +16,16 @@
 // count-up figures — all transform/opacity only (GPU), all gated behind
 // prefers-reduced-motion. Every slide carries a one-line explainer
 // derived from the same live numbers, so the deck reads aloud.
+// Present aloud reads title + explainer per slide from the cursor on,
+// follows along, and stops on any navigation, retick, or unmount.
 // Print CSS puts one slide per page.
 // ═══════════════════════════════════════════════════════════════════
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useApp } from "../../contexts/AppContext";
 import { api } from "../../lib/api";
 import { buildPptx } from "../../lib/deckExport";
+import { readAlong, speechOutputSupported } from "../../lib/speech";
 import {
 	DECK_SECTIONS,
 	DEFAULT_SECTIONS,
@@ -247,6 +250,8 @@ export default function ReportDeck() {
 	const [aiEngine, setAiEngine] = useState<string | null>(null);
 	const [narrating, setNarrating] = useState(false);
 	const [promptText, setPromptText] = useState("");
+	const [reading, setReading] = useState(false);
+	const stopReadRef = useRef<(() => void) | null>(null);
 
 	const TONE_PRESETS = [
 		{ label: "Assembly", prompt: "For a school assembly, upbeat and short" },
@@ -280,23 +285,48 @@ export default function ReportDeck() {
 		if (index > slides.length - 1) setIndex(Math.max(0, slides.length - 1));
 	}, [index, slides.length]);
 
+	// Present-aloud stop: declared early so the keyboard effect below can
+	// depend on it (effect dep arrays evaluate during render — TDZ).
+	const stopRead = useCallback(() => {
+		stopReadRef.current?.();
+		stopReadRef.current = null;
+		setReading(false);
+	}, []);
+
 	useEffect(() => {
 		const onKey = (e: KeyboardEvent) => {
-			if (e.key === "ArrowRight") setIndex((i) => Math.min(i + 1, slides.length - 1));
-			if (e.key === "ArrowLeft") setIndex((i) => Math.max(i - 1, 0));
+			// Typing in the narrator prompt (or any field) must never flip slides.
+			const t = e.target as HTMLElement | null;
+			if (
+				t &&
+				(t.tagName === "INPUT" ||
+					t.tagName === "TEXTAREA" ||
+					t.tagName === "SELECT" ||
+					t.isContentEditable)
+			)
+				return;
+			if (e.key === "ArrowRight") {
+				stopRead();
+				setIndex((i) => Math.min(i + 1, slides.length - 1));
+			}
+			if (e.key === "ArrowLeft") {
+				stopRead();
+				setIndex((i) => Math.max(i - 1, 0));
+			}
 		};
 		window.addEventListener("keydown", onKey);
 		return () => window.removeEventListener("keydown", onKey);
-	}, [slides.length]);
+	}, [slides.length, stopRead]);
 
 	const toggle = useCallback((key: SectionKey) => {
+		stopRead();
 		setSelected((prev) => {
 			if (prev.includes(key)) return prev.filter((k) => k !== key);
 			return DECK_SECTIONS.map((s) => s.key).filter(
 				(k) => k === key || prev.includes(k),
 			);
 		});
-	}, []);
+	}, [stopRead]);
 
 	const doExport = useCallback(async () => {
 		if (!spec || exporting) return;
@@ -341,6 +371,30 @@ export default function ReportDeck() {
 
 	const expl = spec ? (aiNotes ?? spec.narrations) : null;
 
+	// Present-aloud: read title + explainer per slide from the cursor on,
+	// follow along by driving the slide index, stop on any navigation.
+	const toggleRead = useCallback(() => {
+		if (reading) {
+			stopRead();
+			return;
+		}
+		if (!spec || !expl || slides.length === 0) return;
+		const script = slides
+			.slice(index)
+			.map((s) => `${s.title}. ${expl[s.key] ?? ""}`.trim());
+		stopReadRef.current = readAlong(
+			script,
+			(seg) => setIndex(index + seg),
+			() => {
+				stopReadRef.current = null;
+				setReading(false);
+			},
+		);
+		setReading(true);
+	}, [reading, spec, expl, slides, index, stopRead]);
+
+	useEffect(() => () => stopReadRef.current?.(), []);
+
 	return (
 		<div>
 			<style>{`@media (prefers-reduced-motion: no-preference) {
@@ -383,6 +437,18 @@ export default function ReportDeck() {
 					>
 						{narrating ? "Narrating…" : "Narrate with AI"}
 					</button>
+					{speechOutputSupported && (
+						<button
+							type="button"
+							className={reading ? "btn btn-primary !text-xs" : "btn btn-soft !text-xs"}
+							onClick={() => toggleRead()}
+							disabled={!spec || slides.length === 0}
+							aria-pressed={reading}
+							title="Read the slides aloud from the current slide on"
+						>
+							{reading ? "Stop reading" : "Present aloud"}
+						</button>
+					)}
 					<button
 						type="button"
 						className="btn btn-primary !text-xs"
@@ -405,6 +471,7 @@ export default function ReportDeck() {
 							type="button"
 							className="btn btn-ghost !text-[11px] !py-1 !px-2.5 rounded-lg"
 							onClick={() => {
+								stopRead();
 								setSelected([...DEFAULT_SECTIONS]);
 								setIndex(0);
 							}}
@@ -415,6 +482,7 @@ export default function ReportDeck() {
 							type="button"
 							className="btn btn-ghost !text-[11px] !py-1 !px-2.5 rounded-lg"
 							onClick={() => {
+								stopRead();
 								setSelected([]);
 								setIndex(0);
 							}}
@@ -746,7 +814,10 @@ export default function ReportDeck() {
 								className="btn btn-soft !text-xs"
 								aria-label="Previous slide"
 								disabled={index === 0}
-								onClick={() => setIndex((i) => Math.max(0, i - 1))}
+								onClick={() => {
+									stopRead();
+									setIndex((i) => Math.max(0, i - 1));
+								}}
 							>
 								← Prev
 							</button>
@@ -758,7 +829,10 @@ export default function ReportDeck() {
 										role="tab"
 										aria-selected={i === index}
 										aria-label={`Go to slide ${i + 1}: ${s.title}`}
-										onClick={() => setIndex(i)}
+										onClick={() => {
+											stopRead();
+											setIndex(i);
+										}}
 										className={`h-2 rounded-full transition-all ${
 											i === index ? "w-6 bg-accent" : "w-2 bg-border hover:bg-ink3"
 										}`}
@@ -770,7 +844,10 @@ export default function ReportDeck() {
 								className="btn btn-soft !text-xs"
 								aria-label="Next slide"
 								disabled={index >= slides.length - 1}
-								onClick={() => setIndex((i) => Math.min(slides.length - 1, i + 1))}
+								onClick={() => {
+									stopRead();
+									setIndex((i) => Math.min(slides.length - 1, i + 1));
+								}}
 							>
 								Next →
 							</button>

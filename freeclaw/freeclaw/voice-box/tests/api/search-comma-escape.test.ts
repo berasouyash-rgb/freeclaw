@@ -7,6 +7,10 @@ const db = vi.hoisted(() => ({
 vi.mock("../../api/_auth.js", () => ({
 	cors: vi.fn(),
 	isAdmin: vi.fn().mockResolvedValue(false),
+	clientIp: vi.fn((req: { headers?: Record<string, string> }) => req?.headers?.["x-forwarded-for"] || "test-ip"),
+	rateLimitResponse: vi.fn((res, retry) =>
+		res.status(429).json({ error: "Too many searches", retry }),
+	),
 }));
 
 vi.mock("../../api/_db-client.js", () => ({

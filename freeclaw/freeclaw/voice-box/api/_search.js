@@ -2,7 +2,7 @@
 // GET /api/search?q=keyword&type=all&status=all&category=all&priority=all
 
 import { isTestArtifact } from "./_artifact-filter.js";
-import { cors, isAdmin } from "./_auth.js";
+import { clientIp, cors, isAdmin, rateLimitResponse } from "./_auth.js";
 import supabase from "./_db-client.js";
 import { staleWhileRevalidate } from "./_cache.js";
 import { isMissingColumn } from "./_polls.js";
@@ -179,6 +179,31 @@ const searchSWR = staleWhileRevalidate(scanSearchRows, {
 	maxEntries: 200,
 });
 
+// Search flood guard: full-table scans (posts 500 + comments 1000 + polls
+// 1000 + users 200) run per DISTINCT query — the 15s SWR above collapses
+// repeats, but a rotating-query flood still scans. Key on identity (viewer)
+// with a loose per-IP backstop so a school NAT shares headroom instead of
+// one bucket (same lesson as _users.js). Serverless-safe: lazy prune, no
+// timers. Counts only real scans — trivial queries return before the gate
+// and never burn quota.
+const searchHits = new Map();
+function searchRateLimited(key, windowMs = 60000, limit = 120) {
+	const now = Date.now();
+	if (searchHits.size > 2000) {
+		const cutoff = now - 2 * windowMs;
+		for (const [k, v] of searchHits) {
+			if (v.start < cutoff) searchHits.delete(k);
+		}
+	}
+	const entry = searchHits.get(key);
+	if (!entry || now - entry.start > windowMs) {
+		searchHits.set(key, { start: now, count: 1 });
+		return false;
+	}
+	entry.count++;
+	return entry.count > limit;
+}
+
 export default async function handler(req, res) {
 	cors(res, req);
 	if (req.method === "OPTIONS") return res.status(204).end();
@@ -216,6 +241,14 @@ export default async function handler(req, res) {
 		const viewer = (req.query.viewer || "").toString().toLowerCase();
 		const maskAuthor = (a) =>
 			viewer && a && String(a).toLowerCase() === viewer ? a : null;
+
+		// Flood gate (after the trivial early-returns above, before the scan).
+		const searchIdentity = viewer ? `id:${viewer}` : `ip:${clientIp(req)}`;
+		if (
+			searchRateLimited(`search:${searchIdentity}`) ||
+			searchRateLimited(`search-ip:${clientIp(req)}`, 60000, 600)
+		)
+			return rateLimitResponse(res, 60, "Too many searches. Please slow down.");
 
 		// One cached scan serves this request (stale-while-revalidate at module scope)
 		const rows = await searchSWR(q, type, status, category, priority);

@@ -507,7 +507,7 @@ export default async function handler(req, res) {
 			// chain (35s-class), and the shared admin token is a single
 			// bearer — an unthrottled loop would spend provider quota
 			// without bound.
-			if (rateLimited("ai_narrate", clientIp(req), 60000, 10))
+			if (await rateLimited("ai_narrate", clientIp(req), 60000, 10))
 				return rateLimitResponse(
 					res,
 					60,

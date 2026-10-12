@@ -9,7 +9,7 @@
 // titles, categories, counts only. Empty DB → honest empty, never filler.
 // ═══════════════════════════════════════════════════════════════════
 
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import ReportDeck from "../pages/admin/ReportDeck";
 import { cannedSpec, emptySpec } from "./deckSpecFixture";
@@ -22,6 +22,12 @@ const mocks = vi.hoisted(() => ({
 	del: vi.fn(),
 	toast: vi.fn(),
 	buildPptx: vi.fn(async () => {}),
+	// Present-aloud: the component imports readAlong / stopReading /
+	// speechOutputSupported from lib/speech. speechOutputSupported is a
+	// plain const in the real module, so a mutable field mirrors it here.
+	readAlong: vi.fn(() => () => {}),
+	stopReading: vi.fn(),
+	speechOutputSupported: true,
 }));
 
 vi.mock("../lib/api", () => ({
@@ -42,8 +48,17 @@ vi.mock("../lib/deckExport", () => ({
 	buildPptx: mocks.buildPptx,
 }));
 
+vi.mock("../lib/speech", () => ({
+	readAlong: mocks.readAlong,
+	stopReading: mocks.stopReading,
+	get speechOutputSupported() {
+		return mocks.speechOutputSupported;
+	},
+}));
+
 beforeEach(() => {
 	vi.clearAllMocks();
+	mocks.speechOutputSupported = true;
 });
 
 function renderDeck() {
@@ -256,5 +271,104 @@ describe("ReportDeck presenter notes", () => {
 		expect(screen.getByLabelText(/Describe this presentation/i)).toHaveValue(
 			"For parents, reassuring tone",
 		);
+	});
+});
+
+describe("ReportDeck present-aloud", () => {
+	async function loadedDeck() {
+		mocks.getSlow.mockResolvedValueOnce(cannedSpec());
+		renderDeck();
+		const tabs = await screen.findAllByRole("tab");
+		expect(tabs).toHaveLength(7);
+		return tabs;
+	}
+
+	function readAlongScript() {
+		const calls = mocks.readAlong.mock.calls as unknown as [
+			string[],
+			(index: number) => void,
+			() => void,
+		][];
+		expect(calls).toHaveLength(1);
+		return calls[0]!;
+	}
+
+	it("reads title + explainer per slide from the current slide", async () => {
+		await loadedDeck();
+		fireEvent.click(screen.getByRole("button", { name: /present aloud/i }));
+		const [script] = readAlongScript();
+		expect(script).toHaveLength(7);
+		expect(script[0]).toContain("School report — 2026-10-10");
+		expect(script[0]).toContain("10 posts in scope, 7 still open");
+		expect(
+			screen.getByRole("button", { name: /stop reading/i }),
+		).toBeInTheDocument();
+	});
+
+	it("follows along as segments advance", async () => {
+		const tabs = await loadedDeck();
+		fireEvent.click(screen.getByRole("button", { name: /present aloud/i }));
+		const [, onSegment] = readAlongScript();
+		act(() => {
+			onSegment(1);
+		});
+		expect(tabs[0]).toHaveAttribute("aria-selected", "false");
+		expect(tabs[1]).toHaveAttribute("aria-selected", "true");
+	});
+
+	it("Stop reading ends it through the returned cancel", async () => {
+		const cancel = vi.fn();
+		mocks.readAlong.mockReturnValueOnce(cancel);
+		await loadedDeck();
+		fireEvent.click(screen.getByRole("button", { name: /present aloud/i }));
+		fireEvent.click(screen.getByRole("button", { name: /stop reading/i }));
+		expect(cancel).toHaveBeenCalledTimes(1);
+		expect(
+			screen.getByRole("button", { name: /present aloud/i }),
+		).toBeInTheDocument();
+	});
+
+	it("manual navigation stops the reading", async () => {
+		const cancel = vi.fn();
+		mocks.readAlong.mockReturnValueOnce(cancel);
+		await loadedDeck();
+		fireEvent.click(screen.getByRole("button", { name: /present aloud/i }));
+		fireEvent.click(screen.getByRole("button", { name: /next slide/i }));
+		expect(cancel).toHaveBeenCalledTimes(1);
+	});
+
+	it("unmount stops the reading", async () => {
+		const cancel = vi.fn();
+		mocks.readAlong.mockReturnValueOnce(cancel);
+		mocks.getSlow.mockResolvedValueOnce(cannedSpec());
+		const { unmount } = renderDeck();
+		await screen.findAllByRole("tab");
+		fireEvent.click(screen.getByRole("button", { name: /present aloud/i }));
+		unmount();
+		expect(cancel).toHaveBeenCalledTimes(1);
+	});
+
+	it("arrow keys typed in the prompt box do not flip slides", async () => {
+		const tabs = await loadedDeck();
+		const prompt = screen.getByLabelText(/describe this presentation/i);
+		fireEvent.keyDown(prompt, { key: "ArrowRight", bubbles: true });
+		expect(tabs[0]).toHaveAttribute("aria-selected", "true");
+		expect(tabs[1]).toHaveAttribute("aria-selected", "false");
+	});
+
+	it("arrow keys on the deck navigate", async () => {
+		const tabs = await loadedDeck();
+		fireEvent.keyDown(window, { key: "ArrowRight" });
+		expect(tabs[1]).toHaveAttribute("aria-selected", "true");
+	});
+
+	it("hides Present aloud when speech output is unsupported", async () => {
+		mocks.speechOutputSupported = false;
+		mocks.getSlow.mockResolvedValueOnce(cannedSpec());
+		renderDeck();
+		await screen.findAllByRole("tab");
+		expect(
+			screen.queryByRole("button", { name: /present aloud|stop reading/i }),
+		).not.toBeInTheDocument();
 	});
 });

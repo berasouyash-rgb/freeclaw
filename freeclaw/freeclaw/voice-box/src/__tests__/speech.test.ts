@@ -102,3 +102,85 @@ describe("readAloud and stopReading", () => {
 		}
 	});
 });
+
+describe("readAlong", () => {
+	const originalSynth = window.speechSynthesis;
+
+	beforeEach(() => {
+		class UtteranceMock {
+			text: string;
+			rate = 1;
+			lang = "";
+			onend: (() => void) | null = null;
+			constructor(text = "") {
+				this.text = text;
+			}
+		}
+		Object.defineProperty(window, "SpeechSynthesisUtterance", {
+			writable: true,
+			configurable: true,
+			value: UtteranceMock,
+		});
+		vi.mocked(originalSynth.speak).mockClear();
+		vi.mocked(originalSynth.cancel).mockClear();
+	});
+
+	it("reads each segment in order, announces the index, then finishes", async () => {
+		const { readAlong } = await loadSpeech();
+		const onSegment = vi.fn();
+		const onDone = vi.fn();
+
+		readAlong(["first", "second"], onSegment, onDone);
+
+		expect(onSegment).toHaveBeenCalledWith(0);
+		expect(originalSynth.speak).toHaveBeenCalledTimes(1);
+		let utter: any = vi.mocked(originalSynth.speak).mock.calls[0]![0];
+		expect(utter.text).toBe("first");
+
+		utter.onend();
+		expect(onSegment).toHaveBeenCalledWith(1);
+		expect(originalSynth.speak).toHaveBeenCalledTimes(2);
+		utter = vi.mocked(originalSynth.speak).mock.calls[1]![0];
+		expect(utter.text).toBe("second");
+
+		utter.onend();
+		expect(onDone).toHaveBeenCalledTimes(1);
+	});
+
+	it("cancelling stops the sequence even if a late onend fires", async () => {
+		const { readAlong } = await loadSpeech();
+		const onDone = vi.fn();
+
+		const stop = readAlong(["first", "second"], undefined, onDone);
+		const utter: any = vi.mocked(originalSynth.speak).mock.calls[0]![0];
+
+		stop();
+		expect(originalSynth.cancel).toHaveBeenCalledTimes(1);
+
+		// A cancelled utterance can still report completion late — it must
+		// not resurrect the chain.
+		utter.onend();
+		expect(originalSynth.speak).toHaveBeenCalledTimes(1);
+		expect(onDone).not.toHaveBeenCalled();
+	});
+
+	it("no-ops on an empty list and when speech synthesis is unsupported", async () => {
+		const { readAlong } = await loadSpeech();
+		const stop = readAlong([], vi.fn(), vi.fn());
+		expect(typeof stop).toBe("function");
+		expect(originalSynth.speak).not.toHaveBeenCalled();
+
+		delete (window as any).speechSynthesis;
+		try {
+			const { readAlong: readAlongUnsupported } = await loadSpeech();
+			readAlongUnsupported(["x"], vi.fn(), vi.fn());
+			expect(originalSynth.speak).not.toHaveBeenCalled();
+		} finally {
+			Object.defineProperty(window, "speechSynthesis", {
+				writable: true,
+				configurable: true,
+				value: originalSynth,
+			});
+		}
+	});
+});
