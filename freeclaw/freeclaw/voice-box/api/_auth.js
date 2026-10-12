@@ -720,8 +720,10 @@ function mergeTokenList(list, hash, now) {
 	return out;
 }
 
-/** Mint a fresh token, persist its hash, hand the cookie to the client. */
-async function mintSession(res, req, id, now, prevRecord) {
+/** Mint a fresh token and persist its hash. Cookie handling stays with the
+ * caller: concurrent first-visits share one flight and each sets its own
+ * Set-Cookie from the returned token. */
+async function mintSessionRecord(id, now, prevRecord) {
 	const token = randomBytes(32).toString("hex");
 	// Preserve the prior hash (single slot) so the losing side of a
 	// concurrent first-visit double-mint can still prove itself via th_prev.
@@ -758,6 +760,39 @@ async function mintSession(res, req, id, now, prevRecord) {
 		created_at: prev?.created_at || new Date(now).toISOString(),
 		...(mergedTokens ? { tokens: mergedTokens } : {}),
 	});
+	return token;
+}
+
+// In-flight first-visit mints by id. Concurrent cookieless requests for a
+// brand-new id must share ONE mint: without this each mints its own token
+// and all but the last two orphan past the single th_prev slot (worse,
+// under total pile-up even th_prev never forms), so early winners 403 on
+// their very next request. Joiners await the winner's token and set their
+// own cookie from it — no sibling can orphan another. Entries are deleted
+// in finally (no leak); a failed mint rejects every joiner exactly like
+// today (each caller maps it to the same 503). Cross-instance storms still
+// fall back to th_prev + preserved tokens. check-then-set below is atomic:
+// no await sits between the get and the set on one tick.
+const mintFlights = new Map();
+async function singleFlightMint(res, req, id, now) {
+	let flight = mintFlights.get(id);
+	if (!flight) {
+		flight = (async () => {
+			try {
+				let prev = null;
+				try {
+					prev = await loadSessionRecord(id);
+				} catch {
+					prev = null;
+				}
+				return await mintSessionRecord(id, now, prev);
+			} finally {
+				mintFlights.delete(id);
+			}
+		})();
+		mintFlights.set(id, flight);
+	}
+	const token = await flight;
 	setSessionCookie(res, token, req);
 	return token;
 }
@@ -792,17 +827,11 @@ export async function verifyCallerIdentity(req, res, claimedUserId, opts = {}) {
 	// No record row at all: first contact for this id. Mint transparently —
 	// onboarding requires it, and there is no prior session or data to steal
 	// (ids are client-generated ~72-bit randoms; a victim's future id is
-	// unpredictable). The mint re-reads first so a concurrent double-mint
-	// preserves the loser's hash as th_prev instead of silently orphaning it.
+	// unpredictable). Concurrent first-visits join one flight (single-flight
+	// mint) instead of each minting — see singleFlightMint.
 	if (!record) {
 		try {
-			let prev = null;
-			try {
-				prev = await loadSessionRecord(id);
-			} catch {
-				prev = null;
-			}
-			const token = await mintSession(res, req, id, now, prev);
+			const token = await singleFlightMint(res, req, id, now);
 			return { ok: true, callerId: id, sessionToken: token };
 		} catch (err) {
 			console.error("[auth] session mint failed:", err?.message || err);

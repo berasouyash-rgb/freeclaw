@@ -1,17 +1,18 @@
 // ═══════════════════════════════════════════════════════════════════
-// Session concurrent-mint storm — no winner orphans (regression).
+// Session concurrent-mint storm — ONE mint, every winner usable.
 // First-load storms fire 4-6 session-establishing requests together
-// (users/me/saved/notifications/chat). Each sees no record and mints; the
-// single th_prev slot preserves only ONE loser, so in a 3+-way storm the
-// early winners are orphaned and their next request 403s as
-// session_unrecoverable (proven by E2E trace: 4 distinct vb_session tokens
-// minted inside ~1s, then a 403 presenting an evicted one).
-//
-// The mock store answers reads from live state, so the natural microtask
-// lockstep reproduces the storm shape deterministically: all initial reads
-// land before any write (all see nothing), then round-trips serialize and
-// each mint chains onto the previous save — exactly the production
-// interleave, with zero timers.
+// (users/me/saved/notifications/chat). Without single-flight, each mints
+// its own token and all but the last two orphan past the single th_prev
+// slot (proven by E2E trace: 4 distinct vb_session tokens inside ~1s,
+// then a 403 presenting an evicted one) — and under total pile-up even
+// th_prev never forms. The fix: concurrent first-visit mints for one id
+// join a single flight and share its token (each response still carries
+// its own Set-Cookie), so no sibling can orphan another. The bounded
+// token-list preservation stays as defense for staggered/cross-instance
+// races. The mock store answers reads from live state, so the natural
+// microtask lockstep reproduces the storm shape deterministically: all
+// initial reads land before any write (all see nothing), then round-trips
+// serialize — exactly the production interleave, with zero timers.
 // ═══════════════════════════════════════════════════════════════════
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -180,8 +181,14 @@ describe("verifyCallerIdentity — concurrent first-visit mint storm", () => {
 		state.stormSize = 3;
 		const mints = await Promise.all([mint(id), mint(id), mint(id)]);
 		expect(mints.every((m) => m.out.ok === true)).toBe(true);
+		// Storm over: stop scripting round-trips so the verification reads
+		// see live store state like production would after the burst.
+		state.stormSize = 0;
 		const tokens = mints.map((m) => m.token);
 		expect(tokens.every(Boolean)).toBe(true);
+		// Single flight: one mint total, so every sibling holds the SAME
+		// token — nothing exists to orphan. (Pre-fix: 3 distinct tokens.)
+		expect(new Set(tokens).size).toBe(1);
 		for (const t of tokens) {
 			const v = await present(id, t as string);
 			expect(v.ok).toBe(true);
@@ -199,8 +206,12 @@ describe("verifyCallerIdentity — concurrent first-visit mint storm", () => {
 			mint(id),
 		]);
 		expect(mints.every((m) => m.out.ok === true)).toBe(true);
+		state.stormSize = 0;
 		const tokens = mints.map((m) => m.token);
 		expect(tokens.every(Boolean)).toBe(true);
+		// Five-way pile-up is where th_prev alone provably orphans two
+		// winners; single-flight leaves exactly one token behind.
+		expect(new Set(tokens).size).toBe(1);
 		for (const t of tokens) {
 			const v = await present(id, t as string);
 			expect(v.ok).toBe(true);
