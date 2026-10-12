@@ -486,12 +486,17 @@ export default async function handler(req, res) {
 		let q = supabase
 			.from("users_meta")
 			.select("*")
-			.order("created_at", { ascending: false });
+			// Presence desk order: most-recently-ACTIVE first. created_at
+			// ordering buried live users hundreds of pages deep (page 1 held
+			// the newest — usually idle — accounts, so the Now pill read 0).
+			// NULLS LAST: never-active rows sort after every heartbeat, and
+			// the cursor below rides this same column.
+			.order("last_seen", { ascending: false, nullsFirst: false });
 		// Server-side search: filter by anon_id if search query provided
 		if (search && typeof search === "string" && search.trim()) {
 			q = q.ilike("anon_id", `%${search.trim()}%`);
 		}
-		if (isPaginated && cursor) q = q.lt("created_at", cursor);
+		if (isPaginated && cursor) q = q.lt("last_seen", cursor);
 			if (isPaginated) q = q.limit(PAGE_LIMIT + 1);
 			else q = q.limit(500);
 			const { data: users, error } = await q;
@@ -503,7 +508,7 @@ export default async function handler(req, res) {
 				const hasMore = rows.length > PAGE_LIMIT;
 				const sliced = hasMore ? rows.slice(0, PAGE_LIMIT) : rows;
 				const nextCursor = hasMore
-					? sliced[sliced.length - 1]?.created_at
+					? sliced[sliced.length - 1]?.last_seen
 					: null;
 				const anonIds = sliced.map((u) => u.anon_id);
 				// `.in()` with an empty array is an invalid PostgREST filter — skip

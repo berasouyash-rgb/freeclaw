@@ -267,9 +267,19 @@ export default function UserManager() {
 					</button>
 				)}
 			</div>
-			<p className="text-[11px] text-ink3 mb-4">
-				Presence as of last refresh ({new Date(nowTick).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}) — tiers decay without refetching.
-			</p>
+			<div className="flex items-center gap-2 mb-4">
+				<p className="text-[11px] text-ink3">
+					Presence as of last refresh ({new Date(nowTick).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}) — tiers decay without refetching.
+				</p>
+				<button
+					type="button"
+					className="chip !text-[11px] shrink-0"
+					aria-label="Refresh users"
+					onClick={() => reset()}
+				>
+					Refresh
+				</button>
+			</div>
 			<div className="relative mb-4 max-w-md">
 				<Search
 					size={14}

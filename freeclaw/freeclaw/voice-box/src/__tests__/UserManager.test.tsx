@@ -682,3 +682,16 @@ describe("UserManager — presence honesty", () => {
 		expect(stored).toMatchObject({ filter: "hour" });
 	});
 });
+
+describe("UserManager refresh", () => {
+	it("offers an explicit Refresh that reloads the list", async () => {
+		// Hermetic scope: an earlier test persists filter=hour to
+		// localStorage, which would hide every fixture row here.
+		localStorage.removeItem("vb:userscope");
+		renderPage();
+		await screen.findByText("anon_aaa");
+		mocks.reset.mockClear();
+		fireEvent.click(screen.getByRole("button", { name: /refresh users/i }));
+		expect(mocks.reset).toHaveBeenCalledTimes(1);
+	});
+});
