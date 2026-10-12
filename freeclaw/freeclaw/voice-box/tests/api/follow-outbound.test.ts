@@ -18,7 +18,7 @@ type Chain = Record<string, unknown> & {
 	then: (fn: (v: unknown) => void) => void;
 };
 
-function chainFor(table: string): Chain {
+function chainFor(_table: string): Chain {
 	const filters: Array<[string, unknown]> = [];
 	let ilikeF: [string, string] | null = null;
 	let op: "select" | "upsert" = "select";
