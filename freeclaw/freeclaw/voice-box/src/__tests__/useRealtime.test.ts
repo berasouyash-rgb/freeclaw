@@ -563,3 +563,52 @@ describe("useRealtime — debounceMs 0 means no debounce", () => {
 	});
 });
 
+// ─── contract warning is dev-only ────────────────────────────────────
+// REGRESSION (browser pass 2026-10-12, ISSUE-003): the out-of-contract
+// tables are deliberate, documented wiring at seven call sites (admin
+// stream / peeks / row flushes cover them), but the one-time warning
+// fired in production too — its own comment calls it a dev-time signal.
+// Prod must stay silent; dev keeps the misuse signal; the allowed subset
+// subscribes either way.
+describe("useRealtime — dev-only contract warning", () => {
+	let warnSpy: ReturnType<typeof vi.spyOn>;
+	beforeEach(() => {
+		vi.useFakeTimers();
+		mock.channels.clear();
+		warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+	});
+	afterEach(() => {
+		warnSpy.mockRestore();
+		vi.unstubAllEnvs();
+		vi.useRealTimers();
+	});
+
+	it("warns once in dev when a table is outside the contract", async () => {
+		vi.stubEnv("DEV", true);
+		const onChange = vi.fn();
+		const { unmount } = await renderHook(() =>
+			useRealtime(["posts", "chat_threads"], onChange, 0),
+		);
+		expect(warnSpy).toHaveBeenCalledTimes(1);
+		expect(String(warnSpy.mock.calls[0]?.[0])).toMatch(
+			/chat_threads.*outside the anon realtime contract/,
+		);
+		// The allowed subset still subscribes normally.
+		expect(mock.channels.has("rt-posts")).toBe(true);
+		unmount();
+	});
+
+	it("stays silent in production while the allowed subset subscribes", async () => {
+		vi.stubEnv("DEV", false);
+		const onChange = vi.fn();
+		const { unmount } = await renderHook(() =>
+			useRealtime(["posts", "audit_log"], onChange, 0),
+		);
+		expect(warnSpy).not.toHaveBeenCalled();
+		expect(mock.channels.has("rt-posts")).toBe(true);
+		expect(mock.channels.has("rt-audit_log")).toBe(false);
+		expect(mock.channels.has("rt-posts,audit_log")).toBe(false);
+		unmount();
+	});
+});
+

@@ -98,7 +98,10 @@ function liveTables(tables: string[]): string[] {
 		if (!REALTIME_TABLES.has(t)) {
 			if (!warnedTables.has(t)) {
 				warnedTables.add(t);
-				if (typeof console !== "undefined")
+				// Dev-time signal only (browser pass 2026-10-12, ISSUE-003):
+				// out-of-contract tables are deliberate wiring at several
+				// call sites, so this must never noise the prod console.
+				if (import.meta.env.DEV && typeof console !== "undefined")
 					console.warn(
 						`[realtime] "${t}" is outside the anon realtime contract ` +
 							`(no publication / no anon read) — no events will arrive ` +
