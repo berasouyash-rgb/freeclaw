@@ -263,73 +263,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
 		notificationsRef.current = notifications;
 	}, [notifications]);
 
-	// Heartbeat: registers this browser's anonymous ID (so it appears in admin
-	// immediately, before any post) AND returns live ban/suspension/warning status.
-	// Also detects new warnings/strikes and fires a notification popup.
-	useEffect(() => {
-		let cancelled = false;
-		const beat = () =>
-			api
-				.post<AccountStatus>("/api/users", { anon_id: anonId })
-				.then((s) => {
-					if (cancelled) return;
-					const prev = prevStatusRef.current;
-					prevStatusRef.current = s;
-					setAccountStatus(s);
-					// Detect NEW warning (strike increased) or NEW ban — only fire on a
-					// real change. The pre-publish review queue issues ban + strike in a
-					// single update, so the strike branch alone would never fire for it:
-					// banning must ALWAYS produce a popup.
-					if (prev && s) {
-						const prevStrikes = prev.strikes || 0;
-						const newStrikes = s.strikes || 0;
-						const newlyBanned = !prev.banned && !!s.banned;
-						if (newlyBanned) {
-							pushNotif({
-								kind: "info",
-								title: "🚫 Your account has been banned",
-								body: "This anonymous ID can no longer post, comment, or vote. Contact an admin if you believe this is a mistake.",
-								link: "/chat",
-							});
-							toast("🚫 Your anonymous ID has been permanently banned", "err", {
-								label: "Details",
-								fn: _toastAction,
-							});
-						} else if (newStrikes > prevStrikes && !s.banned) {
-							const warningText = s.latest_warning || "";
-							pushNotif({
-								kind: "info",
-								title: "⚠️ You received a warning from admin",
-								body: warningText
-									? `"${warningText}"`
-									: `Strike ${newStrikes} of 3. Too many strikes may result in a ban.`,
-								link: "/chat",
-							});
-							// Also show as toast (auto-dismissed after 30s)
-							toast(
-								warningText
-									? `⚠️ Warning: "${warningText.slice(0, 80)}" (${newStrikes}/3 strikes)`
-									: `⚠️ Strike ${newStrikes} of 3 issued against your account`,
-								"err",
-								{ label: "View", fn: _toastAction },
-							);
-						}
-					}
-				})
-				.catch((e: unknown) => {
-					console.warn(
-						"[AppContext] heartbeat failed:",
-						e instanceof Error ? e.message : e,
-					);
-				});
-		beat();
-		// One initial heartbeat per identity. Do not poll every open tab or
-		// re-register on visibility; route entry or an explicit user action is
-		// the refresh boundary.
-		return () => {
-			cancelled = true;
-		};
-	}, [anonId]); // eslint-disable-line react-hooks/exhaustive-deps
+	// (Account-status heartbeat lives below applyAccountStatus so its deps
+	// are declared before use — no TDZ-by-accident, no eslint suppression.)
 
 	// Apply the REAL appearance: resolved theme + glass/animation/density
 	// toggles become <html> data attributes that index.css reacts to.
@@ -525,6 +460,101 @@ export function AppProvider({ children }: { children: ReactNode }) {
 		[],
 	);
 
+	// Apply a fresh account status: store it and fire the ban/strike
+	// popups ONLY on a real change (prev === null means first sight —
+	// never pop on load). Shared by the mount heartbeat and the
+	// notification-engine check pass, so an admin ban/suspend lands live
+	// on the next SSE wake instead of waiting for a reload.
+	const applyAccountStatus = useCallback(
+		(s: AccountStatus | null) => {
+			if (!s) return;
+			const prev = prevStatusRef.current;
+			prevStatusRef.current = s;
+			setAccountStatus(s);
+			// Detect NEW warning (strike increased) or NEW ban — only fire on a
+			// real change. The pre-publish review queue issues ban + strike in a
+			// single update, so the strike branch alone would never fire for it:
+			// banning must ALWAYS produce a popup.
+			if (prev && s) {
+				const prevStrikes = prev.strikes || 0;
+				const newStrikes = s.strikes || 0;
+				const newlyBanned = !prev.banned && !!s.banned;
+				if (newlyBanned) {
+					pushNotif({
+						kind: "info",
+						title: "🚫 Your account has been banned",
+						body: "This anonymous ID can no longer post, comment, or vote. Contact an admin if you believe this is a mistake.",
+						link: "/chat",
+					});
+					toast("🚫 Your anonymous ID has been permanently banned", "err", {
+						label: "Details",
+						fn: _toastAction,
+					});
+				} else if (newStrikes > prevStrikes && !s.banned) {
+					const warningText = s.latest_warning || "";
+					pushNotif({
+						kind: "info",
+						title: "⚠️ You received a warning from admin",
+						body: warningText
+							? `"${warningText}"`
+							: `Strike ${newStrikes} of 3. Too many strikes may result in a ban.`,
+						link: "/chat",
+					});
+					// Also show as toast (auto-dismissed after 30s)
+					toast(
+						warningText
+							? `⚠️ Warning: "${warningText.slice(0, 80)}" (${newStrikes}/3 strikes)`
+							: `⚠️ Strike ${newStrikes} of 3 issued against your account`,
+						"err",
+						{ label: "View", fn: _toastAction },
+					);
+				}
+			}
+		},
+		[pushNotif, toast],
+	);
+
+	// Heartbeat: registers this browser's anonymous ID (so it appears in admin
+	// immediately, before any post) AND returns live ban/suspension/warning
+	// status. Runs AFTER applyAccountStatus is declared so the deps array is
+	// honest (react-hooks/exhaustive-deps satisfied without suppression).
+	//
+	// prevStatusRef is RESET on every identity change: the baseline is
+	// per-identity, so switching anon IDs must never compare the new
+	// account's status against the old account's (a benign→banned switch
+	// would popup off someone else's baseline; banned→benign would swallow
+	// a real one). First sight after a switch = first sight after a load:
+	// no popup, state only.
+	//
+	// This POST also runs once on mount alongside the notification-engine's
+	// status refresh — two reads, both idempotent registrations of the same
+	// id. Intentional: neither effect may depend on the other having run,
+	// so a failed/slow heartbeat can't leave the engine without status.
+	useEffect(() => {
+		let cancelled = false;
+		prevStatusRef.current = null;
+		const beat = () =>
+			api
+				.post<AccountStatus>("/api/users", { anon_id: anonId })
+				.then((s) => {
+					if (cancelled) return;
+					applyAccountStatus(s);
+				})
+				.catch((e: unknown) => {
+					console.warn(
+						"[AppContext] heartbeat failed:",
+						e instanceof Error ? e.message : e,
+					);
+				});
+		beat();
+		// One initial heartbeat per identity. Do not poll every open tab or
+		// re-register on visibility; route entry or an explicit user action is
+		// the refresh boundary.
+		return () => {
+			cancelled = true;
+		};
+	}, [anonId, applyAccountStatus]);
+
 	const refreshIdentity = useCallback(() => {
 		setAnonId(getAnonId());
 		setBookmarks(lsGet("vb:bookmarks", []));
@@ -566,7 +596,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 				pushNotif(n);
 			};
 			try {
-				const [mine, chat, serverNotifs] = await Promise.all([
+				const [mine, chat, serverNotifs, status] = await Promise.all([
 					api
 						.getSlow<PostData[]>(`/api/posts?author=${anonId}&viewer=${anonId}`)
 						.catch((): PostData[] => []),
@@ -578,8 +608,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
 							`/api/notifications?user_id=${anonId}`,
 						)
 						.catch((): { notifications?: ServerNotif[] } => ({})),
+					// Live account status (ban/suspend/strikes): the admin
+					// Users desk writes + notifies, the SSE stream wakes us
+					// within seconds, and this refresh turns that wake into
+					// the same enforcement popup a reload would show.
+					api
+						.post<AccountStatus>("/api/users", { anon_id: anonId })
+						.catch((): null => null),
 				]);
 				if (cancelled) return;
+				applyAccountStatus(status);
 				// Merge admin-issued notifications (warnings, suspensions, bans) that
 				// were written server-side — they must reach the user even on a fresh
 				// visit or after localStorage was cleared. Client notifications keep
@@ -728,7 +766,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 		return () => {
 			cancelled = true;
 		};
-	}, [anonId, pushNotif]);
+	}, [anonId, pushNotif, applyAccountStatus]);
 
 	// ---------- live inbox stream ----------
 	// A server-sent-events stream (/api/events) wakes the engine pass above

@@ -39,6 +39,12 @@ export function DownloadButton({
 	filename,
 }: { url: string; filename?: string }) {
 	const download = async () => {
+		// Scheme allowlist — defense in depth on top of the server-side
+		// http(s)-only validation. Stored attachment_url is admin-rendered
+		// content (anonymous users can attach to their own messages), so a
+		// javascript: URL MUST never reach either the fetch below or the
+		// fallback's a.href (which executes it in this origin).
+		if (!/^https?:\/\//i.test(url)) return;
 		try {
 			const res = await fetch(url);
 			if (!res.ok) throw new Error(`HTTP ${res.status}`);

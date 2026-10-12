@@ -18,6 +18,12 @@ const authMocks = {
 	cors: vi.fn(),
 	isAdmin: vi.fn().mockResolvedValue(false),
 	checkUser: vi.fn().mockResolvedValue({ ok: true }),
+	clientIp: vi.fn().mockReturnValue("203.0.113.7"),
+	// Default: never throttled. Tests for the gate override this.
+	rateLimited: vi.fn().mockReturnValue(false),
+	rateLimitResponse: vi.fn((res: { status: (n: number) => { json: (b: unknown) => unknown } }, seconds: number) =>
+		res.status(429).json({ error: "rate limited", retry_after: seconds }),
+	),
 };
 
 vi.mock("../../api/_auth.js", () => authMocks);
@@ -111,6 +117,28 @@ describe("POST /api/ai { task: narrate }", () => {
 	it("denies non-admins before touching the provider chain", async () => {
 		const res = await narrate(false);
 		expect(res.statusCode).toBe(403);
+		expect(providerMocks.callLLMChain).not.toHaveBeenCalled();
+	});
+
+	it("throttles narration when the rate limiter trips (admin loop cannot burn provider quota)", async () => {
+		authMocks.isAdmin.mockResolvedValue(true);
+		authMocks.rateLimited.mockReturnValueOnce(true);
+		const res = await narrate(true);
+		expect(res.statusCode).toBe(429);
+		expect(authMocks.rateLimited).toHaveBeenCalledWith(
+			"ai_narrate",
+			"203.0.113.7",
+			60000,
+			10,
+		);
+		expect(providerMocks.callLLMChain).not.toHaveBeenCalled();
+	});
+
+	it("rejects an oversized brief before touching the provider chain", async () => {
+		authMocks.isAdmin.mockResolvedValue(true);
+		const huge = { ...BRIEF, junk: "x".repeat(30000) };
+		const res = await narrate(true, huge);
+		expect(res.statusCode).toBe(413);
 		expect(providerMocks.callLLMChain).not.toHaveBeenCalled();
 	});
 

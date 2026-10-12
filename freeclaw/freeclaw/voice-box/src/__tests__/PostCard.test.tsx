@@ -152,6 +152,32 @@ describe("PostCard", () => {
     });
   });
 
+  describe("density", () => {
+    it("clamps the feed description to two lines so long posts never flood the feed", () => {
+      render(<PostCard post={makePost()} />);
+      const desc = screen.getByText(
+        "The elevator has been broken for 2 days. Nobody can use it.",
+      );
+      expect(desc.tagName).toBe("P");
+      expect(desc.className).toMatch(/line-clamp-2/);
+    });
+
+    it("gives feed action targets phone-sized hit areas without changing desktop", () => {
+      render(<PostCard post={makePost()} />);
+      // Reaction buttons carry "<label> (<count>)" accessible names.
+      const reactions = screen.getAllByRole("button", { name: /\(\d+\)$/ });
+      expect(reactions.length).toBeGreaterThan(0);
+      for (const btn of [
+        ...reactions,
+        screen.getByRole("button", { name: "Bookmark" }),
+        screen.getByRole("button", { name: "Report this post" }),
+      ]) {
+        expect(btn.className).toMatch(/py-2/);
+        expect(btn.className).toMatch(/sm:py-1\.5/);
+      }
+    });
+  });
+
   describe("reactions", () => {
     // Support-only by design: no Against, no Downvote, anywhere.
     it("renders only the Support button on problems (no Against)", () => {

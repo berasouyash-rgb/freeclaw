@@ -109,7 +109,7 @@ export function ReactionButton({
 			aria-label={`${label} (${count})`}
 			aria-pressed={active}
 			title={label}
-			className={`relative flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-semibold transition-all duration-200 ${
+			className={`relative flex items-center gap-1 px-2.5 py-2 sm:py-1.5 rounded-lg text-xs font-semibold transition-all duration-200 ${
 				active ? "vb-pop ring-1" : inactiveClassName
 			}`}
 			style={
@@ -452,7 +452,7 @@ function PostCardInner({ post, myReactions, onReacted, pollData, myPollVote, onP
 						to={`/post/${post.id}`}
 						data-tour="comments-link"
 						aria-label={`${post.comment_count || 0} comments on ${post.title}`}
-						className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-semibold text-ink3 hover:text-accent transition-colors duration-200"
+						className="flex items-center gap-1 px-2.5 py-2 sm:py-1.5 rounded-lg text-xs font-semibold text-ink3 hover:text-accent transition-colors duration-200"
 					>
 						<MessageCircle
 							size={13}
@@ -485,7 +485,7 @@ function PostCardInner({ post, myReactions, onReacted, pollData, myPollVote, onP
 							}}
 							aria-label="Bookmark"
 							aria-pressed={bookmarks.includes(post.id)}
-							className={`px-2.5 py-1.5 rounded-lg transition-colors duration-200 ${bookmarks.includes(post.id) ? "text-accent vb-pop" : "text-ink3 hover:text-accent"}`}
+							className={`px-2.5 py-2 sm:py-1.5 rounded-lg transition-colors duration-200 ${bookmarks.includes(post.id) ? "text-accent vb-pop" : "text-ink3 hover:text-accent"}`}
 						>
 							<Bookmark
 								size={13}
@@ -497,7 +497,7 @@ function PostCardInner({ post, myReactions, onReacted, pollData, myPollVote, onP
 							onClick={() => setReportOpen(true)}
 							aria-label="Report this post"
 							title="Report this post"
-							className="px-2.5 py-1.5 rounded-lg text-ink3 hover:text-bad transition-colors duration-200"
+							className="px-2.5 py-2 sm:py-1.5 rounded-lg text-ink3 hover:text-bad transition-colors duration-200"
 						>
 							<Flag size={13} className="transition-transform duration-200" />
 						</button>

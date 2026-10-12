@@ -1811,11 +1811,44 @@ export default async function handler(req, res) {
 						"Slow down — max 10 messages per minute.",
 					);
 				}
+				// IP-keyed backstop on top of the per-identity bucket: anon
+				// ids are self-mintable, so a limit keyed ONLY on the id is
+				// bypassed by switching ids (mint → send 10 → repeat). This
+				// caps what one source can drive — every message can hold a
+				// serverless invocation for up to the AI race budget (35s).
+				if (inboxAdminRateLimited(`ip:${clientIp(req)}`, 60000, 30)) {
+					return rateLimitResponse(
+						res,
+						60,
+						"Too many messages from this network — slow down.",
+					);
+				}
 			}
 
 			const body = maskProfanity(clean(b.body, 2000));
 			if (!body && !b.attachment_url)
 				return res.status(400).json({ error: "Empty message" });
+			// Attachment URLs are stored and later fetched/downloaded by
+			// admins in the shared origin — only http(s) may persist. A
+			// javascript:/data: scheme here would execute in the admin's
+			// browser when they click Download (the client fallback assigns
+			// the URL to a.href directly). Reject loudly so the sender sees it.
+			const attachmentUrl = clean(b.attachment_url, 500) || null;
+			if (attachmentUrl) {
+				let schemeOk = false;
+				try {
+					const parsedAtt = new URL(attachmentUrl);
+					schemeOk =
+						parsedAtt.protocol === "https:" ||
+						parsedAtt.protocol === "http:";
+				} catch {
+					schemeOk = false;
+				}
+				if (!schemeOk)
+					return res
+						.status(400)
+						.json({ error: "Invalid attachment URL (http/https only)" });
+			}
 			// Server-side PII/safety gate for user messages — addresses/phones/emails must
 			// never leak through the AI inbox on an anonymous platform.
 			if (!admin) {
@@ -1866,7 +1899,7 @@ export default async function handler(req, res) {
 					thread_id: threadId,
 					sender: admin ? "admin" : "user",
 					body,
-					attachment_url: clean(b.attachment_url, 500) || null,
+					attachment_url: attachmentUrl,
 				})
 				.select()
 				.single();
@@ -1940,6 +1973,21 @@ export default async function handler(req, res) {
 			private: triage.isPrivate,
 		};
 
+		// One shared read for the three gates below (draft-propose, suggest,
+		// AI-mode): prefs + global switch + thread state resolve in parallel
+		// ONCE instead of re-reading per gate. NOTE: writes made after this
+		// read (proposeDraft's draft_proposal, the suggest write below) are
+		// re-applied onto the snapshot before the single final state write,
+		// so the hoist cannot silently clobber them.
+		const [prefsAll, globalAiAll, threadStateAll] = await Promise.all([
+			getNotifyPrefs(threadId).catch(() => null),
+			getInboxAiConfig(),
+			getThreadState(threadId).catch(() => null),
+		]);
+		const aiOnAll =
+			(!prefsAll || prefsAll.ai_chat_enabled !== false) &&
+			globalAiAll.enabled;
+
 		// Auto-propose a post draft ONLY on explicit post-intent words from
 		// the student ("post this", "publish"…​) about a real problem — never
 		// inferred. Skipped when AI is off for this user (an LLM draft would
@@ -1949,10 +1997,15 @@ export default async function handler(req, res) {
 		let draftProposal = null;
 		if (triage.isProblem && postIntent(body)) {
 			try {
-				const prefsEarly = await getNotifyPrefs(threadId).catch(() => null);
-				const aiOnEarly = (!prefsEarly || prefsEarly.ai_chat_enabled !== false) && (await getInboxAiConfig()).enabled;
-				if (aiOnEarly) {
-					const { proposal: draftProposal } = await proposeDraft(threadId, "student-request");
+				if (aiOnAll) {
+					// Destructure INTO the outer draftProposal (no shadowing):
+					// the final state write re-applies this proposal, and the
+					// response carries it — a shadowed const here would leave
+					// both reading null while the DB row still got the write.
+					({ proposal: draftProposal } = await proposeDraft(
+						threadId,
+						"student-request",
+					));
 					draftProposed = !!draftProposal;
 				}
 			} catch (draftErr) {
@@ -1966,15 +2019,15 @@ export default async function handler(req, res) {
 		// inferred. Same AI gates as auto-propose, same best-effort posture,
 		// at most one live suggestion per thread (dismiss/accept ends it).
 		let draftSuggested = false;
+		let draftSuggestedAt = null;
 		try {
-			const suggestState = await getThreadState(threadId).catch(() => null);
+			const suggestState = threadStateAll;
 			if (shouldSuggestDraft(triage.isProblem, body, suggestState)) {
-				const prefsSuggest = await getNotifyPrefs(threadId).catch(() => null);
-				const aiOnSuggest = (!prefsSuggest || prefsSuggest.ai_chat_enabled !== false) && (await getInboxAiConfig()).enabled;
-				if (aiOnSuggest) {
+				if (aiOnAll) {
+					draftSuggestedAt = new Date().toISOString();
 					await setThreadState(threadId, {
 						...(suggestState || {}),
-						draft_suggestion: { status: "suggested", at: new Date().toISOString() },
+						draft_suggestion: { status: "suggested", at: draftSuggestedAt },
 					});
 					try {
 						await auditLog("inbox", "draft_suggested", `Thread ${threadId}`);
@@ -1993,14 +2046,9 @@ export default async function handler(req, res) {
 			// (notify_prefs.ai_chat_enabled) and admins can disable them
 			// platform-wide (inbox_ai_config.enabled). With AI off the message
 			// is saved and waits for a human admin — no LLM call, no fallback
-			// bot message.
-			let userPrefs = null;
-			try {
-				userPrefs = await getNotifyPrefs(threadId);
-			} catch {
-				/* prefs unavailable → default to AI on */
-			}
-			const globalAi = await getInboxAiConfig();
+			// bot message. Reads hoisted above; same values, zero extra trips.
+			const userPrefs = prefsAll;
+			const globalAi = globalAiAll;
 			const userAiOn = !userPrefs || userPrefs.ai_chat_enabled !== false;
 			if (!userAiOn || !globalAi.enabled) {
 				await auditLog(
@@ -2033,17 +2081,35 @@ export default async function handler(req, res) {
 			// 2. Generate AI reply with timeout (must complete before response)
 			let emotion = { level: "none", emotion: "none", agent: "default" };
 			let replyResult = { reply: null, agent: "default", handoff: false };
+			// Set when the race below times out: the orphaned aiWork
+			// MUST NOT insert or write when it finishes late — that is
+			// the "AI sends twice" bug (fallback + late real reply).
+			let aiAbandoned = false;
 
 			try {
-				// Run emotion + reply with 35s total timeout (Vercel has 60s max).
-				// Latency: emotion, thread state, and admin presence resolve in
-				// parallel; the tail (notify/audit/emit) settles in parallel too.
+				// Run emotion + reply with a bounded outer race (Vercel has
+				// 60s max). VB_AI_TIMEOUT_MS exists for tests/ops; default
+				// 35s keeps fast(16s)+chain(18s)=34s inside it and inside
+				// the 45s client budget.
+				const AI_RACE_MS = Number(process.env.VB_AI_TIMEOUT_MS) || 35000;
 				const aiWork = (async () => {
-					const [emo, threadState, adminOnline] = await Promise.all([
+					// Latency: emotion and admin presence resolve in
+					// parallel; thread state is the hoisted read above —
+					// fields written after that read are re-applied below
+					// before the final state write.
+					const [emo, adminOnline] = await Promise.all([
 						classifyEmotion(body),
-						getThreadState(threadId),
 						isAdminOnline(),
 					]);
+					const threadState =
+						threadStateAll && typeof threadStateAll === "object"
+							? threadStateAll
+							: {
+									agent: "general",
+									handoff: false,
+									emotion_history: [],
+									message_count: 0,
+								};
 					threadState.message_count = (threadState.message_count || 0) + 1;
 					if (!threadState.emotion_history) threadState.emotion_history = [];
 					if (emo.level !== "none") {
@@ -2070,11 +2136,12 @@ export default async function handler(req, res) {
 						emo,
 						adminOnline,
 					);
+					if (aiAbandoned) return { emotion: emo, replyResult: reply, threadState, abandoned: true };
 					return { emotion: emo, replyResult: reply, threadState };
 				})();
 
 				const timeout = new Promise((_, rej) =>
-					setTimeout(() => rej(new Error("AI timeout")), 35000),
+					setTimeout(() => rej(new Error("AI timeout")), AI_RACE_MS),
 				);
 				const {
 					emotion: emo,
@@ -2121,6 +2188,18 @@ export default async function handler(req, res) {
 				// Slang rollup (detection only — gates decide blocking).
 				// User message only: AI/admin prose never feeds the finder.
 				threadState.slang_hits = mergeSlang(threadState.slang_hits, body, now);
+				// Re-apply writes that landed AFTER the hoisted snapshot:
+				// proposeDraft (draft_proposal) and the suggest write above
+				// (draft_suggestion) both persisted fields this snapshot
+				// predates. Without re-applying, this final write would
+				// clobber them (lost update → the next message re-proposes /
+				// re-nudges an already-made suggestion).
+				if (draftProposal) threadState.draft_proposal = draftProposal;
+				if (draftSuggestedAt)
+					threadState.draft_suggestion = {
+						status: "suggested",
+						at: draftSuggestedAt,
+					};
 				// Single state write (was two sequential writes)
 				await setThreadState(threadId, threadState);
 
@@ -2164,6 +2243,9 @@ export default async function handler(req, res) {
 				});
 			} catch (aiErr) {
 				console.error("[inbox] AI generation failed/timed out:", aiErr.message);
+				// From here on the orphaned aiWork (if any) is abandoned:
+				// its late insert/state-write/tail must not run.
+				aiAbandoned = true;
 				await auditLog(
 					"user",
 					"inbox_ai_error",
