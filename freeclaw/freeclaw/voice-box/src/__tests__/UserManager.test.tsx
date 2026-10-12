@@ -7,7 +7,7 @@
 // wiring, error toasts.
 // ═══════════════════════════════════════════════════════════════════
 
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import UserManager from "../pages/admin/UserManager";
@@ -20,6 +20,7 @@ const mocks = vi.hoisted(() => ({
 	initialLoading: false,
 	total: 0,
 	reset: vi.fn(),
+	softReset: vi.fn(),
 }));
 
 vi.mock("../lib/api", () => ({
@@ -55,6 +56,7 @@ vi.mock("../hooks/useInfiniteScroll", () => ({
 		},
 		replaceItems: vi.fn(),
 		setItems: vi.fn(),
+		softReset: mocks.softReset,
 	}),
 }));
 
@@ -196,6 +198,9 @@ describe("UserManager — list rendering", () => {
 	});
 
 	it("shows skeletons while the initial load is pending", () => {
+		// Skeletons mean "nothing to show yet": with rows on screen a
+		// revalidation must keep the table mounted, never flash loaders.
+		mocks.items = [];
 		mocks.initialLoading = true;
 		renderPage();
 		expect(document.querySelectorAll(".skeleton").length).toBeGreaterThan(0);
@@ -693,5 +698,50 @@ describe("UserManager refresh", () => {
 		mocks.reset.mockClear();
 		fireEvent.click(screen.getByRole("button", { name: /refresh users/i }));
 		expect(mocks.reset).toHaveBeenCalledTimes(1);
+	});
+
+	it("shows the loaded count while revalidating instead of flashing 0 total", async () => {
+		localStorage.removeItem("vb:userscope");
+		// A revalidation zeroes the total before the fresh count lands;
+		// the header must keep showing the loaded rows, never "0 total".
+		mocks.total = 0;
+		renderPage();
+		await screen.findByText("anon_aaa");
+		expect(screen.getByText("3 total")).toBeInTheDocument();
+	});
+});
+
+describe("UserManager live presence peek", () => {
+	afterEach(() => {
+		vi.useRealTimers();
+		delete (document as unknown as Record<string, unknown>).visibilityState;
+	});
+
+	it("revalidates the list every minute while visible", () => {
+		localStorage.removeItem("vb:userscope");
+		vi.useFakeTimers();
+		renderPage();
+		expect(screen.getByText("anon_aaa")).toBeInTheDocument();
+		mocks.softReset.mockClear();
+		act(() => {
+			vi.advanceTimersByTime(61_000);
+		});
+		expect(mocks.softReset).toHaveBeenCalledTimes(1);
+	});
+
+	it("does not revalidate while the tab is hidden", () => {
+		localStorage.removeItem("vb:userscope");
+		Object.defineProperty(document, "visibilityState", {
+			configurable: true,
+			get: () => "hidden",
+		});
+		vi.useFakeTimers();
+		renderPage();
+		expect(screen.getByText("anon_aaa")).toBeInTheDocument();
+		mocks.softReset.mockClear();
+		act(() => {
+			vi.advanceTimersByTime(61_000);
+		});
+		expect(mocks.softReset).not.toHaveBeenCalled();
 	});
 });

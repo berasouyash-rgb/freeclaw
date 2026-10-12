@@ -96,6 +96,7 @@ export default function UserManager() {
 		total,
 		sentinelRef,
 		reset,
+		softReset,
 	} = useInfiniteScroll<UserSummary>(fetchUsers, { limit: 30 });
 
 	// Debounced search — reset results when query changes
@@ -155,13 +156,23 @@ export default function UserManager() {
 			localStorage.setItem(USERSCOPE_KEY, JSON.stringify({ filter: presenceFilter, hideTests }));
 		} catch { /* private mode: scope simply doesn't persist */ }
 	}, [presenceFilter, hideTests]);
-	// Ticker only re-renders so presence tiers decay honestly between
-	// explicit Refreshes — it fetches nothing.
+	// Minute tick does two jobs: re-render so presence tiers decay honestly,
+	// and revalidate page one while visible (softReset keeps rows mounted —
+	// no skeleton flash, no scroll jump). Users_meta is outside the realtime
+	// contract, so without this the desk shows a frozen snapshot and the Now
+	// pill reads 0 while users are active. Manual Refresh stays available.
 	const [nowTick, setNowTick] = useState(() => Date.now());
 	useEffect(() => {
-		const iv = window.setInterval(() => setNowTick(Date.now()), 60_000);
+		const iv = window.setInterval(() => {
+			setNowTick(Date.now());
+			if (
+				typeof document === "undefined" ||
+				document.visibilityState !== "hidden"
+			)
+				softReset();
+		}, 60_000);
 		return () => window.clearInterval(iv);
-	}, []);
+	}, [softReset]);
 
 	const openDetail = async (anonId: string) => {
 		// Race guard: rapid A→B clicks must never show A's slower response
@@ -230,7 +241,7 @@ export default function UserManager() {
 				<h1 className="flex items-center gap-2 font-display font-bold text-2xl tracking-tight">
 					<span className="vb-gradient-text">User Management</span>
 				</h1>
-				<span className="text-xs text-ink3 bg-surface2 px-2.5 py-1 rounded-full font-medium">{total} total</span>
+				<span className="text-xs text-ink3 bg-surface2 px-2.5 py-1 rounded-full font-medium">{total > 0 ? total : users.length} total</span>
 			</div>
 			<p className="text-xs text-ink3 mb-4">
 				Only anonymous browser IDs are visible — no personal data exists
@@ -269,7 +280,7 @@ export default function UserManager() {
 			</div>
 			<div className="flex items-center gap-2 mb-4">
 				<p className="text-[11px] text-ink3">
-					Presence as of last refresh ({new Date(nowTick).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}) — tiers decay without refetching.
+					Presence as of last refresh ({new Date(nowTick).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}) — revalidates every minute while this tab is visible.
 				</p>
 				<button
 					type="button"
@@ -293,7 +304,7 @@ export default function UserManager() {
 				/>
 			</div>
 
-			{initialLoading ? (
+			{initialLoading && users.length === 0 ? (
 				<div className="space-y-2">
 					{[1, 2, 3].map((i) => (
 						<div key={i} className="skeleton h-14" />
