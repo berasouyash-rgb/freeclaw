@@ -359,7 +359,12 @@ describe("ReportDeck present-aloud", () => {
 	it("arrow keys on the deck navigate", async () => {
 		const tabs = await loadedDeck();
 		fireEvent.keyDown(window, { key: "ArrowRight" });
-		expect(tabs[1]).toHaveAttribute("aria-selected", "true");
+		// waitFor, not bare assert: CI runners attach/deliver the window
+		// keydown on their own schedule. A broken handler still fails (the
+		// update never lands and this times out) — this only absorbs timing.
+		await waitFor(() => {
+			expect(tabs[1]).toHaveAttribute("aria-selected", "true");
+		});
 	});
 
 	it("hides Present aloud when speech output is unsupported", async () => {
