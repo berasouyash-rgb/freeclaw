@@ -1230,3 +1230,258 @@ describe("Submit — untrusted pre-publish and live-verdict shapes", () => {
 		expect(screen.getByText(/phone number detected/i)).toBeInTheDocument();
 	});
 });
+
+// ═══════════════════════════════════════════════════════════════════
+// The live preview has TWO passes: a fast deterministic check (~ms) and
+// a model pass (`aiJudge:true`, seconds). The green banner is a claim
+// that the MODEL reviewed the draft — painting it from the deterministic
+// pass alone congratulated authors on text the publish path then
+// rejected (`sex sex sex sex` previewed clean, published blocked).
+// These tests pin: green ONLY after `aiChecked:true` for the exact text
+// on screen; anything else is "quick checks" or "couldn't run", never
+// green. No word lists — the model verdict is the write-path pipeline.
+// ═══════════════════════════════════════════════════════════════════
+describe("Submit — AI model pass behind the live green banner", () => {
+	const FAST_CLEAN = {
+		checked: true,
+		safe: true,
+		overallSeverity: "none",
+		flags: [],
+		score: 0,
+		serverBlocked: false,
+		aiChecked: false,
+		aiTimedOut: false,
+	};
+	const AI_CLEAN = { ...FAST_CLEAN, aiChecked: true };
+	const AI_TIMEOUT = {
+		...FAST_CLEAN,
+		aiChecked: false,
+		aiTimedOut: true,
+	};
+	const AI_SEXUAL_BLOCK = {
+		checked: true,
+		safe: false,
+		overallSeverity: "critical",
+		flags: [
+			{
+				category: "sexual",
+				severity: "critical",
+				message: "Sexual content is not allowed.",
+				matched: "",
+			},
+		],
+		score: 100,
+		serverBlocked: true,
+		aiChecked: true,
+		aiTimedOut: false,
+	};
+
+	function typeDraft() {
+		fireEvent.change(screen.getByRole("textbox", { name: "Title *" }), {
+			target: { value: "Broken benches near the basketball court" },
+		});
+		fireEvent.change(screen.getByRole("textbox", { name: "Description *" }), {
+			target: {
+				value:
+					"Several benches by the court have loose planks and wobble when students sit on them after practice.",
+			},
+		});
+	}
+
+	it("paints green only after the model verdict arrives, never from the fast pass", {
+		timeout: 20000,
+	}, async () => {
+		mocks.post.mockImplementation(
+			(url: string, body?: Record<string, unknown>) => {
+				if (String(url).includes("/api/assist")) return Promise.resolve({});
+				if (String(url).includes("/api/pre-publish"))
+					return Promise.resolve(APPROVED);
+				if (String(url).includes("/api/moderate"))
+					return Promise.resolve(
+						body?.aiJudge === true ? AI_CLEAN : FAST_CLEAN,
+					);
+				return Promise.resolve({});
+			},
+		);
+		renderPage();
+		typeDraft();
+
+		// The fast deterministic pass answers first: quick checks only.
+		// Claiming the AI reviewed the draft here is the fake green.
+		await waitFor(
+			() => {
+				expect(screen.getByText(/Quick checks passed/i)).toBeInTheDocument();
+			},
+			{ timeout: 8000 },
+		);
+		expect(
+			screen.queryByText(/AI reviewed your draft/i),
+		).not.toBeInTheDocument();
+
+		// The model pass answers after its settle: only now is green honest.
+		await waitFor(
+			() => {
+				expect(
+					screen.getByText(/AI reviewed your draft/i),
+				).toBeInTheDocument();
+			},
+			{ timeout: 8000 },
+		);
+	});
+
+	it("says the AI check could not run — never green — when the model times out", {
+		timeout: 20000,
+	}, async () => {
+		mocks.post.mockImplementation(
+			(url: string, body?: Record<string, unknown>) => {
+				if (String(url).includes("/api/assist")) return Promise.resolve({});
+				if (String(url).includes("/api/pre-publish"))
+					return Promise.resolve(APPROVED);
+				if (String(url).includes("/api/moderate"))
+					return Promise.resolve(
+						body?.aiJudge === true ? AI_TIMEOUT : FAST_CLEAN,
+					);
+				return Promise.resolve({});
+			},
+		);
+		renderPage();
+		typeDraft();
+
+		await waitFor(
+			() => {
+				expect(
+					screen.getByText(/AI check couldn't run/i),
+				).toBeInTheDocument();
+			},
+			{ timeout: 8000 },
+		);
+		expect(
+			screen.queryByText(/AI reviewed your draft/i),
+		).not.toBeInTheDocument();
+	});
+
+	it("blocks publish when the MODEL flags the draft the fast pass cleared", {
+		timeout: 20000,
+	}, async () => {
+		mocks.post.mockImplementation(
+			(url: string, body?: Record<string, unknown>) => {
+				if (String(url).includes("/api/assist")) return Promise.resolve({});
+				if (String(url).includes("/api/pre-publish"))
+					return Promise.resolve(APPROVED);
+				if (String(url).includes("/api/moderate"))
+					return Promise.resolve(
+						body?.aiJudge === true ? AI_SEXUAL_BLOCK : FAST_CLEAN,
+					);
+				return Promise.resolve({});
+			},
+		);
+		renderPage();
+
+		fireEvent.change(screen.getByRole("textbox", { name: "Title *" }), {
+			target: { value: "Evening study hall feedback" },
+		});
+		fireEvent.change(screen.getByRole("textbox", { name: "Description *" }), {
+			target: {
+				value:
+					"sex sex sex sex is the probe text for the model pass in this test",
+			},
+		});
+
+		await waitFor(
+			() => {
+				expect(
+					screen.getByText(/Sexual content is not allowed/i),
+				).toBeInTheDocument();
+				expect(
+					screen.getByRole("button", {
+						name: "Content has issues that must be fixed first",
+					}),
+				).toBeDisabled();
+			},
+			{ timeout: 10000 },
+		);
+		expect(mocks.post).not.toHaveBeenCalledWith(
+			"/api/posts",
+			expect.anything(),
+		);
+	});
+
+	it("keeps the model verdict when the fast pass answers after it", {
+		timeout: 20000,
+	}, async () => {
+		// Manually gated promises: the model answers first, the
+		// deterministic pass second. A late fast response must not knock
+		// out the verdict the banner was painted from.
+		let resolveFast!: (v: unknown) => void;
+		let resolveAI!: (v: unknown) => void;
+		const fastGate = new Promise((r) => {
+			resolveFast = r;
+		});
+		const aiGate = new Promise((r) => {
+			resolveAI = r;
+		});
+		mocks.post.mockImplementation(
+			(url: string, body?: Record<string, unknown>) => {
+				if (String(url).includes("/api/assist")) return Promise.resolve({});
+				if (String(url).includes("/api/pre-publish"))
+					return Promise.resolve(APPROVED);
+				if (String(url).includes("/api/moderate"))
+					return body?.aiJudge === true ? aiGate : fastGate;
+				return Promise.resolve({});
+			},
+		);
+		renderPage();
+		typeDraft();
+
+		await waitFor(
+			() => {
+				expect(mocks.post).toHaveBeenCalledWith(
+					"/api/moderate",
+					expect.objectContaining({ aiJudge: true }),
+				);
+			},
+			{ timeout: 8000 },
+		);
+		resolveAI(AI_CLEAN);
+		// The model answered but the fast pass is still in flight: a check
+		// is pending, so no verdict may be claimed yet — green or otherwise.
+		await new Promise((r) => setTimeout(r, 300));
+		expect(
+			screen.queryByText(/AI reviewed your draft/i),
+		).not.toBeInTheDocument();
+
+		// The fast pass lands late. The model verdict stands: green.
+		resolveFast(FAST_CLEAN);
+		await waitFor(
+			() => {
+				expect(
+					screen.getByText(/AI reviewed your draft/i),
+				).toBeInTheDocument();
+			},
+			{ timeout: 8000 },
+		);
+		await new Promise((r) => setTimeout(r, 500));
+		expect(screen.getByText(/AI reviewed your draft/i)).toBeInTheDocument();
+	});
+
+	it("does not call the model for text too short to judge", async () => {
+		mocks.post.mockImplementation((url: string) => {
+			if (String(url).includes("/api/assist")) return Promise.resolve({});
+			if (String(url).includes("/api/pre-publish"))
+				return Promise.resolve(APPROVED);
+			return Promise.resolve({});
+		});
+		renderPage();
+
+		fireEvent.change(screen.getByRole("textbox", { name: "Title *" }), {
+			target: { value: "Hi team" },
+		});
+
+		// Past the 1200ms model settle: no aiJudge call may have fired.
+		await new Promise((r) => setTimeout(r, 1800));
+		expect(mocks.post).not.toHaveBeenCalledWith(
+			"/api/moderate",
+			expect.objectContaining({ aiJudge: true }),
+		);
+	});
+});

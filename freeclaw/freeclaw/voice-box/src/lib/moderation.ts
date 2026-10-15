@@ -37,6 +37,23 @@ export interface ModerationResult {
 	/** False when the server check itself failed. A failed check is not a pass. */
 	checked?: boolean;
 	/**
+	 * True ONLY when a language model actually judged the exact text this
+	 * result describes (`/api/moderate` with `aiJudge:true`, reporting
+	 * `decision.model_used === true`). Absent/false means deterministic-only,
+	 * skipped, timed out, or failed — the green "AI reviewed" banner must
+	 * never render from such a result. Callers must treat `undefined` as
+	 * "not known", never as "false" for any OTHER question: this field
+	 * answers one question only ("did the model judge this text?"), exactly
+	 * like `serverBlocked` answers "will the server reject this?".
+	 */
+	aiChecked?: boolean;
+	/**
+	 * True when the model was asked but timed out and the deterministic
+	 * verdict stands. Lets the UI say "couldn't run" instead of silently
+	 * implying a review happened. Only meaningful alongside `aiChecked`.
+	 */
+	aiTimedOut?: boolean;
+	/**
 	 * Advisory: is this an actionable school problem, or noise?
 	 *
 	 * Present only on results from `/api/moderate`. `undefined`/`null` means

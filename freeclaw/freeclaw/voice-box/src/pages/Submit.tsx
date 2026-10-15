@@ -192,6 +192,30 @@ export default function Submit() {
 	const [modChecking, setModChecking] = useState(false);
 	const modSeq = useRef(0);
 
+	/**
+	 * Model verdict for the live check — the LLM is ALWAYS in the loop.
+	 *
+	 * The fast pass above answers from deterministic rules in milliseconds;
+	 * the model needs a provider round trip (seconds). Its verdict is
+	 * stored WITH the exact text AND surface it was computed for, mirrored
+	 * in a ref so the effect below can skip re-judging without taking the
+	 * verdict into its deps (a failed attempt leaves no verdict, so
+	 * returning to that text retries once — transient outages recover
+	 * instead of sticking on "couldn't run").
+	 */
+	const [aiVerdict, setAiVerdict] = useState<{
+		text: string;
+		surface: string;
+		result: ModerationResult;
+	} | null>(null);
+	const [aiChecking, setAiChecking] = useState(false);
+	const aiSeq = useRef(0);
+	const aiVerdictRef = useRef<{
+		text: string;
+		surface: string;
+		result: ModerationResult;
+	} | null>(null);
+
 	/** Pre-publish AI review result */
 	const [prePubResult, setPrePubResult] = useState<PrePubResult | null>(null);
 	const [prePubBusy, setPrePubBusy] = useState(false);
@@ -297,13 +321,32 @@ export default function Submit() {
 	}, [title, desc, type, options, attachPoll, attachQuestion, attachOptions]);
 
 	/**
+	 * The model verdict — present ONLY while it describes the text on
+	 * screen AND the surface it was judged for. A verdict is a claim about
+	 * one exact string on one write path: polls publish through "direct"
+	 * (no review queue) while posts go "queued", and the policy maps them
+	 * differently. Applying a queued verdict to a poll draft (or vice
+	 * versa) invents facts the judge never stated.
+	 */
+	const aiSurface = type === "poll" ? "direct" : "queued";
+	const aiReview =
+		aiVerdict && aiVerdict.text === liveText && aiVerdict.surface === aiSurface
+			? aiVerdict.result
+			: null;
+	/**
 	 * The live verdict — present ONLY while it describes the text on screen.
 	 * Anything else is "not checked yet", which every consumer below already
 	 * knows how to render: silence, with the local scan standing in as the
 	 * pre-send backstop. See the state comment above for the bugs this closes.
+	 *
+	 * The model verdict wins when it matches: `evaluateContentDeep` runs
+	 * the deterministic scan as its base, so it is a strict superset of the
+	 * fast verdict — preferring it can only add flags, never drop them, and
+	 * a late fast response can never knock it out.
 	 */
 	const moderation =
-		modVerdict && modVerdict.text === liveText ? modVerdict.result : null;
+		aiReview ??
+		(modVerdict && modVerdict.text === liveText ? modVerdict.result : null);
 	/**
 	 * Render-safe flag list. `moderation` comes from the network and may be a
 	 * partial/mocked shape without `flags` — every direct `moderation.flags`
@@ -407,6 +450,78 @@ export default function Submit() {
 					setModChecking(false);
 				});
 		}, 250);
+		return () => {
+			cancelled = true;
+			clearTimeout(t);
+		};
+	}, [liveText, type]);
+
+	// Model pass — the LLM is ALWAYS in the loop on the live check.
+	//
+	// The fast pass above runs the deterministic scan on a 250ms debounce;
+	// this runs the write-path pipeline WITH the model judge (`aiJudge`,
+	// same policy the publish gate enforces) after a 1200ms settle, via
+	// `postSlow` — typing never waits on it. The verdict is stored with the
+	// exact text + surface it judged; `moderation` (derived above) prefers
+	// it when it describes the current draft.
+	//
+	// Failure honesty: an unusable response (network/429/`checked:false`/
+	// missing flags) is NOT a verdict — it clears to null so the UI falls
+	// back to "quick checks", never green. Only `aiChecked:true` (the
+	// server reporting the model actually judged the text) may paint the
+	// "AI reviewed" banner.
+	useEffect(() => {
+		const text = liveText;
+		const surface = type === "poll" ? "direct" : "queued";
+		if (text.trim().length < 10) {
+			aiVerdictRef.current = null;
+			setAiVerdict(null);
+			setAiChecking(false);
+			return;
+		}
+		// Never re-judge text the model already judged for this surface.
+		if (
+			aiVerdictRef.current?.text === text &&
+			aiVerdictRef.current?.surface === surface
+		) {
+			setAiChecking(false);
+			return;
+		}
+		const seq = ++aiSeq.current;
+		let cancelled = false;
+		const t = setTimeout(() => {
+			setAiChecking(true);
+			api
+				.postSlow<ModerationResult & { checked?: boolean; serverBlocked?: boolean }>(
+					"/api/moderate",
+					{ text, surface, aiJudge: true },
+				)
+				.then((r) => {
+					// Ignore a response for text the user has already typed past.
+					if (cancelled || seq !== aiSeq.current) return;
+					// A failed or unusable check must never render as a pass,
+					// and must never overwrite the fast verdict with nothing.
+					if (!r || r.checked === false || !Array.isArray(r.flags)) {
+						aiVerdictRef.current = null;
+						setAiVerdict(null);
+						return;
+					}
+					const verdict = { text, surface, result: r };
+					aiVerdictRef.current = verdict;
+					setAiVerdict(verdict);
+				})
+				.catch(() => {
+					if (cancelled || seq !== aiSeq.current) return;
+					// Deliberately null, not an empty result: the UI shows
+					// "could not check" rather than "no issues found".
+					aiVerdictRef.current = null;
+					setAiVerdict(null);
+				})
+				.finally(() => {
+					if (cancelled || seq !== aiSeq.current) return;
+					setAiChecking(false);
+				});
+		}, 1200);
 		return () => {
 			cancelled = true;
 			clearTimeout(t);
@@ -1024,10 +1139,24 @@ export default function Submit() {
 					<span>Checking content against the safety policy…</span>
 				</div>
 			)}
+			{aiChecking && (
+				<div className="flex items-center gap-2 rounded-lg px-3 py-2 text-xs text-ink3">
+					<Loader2 size={13} className="animate-spin" />
+					<span>The AI is reviewing your draft…</span>
+				</div>
+			)}
+			{/* The green banner is a claim that the MODEL reviewed the draft:
+				it renders ONLY from a verdict carrying `aiChecked:true` for
+				the exact text on screen. A deterministic-only verdict — or a
+				model call that timed out or failed — renders a neutral note
+				instead. Flags always win: any flag list suppresses every
+				banner here and the flag panel above speaks. */}
 			{moderation &&
 				!modChecking &&
+				!aiChecking &&
 				modFlags.length === 0 &&
-				(title.length > 10 || desc.length > 10 || liveText.trim().length > 10) && (
+				(title.length > 10 || desc.length > 10 || liveText.trim().length > 10) &&
+				(aiReview?.aiChecked === true ? (
 					<div
 						className="flex items-center gap-2 rounded-lg px-3 py-2 text-xs vb-rise"
 						style={{
@@ -1037,10 +1166,25 @@ export default function Submit() {
 					>
 						<ShieldCheck size={13} style={{ color: "var(--vb-good)" }} />
 						<span style={{ color: "var(--vb-good)" }}>
-							No issues found so far — final AI review runs when you publish
+							No issues found — the AI reviewed your draft
 						</span>
 					</div>
-				)}
+				) : (
+					<div
+						className="flex items-center gap-2 rounded-lg px-3 py-2 text-xs text-ink3 vb-rise"
+						style={{
+							background: "rgba(120,130,150,0.08)",
+							border: "1px solid rgba(120,130,150,0.25)",
+						}}
+					>
+						<ShieldCheck size={13} />
+						<span>
+							{aiReview
+								? "The AI check couldn't run — full review still runs when you publish"
+								: "Quick checks passed — final AI review runs when you publish"}
+						</span>
+					</div>
+				))}
 		</>
 	);
 

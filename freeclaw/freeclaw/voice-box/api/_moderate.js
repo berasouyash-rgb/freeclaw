@@ -26,16 +26,27 @@
 // the UI can stop lying to a real user before they hit submit.
 //
 // LATENCY
-// `evaluateContentAsync` runs the DETERMINISTIC contextual scan with
-// `useModel: false` — measured ~0-14ms, no network, no provider. A
-// model call here would put a multi-second spinner in front of every
-// keystroke, which is the "hide it behind a spinner" antipattern.
-// `assessRelevance` is likewise deterministic and in-process.
+// The DEFAULT pass runs `evaluateContentAsync` — the DETERMINISTIC
+// contextual scan with `useModel: false` (measured ~0-14ms, no network,
+// no provider). The client fires it on a 250ms debounce while typing, so
+// awaiting it costs nothing perceptible.
+//
+// The `aiJudge: true` pass runs `evaluateContentDeep` — the SAME pipeline
+// (and policy table) the write path enforces, bounded to 8s under the
+// `moderation.preview` task key. It costs a provider round trip, so the
+// client fires it only after a 1200ms settle, shows a spinner while it is
+// in flight, and NEVER paints green from a deterministic-only verdict.
+// `aiChecked` reports whether the model actually judged the text; the
+// client treats anything else as "quick checks only".
+// `assessRelevance` is deterministic and in-process on both paths.
 // ═══════════════════════════════════════════════════════════════════
 
 import { cors, rateLimited, rateLimitResponse } from "./_auth.js";
 import { assessRelevance } from "./_relevance.js";
-import { evaluateContentAsync } from "./_safety-pipeline.js";
+import {
+	evaluateContentAsync,
+	evaluateContentDeep,
+} from "./_safety-pipeline.js";
 
 /** Server flag type -> the client-facing category vocabulary. */
 const CATEGORY = {
@@ -103,20 +114,32 @@ export default async function handler(req, res) {
 				// Too short to judge relevance — say so rather than guess.
 				relevance: assessRelevance(text),
 				checked: true,
+				// Too short to judge at all: the model was not consulted,
+				// so this must never read as an "AI reviewed" verdict.
+				aiChecked: false,
+				aiTimedOut: false,
 			});
 		}
 
-		// Rate limit: max 120 checks per IP per minute. Typing fires one
-		// request per debounce; a paste-and-hold would otherwise be a cheap
-		// amplification of the moderation work.
-		if (
-			await rateLimited(
-				"moderation_preview",
-				req.headers["x-forwarded-for"] || "anon",
-				60,
-				120,
-			)
-		) {
+		// `aiJudge: true` asks for the write-path verdict (model judge, same
+		// pipeline and policy the publish gate enforces). Model calls cost a
+		// provider round trip, so they get their own, tighter bucket: 60/min
+		// sits above the ~50/min ceiling of the client's 1200ms settle (a
+		// careful typer never trips it) while a looped client cannot burn
+		// unbounded provider calls. The deterministic pass keeps 120/min.
+		const ip = req.headers["x-forwarded-for"] || "anon";
+		const aiJudge = req.body?.aiJudge === true;
+		if (aiJudge) {
+			if (await rateLimited("moderation_preview_ai", ip, 60, 60)) {
+				return rateLimitResponse(
+					res,
+					"Too many checks. Wait a moment.",
+				);
+			}
+		} else if (await rateLimited("moderation_preview", ip, 60, 120)) {
+			// Rate limit: max 120 checks per IP per minute. Typing fires one
+			// request per debounce; a paste-and-hold would otherwise be a cheap
+			// amplification of the moderation work.
 			return rateLimitResponse(
 				res,
 				"Too many checks. Wait a moment.",
@@ -130,7 +153,22 @@ export default async function handler(req, res) {
 		// was publishable while the server 403'd it. Unknown values fall back
 		// to "queued", never to an invented third surface.
 		const surface = req.body?.surface === "direct" ? "direct" : "queued";
-		const decision = await evaluateContentAsync(text, surface);
+		// The model pass is the write-path pipeline verbatim (it runs the
+		// deterministic scan as its base, so its verdict is a strict
+		// superset of the default pass). Bounded to 8s: a preview must not
+		// hold a request slot the way a publish may.
+		const decision = aiJudge
+			? await evaluateContentDeep(text, surface, null, {
+					timeoutMs: 8000,
+					taskKey: "moderation.preview",
+				})
+			: await evaluateContentAsync(text, surface);
+		// `aiChecked` is true ONLY when a model actually judged this text.
+		// Every other outcome — deterministic pass, already-blocked skip,
+		// timeout, outage — reports false, and the client must not paint
+		// the "AI reviewed" green from it.
+		const aiChecked = aiJudge && decision.model_used === true;
+		const aiTimedOut = aiJudge && decision.timedOut === true;
 		// Advisory only: is this an actionable school problem, or noise?
 		// It never blocks and never changes `serverBlocked` — the write path
 		// is the authority on what may be published.
@@ -173,6 +211,14 @@ export default async function handler(req, res) {
 				: null,
 			relevance,
 			checked: true,
+			// True ONLY when a model judged this exact text. Absent/false
+			// means deterministic-only, skipped, timed out, or failed —
+			// the client renders those as "quick checks", never green.
+			aiChecked,
+			// True when the model was asked but timed out and the
+			// deterministic verdict stands. Lets the client say "couldn't
+			// run" instead of silently implying a review happened.
+			aiTimedOut,
 		});
 	} catch (error) {
 		// A broken moderation check must NOT be reported to the user as
@@ -191,6 +237,10 @@ export default async function handler(req, res) {
 			// render as a positive verdict about the submission.
 			relevance: null,
 			checked: false,
+			// The check crashed before any verdict existed — including
+			// before any model could judge. Never a pass, never AI-reviewed.
+			aiChecked: false,
+			aiTimedOut: false,
 			// A static, non-leaking message. `sanitizeError` SENDS a response of
 			// its own (and is keyed on `res`), so calling it inside this 200 body
 			// both leaked `err.message` and threw `res.status is not a function`
