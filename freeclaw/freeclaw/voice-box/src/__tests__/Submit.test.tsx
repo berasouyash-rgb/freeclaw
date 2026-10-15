@@ -1485,3 +1485,158 @@ describe("Submit — AI model pass behind the live green banner", () => {
 		);
 	});
 });
+
+// ═══════════════════════════════════════════════════════════════════
+// The live status slot must stay stable while typing. Each keystroke
+// invalidates the verdict for the previous text (a verdict is a claim
+// about one exact string), but the slot must never go blank between a
+// verdict and the next check, never hide a matching banner to show a
+// spinner, and never shift the layout — blank-then-flash plus layout
+// jumps read as "glitching" on every pause while typing.
+// ═══════════════════════════════════════════════════════════════════
+describe("Submit — live feedback stays stable while typing", () => {
+	const FAST_CLEAN = {
+		checked: true,
+		safe: true,
+		overallSeverity: "none",
+		flags: [],
+		score: 0,
+		serverBlocked: false,
+		aiChecked: false,
+		aiTimedOut: false,
+	};
+	const AI_CLEAN = { ...FAST_CLEAN, aiChecked: true };
+
+	function typeDraft() {
+		fireEvent.change(screen.getByRole("textbox", { name: "Title *" }), {
+			target: { value: "Broken benches near the basketball court" },
+		});
+		fireEvent.change(screen.getByRole("textbox", { name: "Description *" }), {
+			target: {
+				value:
+					"Several benches by the court have loose planks and wobble when students sit on them after practice.",
+			},
+		});
+	}
+
+	function mockChecks(aiImpl: (body?: Record<string, unknown>) => Promise<unknown>) {
+		mocks.post.mockImplementation(
+			(url: string, body?: Record<string, unknown>) => {
+				if (String(url).includes("/api/assist")) return Promise.resolve({});
+				if (String(url).includes("/api/pre-publish"))
+					return Promise.resolve(APPROVED);
+				if (String(url).includes("/api/moderate")) {
+					if (body?.aiJudge === true) return aiImpl(body);
+					return new Promise((res) => setTimeout(() => res(FAST_CLEAN), 50));
+				}
+				return Promise.resolve({});
+			},
+		);
+	}
+
+	it("never blanks the status slot between a verdict and the next check", {
+		timeout: 20000,
+	}, async () => {
+		mockChecks(async () => {
+			await new Promise((r) => setTimeout(r, 300));
+			return AI_CLEAN;
+		});
+		renderPage();
+		typeDraft();
+		await waitFor(
+			() => {
+				expect(
+					screen.getByText(/AI reviewed your draft/i),
+				).toBeInTheDocument();
+			},
+			{ timeout: 10000 },
+		);
+
+		// One more keystroke: the green verdict described the old text, so
+		// it must go — but the slot must show a checking indicator
+		// immediately, never blank. A check IS scheduled; silence-then-flash
+		// on every keystroke is the glitch.
+		fireEvent.change(screen.getByRole("textbox", { name: "Description *" }), {
+			target: {
+				value:
+					"Several benches by the court have loose planks and wobble when students sit on them after practice!",
+			},
+		});
+		expect(
+			screen.queryByText(/AI reviewed your draft/i),
+		).not.toBeInTheDocument();
+		expect(
+			screen.getByText(
+				/Reviewing latest changes|Checking content|AI is reviewing/i,
+			),
+		).toBeInTheDocument();
+	});
+
+	it("keeps the fast banner on screen while the model pass is in flight", {
+		timeout: 20000,
+	}, async () => {
+		// Gated model pass: it answers only when released, so the moment
+		// "model in flight + fast verdict matched" is deterministic.
+		let resolveAI!: (v: unknown) => void;
+		const aiGate = new Promise((r) => {
+			resolveAI = r;
+		});
+		mockChecks(() => aiGate);
+		renderPage();
+		typeDraft();
+
+		// Fast verdict lands first: quick checks only.
+		await waitFor(
+			() => {
+				expect(screen.getByText(/Quick checks passed/i)).toBeInTheDocument();
+			},
+			{ timeout: 8000 },
+		);
+		// Model pass goes in flight (past its 1200ms settle).
+		await waitFor(
+			() => {
+				expect(
+					screen.getByText(/The AI is reviewing your draft/i),
+				).toBeInTheDocument();
+			},
+			{ timeout: 8000 },
+		);
+		// The banner described the current text all along — hiding it to
+		// show the spinner is a hide/show flash per pause. It must stay.
+		expect(screen.getByText(/Quick checks passed/i)).toBeInTheDocument();
+
+		resolveAI(AI_CLEAN);
+		await waitFor(
+			() => {
+				expect(
+					screen.getByText(/AI reviewed your draft/i),
+				).toBeInTheDocument();
+			},
+			{ timeout: 8000 },
+		);
+	});
+
+	it("reserves stable slot height once feedback is active", {
+		timeout: 20000,
+	}, async () => {
+		mockChecks(async () => {
+			await new Promise((r) => setTimeout(r, 300));
+			return AI_CLEAN;
+		});
+		renderPage();
+		typeDraft();
+		await waitFor(
+			() => {
+				expect(
+					screen.getByText(/AI reviewed your draft/i),
+				).toBeInTheDocument();
+			},
+			{ timeout: 10000 },
+		);
+
+		// Rows appearing/disappearing shift the publish button up and down
+		// on every keystroke. The slot reserves its height instead.
+		const slot = screen.getByTestId("live-mod-slot");
+		expect(slot.style.minHeight).not.toBe("");
+	});
+});

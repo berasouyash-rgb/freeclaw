@@ -357,6 +357,27 @@ export default function Submit() {
 	const modFlags = moderation?.flags ?? [];
 
 	/**
+	 * Length gate shared by the checking line and the banner below. Short
+	 * stubs get no live feedback at all — a spinner that resolves into
+	 * nothing is a flash, and feedback that appears only past this length
+	 * would pop the layout on the keystroke that crosses it (the slot
+	 * reserves height only past the same gate, so the two can never
+	 * disagree about whether the slot is active).
+	 */
+	const feedbackLengthOk =
+		title.length > 10 || desc.length > 10 || liveText.trim().length > 10;
+	/**
+	 * A check is scheduled but no request is in flight yet: the text
+	 * changed inside the debounce window. Rendering nothing here blanks
+	 * the slot on EVERY keystroke (verdicts are text-keyed, so the old one
+	 * just died) — blank-then-flash per pause is the typing glitch. A
+	 * check genuinely is pending, so saying so is honest, and it keeps one
+	 * stable row in the slot until a verdict lands.
+	 */
+	const stalePending =
+		!moderation && !modChecking && !aiChecking && feedbackLengthOk;
+
+	/**
 	 * Advisory relevance verdict for the current text, or null when the check
 	 * has not run or has failed. Null must never render as a positive claim.
 	 */
@@ -1070,7 +1091,16 @@ export default function Submit() {
 	 * drift apart.
 	 */
 	const renderLiveModerationFeedback = () => (
-		<>
+		// Stable slot: rows appearing/disappearing here used to shove the
+		// publish button up and down on every keystroke. The height is
+		// reserved while feedback is active (checking or banner rows fit
+		// inside it), so only the copy changes — never the layout. Short
+		// stubs reserve nothing: the slot is either active or absent, and
+		// the gate below is the same one that decides activity.
+		<div
+			data-testid="live-mod-slot"
+			style={feedbackLengthOk || modFlags.length > 0 ? { minHeight: 76 } : undefined}
+		>
 			{/* Advisory: does this read as an actionable school problem? */}
 			<RelevanceNote
 				relevance={relevance}
@@ -1133,29 +1163,39 @@ export default function Submit() {
 						)}
 				</div>
 			)}
-			{modChecking && (
-				<div className="flex items-center gap-2 rounded-lg px-3 py-2 text-xs text-ink3">
-					<Loader2 size={13} className="animate-spin" />
-					<span>Checking content against the safety policy…</span>
-				</div>
-			)}
-			{aiChecking && (
-				<div className="flex items-center gap-2 rounded-lg px-3 py-2 text-xs text-ink3">
-					<Loader2 size={13} className="animate-spin" />
-					<span>The AI is reviewing your draft…</span>
-				</div>
-			)}
+			{/* One checking row, never two: the fast and model passes overlap
+				(mainly across tab switches), and stacked spinners read as a
+				glitch. Fast pass wins the copy while it is in flight; the
+				model copy shows once only the model is pending; the stale
+				copy covers the debounce window before either request fires.
+				Suppressed under flags — the flag panel speaks then. */}
+			{(modChecking || aiChecking || stalePending) &&
+				feedbackLengthOk &&
+				modFlags.length === 0 && (
+					<div className="flex items-center gap-2 rounded-lg px-3 py-2 text-xs text-ink3">
+						<Loader2 size={13} className="animate-spin" />
+						<span>
+							{modChecking
+								? "Checking content against the safety policy…"
+								: aiChecking
+									? "The AI is reviewing your draft…"
+									: "Reviewing latest changes…"}
+						</span>
+					</div>
+				)}
 			{/* The green banner is a claim that the MODEL reviewed the draft:
 				it renders ONLY from a verdict carrying `aiChecked:true` for
 				the exact text on screen. A deterministic-only verdict — or a
 				model call that timed out or failed — renders a neutral note
 				instead. Flags always win: any flag list suppresses every
-				banner here and the flag panel above speaks. */}
+				banner here and the flag panel above speaks.
+				The banner stays up while the model pass is in flight for the
+				same text: the fast verdict it shows is true, and hiding it
+				for a spinner is a hide/show flash per pause. */}
 			{moderation &&
 				!modChecking &&
-				!aiChecking &&
 				modFlags.length === 0 &&
-				(title.length > 10 || desc.length > 10 || liveText.trim().length > 10) &&
+				feedbackLengthOk &&
 				(aiReview?.aiChecked === true ? (
 					<div
 						className="flex items-center gap-2 rounded-lg px-3 py-2 text-xs vb-rise"
@@ -1185,7 +1225,7 @@ export default function Submit() {
 						</span>
 					</div>
 				))}
-		</>
+		</div>
 	);
 
 	const TABS = [
