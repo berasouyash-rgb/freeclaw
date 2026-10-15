@@ -63,6 +63,30 @@ const CATEGORY_FLAGS = {
 const BLOCKING = new Set(["high", "critical"]);
 
 /**
+ * What the student reads when a model-emitted flag fires: the CRITERION,
+ * in plain school language — what rule, and why this cannot be accepted.
+ * Static strings only, keyed by the emitted flag TYPE (what POLICY
+ * enforces — unchanged): model vocabulary ("neutral", "unsafe", category
+ * tokens) must never reach the UI, both because it confuses ("neutral
+ * (high)" on a blocked post) and because model text is untrusted input.
+ * No new policy row is invented here; only the human sentence changes.
+ */
+const FLAG_CRITERIA = {
+	explicit: "Sexual content is not allowed here.",
+	bullying: "Targeting a student with harassment is not allowed here.",
+	threat: "Threats are not allowed here.",
+	threat_report:
+		"This reads as a report of abuse — held for a human to review.",
+	violence: "Violent content is not allowed here.",
+	hate_speech: "Hate speech is not allowed here.",
+	coercion: "Coercion or blackmail is not allowed here.",
+	privacy: "Personal information must not be shared here.",
+	privacy_weak:
+		"Possible personal information — held for a human to review.",
+	profanity: "Profanity is not allowed here.",
+};
+
+/**
  * Map a contextual decision onto deterministic flags.
  * Returns [] when the message is neutral — a null/clean context NEVER clears
  * an existing finding.
@@ -204,7 +228,7 @@ export async function contextualModerationDeep(
 		// (high, never critical): on queued surfaces they quarantine rather
 		// than block, exactly like their deterministic counterparts.
 		severity: type === "threat_report" || type === "privacy_weak" ? "high" : String(result?.level || "high"),
-		message: `AI review: ${result?.category || "unsafe"} (${result?.level || "unknown"})`,
+		message: FLAG_CRITERIA[type] || "This content breaks the safety policy.",
 		source: "context-model",
 	}));
 	const out = { flags, context: result, model_used: modelUsed, timedOut };
