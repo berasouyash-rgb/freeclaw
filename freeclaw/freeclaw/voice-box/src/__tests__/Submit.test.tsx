@@ -1640,3 +1640,83 @@ describe("Submit — live feedback stays stable while typing", () => {
 		expect(slot.style.minHeight).not.toBe("");
 	});
 });
+
+// ═══════════════════════════════════════════════════════════════════
+// Draft retention: an abandoned draft restores forever with no way to
+// clear it except publishing or wiping all site data. The author gets
+// an explicit two-tap Discard — drafts are the author's own
+// unsubmitted words (local only, never evidence). Published, held, or
+// reported content is NOT covered here: those deletes stay admin-only
+// (see tests/api/evidence-delete-lock.test.ts).
+// ═══════════════════════════════════════════════════════════════════
+describe("Submit — discard unimportant draft data", () => {
+	function mockQuiet() {
+		mocks.post.mockImplementation((url: string) => {
+			if (String(url).includes("/api/assist")) return Promise.resolve({});
+			if (String(url).includes("/api/pre-publish"))
+				return Promise.resolve(APPROVED);
+			return Promise.resolve({});
+		});
+	}
+
+	it("discards the draft on two taps: fields cleared, storage cleared, announced", {
+		timeout: 20000,
+	}, async () => {
+		mockQuiet();
+		const page = renderPage();
+
+		fireEvent.change(screen.getByRole("textbox", { name: "Title *" }), {
+			target: { value: "Canteen queue too long" },
+		});
+		fireEvent.change(screen.getByRole("textbox", { name: "Description *" }), {
+			target: { value: "The lunch queue takes the whole break every single day." },
+		});
+		// Past the 900ms autosave: the draft exists in storage now.
+		await new Promise((r) => setTimeout(r, 1200));
+
+		// Two-tap: arm, then confirm. One tap must never lose work.
+		fireEvent.click(screen.getByRole("button", { name: "Discard draft" }));
+		expect(
+			screen.getByRole("button", { name: "Confirm discard draft" }),
+		).toBeInTheDocument();
+		expect(
+			(screen.getByRole("textbox", { name: "Title *" }) as HTMLInputElement)
+				.value,
+		).toBe("Canteen queue too long");
+
+		fireEvent.click(
+			screen.getByRole("button", { name: "Confirm discard draft" }),
+		);
+		expect(
+			(screen.getByRole("textbox", { name: "Title *" }) as HTMLInputElement)
+				.value,
+		).toBe("");
+		expect(
+			(screen.getByRole("textbox", { name: "Description *" }) as HTMLInputElement)
+				.value,
+		).toBe("");
+		expect(mocks.toast).toHaveBeenCalledWith("Draft discarded", "info");
+
+		// Remount: nothing restores — the storage row is really gone.
+		page.unmount();
+		renderPage();
+		await new Promise((r) => setTimeout(r, 300));
+		expect(
+			(screen.getByRole("textbox", { name: "Title *" }) as HTMLInputElement)
+				.value,
+		).toBe("");
+		expect(mocks.post).not.toHaveBeenCalledWith(
+			"/api/posts",
+			expect.anything(),
+		);
+	});
+
+	it("offers no discard control on an empty form", async () => {
+		mockQuiet();
+		renderPage();
+		await new Promise((r) => setTimeout(r, 300));
+		expect(
+			screen.queryByRole("button", { name: "Discard draft" }),
+		).not.toBeInTheDocument();
+	});
+});

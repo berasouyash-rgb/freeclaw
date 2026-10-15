@@ -101,6 +101,15 @@ export default function Submit() {
 	const [preview, setPreview] = useState(false);
 	const [busy, setBusy] = useState(false);
 	const [draftSaved, setDraftSaved] = useState(false);
+	/**
+	 * Two-tap draft discard arming. Drafts are the author's own unsubmitted
+	 * words (local only, never evidence), and an abandoned draft restores
+	 * forever with no other way to clear it. One tap arms, the second
+	 * discards — a single tap must never lose work. Published, held, or
+	 * reported content is NOT covered here: those deletes stay admin-only
+	 * (see tests/api/evidence-delete-lock.test.ts).
+	 */
+	const [discardArmed, setDiscardArmed] = useState(false);
 	// Recourse: when safety blocks the write (client pre-gate or server 403),
 	// offer a human appeal carrying the exact blocked text.
 	const [blockedAppeal, setBlockedAppeal] = useState<{
@@ -768,6 +777,22 @@ export default function Submit() {
 		}, 900);
 		return () => clearTimeout(t);
 	}, [title, desc, category, tags, type]);
+
+	/**
+	 * The draft holds typed content only (title/desc/tags) — structural
+	 * choices (category, type, poll options) are prefs, not data, and stay.
+	 * Storage is cleared first so a remount can never resurrect the words.
+	 */
+	const hasDraftContent =
+		title.trim() !== "" || desc.trim() !== "" || tags.trim() !== "";
+	const discardDraft = () => {
+		lsSet(DRAFT_KEY, null);
+		setTitle("");
+		setDesc("");
+		setTags("");
+		setDiscardArmed(false);
+		toast("Draft discarded", "info");
+	};
 
 	const pickImage = (f: File) => {
 		if (f.size > 3 * 1024 * 1024) {
@@ -2091,6 +2116,20 @@ export default function Submit() {
 					>
 						<Save size={11} /> Draft saved
 					</span>
+					{hasDraftContent && (
+						<button
+							type="button"
+							className="btn btn-ghost !text-[11px] text-ink3 hover:text-bad"
+							onClick={() =>
+								discardArmed ? discardDraft() : setDiscardArmed(true)
+							}
+							aria-label={
+								discardArmed ? "Confirm discard draft" : "Discard draft"
+							}
+						>
+							{discardArmed ? "Tap again to discard" : "Discard draft"}
+						</button>
+					)}
 					<button
 						className={`btn btn-primary ml-auto ${busy ? "btn-loading" : ""}`}
 						onClick={submit}
