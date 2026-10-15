@@ -239,3 +239,63 @@ describe("IDOR: notifications", () => {
 		expect(res.statusCode).toBe(403);
 	});
 });
+
+describe("IDOR: notifications POST create/mark-read", () => {
+	it("rejects POST create when x-anon-id does not match user_id — nothing stored", async () => {
+		// REGRESSION: POST (unlike GET/DELETE) skipped caller verification,
+		// so anyone could plant arbitrary title/body into anyone else's
+		// inbox — unmoderated content delivered straight to a victim.
+		vi.resetModules();
+		const { default: handler } = await import("../../api/_notifications.js");
+		const res = response();
+		await handler(
+			{
+				method: "POST",
+				query: {},
+				body: {
+					user_id: "anon_victim",
+					title: "You are finished",
+					body: "don't come to school tomorrow",
+				},
+				headers: { "x-anon-id": "anon_attacker" },
+			},
+			res,
+		);
+		expect(res.statusCode).toBe(403);
+		expect(upsert).not.toHaveBeenCalled();
+	});
+
+	it("rejects POST mark-read when x-anon-id does not match user_id", async () => {
+		vi.resetModules();
+		const { default: handler } = await import("../../api/_notifications.js");
+		const res = response();
+		await handler(
+			{
+				method: "POST",
+				query: {},
+				body: { user_id: "anon_victim", notification_id: "notif_x" },
+				headers: { "x-anon-id": "anon_attacker" },
+			},
+			res,
+		);
+		expect(res.statusCode).toBe(403);
+		expect(upsert).not.toHaveBeenCalled();
+	});
+
+	it("still lets the owner create into their own inbox", async () => {
+		vi.resetModules();
+		const { default: handler } = await import("../../api/_notifications.js");
+		const res = response();
+		await handler(
+			{
+				method: "POST",
+				query: {},
+				body: { user_id: "anon_owner", title: "Hello", body: "world" },
+				headers: { "x-anon-id": "anon_owner" },
+			},
+			res,
+		);
+		expect(res.statusCode).toBe(201);
+		expect(upsert).toHaveBeenCalled();
+	});
+});

@@ -64,8 +64,17 @@ export default async function handler(req, res) {
 			);
 		}
 
-		// P0 SECURITY FIX: Verify caller identity — prevent reading/other-user's notifications
-		if (req.method === "GET" || req.method === "DELETE") {
+		// P0 SECURITY FIX: Verify caller identity — prevent reading/other-user's notifications.
+		// POST is verified too: it both writes new notifications (arbitrary
+		// title/body into anyone's inbox) and flips read state. Only the
+		// inbox owner (or an admin via the isAdmin bypass inside the
+		// verifier) may do either — server-side fan-outs write the store
+		// directly, never through this route, so nothing legit breaks.
+		if (
+			req.method === "GET" ||
+			req.method === "DELETE" ||
+			req.method === "POST"
+		) {
 			const caller = await verifyCallerIdentity(req, res, userId);
 			if (!caller.ok)
 				return res.status(caller.status).json({ error: caller.error, code: caller.code });
