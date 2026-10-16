@@ -182,6 +182,51 @@ const OFF_TOPIC = [
 	},
 ];
 
+/**
+ * Pleas for help — "help me", "save me", "protect us", "I am scared".
+ * Routing, NOT moderation: a plea is never blocked, never punished; it
+ * goes to support (private + human) instead of the public feed, because
+ * publishing a vulnerable student's cry for help exposes them. The
+ * academic-task guard below keeps schoolwork ("help me with maths")
+ * public: routing every homework plea to support would flood the review
+ * queue and confuse authors. Crisis (DISTRESS) still wins over plea.
+ */
+const PLEA = [
+	{
+		id: "plea_help",
+		label: "a plea for help",
+		re: /\bhelp (?:me|us|him|her|them)\b|\bplease help\b|\bi need help\b|\bneed help\b/i,
+	},
+	{
+		id: "plea_save",
+		label: "a plea to be kept safe",
+		re: /\bsave (?:me|us|him|her|them)\b|\bplease save\b/i,
+	},
+	{
+		id: "plea_protect",
+		label: "a plea for protection",
+		re: /\bprotect (?:me|us|him|her|them)\b/i,
+	},
+	{
+		id: "plea_scared",
+		label: "fear about coming to school",
+		re: /\b(?:i am|i'm|im|we are|we're|so|really|very) scared\b|\bscar(?:ed|y) (?:to come|of (?:school|class|seniors|him|her|them))\b/i,
+	},
+];
+
+/**
+ * Schoolwork markers. A plea wrapped around homework ("help me with
+ * maths chapter 5") is schoolwork, not distress — the guard keeps it on
+ * the normal path instead of flooding support with homework.
+ */
+const ACADEMIC_TASK = [
+	{
+		id: "schoolwork",
+		label: "schoolwork context",
+		re: /\b(?:maths?|homework|exam|quiz|assignment|tuition|syllabus|lesson|classwork|chapter|sum|algebra|geometry)\b/i,
+	},
+];
+
 /** Verdicts. `unclear` is the honest fallback, never an accusation. */
 export const VERDICTS = ["school_problem", "unclear", "not_school_related"];
 /** Advisory route for the caller. None of these block anything. */
@@ -239,6 +284,8 @@ export function assessRelevance(rawText) {
 	const problemHits = matchBucket(text, PROBLEM);
 	const distressHits = matchBucket(text, DISTRESS);
 	const offTopicHits = matchBucket(text, OFF_TOPIC);
+	const pleaHits = matchBucket(text, PLEA);
+	const academicHits = matchBucket(text, ACADEMIC_TASK);
 
 	const hasSchool = schoolHits.length > 0;
 	const hasProblem = problemHits.length > 0;
@@ -256,6 +303,17 @@ export function assessRelevance(rawText) {
 		confidence = "low";
 		explanation =
 			"This might be about how you are feeling rather than a school issue. Support is available, and you can still post this.";
+	} else if (pleaHits.length > 0 && academicHits.length === 0) {
+		// A plea for help is not an accusation and not a complaint — it is
+		// addressed to someone who can help. Publishing it to the feed
+		// exposes a vulnerable student, so it routes to support (private +
+		// human), exactly like distress. The academic-task guard above keeps
+		// schoolwork ("help me with maths") on the normal path.
+		verdict = "unclear";
+		route = "support";
+		confidence = "low";
+		explanation =
+			"This reads like you are asking for help. It stays between you and the support team — never public — and you can still post it.";
 	} else if (hasProblem && hasSchool) {
 		verdict = "school_problem";
 		route = "post";
@@ -297,9 +355,12 @@ export function assessRelevance(rawText) {
 		problemHits,
 		distressHits,
 		offTopicHits,
+		pleaHits,
+		academicHits,
 		// Flat, evidence-carrying list — this is what the UI renders.
 		reasons: [
 			...distressHits.map((h) => ({ kind: "distress", ...h })),
+			...pleaHits.map((h) => ({ kind: "plea", ...h })),
 			...problemHits.map((h) => ({ kind: "problem", ...h })),
 			...schoolHits.map((h) => ({ kind: "school", ...h })),
 			...offTopicHits.map((h) => ({ kind: "off_topic", ...h })),

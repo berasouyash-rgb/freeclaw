@@ -1720,3 +1720,191 @@ describe("Submit — discard unimportant draft data", () => {
 		).not.toBeInTheDocument();
 	});
 });
+
+// ═══════════════════════════════════════════════════════════════════
+// Distress auto-private: a genuine cry for help must never reach the
+// public feed. When the SERVER says the current text needs support —
+// model-read distress (`supportNeeded`) or a deterministic plea
+// (relevance route "support") — the private toggle locks ON with a
+// plain explanation. The lock follows the verdict: editing the text
+// drops the stale verdict and frees the toggle; the server enforces
+// private+review on write regardless (see tests/api/support-routing).
+// ═══════════════════════════════════════════════════════════════════
+describe("Submit — distress auto-private lock", () => {
+	function mockChecks(
+		fast: (body?: Record<string, unknown>) => Promise<unknown>,
+		ai?: (body?: Record<string, unknown>) => Promise<unknown>,
+	) {
+		mocks.post.mockImplementation(
+			(url: string, body?: Record<string, unknown>) => {
+				if (String(url).includes("/api/assist")) return Promise.resolve({});
+				if (String(url).includes("/api/pre-publish"))
+					return Promise.resolve(APPROVED);
+				if (String(url).includes("/api/moderate"))
+					return body?.aiJudge === true
+						? (ai ?? fast)(body)
+						: fast(body);
+				return Promise.resolve({});
+			},
+		);
+	}
+
+	const SUPPORT_RELEVANCE = {
+		policyVersion: "test",
+		verdict: "unclear",
+		route: "support",
+		confidence: "low",
+		reasons: [],
+		explanation: "support",
+		askUserToConfirm: false,
+		limits: [],
+	};
+
+	function typePlea() {
+		fireEvent.change(screen.getByRole("textbox", { name: "Title *" }), {
+			target: { value: "Rahul help me please" },
+		});
+		fireEvent.change(screen.getByRole("textbox", { name: "Description *" }), {
+			target: {
+				value: "Something happened after class and I need help right now",
+			},
+		});
+	}
+
+	it("locks private on when the fast verdict routes to support", {
+		timeout: 20000,
+	}, async () => {
+		mockChecks(async () => ({
+			checked: true,
+			safe: true,
+			overallSeverity: "none",
+			flags: [],
+			serverBlocked: false,
+			aiChecked: false,
+			relevance: SUPPORT_RELEVANCE,
+		}));
+		renderPage();
+		typePlea();
+
+		await waitFor(
+			() => {
+				expect(screen.getByText(/locked to private/i)).toBeInTheDocument();
+			},
+			{ timeout: 8000 },
+		);
+		// The lock's setState lands in the commit after the note renders;
+		// waiting on the switch itself flushes it instead of racing it.
+		await waitFor(
+			() => {
+				const toggle = screen.getByRole("switch", { name: /private post/i });
+				expect(toggle).toHaveAttribute("aria-checked", "true");
+				expect(toggle).toBeDisabled();
+			},
+			{ timeout: 8000 },
+		);
+	});
+
+	it("locks private on when the model verdict needs support", {
+		timeout: 20000,
+	}, async () => {
+		mockChecks(
+			async () => ({
+				checked: true,
+				safe: true,
+				overallSeverity: "none",
+				flags: [],
+				serverBlocked: false,
+				aiChecked: false,
+			}),
+			async () => ({
+				checked: true,
+				safe: true,
+				overallSeverity: "none",
+				flags: [],
+				serverBlocked: false,
+				aiChecked: true,
+				supportNeeded: true,
+			}),
+		);
+		renderPage();
+		typePlea();
+
+		await waitFor(
+			() => {
+				expect(screen.getByText(/locked to private/i)).toBeInTheDocument();
+			},
+			{ timeout: 10000 },
+		);
+		await waitFor(
+			() => {
+				expect(
+					screen.getByRole("switch", { name: /private post/i }),
+				).toHaveAttribute("aria-checked", "true");
+			},
+			{ timeout: 8000 },
+		);
+	});
+
+	it("leaves the toggle free on ordinary posts", async () => {
+		mockChecks(async () => ({
+			checked: true,
+			safe: true,
+			overallSeverity: "none",
+			flags: [],
+			serverBlocked: false,
+			aiChecked: false,
+		}));
+		renderPage();
+		fireEvent.change(screen.getByRole("textbox", { name: "Title *" }), {
+			target: { value: "Broken benches near the basketball court" },
+		});
+		fireEvent.change(screen.getByRole("textbox", { name: "Description *" }), {
+			target: {
+				value: "Several benches are loose and wobble when students sit on them.",
+			},
+		});
+		await new Promise((r) => setTimeout(r, 1200));
+		const toggle = screen.getByRole("switch", { name: /private post/i });
+		expect(toggle).toHaveAttribute("aria-checked", "false");
+		expect(toggle).not.toBeDisabled();
+	});
+
+	it("frees the toggle when the locked text is edited away", {
+		timeout: 20000,
+	}, async () => {
+		mockChecks(async () => ({
+			checked: true,
+			safe: true,
+			overallSeverity: "none",
+			flags: [],
+			serverBlocked: false,
+			aiChecked: false,
+			relevance: SUPPORT_RELEVANCE,
+		}));
+		renderPage();
+		typePlea();
+		await waitFor(
+			() => {
+				expect(screen.getByText(/locked to private/i)).toBeInTheDocument();
+			},
+			{ timeout: 8000 },
+		);
+
+		// New words, new verdict pending: the stale lock must drop rather
+		// than pin private onto text no verdict has seen.
+		fireEvent.change(screen.getByRole("textbox", { name: "Description *" }), {
+			target: { value: "Something happened after class today" },
+		});
+		await waitFor(
+			() => {
+				expect(
+					screen.queryByText(/locked to private/i),
+				).not.toBeInTheDocument();
+			},
+			{ timeout: 8000 },
+		);
+		expect(
+			screen.getByRole("switch", { name: /private post/i }),
+		).not.toBeDisabled();
+	});
+});

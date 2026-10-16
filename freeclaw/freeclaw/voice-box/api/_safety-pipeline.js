@@ -262,13 +262,21 @@ export async function evaluateContentDeep(
 			// false made a real, paid judgment look like a provider outage.
 			model_used: deep?.model_used === true,
 			timedOut: deep?.timedOut === true,
+			// The model's emotional read travels with the verdict even when
+			// there is no policy flag: a plea for help ("Rahul help me")
+			// carries no flaggable content, but the write path and the
+			// preview need the read to route it to private+support instead
+			// of public. Present ONLY when the model actually ran — never
+			// infer one from a skip, a timeout, or an outage.
+			emotion: deep?.model_used === true ? (deep?.context?.emotion ?? null) : null,
+			level: deep?.model_used === true ? (deep?.context?.level ?? null) : null,
 			trace: [...(base.trace || []), `model:${deep?.timedOut ? "timeout" : "no-signal"}`],
 		};
 	}
 	const merged = mergeFlags(base.flags || [], deep.flags);
 	const types = merged.map((f) => f.type);
 	const row = POLICY.find((p) => p.flagTypes.some((t) => types.includes(t))) || null;
-	if (!row) return { ...base, model_used: true, timedOut: false };
+	if (!row) return { ...base, model_used: true, timedOut: false, emotion: deep?.context?.emotion ?? null, level: deep?.context?.level ?? null };
 	const action = surfaceKind === "queued" ? row.action.queued : row.action.direct;
 	return {
 		...base,
@@ -287,6 +295,10 @@ export async function evaluateContentDeep(
 		code: row.code,
 		model_used: true,
 		timedOut: false,
+		// Same support-signal contract as the no-flag path above: the
+		// emotion and level travel whenever the model actually judged the text.
+		emotion: deep?.context?.emotion ?? null,
+		level: deep?.context?.level ?? null,
 	};
 }
 
@@ -296,6 +308,41 @@ export function getPolicyTable() {	return POLICY.map((p) => ({
 		action: { ...p.action },
 		code: p.code,
 	}));
+}
+
+/**
+ * What counts as a genuine cry for help — a model judgment, never a list.
+ * `needsSupport` is the SINGLE rule both the preview (auto-private) and
+ * the write path (force private+review) obey, so they can never disagree
+ * about the same text. A plea routes to support only when ALL hold:
+ * - the model actually judged the text (model_used),
+ * - it read distress (critical_distress/anxious/sad) at moderate or worse
+ *   (mild exam nerves stay a normal post — forcing those private would
+ *   punish ordinary venting),
+ * - no attack flag fired (threats stay on the block path, never the
+ *   support path — "I will kill" is stopped, not sheltered).
+ */
+const SUPPORT_EMOTIONS = new Set(["critical_distress", "anxious", "sad"]);
+const SUPPORT_LEVELS = new Set(["moderate", "high", "critical"]);
+const ATTACK_TYPES = new Set([
+	"threat",
+	"violence",
+	"hate_speech",
+	"coercion",
+	"explicit",
+	"bullying",
+	"profanity",
+]);
+
+export function needsSupport(decision) {
+	if (!decision || decision.model_used !== true) return false;
+	if (!SUPPORT_EMOTIONS.has(decision.emotion)) return false;
+	if (!SUPPORT_LEVELS.has(decision.level)) return false;
+	if (
+		(decision.flags || []).some((f) => f && ATTACK_TYPES.has(f.type))
+	)
+		return false;
+	return true;
 }
 
 // ─── Surface copy table ─────────────────────────────────────────

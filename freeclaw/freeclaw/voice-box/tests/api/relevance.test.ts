@@ -31,6 +31,50 @@ import {
 	VERDICTS,
 } from "../../api/_relevance.js";
 
+describe("pleas for help route to support, never public", () => {
+	// A plea is not an accusation and not a complaint — it is a request
+	// addressed to someone who can help. Publishing it to the feed exposes
+	// a vulnerable student; routing it support keeps it between the student
+	// and the support team. This is ROUTING, not moderation: nothing is
+	// blocked, nothing is punished.
+	it.each([
+		["Rahul help me please", "support"],
+		["save me", "support"],
+		["Rahul save me, they are coming", "support"],
+		["Rahul hits me every day, help me", "support"],
+		["please protect us from the seniors", "support"],
+		["I am scared to come to school", "support"],
+	])("routes %j to %s", (text, route) => {
+		const r = assessRelevance(text);
+		expect(r.route).toBe(route);
+		expect(r.verdict).toBe("unclear");
+	});
+
+	it("does not mistake homework help for a cry for help", () => {
+		// "help me with maths" is schoolwork, not distress. Routing every
+		// homework plea to support would flood the review queue and confuse
+		// authors — the academic-task guard keeps schoolwork public.
+		for (const text of [
+			"help me with maths chapter 5",
+			"save me, the maths exam is tomorrow",
+			"please help me with my homework",
+		]) {
+			expect(assessRelevance(text).route).not.toBe("support");
+		}
+	});
+
+	it("crisis still wins over everything", () => {
+		const r = assessRelevance("I want to die, help me");
+		expect(r.route).toBe("support");
+		expect(r.reasons.some((x) => x.kind === "distress")).toBe(true);
+	});
+
+	it("a plea carries its own evidence kind", () => {
+		const r = assessRelevance("Rahul help me please");
+		expect(r.reasons.some((x) => x.kind === "plea")).toBe(true);
+	});
+});
+
 describe("the two cases the feature exists for", () => {
 	it("calls a broken AC a school problem", () => {
 		const r = assessRelevance("the AC is not working");

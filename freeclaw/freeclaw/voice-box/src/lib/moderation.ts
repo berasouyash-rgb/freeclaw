@@ -37,6 +37,15 @@ export interface ModerationResult {
 	/** False when the server check itself failed. A failed check is not a pass. */
 	checked?: boolean;
 	/**
+	 * True ONLY when the server judges this exact text needs support
+	 * routing (model-read distress, or a deterministic plea): the draft
+	 * must stay private. Computed server-side by `needsSupport` (model)
+	 * or the relevance support route (deterministic) — never derived on
+	 * the client, so preview and write path cannot disagree. Absent/false
+	 * means no support signal; `undefined` = not known (older server).
+	 */
+	supportNeeded?: boolean;
+	/**
 	 * True ONLY when a language model actually judged the exact text this
 	 * result describes (`/api/moderate` with `aiJudge:true`, reporting
 	 * `decision.model_used === true`). Absent/false means deterministic-only,
@@ -70,7 +79,7 @@ export interface ModerationResult {
 
 /** The exact text evidence behind one relevance signal. */
 export interface RelevanceReason {
-	kind: "distress" | "problem" | "school" | "off_topic";
+	kind: "distress" | "plea" | "problem" | "school" | "off_topic";
 	signal: string;
 	label: string;
 	/** The literal substring that matched, for the "why" shown to the author. */

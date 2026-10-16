@@ -46,6 +46,7 @@ import { assessRelevance } from "./_relevance.js";
 import {
 	evaluateContentAsync,
 	evaluateContentDeep,
+	needsSupport,
 } from "./_safety-pipeline.js";
 
 /** Server flag type -> the client-facing category vocabulary. */
@@ -118,6 +119,8 @@ export default async function handler(req, res) {
 				// so this must never read as an "AI reviewed" verdict.
 				aiChecked: false,
 				aiTimedOut: false,
+				emotion: null,
+				supportNeeded: false,
 			});
 		}
 
@@ -219,6 +222,14 @@ export default async function handler(req, res) {
 			// deterministic verdict stands. Lets the client say "couldn't
 			// run" instead of silently implying a review happened.
 			aiTimedOut,
+			// The model's emotional read, present ONLY when it judged this
+			// text (null otherwise — never infer one). The client uses it
+			// to auto-activate private mode on genuine pleas for help.
+			emotion: decision.emotion ?? null,
+			// Single policy rule, computed HERE so the client and the write
+			// path can never disagree: support routing is a server verdict,
+			// never a client derivation.
+			supportNeeded: needsSupport(decision),
 		});
 	} catch (error) {
 		// A broken moderation check must NOT be reported to the user as
@@ -241,6 +252,8 @@ export default async function handler(req, res) {
 			// before any model could judge. Never a pass, never AI-reviewed.
 			aiChecked: false,
 			aiTimedOut: false,
+			emotion: null,
+			supportNeeded: false,
 			// A static, non-leaking message. `sanitizeError` SENDS a response of
 			// its own (and is keyed on `res`), so calling it inside this 200 body
 			// both leaked `err.message` and threw `res.status is not a function`

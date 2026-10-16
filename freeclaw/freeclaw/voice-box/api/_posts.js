@@ -18,7 +18,8 @@ import {
 import supabase from "./_db-client.js";
 import { staleWhileRevalidate } from "./_cache.js";
 import { getRawCounts, invalidateCounts } from "./_counts.js";
-import { evaluateContentDeep, messageFor } from "./_safety-pipeline.js";
+import { evaluateContentDeep, messageFor, needsSupport } from "./_safety-pipeline.js";
+import { assessRelevance } from "./_relevance.js";
 import { strikeSlangAbuse } from "./_reports.js";
 import { sanitizeError } from "./_error.js";
 import { EVENT_TYPES, emitEventAndBridge } from "./_events.js";
@@ -839,7 +840,18 @@ export default async function handler(req, res) {
 			// decision, while comments/polls hard-block outright.
 			const weakPII = decision.flags.some((f) => f.type === "privacy_weak");
 			const needsReview = decision.needsReview;
-			const holdForReview = needsReview || weakPII || b.pending_review === true;
+			// Genuine cry for help — model-read distress with no attack flags,
+			// or a deterministic plea ("help me", "save me"): never public.
+			// Forced private + review so the support team sees it; the client
+			// explains this up front, but the server enforces it so no client
+			// can bypass it. Threats and attacks never land here (needsSupport
+			// excludes attack flags) — they stay on the block path above.
+			const supportRouting =
+				needsSupport(decision) ||
+				assessRelevance(`${title} ${description}`).route === "support";
+			const holdForReview =
+				needsReview || weakPII || b.pending_review === true || supportRouting;
+			const finalVisibility = supportRouting ? "private" : visibility;
 
 			// ── Real spam analysis (multi-signal, deterministic) ────────
 			const ip = clientIp(req);
@@ -897,7 +909,9 @@ export default async function handler(req, res) {
 				title: maskProfanity(title),
 				description: maskProfanity(description),
 				category,
-				visibility,
+				// Support-routed pleas are forced private above — the stored
+				// row must match what enforcement decided, not the request.
+				visibility: finalVisibility,
 				priority,
 				tags,
 				image_url: clean(b.image_url, 500) || null,
@@ -908,9 +922,11 @@ export default async function handler(req, res) {
 					{
 						status: initialStatus,
 						at: new Date().toISOString(),
-						note: holdForReview
-							? "Queued for quality review"
-							: "Submitted anonymously",
+						note: supportRouting
+							? "Routed to support — private"
+							: holdForReview
+								? "Queued for quality review"
+								: "Submitted anonymously",
 					},
 				],
 			};

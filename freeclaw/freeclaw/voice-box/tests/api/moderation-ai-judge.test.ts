@@ -169,6 +169,39 @@ describe("aiJudge preview runs the write-path model verdict", () => {
 		expect(body.aiChecked).toBe(false);
 		expect(body.aiTimedOut).toBe(false);
 	});
+
+	it("echoes the support signal when the model reads distress", async () => {
+		// Plea with no policy flag: the model ran, read anxiety, found
+		// nothing flaggable. The preview must carry that read so the
+		// client can auto-activate private mode — and must never invent
+		// the signal on paths the model never judged.
+		pipelineMocks.evaluateContentDeep.mockResolvedValue({
+			action: "ALLOW_ACTION",
+			blocked: false,
+			needsReview: false,
+			flags: [],
+			code: "clean",
+			model_used: true,
+			timedOut: false,
+			emotion: "anxious",
+			level: "moderate",
+		});
+
+		const { body } = await call("Rahul help me please", { aiJudge: true });
+
+		expect(body.checked).toBe(true);
+		expect(body.aiChecked).toBe(true);
+		expect(body.emotion).toBe("anxious");
+		expect(body.supportNeeded).toBe(true);
+	});
+
+	it("never reports supportNeeded without a model verdict", async () => {
+		const { body } = await call("Rahul help me please");
+
+		expect(body.checked).toBe(true);
+		expect(body.supportNeeded).toBe(false);
+		expect(pipelineMocks.evaluateContentDeep).not.toHaveBeenCalled();
+	});
 });
 
 describe("default preview path stays deterministic and says so", () => {

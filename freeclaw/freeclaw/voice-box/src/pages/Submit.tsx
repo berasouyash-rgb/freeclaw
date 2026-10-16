@@ -366,6 +366,25 @@ export default function Submit() {
 	const modFlags = moderation?.flags ?? [];
 
 	/**
+	 * Distress lock: a genuine cry for help must never reach the public
+	 * feed. Driven ONLY by the server verdict for the current text —
+	 * `supportNeeded` (model-read distress) or relevance route "support"
+	 * (deterministic plea) — never derived on the client, so the preview
+	 * and the write-path enforcement cannot disagree. Scoped to posts:
+	 * polls have no private mode to lock. Editing the text drops the
+	 * stale verdict and frees the toggle; the server enforces
+	 * private+review on write regardless.
+	 */
+	const supportLock =
+		type !== "poll" &&
+		moderation != null &&
+		(moderation.supportNeeded === true ||
+			moderation.relevance?.route === "support");
+	useEffect(() => {
+		if (supportLock) setIsPrivate(true);
+	}, [supportLock]);
+
+	/**
 	 * Length gate shared by the checking line and the banner below. Short
 	 * stubs get no live feedback at all — a spinner that resolves into
 	 * nothing is a flash, and feedback that appears only past this length
@@ -1892,6 +1911,12 @@ export default function Submit() {
 							role="switch"
 							aria-checked={isPrivate}
 							onClick={() => setIsPrivate((v) => !v)}
+							disabled={supportLock}
+							title={
+								supportLock
+									? "Locked to private — this reads like you need support"
+									: "Private post"
+							}
 							className={`w-full flex items-center gap-3 rounded-xl px-3.5 py-3 text-left transition-all border ${
 								isPrivate
 									? "border-accent/40 bg-accent-soft/60"
@@ -1915,6 +1940,13 @@ export default function Submit() {
 									Only you, admins and moderators can read this. Hidden from the
 									public feed.
 								</span>
+								{supportLock && (
+									<span className="block text-[10px] mt-0.5 font-semibold text-accent">
+										Locked to private — this reads like you need support, so
+										only you and the support team see it. It stays out of the
+										public feed.
+									</span>
+								)}
 							</span>
 						</button>
 						<div>
