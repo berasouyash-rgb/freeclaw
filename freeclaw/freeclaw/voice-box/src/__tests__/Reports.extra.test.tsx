@@ -215,9 +215,7 @@ describe("Reports.extra — tabs, filters, refresh", () => {
 			expect(screen.getByText(/Harassment/)).toBeInTheDocument(),
 		);
 		const callsBefore = mocks.get.mock.calls.length;
-		fireEvent.click(
-			screen.getAllByRole("button", { name: /Refresh/ })[0],
-		);
+		fireEvent.click(screen.getAllByRole("button", { name: /Refresh/ })[0]!);
 		await waitFor(() => {
 			expect(mocks.get.mock.calls.length).toBeGreaterThan(callsBefore);
 		});

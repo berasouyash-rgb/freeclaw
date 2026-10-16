@@ -63,7 +63,8 @@ describe("cn — tailwind-aware class merging", () => {
 	});
 
 	it("should support conditional and falsy inputs", () => {
-		expect(cn("a", false && "b", undefined, null, "c")).toBe("a c");
+		const skip = false;
+		expect(cn("a", skip && "b", undefined, null, "c")).toBe("a c");
 	});
 
 	it("should support object and array inputs", () => {
@@ -457,7 +458,7 @@ describe("downloadFile — options and cleanup", () => {
 			() => ({ href: "", download: "", click }) as unknown as HTMLAnchorElement,
 		) as typeof document.createElement;
 		downloadFile("x.csv", "a,b", "text/csv");
-		const blob = create.mock.calls[0][0] as Blob;
+		const blob = (create.mock.calls[0] as [Blob])[0] as Blob;
 		expect(blob.type).toBe("text/csv");
 	});
 
@@ -469,7 +470,7 @@ describe("downloadFile — options and cleanup", () => {
 			() => ({ href: "", download: "", click }) as unknown as HTMLAnchorElement,
 		) as typeof document.createElement;
 		downloadFile("x.json", "{}");
-		const blob = create.mock.calls[0][0] as Blob;
+		const blob = (create.mock.calls[0] as [Blob])[0] as Blob;
 		expect(blob.type).toBe("application/json");
 	});
 });

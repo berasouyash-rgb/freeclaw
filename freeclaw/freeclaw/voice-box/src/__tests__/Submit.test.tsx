@@ -2142,7 +2142,7 @@ describe("Submit — uncovered user paths", () => {
 			},
 			{ timeout: 10000 },
 		);
-		expect((published as Record<string, unknown>).visibility).toBe("private");
+		expect((published as unknown as Record<string, unknown>).visibility).toBe("private");
 	});
 
 	it("applies the AI-suggested category", {
@@ -2220,7 +2220,7 @@ describe("Submit — uncovered user paths", () => {
 			{ timeout: 10000 },
 		);
 		expect(published).not.toBeNull();
-		expect((published as Record<string, unknown>).pending_review).toBe(true);
+		expect((published as unknown as Record<string, unknown>).pending_review).toBe(true);
 	});
 
 	it("blocks a second rapid publish with a cooldown toast, not a twin", {
@@ -2300,8 +2300,8 @@ describe("Submit — uncovered user paths", () => {
 		// the option inputs exist (the real user path).
 		fireEvent.click(screen.getByRole("button", { name: /single choice/i }));
 		const options = screen.getAllByPlaceholderText(/Option \d/);
-		fireEvent.change(options[0], { target: { value: "Yes, keep it open" } });
-		fireEvent.change(options[1], { target: { value: "No, close on time" } });
+		fireEvent.change(options[0] as HTMLElement, { target: { value: "Yes, keep it open" } });
+		fireEvent.change(options[1] as HTMLElement, { target: { value: "No, close on time" } });
 		fireEvent.click(screen.getByRole("button", { name: /publish anonymously/i }));
 		await waitFor(
 			() => {
@@ -2309,7 +2309,7 @@ describe("Submit — uncovered user paths", () => {
 			},
 			{ timeout: 10000 },
 		);
-		expect((pollBody as Record<string, unknown>).title).toContain("library");
+		expect((pollBody as unknown as Record<string, unknown>).title).toContain("library");
 		expect(mocks.post).not.toHaveBeenCalledWith(
 			"/api/posts",
 			expect.anything(),
