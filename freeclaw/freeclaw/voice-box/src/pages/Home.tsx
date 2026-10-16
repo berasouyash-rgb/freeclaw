@@ -1,4 +1,4 @@
-﻿import {
+import {
 	Activity,
 	ArrowUp,
 	CheckCircle2,
@@ -17,9 +17,15 @@
 	Users,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { usePullToRefresh } from "../hooks/usePullToRefresh";
+import UpdateNotice from "../components/admin/UpdateNotice";
+import { useUpdateSignal } from "../hooks/useUpdateSignal";
 import { Link } from "react-router";
 import CountUp from "../components/CountUp";
 import GlowButton from "../components/GlowButton";
+import GridPattern from "../components/ui/grid-pattern";
+import ShimmerButton from "../components/ui/shimmer-button";
+import BorderBeam from "../components/ui/border-beam";
 import PostCard from "../components/PostCard";
 import RecapCard from "../components/RecapCard";
 import Trend, { Sparkline } from "../components/Trend";
@@ -27,9 +33,108 @@ import WordCloud from "../components/WordCloud";
 import { useApp } from "../contexts/AppContext";
 import { useCategories } from "../hooks/useCategories";
 import { api } from "../lib/api";
-import { useRealtime } from "../lib/useRealtime";
-import { trendingScore } from "../lib/utils";
-import type { PostData, ReactionEntry } from "../types";
+import {
+	applyServerMine,
+	mergeReactionCounts,
+} from "../lib/feedReactionMerge";
+import { postWithdrawal } from "../lib/postWithdrawal";
+import { apiBase, isMobileApp, isNativeShell } from "../lib/platform";
+import { useRealtime, type RealtimePayload } from "../lib/useRealtime";
+import { dedupeById, errorText, trendingScore } from "../lib/utils";
+import type { PollData, PostData, ReactionEntry } from "../types";
+
+// ─── Cross-visit feed snapshot ────────────────────────────────
+// The feed mounts fresh on every route entry, which used to mean an empty
+// list + a network round-trip on EVERY visit (the "navigating always
+// loads" flash). This module-level snapshot lets a revisit paint the
+// last-known list INSTANTLY, then silently revalidate behind the existing
+// quiet-merge path (newcomers park behind the pill — never a reorder, no
+// skeleton, no flash).
+// Bounds (so it can never show the wrong thing): default view only —
+// never a search/filter result — and at most HOME_SNAPSHOT_TTL_MS old.
+// Realtime deltas keep applying on top, and every explicit refresh (manual,
+// pill, badge) overwrites it, so it converges instead of going stale.
+interface HomeSnapshot {
+	posts: PostData[];
+	myReactions: Record<string, string[]>;
+	pollsMap: Record<string, PollData>;
+	myPollVotes: Record<string, number[]>;
+	knownIds: string[];
+	at: number;
+}
+let homeSnapshot: HomeSnapshot | null = null;
+const HOME_SNAPSHOT_TTL_MS = 60_000;
+// Persisted so a full page RELOAD — not just an in-app revisit — can paint too.
+// sessionStorage, not localStorage: the snapshot dies with the tab, so a shared
+// school machine never shows the previous student's feed and nothing outlives
+// the anonymous session that produced it.
+const HOME_SNAPSHOT_KEY = "voicebox:home-snapshot:v1";
+
+const isPlainObject = (v: unknown): v is Record<string, unknown> =>
+	!!v && typeof v === "object" && !Array.isArray(v);
+
+/** Write-through: stores the snapshot and returns it, for `homeSnapshot = persist(x)`. */
+function persistSnapshot(snapshot: HomeSnapshot): HomeSnapshot {
+	try {
+		sessionStorage.setItem(HOME_SNAPSHOT_KEY, JSON.stringify({ v: 1, ...snapshot }));
+	} catch {
+		// Storage disabled or over quota — the in-memory snapshot still works.
+	}
+	return snapshot;
+}
+
+/**
+ * Reads the persisted snapshot, or null when it is absent, foreign, corrupt or
+ * expired. Every field is re-validated: sessionStorage is writable by anything
+ * running on the origin and can hold a half-written value, and a bad shape here
+ * would paint a broken feed or throw during render.
+ */
+function readPersistedSnapshot(): HomeSnapshot | null {
+	try {
+		const raw = sessionStorage.getItem(HOME_SNAPSHOT_KEY);
+		if (!raw) return null;
+		const p = JSON.parse(raw) as Partial<HomeSnapshot> & { v?: number };
+		if (!isPlainObject(p) || p.v !== 1) return null;
+		if (!Array.isArray(p.posts) || p.posts.length === 0) return null;
+		if (!Array.isArray(p.knownIds)) return null;
+		if (typeof p.at !== "number" || !isHomeSnapshotFresh(p.at)) return null;
+		return {
+			posts: p.posts,
+			myReactions: isPlainObject(p.myReactions)
+				? (p.myReactions as Record<string, string[]>)
+				: {},
+			pollsMap: isPlainObject(p.pollsMap)
+				? (p.pollsMap as unknown as Record<string, PollData>)
+				: {},
+			myPollVotes: isPlainObject(p.myPollVotes)
+				? (p.myPollVotes as Record<string, number[]>)
+				: {},
+			knownIds: p.knownIds,
+			at: p.at,
+		};
+	} catch {
+		return null;
+	}
+}
+
+/** Test-only reset of the persisted copy (the in-memory reset is below). */
+export function clearPersistedSnapshot(): void {
+	try {
+		sessionStorage.removeItem(HOME_SNAPSHOT_KEY);
+	} catch {
+		/* nothing to clear */
+	}
+}
+
+export function isHomeSnapshotFresh(at: number, now = Date.now()): boolean {
+	return now - at < HOME_SNAPSHOT_TTL_MS;
+}
+
+/** Test-only reset: module state would otherwise leak across test cases. */
+export function __resetHomeSnapshot(): void {
+	homeSnapshot = null;
+	clearPersistedSnapshot();
+}
 
 const SORTS = [
 	{ key: "trending", label: "Trending", icon: TrendingUp },
@@ -37,85 +142,719 @@ const SORTS = [
 	{ key: "discussed", label: "Most Discussed", icon: MessageCircle },
 	{ key: "supported", label: "Most Supported", icon: ThumbsUp },
 ];
+type FeedType = "all" | "problem" | "suggestion" | "poll";
+type FeedLoadOptions = {
+	silent?: boolean;
+	fresh?: boolean;
+	search?: string;
+	feedType?: FeedType;
+	category?: string;
+	status?: string;
+};
+
+function buildPostsPath({
+	search = "",
+	feedType = "problem",
+	category = "All",
+	status = "all",
+	fresh = false,
+}: {
+	search?: string;
+	feedType?: FeedType;
+	category?: string;
+	status?: string;
+	fresh?: boolean;
+}) {
+	// One bounded load: the server returns the whole visible feed (up to 300
+	// rows) in a single response. No pagination, no Load more — scrolling is
+	// the only action. Pinned posts sort to the top client-side.
+	const params: string[] = [];
+	const term = search.trim();
+	if (term) params.push(`q=${encodeURIComponent(term)}`);
+	if (feedType !== "all") params.push(`type=${encodeURIComponent(feedType)}`);
+	if (category && category !== "All") {
+		params.push(`category=${encodeURIComponent(category)}`);
+	}
+	if (status && status !== "all") params.push(`status=${encodeURIComponent(status)}`);
+	if (fresh) params.push("fresh=1");
+	return `/api/posts${params.length ? `?${params.join("&")}` : ""}`;
+}
 
 export default function Home() {
 	const { anonId } = useApp();
 	const categories = useCategories();
 	const [posts, setPosts] = useState<PostData[]>([]);
 	const [myReactions, setMyReactions] = useState<Record<string, string[]>>({});
-	const [loading, setLoading] = useState(true);
+	// No skeleton preloader: the list area stays quiet until the first load
+	// settles, then shows posts, the honest empty state, or the error.
+	const [hasLoaded, setHasLoaded] = useState(false);
 	const [error, setError] = useState("");
 	const [query, setQuery] = useState("");
 	const [cat, setCat] = useState("All");
-	const [sort, setSort] = useState("trending");
+	const [feedType, setFeedType] = useState<FeedType>("problem");
+	const [sort, setSort] = useState("newest");
 	const [statusFilter, setStatusFilter] = useState("all");
 	const [showFilters, setShowFilters] = useState(false);
 	const [pendingNew, setPendingNew] = useState(0);
+	// APK-only UI layers (sticky glass toolbar, skeleton loaders, entrance
+	// stagger) branch on this. Web and desktop never take these branches,
+	// so their experience is byte-for-byte unchanged.
+	const mobileApp = isMobileApp();
+	// Filters hidden behind the toggle on mobile (sort row + status row).
+	const hiddenActiveCount =
+		(sort !== "newest" ? 1 : 0) + (statusFilter !== "all" ? 1 : 0);
+	const [pollsMap, setPollsMap] = useState<Record<string, PollData>>({});
+	const [myPollVotes, setMyPollVotes] = useState<Record<string, number[]>>({});
 	const knownIdsRef = useRef<Set<string>>(new Set());
+	const inflightFeedRef = useRef<{ key: string; promise: Promise<void> } | null>(null);
+	// Monotonic load id: mount + realtime refreshes race (a slow cold fetch
+	// must never clobber a newer fast one), so stale losers return early.
+	const loadSeqRef = useRef(0);
+	// Storm guards: fetchPolls and the realtime my-reactions refresh skip
+	// redundant network work when nothing structurally changed, so bursts of
+	// realtime events don't translate into N+1 request storms ("too many").
+	const pollsKeyRef = useRef("");
+	const pollsLoadedRef = useRef(false);
 
 	const load = useCallback(
-		async (silent = false) => {
-			try {
-				setError("");
-				// Realtime-triggered loads bypass the client 5s GET cache so live votes
-				// and counts always reflect the server; browsers revalidate anyway.
-				const fetchPosts = silent ? api.getSlowFresh : api.getSlow;
-				const fetchReactions = silent ? api.getFresh : api.get;
-				const [data, reactions] = await Promise.all([
-					fetchPosts<PostData[]>("/api/posts?type=problem"),
-					fetchReactions<ReactionEntry[]>(`/api/reactions?author=${anonId}`),
-				]);
-				const map: Record<string, string[]> = {};
-				reactions.forEach((r) => {
-					map[r.target_id] = [...(map[r.target_id] || []), r.kind];
-				});
-				setMyReactions(map);
+		(options: FeedLoadOptions = {}): Promise<void> => {
+			const {
+				silent = false,
+				fresh = silent,
+				search = "",
+				feedType: requestedType = "problem",
+				category = "All",
+				status = "all",
+			} = options;
+			const normalizedSearch = search.trim();
+			const isDefaultView =
+				!normalizedSearch &&
+				requestedType === "problem" &&
+				category === "All" &&
+				status === "all";
+			const requestKey = `${fresh ? "fresh" : "cached"}|${requestedType}|${normalizedSearch}|${category}|${status}`;
+			const current = inflightFeedRef.current;
+			if (current?.key === requestKey) return current.promise;
 
-				if (silent && knownIdsRef.current.size > 0) {
-					// Live update while user may be scrolling: update existing rows in place,
-					// but hold NEW posts behind the "New posts ↑" pill so the list never
-					// reorders under their finger.
-					const newOnes = data.filter((p) => !knownIdsRef.current.has(p.id));
-					if (newOnes.length > 0 && window.scrollY > 300) {
-						setPosts((prev) =>
-							prev.map((p) => data.find((d) => d.id === p.id) || p),
-						);
-						setPendingNew((n) => n + newOnes.length);
-						newOnes.forEach((p) => knownIdsRef.current.add(p.id));
+			const request = (async () => {
+				const seq = ++loadSeqRef.current;
+				try {
+					setError("");
+					// The first bounded load is cached for route entry. Explicit
+					// refreshes and realtime updates bypass the 5s client cache so
+					// a user never has to wait for a stale snapshot to expire.
+					const fetchPosts = fresh ? api.getSlowFresh : api.getSlow;
+					const fetchReactions = fresh || silent ? api.getFresh : api.get;
+					const [postResponse, reactions] = await Promise.all([
+						fetchPosts<
+							PostData[] | { data: PostData[]; nextCursor: string | null; total: number }
+						>(buildPostsPath({
+							search: normalizedSearch,
+							feedType: requestedType,
+							category,
+							status,
+							// Explicit refreshes demand a fully fresh read; silent
+							// background reloads share the server's 10s snapshot
+							// so 1000 clients reacting to the same event don't
+							// stampede the database (writes invalidate it, and
+							// new posts ride behind the pill + targeted refetch).
+							fresh: fresh && !silent,
+						})),
+						fetchReactions<ReactionEntry[]>(`/api/reactions?author=${anonId}`),
+					]);
+					const isEnvelope = !Array.isArray(postResponse);
+					const data = isEnvelope ? postResponse.data : postResponse;
+					if (seq !== loadSeqRef.current) return; // superseded by a newer load
+					const map: Record<string, string[]> = {};
+					reactions.forEach((r) => {
+						map[r.target_id] = [...(map[r.target_id] || []), r.kind];
+					});
+					setMyReactions(map);
+
+					if (silent && !normalizedSearch && knownIdsRef.current.size > 0) {
+						// Live update while user may be scrolling: update existing rows in place,
+						// but hold NEW posts behind the "New posts ↑" pill so the list never
+						// reorders under their finger. A search result set is replaced
+						// atomically instead, otherwise a realtime event would hide the
+						// user's active search behind an unrelated live row.
+						const newOnes = data.filter((p) => !knownIdsRef.current.has(p.id));
+						if (newOnes.length > 0 && window.scrollY > 300) {
+							setPosts((prev) =>
+								prev.map((p) => data.find((d) => d.id === p.id) || p),
+							);
+							setPendingNew((n) => n + newOnes.length);
+							newOnes.forEach((p) => knownIdsRef.current.add(p.id));
+							return;
+						}
+						// Quiet merge: refresh known rows in place and prepend only
+						// genuinely new ids, so a background refresh never deletes
+						// rows the user is already reading.
+						setPosts((prev) => {
+							const freshById = new Map(data.map((p) => [p.id, p]));
+							const merged = prev.map((p) => freshById.get(p.id) ?? p);
+							const newcomers = data.filter(
+								(p) => !prev.some((q) => q.id === p.id),
+							);
+							return dedupeById([...newcomers, ...merged]);
+						});
+						data.forEach((p) => knownIdsRef.current.add(p.id));
+						setPendingNew(0);
 						return;
 					}
+					const settled = dedupeById(data);
+					setPosts(settled);
+					knownIdsRef.current = new Set(settled.map((p) => p.id));
+					setPendingNew(0);
+					// Snapshot the default view so the next visit paints
+					// instantly. Poll maps ride along from fetchPolls below;
+					// carried-over maps are at most a minute old by TTL.
+					if (isDefaultView) {
+						homeSnapshot = persistSnapshot({
+							posts: settled,
+							myReactions: map,
+							pollsMap: homeSnapshot?.pollsMap ?? {},
+							myPollVotes: homeSnapshot?.myPollVotes ?? {},
+							knownIds: settled.map((p) => p.id),
+							at: Date.now(),
+						});
+					}
+				} catch (e: unknown) {
+					if (!silent && seq === loadSeqRef.current) {
+						setError(errorText(e) || "Could not load feed");
+					}
+				} finally {
+					if (seq === loadSeqRef.current) setHasLoaded(true);
 				}
-				setPosts(data);
-				knownIdsRef.current = new Set(data.map((p) => p.id));
-				setPendingNew(0);
-			} catch (e: unknown) {
-				if (!silent)
-					setError(e instanceof Error ? e.message : "Could not load feed");
+			})();
+			inflightFeedRef.current = { key: requestKey, promise: request };
+			const clearInflight = () => {
+				if (inflightFeedRef.current?.promise === request) {
+					inflightFeedRef.current = null;
+				}
+			};
+			void request.then(clearInflight, clearInflight);
+			return request;
+		},
+		[anonId],
+	);
+
+	// Fetch poll data + user's poll votes for posts that have linked_poll.
+	// Runs after every post load so the feed always has up-to-date poll info.
+	const fetchPolls = useCallback(
+		async (postList: PostData[]) => {
+			const pollIds = postList
+				.map((p) => p.linked_poll)
+				.filter((id): id is string => !!id);
+			const uniquePollIds = [...new Set(pollIds)].slice(0, 50);
+			// Storm guard: the posts effect re-runs on every realtime delta, but
+			// when the SET of linked polls is unchanged there is nothing new to
+			// fetch — live vote changes arrive via the targeted per-poll refetch
+			// in the realtime handler. Skipping avoids an N+1 request burst per
+			// realtime event ("too many requests" / server churn).
+			const key = uniquePollIds.slice().sort().join("\u0000");
+			if (pollsLoadedRef.current && key === pollsKeyRef.current) return;
+			pollsLoadedRef.current = true;
+			pollsKeyRef.current = key;
+			if (!uniquePollIds.length) {
+				setPollsMap({});
+				return;
 			}
-			setLoading(false);
+			// One bounded batch replaces the previous one-request-per-poll fanout.
+			// A failed poll fetch keeps the feed usable rather than failing it.
+			const pollsFetch = api
+				.getFresh<PollData[]>(
+					`/api/polls?ids=${encodeURIComponent(uniquePollIds.join(","))}&viewer=${anonId}`,
+				)
+				.catch((err: unknown) => {
+					console.error("[home] poll batch fetch failed", {
+						error: err instanceof Error ? err.message : String(err),
+					});
+					return [] as PollData[];
+				});
+			const votesFetch = anonId
+				? api.getFresh<{ poll_id: string; choices: number[] }[]>(
+						`/api/polls?voter=${anonId}`,
+					).catch((err: unknown) => {
+						console.error("[home] poll votes fetch failed", { error: err instanceof Error ? err.message : String(err) });
+						return [] as { poll_id: string; choices: number[] }[];
+					})
+				: Promise.resolve([]);
+			const [pollResults, votes] = await Promise.all([pollsFetch, votesFetch]);
+			const pMap: Record<string, PollData> = {};
+			(Array.isArray(pollResults) ? pollResults : []).forEach((poll) => {
+				if (poll?.id) pMap[poll.id] = poll;
+			});
+			setPollsMap(pMap);
+			if (Array.isArray(votes)) {
+				const vMap: Record<string, number[]> = {};
+				for (const v of votes)
+					if (v?.poll_id) vMap[v.poll_id] = v.choices || [];
+			setMyPollVotes(vMap);
+			// Poll/vote data is view-independent — fold it into a live
+			// snapshot so revisits paint it instantly too.
+			if (homeSnapshot) {
+				homeSnapshot = persistSnapshot({ ...homeSnapshot, pollsMap: pMap, myPollVotes: vMap });
+			}
+			}
 		},
 		[anonId],
 	);
 
 	useEffect(() => {
-		load();
-	}, [load]);
+		const term = query.trim();
+		if (!term) {
+			// Cold entry (nothing in memory yet) restores the tab's last snapshot
+			// so a RELOAD paints the feed immediately instead of waiting on the
+			// network — the reported "posts show up about 5s late".
+			let restoredFromStorage = false;
+			if (!homeSnapshot) {
+				homeSnapshot = readPersistedSnapshot();
+				restoredFromStorage = !!homeSnapshot;
+			}
+			if (
+				feedType === "problem" &&
+				cat === "All" &&
+				statusFilter === "all" &&
+				homeSnapshot &&
+				isHomeSnapshotFresh(homeSnapshot.at)
+			) {
+				// Instant revisit: paint last-known state, then revalidate
+				// behind the quiet-merge path (no flash, no reorder —
+				// newcomers park behind the pill as usual).
+				const snap = homeSnapshot;
+				setPosts([...snap.posts]);
+				setMyReactions(snap.myReactions);
+				setPollsMap(snap.pollsMap);
+				setMyPollVotes(snap.myPollVotes);
+				knownIdsRef.current = new Set(snap.knownIds);
+				setHasLoaded(true);
+				// A RESTORED snapshot predates this page load, so the quiet merge
+				// is wrong for it: that path only ever adds and updates rows, so a
+				// post deleted since the snapshot was taken would stay on screen
+				// for the rest of the session. Reconcile with a full replace
+				// instead. The list is already painted, so this still shows no
+				// skeleton and no empty flash.
+				void load({
+					silent: !restoredFromStorage,
+					feedType,
+					category: cat,
+					status: statusFilter,
+				});
+				return;
+			}
+			void load({ feedType, category: cat, status: statusFilter });
+			return;
+		}
+		// Search is a server-side operation. The local filter below remains a
+		// rendering guard, but it must not be the only search boundary.
+		const timer = setTimeout(() => {
+			void load({
+				fresh: true,
+				search: term,
+				feedType,
+				category: cat,
+				status: statusFilter,
+			});
+		}, 300);
+		return () => clearTimeout(timer);
+	}, [cat, feedType, load, query, statusFilter]);
 
-	// 🔴 Realtime: posts, votes and comment counts update live for everyone
-	useRealtime(["posts", "reactions", "comments", "polls", "poll_votes"], () =>
-		load(true),
+	// Fetch polls whenever posts change
+	useEffect(() => {
+		if (posts.length) fetchPolls(posts);
+	}, [posts, fetchPolls]);
+
+	// Freshness signal, not a refetch: the feed loads ONCE per visit and
+	// never reloads itself again. Reaction/comment/vote events still apply
+	// their exact local deltas below (zero network), but posts, polls and
+	// my-reaction-map changes only raise a badge — the reader pulls one
+	// fresh snapshot with the update notice, the "New posts" pill, or
+	// pull-to-refresh. This is what stopped the "reloads every few
+	// seconds under any activity" storm.
+	const { updatesAvailable, markUpdatesAvailable, clearUpdates } =
+		useUpdateSignal();
+	const [feedRefreshing, setFeedRefreshing] = useState(false);
+
+	// Instant local deltas: the realtime payload carries the changed row, so
+	// like/support counts from OTHER users are applied immediately without a
+	// network round-trip (the old lightweight path only refreshed MY reaction
+	// map, so everyone else's likes sat invisible until the 12s reload).
+	// Applying the delta to the parent list is correct for every author: the
+	// parent's counts are the last server snapshot, which never includes the
+	// event that just fired — and PostCard ignores parent counts while its own
+	// authoritative localCounts from the POST response are set.
+	const applyDelta = useCallback(
+		(postId: string, mutate: (p: PostData) => PostData) => {
+			setPosts((prev) => {
+				const idx = prev.findIndex((p) => p.id === postId);
+				if (idx === -1) return prev;
+				const cur = prev[idx];
+				if (!cur) return prev;
+				const next = [...prev];
+				next[idx] = mutate(cur);
+				return next;
+			});
+		},
+		[],
+	);
+
+	const bumpReaction = useCallback(
+		(targetId: string, kind: string | undefined, delta: number) => {
+			if (!targetId || !kind) return;
+			applyDelta(targetId, (p) => ({
+				...p,
+				reactions: {
+					...(p.reactions || {}),
+					[kind]: Math.max(0, (p.reactions?.[kind] || 0) + delta),
+				},
+			}));
+		},
+		[applyDelta],
+	);
+
+	// The feed counts only non-deleted, non-hidden comments (same rule the
+	// /api/posts counter uses), so mirror that exactly here.
+	const bumpCommentCount = useCallback(
+		(postId: string, wasCounted: boolean, isCounted: boolean) => {
+			if (!postId || wasCounted === isCounted) return;
+			applyDelta(postId, (p) => ({
+				...p,
+				comment_count: Math.max(0, (p.comment_count || 0) + (isCounted ? 1 : -1)),
+			}));
+		},
+		[applyDelta],
+	);
+
+	// Authoritative merge the instant your own toggle lands: the list carries
+	// the server counts and the my-map carries the server mine list, so the
+	// card never waits for a full refresh — and later realtime row-merges
+	// apply on top of truth instead of under a frozen optimistic copy.
+	// (Single-kind toggles have no opposites to clear, so the server mine
+	// list is applied verbatim rather than recomputed.)
+	const handleReacted = useCallback(
+		(
+			id: string,
+			counts: Record<string, number>,
+			_kind: string,
+			_toggled: boolean,
+			mine?: string[],
+		) => {
+			setPosts((prev) => mergeReactionCounts(prev, id, counts));
+			setMyReactions((prev) => applyServerMine(prev, id, mine ?? []));
+		},
+		[],
+	);
+
+	// Targeted single-poll refresh for realtime vote/poll events: one small
+	// GET merged into pollsMap, never a full feed reload. A failed fetch
+	// keeps the stale poll rather than breaking the feed over one row.
+	const refreshPoll = useCallback(
+		async (pollId: string) => {
+			try {
+				const rows = await api.getFresh<PollData[]>(
+					`/api/polls?ids=${encodeURIComponent(pollId)}&viewer=${anonId}`,
+				);
+				const row = (Array.isArray(rows) ? rows : []).find(
+					(p) => p?.id === pollId,
+				);
+				if (row) setPollsMap((prev) => ({ ...prev, [pollId]: row }));
+			} catch {
+				/* keep stale poll */
+			}
+		},
+		[anonId],
+	);
+
+	// Narrow row projection shared by both realtime lanes below.
+	const rowLike = (v: unknown) =>
+		(v && typeof v === "object"
+			? (v as { target_id?: string; target_type?: string; post_id?: string; poll_id?: string; kind?: string; deleted?: boolean; hidden?: boolean; author_id?: string; id?: string })
+			: undefined);
+
+	// ── Vote fast lane (declared FIRST, zero debounce). ──
+	// A vote lands as a `polls` UPDATE (the `updated_at` touch in
+	// api/_polls.js) — that touch is the ONLY signal a vote ever sends, so
+	// it cannot share the 1500ms feed batch without missing the ~100ms
+	// budget. Events are coalesced for ~25ms, then each distinct id is
+	// refreshed with one small GET. The handler may do nothing else: no
+	// feed reload, no badge, no raw network call.
+	const pendingPollIds = useRef<Set<string>>(new Set());
+	const pollFlushTimer = useRef<number | null>(null);
+
+	useRealtime(
+		["polls"],
+		(_table: string, payload: RealtimePayload) => {
+			const row = rowLike(payload.new) ?? rowLike(payload.old);
+			const pollId = row?.id;
+			if (!pollId) return;
+			pendingPollIds.current.add(pollId);
+			if (pollFlushTimer.current === null) {
+				pollFlushTimer.current = window.setTimeout(() => {
+					pollFlushTimer.current = null;
+					const ids = [...pendingPollIds.current];
+					pendingPollIds.current.clear();
+					for (const id of ids) void refreshPoll(id);
+				}, 25);
+			}
+		},
+		0,
+	);
+
+	// Flush-or-cancel the pending vote batch on unmount so a trailing
+	// timer never refetches into an unmounted feed.
+	useEffect(
+		() => () => {
+			if (pollFlushTimer.current !== null) {
+				window.clearTimeout(pollFlushTimer.current);
+				pollFlushTimer.current = null;
+			}
+			if (rowFlushTimer.current !== null) {
+				window.clearTimeout(rowFlushTimer.current);
+				rowFlushTimer.current = null;
+			}
+		},
+		[],
+	);
+
+	// ── Single-row live merge (contract evolution 2026-10-05). ──
+	// The old path ran a FULL silent feed reload per event (whole list +
+	// reactions + poll batch) — that reload is what made new posts land
+	// seconds late. Changed ids collect here and flush together: one small
+	// GET per id, merged by the same near-top / pill rules. A burst of N
+	// posts costs N small row reads, never a list scan.
+	const pendingRowIds = useRef<Set<string>>(new Set());
+	const rowFlushTimer = useRef<number | null>(null);
+	const filterRef = useRef({ feedType, cat, statusFilter });
+	filterRef.current = { feedType, cat, statusFilter };
+
+	const flushPostRows = useCallback(async () => {
+		rowFlushTimer.current = null;
+		const ids = [...pendingRowIds.current].slice(0, 20);
+		pendingRowIds.current.clear();
+		if (ids.length === 0) return;
+		const settled = await Promise.all(
+			ids.map(async (rowId) => {
+				try {
+					const res = await api.getFresh<{
+						post: PostData;
+						mine?: string[];
+					}>(`/api/posts?id=${rowId}&viewer=${anonId}`);
+					return { row: res.post ?? null, mine: res.mine, id: rowId };
+				} catch {
+					return { row: null, mine: undefined, id: rowId };
+				}
+			}),
+		);
+		const rows = settled
+			.map((s) => s.row)
+			.filter((r): r is PostData => !!r);
+		if (rows.length === 0) {
+			// Every row failed (gone or unreachable): the withdrawal path
+			// owns 404s, so degrade to the badge for the rest.
+			markUpdatesAvailable();
+			return;
+		}
+		// Live mine sync: another device on this identity may have toggled
+		// since the map was last fetched — the by-id lane carries the
+		// viewer's authoritative kinds per row, so fold them in here.
+		setMyReactions((prev) => {
+			let next = prev;
+			for (const s of settled) {
+				if (s.row && s.mine !== undefined)
+					next = applyServerMine(next, s.id, s.mine);
+			}
+			return next;
+		});
+		const { feedType: ft, cat: c, statusFilter: sf } = filterRef.current;
+		const matches = (row: PostData) =>
+			(ft === "all" || row.type === ft) &&
+			(c === "All" || row.category === c) &&
+			(sf !== "solved" || row.status === "solved");
+		const known = knownIdsRef.current;
+		const newcomers = rows.filter((r) => !known.has(r.id) && matches(r));
+		rows.forEach((r) => known.add(r.id));
+		const scrolled =
+			typeof window !== "undefined" && window.scrollY > 300;
+		if (scrolled) {
+			// Park newcomers behind the pill; refresh known rows in place
+			// and drop rows the current filter no longer matches.
+			setPosts((prev) => {
+				const next: PostData[] = [];
+				for (const p of prev) {
+					const f = rows.find((r) => r.id === p.id);
+					if (f) {
+						if (matches(f)) next.push(f);
+					} else next.push(p);
+				}
+				return dedupeById(next);
+			});
+			if (newcomers.length > 0)
+				setPendingNew((n) => n + newcomers.length);
+			return;
+		}
+		setPosts((prev) => {
+			const next: PostData[] = [];
+			for (const p of prev) {
+				const f = rows.find((r) => r.id === p.id);
+				if (f) {
+					if (matches(f)) next.push(f);
+				} else next.push(p);
+			}
+			const freshNew = rows.filter(
+				(r) => !prev.some((q) => q.id === r.id) && matches(r),
+			);
+			return dedupeById([...freshNew, ...next]);
+		});
+	}, [anonId, markUpdatesAvailable]);
+
+	const scheduleRowFlush = useCallback(() => {
+		if (rowFlushTimer.current !== null) return;
+		rowFlushTimer.current = window.setTimeout(() => {
+			void flushPostRows();
+		}, 400);
+	}, [flushPostRows]);
+
+	useRealtime(
+		["posts", "reactions", "comments", "poll_votes"],
+		(table: string, payload: RealtimePayload) => {
+			const evt = payload.eventType;
+
+			// ── Reaction events: apply the exact delta instantly. ──
+			// The reactions table itself never delivers (no anon read — voter
+			// identity stays private — so there is no channel for it). Its
+			// liveness arrives one level up: every toggle touches the parent
+			// posts row, which lands below as a posts UPDATE → badge. This
+			// branch stays for the exact-delta path: own optimistic toggles
+			// apply instantly, and any future allowed source reuses it.
+			// The feed only surfaces post reactions; ignore other target types.
+			if (table === "reactions" && (evt === "INSERT" || evt === "UPDATE" || evt === "DELETE")) {
+				const next = rowLike(payload.new);
+				const prev = rowLike(payload.old);
+				const targetId = (evt === "DELETE" ? prev?.target_id : next?.target_id) ?? "";
+				const targetType = evt === "DELETE" ? prev?.target_type : next?.target_type;
+				if (targetId && (!targetType || targetType === "post")) {
+					if (evt === "INSERT") bumpReaction(targetId, next?.kind, +1);
+					else if (evt === "DELETE") bumpReaction(targetId, prev?.kind, -1);
+					else {
+						// UPDATE: kind may have changed (rare) — uncount old, count new.
+						if (prev?.kind && prev.kind !== next?.kind)
+							bumpReaction(targetId, prev.kind, -1);
+						bumpReaction(targetId, next?.kind, +1);
+					}
+				}
+				// MY reaction map re-syncs on the next explicit refresh (update
+				// notice, pill, or pull-to-refresh) — no GET per event.
+				return;
+			}
+
+			// ── Comment events: exact comment_count delta, mirrors server rule. ──
+			if (table === "comments" && (evt === "INSERT" || evt === "UPDATE" || evt === "DELETE")) {
+				const counted = (r: ReturnType<typeof rowLike>) =>
+					!!r && r.deleted !== true && r.hidden !== true;
+				const next = rowLike(payload.new);
+				const prev = rowLike(payload.old);
+				if (evt === "INSERT") bumpCommentCount(next?.post_id ?? "", false, counted(next));
+				else if (evt === "DELETE") bumpCommentCount(prev?.post_id ?? "", counted(prev), false);
+				else bumpCommentCount(next?.post_id ?? "", counted(prev), counted(next));
+				return;
+			}
+
+			// ── New + updated posts: quiet auto-merge (live feed). ──
+			// ── Withdrawn rows leave the screen right now. ──
+			// Moderation (`api/_reports.js`) and the quarantine paths flip
+			// posts.hidden / posts.deleted, and the admin delete route removes
+			// the row outright. The server then refuses to serve it — the feed
+			// filters hidden/deleted for EVERY viewer (`api/_posts.js:456-460`)
+			// and a by-id read 404s for anyone but an admin or the author
+			// (`api/_posts.js:521-531`) — so a row still held here is content
+			// the next authoritative read denies. Drop it from the list, forget
+			// its id so an un-hide can bring it back, and skip the reload: this
+			// state IS what that reload would have produced. (The reload could
+			// not have done it anyway — the quiet merge keeps rows absent from
+			// the response, and a DELETE never reached it at all.)
+			if (table === "posts") {
+				const withdrawn = postWithdrawal(table, payload);
+				if (withdrawn) {
+					setPosts((prev) => prev.filter((p) => p.id !== withdrawn.id));
+					knownIdsRef.current.delete(withdrawn.id);
+					return;
+				}
+			}
+
+			// The single-row path refreshes known rows in place (so another
+			// device's Support/vote/edit lands on this screen by itself) and
+			// prepends genuinely new ids when the reader is near the top;
+			// scrolled down, newcomers park behind the pill instead, so the
+			// list never reorders under a finger. A reader with an active
+			// search keeps the badge — a live row must not clobber search
+			// results. Rows the server no longer serves are handled above, so
+			// what is left here is ordinary liveness.
+			if (table === "posts" && (evt === "INSERT" || evt === "UPDATE")) {
+				if (!query.trim()) {
+					const changed = rowLike(payload.new) ?? rowLike(payload.old);
+					if (changed?.id) {
+						pendingRowIds.current.add(changed.id);
+						scheduleRowFlush();
+					} else {
+						markUpdatesAvailable();
+					}
+				} else {
+					markUpdatesAvailable();
+				}
+				return;
+			}
+
+			// ── Everything else: freshness signal only. ──
+			// Comment events bump counts above (the open thread refetches
+			// itself); a feed GET per comment would rebuild the list under
+			// every busy minute — the old reload storm. No fetch here.
+			// Poll events are owned by the zero-debounce lane above; this
+			// batched lane deliberately does not list `polls` so a vote is
+			// never refetched twice.
+			markUpdatesAvailable();
+		},
+		250, // short debounce: bursts coalesce in pendingRowIds + the 400ms
+		// row flush, so reaction deltas land in ~250ms instead of 1.5s.
 	);
 
 	const showPending = () => {
 		window.scrollTo({ top: 0, behavior: "smooth" });
-		load(false);
+		void load({
+			fresh: true,
+			search: query,
+			feedType,
+			category: cat,
+			status: statusFilter,
+		});
 	};
+
+	const refreshFeed = useCallback(
+		() =>
+			load({
+				fresh: true,
+				search: query,
+				feedType,
+				category: cat,
+				status: statusFilter,
+			}),
+		[cat, feedType, load, query, statusFilter],
+	);
+
+	// Declared after refreshFeed: the dep array reads it during render.
+	const handleFeedUpdate = useCallback(async () => {
+		setFeedRefreshing(true);
+		try {
+			await refreshFeed();
+			clearUpdates();
+		} finally {
+			setFeedRefreshing(false);
+		}
+	}, [refreshFeed, clearUpdates]);
 
 	const filtered = useMemo(() => {
 		let list = posts.filter((p) => !p.merged_into);
+		if (feedType !== "all") list = list.filter((p) => p.type === feedType);
 		if (cat !== "All") list = list.filter((p) => p.category === cat);
-		if (statusFilter === "open")
-			list = list.filter((p) => !["solved", "archived"].includes(p.status));
 		if (statusFilter === "solved")
 			list = list.filter((p) => p.status === "solved");
 		if (query.trim()) {
@@ -136,9 +875,15 @@ export default function Home() {
 			supported: (a, b) =>
 				(b.reactions?.support || 0) - (a.reactions?.support || 0),
 		};
-		rest.sort(sorter[sort]);
+		rest.sort(sorter[sort] ?? sorter.newest);
 		return [...pinned, ...rest];
-	}, [posts, cat, query, sort, statusFilter]);
+	}, [posts, cat, feedType, query, sort, statusFilter]);
+
+	const problemPosts = useMemo(
+		() => posts.filter((p) => p.type === "problem"),
+		[posts],
+	);
+	const hasLastKnownPosts = posts.length > 0;
 
 	const stats = useMemo(() => {
 		const now = Date.now();
@@ -153,21 +898,22 @@ export default function Home() {
 			const d = new Date();
 			d.setHours(0, 0, 0, 0);
 			d.setDate(d.getDate() - i);
-			spark.push(cnt(posts, +d, +d + DAY));
+			spark.push(cnt(problemPosts, +d, +d + DAY));
 		}
 		return {
-			total: posts.length,
-			solved: posts.filter((p) => p.status === "solved").length,
-			active: posts.filter((p) => !["solved", "archived"].includes(p.status))
-				.length,
-			week: cnt(posts, now - 7 * DAY, now),
-			prevWeek: cnt(posts, now - 14 * DAY, now - 7 * DAY),
-			solvedWeek: posts.filter((p) =>
+			total: problemPosts.length,
+			solved: problemPosts.filter((p) => p.status === "solved").length,
+			active: problemPosts.filter((p) =>
+				["in_progress", "waiting"].includes(p.status),
+			).length,
+			week: cnt(problemPosts, now - 7 * DAY, now),
+			prevWeek: cnt(problemPosts, now - 14 * DAY, now - 7 * DAY),
+			solvedWeek: problemPosts.filter((p) =>
 				(p.status_history || []).some(
 					(h) => h.status === "solved" && now - +new Date(h.at) < 7 * DAY,
 				),
 			).length,
-			solvedPrevWeek: posts.filter((p) =>
+			solvedPrevWeek: problemPosts.filter((p) =>
 				(p.status_history || []).some((h) => {
 					const t = +new Date(h.at);
 					return (
@@ -177,10 +923,40 @@ export default function Home() {
 			).length,
 			spark,
 		};
-	}, [posts]);
+	}, [problemPosts]);
+
+
+	const pullToRefresh = usePullToRefresh(refreshFeed, { threshold: 80 });
 
 	return (
-		<div>
+		<div
+			className="min-h-dvh"
+			onTouchStart={pullToRefresh.onTouchStart}
+			onTouchMove={pullToRefresh.onTouchMove}
+			onTouchEnd={pullToRefresh.onTouchEnd}
+		>
+			{/* Pull-to-refresh indicator */}
+			{(pullToRefresh.pulling || pullToRefresh.refreshing) && (
+				<div
+					className="fixed inset-x-0 top-0 z-40 pointer-events-none flex items-center justify-center gap-2 text-accent text-sm font-medium overflow-hidden transition-all"
+					style={{ height: pullToRefresh.pullDistance, opacity: pullToRefresh.pullDistance / 80 }}
+					aria-live="polite"
+				>
+					<span className={`inline-block transition-transform ${pullToRefresh.refreshing ? "animate-spin" : ""}`}>
+						↻
+					</span>
+					{pullToRefresh.refreshing ? "Refreshing…" : "Pull to refresh"}
+				</div>
+			)}
+
+			{/* Freshness badge — realtime only raises this; the feed itself
+			loads once per visit. One click pulls the latest snapshot. */}
+			<UpdateNotice
+				count={updatesAvailable}
+				onViewUpdates={() => void handleFeedUpdate()}
+				refreshing={feedRefreshing}
+			/>
+
 			{/* "New posts" pill — live content arrived while scrolled down */}
 			{pendingNew > 0 && (
 				<button
@@ -192,44 +968,56 @@ export default function Home() {
 				</button>
 			)}
 
-			{/* Hero — plain CSS gradient + rgba colors (works on ALL browsers, no color-mix/oklab) */}
+			{/* Hero — animated gradient, premium feel */}
 			<section
-				className="card !border-transparent mb-6 relative overflow-hidden vb-rise"
-				style={{
-					background:
-						"linear-gradient(120deg, #5652d6 0%, #6f63e8 55%, #8a7bf2 100%)",
-					color: "#ffffff",
-				}}
+				className="card !border-transparent mb-6 relative overflow-hidden vb-rise hero-gradient group"
+				style={{ color: "#ffffff" }}
 			>
+				<GridPattern
+					cellWidth={48}
+					cellHeight={48}
+					gap={8}
+					className="text-white"
+				/>
 				<div
 					className="absolute -right-10 -top-10 w-52 h-52 rounded-full"
 					style={{ background: "rgba(255,255,255,0.09)", filter: "blur(28px)" }}
 					aria-hidden
 				/>
-				<img
-					src="/hero-art.png"
-					alt=""
-					aria-hidden
-					loading="eager"
-					className="hidden md:block absolute right-0 top-1/2 -translate-y-1/2 w-60 lg:w-72 h-auto select-none pointer-events-none"
-					style={{
-						maskImage: "linear-gradient(to left, black 60%, transparent)",
-						WebkitMaskImage: "linear-gradient(to left, black 60%, transparent)",
-						mixBlendMode: "soft-light",
-					}}
-				/>
+				<BorderBeam duration={12} size={200} colorFrom="rgba(255,255,255,0.3)" colorTo="rgba(255,255,255,0)" />
+				{/* WebP-first: modern browsers get the ~90% smaller hero art,
+				legacy browsers fall back to the PNG. */}
+				<picture>
+					<source srcSet="/hero-art.webp" type="image/webp" />
+					<img
+						src="/hero-art.png"
+						alt=""
+						aria-hidden
+						loading="lazy"
+						decoding="async"
+						fetchPriority="low"
+						className="hidden md:block absolute right-0 top-1/2 -translate-y-1/2 w-60 lg:w-72 h-auto select-none pointer-events-none"
+						style={{
+							maskImage: "linear-gradient(to left, black 60%, transparent)",
+							WebkitMaskImage:
+								"linear-gradient(to left, black 60%, transparent)",
+							mixBlendMode: "soft-light",
+						}}
+					/>
+				</picture>
 				<div className="relative p-6 sm:p-8 md:max-w-[62%]">
-					<p
-						className="text-xs font-bold uppercase tracking-[0.18em] mb-2 flex items-center gap-1.5"
-						style={{ color: "rgba(255,255,255,0.72)" }}
-					>
-						<Megaphone size={13} /> Anonymous school feedback
-					</p>
-					<h1
-						className="font-display font-bold text-2xl sm:text-3xl leading-tight max-w-lg"
-						style={{ color: "#fff" }}
-					>
-						Speak up. Stay invisible. Get things fixed.
+					{/* H1 carries the primary keyword + brand for crawlers; the
+					eyebrow line is part of the heading, not a sibling of it. */}
+					<h1 className="max-w-lg" style={{ color: "#fff" }}>
+						<span
+							className="font-display text-xs font-bold uppercase tracking-[0.18em] mb-2 flex items-center gap-1.5"
+							style={{ color: "rgba(255,255,255,0.72)" }}
+						>
+							<Megaphone size={13} /> Anonymous school feedback
+						</span>
+						<span className="block font-display font-bold text-2xl sm:text-3xl leading-tight">
+							Voice Flow: speak up. Stay invisible. Get things fixed.
+						</span>
 					</h1>
 					<p
 						className="text-sm mt-2 max-w-md"
@@ -239,13 +1027,14 @@ export default function Home() {
 						share ideas, vote in polls.
 					</p>
 					<div className="flex flex-wrap gap-2 mt-4">
-						<Link
-							to="/submit"
-							data-tour="submit"
-							className="btn"
-							style={{ background: "#ffffff", color: "#5652d6" }}
-						>
-							<PlusCircle size={15} /> Report a problem
+						<Link to="/submit" data-tour="submit">
+							<ShimmerButton
+								shimmerColor="rgba(255,255,255,0.6)"
+								background="rgba(255,255,255,0.95)"
+								className="!text-indigo-600 !font-semibold"
+							>
+								<PlusCircle size={15} /> Report a problem
+							</ShimmerButton>
 						</Link>
 						<Link
 							to="/board"
@@ -321,7 +1110,7 @@ export default function Home() {
 			<div className="grid grid-cols-3 gap-3 mb-6">
 				{[
 					{
-						label: "Total reports",
+						label: "Reported",
 						value: stats.total,
 						icon: Megaphone,
 						color: "text-accent",
@@ -329,7 +1118,7 @@ export default function Home() {
 						spark: stats.spark,
 					},
 					{
-						label: "Being worked on",
+						label: "Worked on",
 						value: stats.active,
 						icon: Activity,
 						color: "text-warn",
@@ -349,7 +1138,7 @@ export default function Home() {
 					>
 						<div className="flex items-center justify-between">
 							<Icon size={16} className={color} />
-							{trend && !loading && (
+							{trend && hasLoaded && (
 								<Trend
 									current={trend.cur}
 									previous={trend.prev}
@@ -358,11 +1147,11 @@ export default function Home() {
 							)}
 						</div>
 						<p className="font-display font-bold text-xl sm:text-2xl mt-1">
-							{loading ? "–" : <CountUp value={value} />}
+							{hasLoaded ? <CountUp value={value} /> : "–"}
 						</p>
 						<div className="flex items-end justify-between gap-1">
 							<p className="text-[11px] sm:text-xs text-ink3">{label}</p>
-							{spark && !loading && (
+							{spark && hasLoaded && (
 								<span className="hidden sm:block">
 									<Sparkline data={spark} width={56} height={18} />
 								</span>
@@ -372,10 +1161,10 @@ export default function Home() {
 				))}
 			</div>
 
-			<RecapCard posts={posts} />
+			<RecapCard posts={problemPosts} />
 
 			{/* Theme word cloud — what the school is talking about */}
-			{!loading && posts.length >= 3 && (
+			{hasLoaded && posts.length >= 3 && (
 				<div className="card p-4 mb-4 vb-rise">
 					<p className="text-[10px] font-bold uppercase tracking-wider text-ink3 text-center mb-1 flex items-center justify-center gap-1.5">
 						<MessageSquare size={11} /> What the school is talking about · tap a
@@ -385,10 +1174,14 @@ export default function Home() {
 				</div>
 			)}
 
-			{/* Search + filters — single clean toolbar */}
-			<div className="card p-3 mb-4 space-y-3">
-				<div className="flex gap-2">
-					<div className="relative flex-1" data-tour="search">
+			{/* Search + filters — single clean toolbar.
+			On the APK it pins as a glass header so filters stay reachable
+			while scrolling; web/desktop keep the static card. */}
+			<div
+				className={`card p-3 mb-4 space-y-3 ${mobileApp ? "sticky top-0 z-30 !bg-surface/85 backdrop-blur-md shadow-sm" : ""}`}
+			>
+				<div className="flex flex-col gap-2">
+					<div className="relative flex-1 min-w-0" data-tour="search">
 						<Search
 							size={15}
 							className="absolute left-3 top-1/2 -translate-y-1/2 text-ink3"
@@ -397,16 +1190,33 @@ export default function Home() {
 						<input
 							id="feed-search"
 							className="input !pl-9 !py-2"
-							placeholder="Search problems…"
+							placeholder={feedType === "problem" ? "Search problems…" : "Search all posts…"}
 							value={query}
 							onChange={(e) => setQuery(e.target.value)}
-							aria-label="Search problems"
+							aria-label={feedType === "problem" ? "Search problems" : "Search all posts"}
 						/>
 					</div>
+					{/* Compact control row: selects + toggle share one row on
+					mobile instead of stacking full-width and pushing the
+					feed off-screen. */}
+					<div className="flex flex-row gap-2 items-center">
+					<select
+						id="feed-type-filter"
+						name="content-type"
+						className="input !py-2 text-sm flex-1 min-w-0"
+						value={feedType}
+						onChange={(e) => setFeedType(e.target.value as FeedType)}
+						aria-label="Filter by content type"
+					>
+						<option value="all">All content</option>
+						<option value="problem">Problems</option>
+						<option value="suggestion">Suggestions</option>
+						<option value="poll">Polls</option>
+					</select>
 					<select
 						id="feed-category-filter"
 						name="category"
-						className="input !w-auto !py-2 text-sm max-w-36"
+						className="input !py-2 text-sm flex-1 min-w-0"
 						value={cat}
 						onChange={(e) => setCat(e.target.value)}
 						aria-label="Filter by category"
@@ -419,13 +1229,22 @@ export default function Home() {
 						))}
 					</select>
 					<button
-						className={`btn !py-2 sm:hidden ${showFilters ? "btn-soft" : "btn-ghost"}`}
+						className={`btn !py-2 sm:hidden relative shrink-0 ${showFilters ? "btn-soft" : "btn-ghost"}`}
 						onClick={() => setShowFilters((s) => !s)}
 						aria-label="Toggle filters"
 						aria-expanded={showFilters}
 					>
 						<SlidersHorizontal size={15} />
+						{mobileApp && hiddenActiveCount > 0 && (
+							<span
+								className="absolute -top-1.5 -right-1.5 min-w-5 h-5 px-1 rounded-full bg-accent text-white text-[10px] font-bold flex items-center justify-center"
+								aria-label={`${hiddenActiveCount} filters active`}
+							>
+								{hiddenActiveCount}
+							</span>
+						)}
 					</button>
+					</div>
 				</div>
 				<div
 					className={`${showFilters ? "flex" : "hidden sm:flex"} flex-wrap items-center gap-2`}
@@ -452,7 +1271,7 @@ export default function Home() {
 						role="tablist"
 						aria-label="Filter by status"
 					>
-						{(["all", "open", "solved"] as const).map((s) => (
+						{(["all", "solved"] as const).map((s) => (
 							<button
 								key={s}
 								role="tab"
@@ -468,49 +1287,166 @@ export default function Home() {
 			</div>
 
 			{/* Feed */}
-			<h2 className="sr-only">Recent Reports</h2>
+			<h2 className="sr-only">Recent posts</h2>
 			{error && (
-				<div className="card p-6 text-center">
-					<p className="text-bad font-medium text-sm">{error}</p>
+				<div
+					className={hasLastKnownPosts ? "card p-3 px-4" : "card p-6 text-center"}
+					role={hasLastKnownPosts ? "status" : "alert"}
+				>
+					<p className={hasLastKnownPosts ? "text-sm text-ink2" : "text-bad font-medium text-sm"}>
+						{hasLastKnownPosts
+							? "Refresh failed — showing the last available posts."
+							: error}
+					</p>
+					{!hasLastKnownPosts && isNativeShell() && (
+						<p className="text-xs text-ink3 mt-1">
+							App is trying: {apiBase() || "(no API address set — rebuild with VITE_API_BASE)"}
+						</p>
+					)}
 					<button
-						className="btn btn-soft mt-3"
+						className={`btn btn-soft ${hasLastKnownPosts ? "mt-2" : "mt-3"}`}
 						onClick={() => {
-							setLoading(true);
-							load();
+							if (!hasLastKnownPosts) setHasLoaded(false);
+							void load({
+								fresh: true,
+								search: query,
+								feedType,
+								category: cat,
+								status: statusFilter,
+							});
 						}}
 					>
-						Retry
+						Try again
 					</button>
 				</div>
 			)}
-			{loading && (
-				<div className="space-y-3">
-					{[1, 2, 3, 4].map((i) => (
-						<div key={i} className="skeleton h-32" />
+			{/* APK-only skeleton loaders: shimmer placeholders while the first
+			load settles, so the app feels alive instead of blank. Web and
+			desktop keep the quiet list (deliberate — no flash). */}
+			{mobileApp && !hasLoaded && !error && (
+				<div className="space-y-3" aria-hidden data-testid="feed-skeleton">
+					{[0, 1, 2].map((i) => (
+						<div key={i} className="card p-4">
+							<div className="skeleton h-4 w-2/3 mb-2" />
+							<div className="skeleton h-3 w-full mb-2" />
+							<div className="skeleton h-3 w-5/6" />
+						</div>
 					))}
 				</div>
 			)}
-			{!loading && !error && filtered.length === 0 && (
+			{hasLoaded && !error && filtered.length === 0 && (
 				<div className="card p-10 text-center vb-rise">
 					<div className="vb-empty-icon">
 						<Megaphone size={28} />
 					</div>
-					<p className="font-display font-semibold">No problems found</p>
+					<p className="font-display font-semibold">No posts found</p>
 					<p className="text-sm text-ink3 mt-1">
-						Be the first to report something anonymously.
+						Be the first to share something anonymously.
 					</p>
 					<Link to="/submit" className="btn btn-primary mt-4 inline-flex">
-						<PlusCircle size={15} /> Report a problem
+						<PlusCircle size={15} /> Share an update
 					</Link>
 				</div>
 			)}
+
 			<div className="space-y-3 vb-feed-list">
 				{filtered.map((p, i) => (
-					<div key={p.id} {...(i === 0 ? { "data-tour": "post-card" } : {})}>
-						<PostCard post={p} myReactions={myReactions[p.id]} />
+					<div
+						key={p.id}
+						className={mobileApp ? "vb-feed-item" : undefined}
+						{...(i === 0 ? { "data-tour": "post-card" } : {})}
+					>
+						<PostCard
+							post={p}
+							myReactions={myReactions[p.id]}
+							onReacted={handleReacted}
+							pollData={p.linked_poll ? pollsMap[p.linked_poll] ?? null : null}
+							myPollVote={p.linked_poll ? myPollVotes[p.linked_poll] : undefined}
+							onPollVoted={() => fetchPolls(posts)}
+						/>
 					</div>
 				))}
 			</div>
+
+		{/* Sitewide footer - about, anonymity explainer, real links. */}
+		<SiteFooter />
 		</div>
 	);
 }
+
+/** Home-page footer — about, how anonymity works, and real internal links.
+ * Gives logged-out visitors (and crawlers) the context the homepage lacked:
+ * what Voice Flow is, what data it does NOT collect, and where to go next. */
+function SiteFooter() {
+	const link = "text-ink3 hover:text-ink transition-colors";
+	return (
+		<footer
+			className="mt-8 pt-6 border-t border-border"
+			data-testid="site-footer"
+		>
+			<div className="grid gap-6 sm:grid-cols-2 mb-6 text-left">
+				<div>
+					<p className="font-display font-bold text-sm mb-1">Voice Flow</p>
+					<p className="text-xs text-ink3 leading-relaxed">
+						Voice Flow is an anonymous school feedback platform. Students
+						report problems, share ideas, and vote in polls — with no names,
+						no emails, and no tracking. Every report moves through a visible
+						pipeline from Reported to Solved, so the whole school can see what
+						was raised and what actually changed. School staff moderate and
+						resolve each issue; students stay untraceable.
+					</p>
+				</div>
+				<div>
+					<p className="font-display font-bold text-sm mb-1">
+						How anonymity works
+					</p>
+					<ul className="text-xs text-ink3 leading-relaxed list-disc pl-4 space-y-1">
+						<li>
+							Your only identifier is a random ID generated in your own
+							browser.
+						</li>
+						<li>We never ask for a name, email, or phone number.</li>
+						<li>Moderators see the random ID — never a real identity.</li>
+						<li>You can delete your own posts, with a 30-second undo.</li>
+					</ul>
+				</div>
+			</div>
+			<nav
+				aria-label="Site links"
+				className="flex flex-wrap gap-x-4 gap-y-1 text-xs mb-3"
+			>
+				<Link to="/about" className={link}>
+					About
+				</Link>
+				<Link to="/faq" className={link}>
+					FAQ
+				</Link>
+				<Link to="/contact" className={link}>
+					Contact
+				</Link>
+				<Link to="/terms" className={link}>
+					Terms
+				</Link>
+				<Link to="/privacy" className={link}>
+					Privacy
+				</Link>
+				<Link to="/accessibility" className={link}>
+					Accessibility
+				</Link>
+				<Link to="/status" className={link}>
+					Status
+				</Link>
+				<Link to="/changelog" className={link}>
+					Changelog
+				</Link>
+				<Link to="/download" className={link}>
+					Download
+				</Link>
+			</nav>
+			<p className="text-[11px] text-ink3">
+				© 2026 Voice Flow · Speak up. Stay invisible. Get things fixed.
+			</p>
+		</footer>
+	);
+}
+

@@ -9,7 +9,7 @@ import {
 	XCircle,
 } from "lucide-react";
 import { useState } from "react";
-import { safeStringify } from "../../../lib/utils";
+import { extractEvidence } from "./evidence";
 import { getToolPreview } from "./ActionPreviews";
 import type { Action } from "./tool-meta";
 import { TOOL_META } from "./tool-meta";
@@ -28,7 +28,7 @@ export default function ActionCard({
 	onDismiss: () => void;
 	executing: boolean;
 }) {
-	const [expanded, setExpanded] = useState(!action.result);
+	const [expanded, setExpanded] = useState(true);
 
 	const meta = TOOL_META[action.tool] || {
 		label: action.tool,
@@ -44,6 +44,8 @@ export default function ActionCard({
 	const renderResult = () => {
 		if (!action.result) return null;
 		const { success, error, data } = action.result;
+		const ev = extractEvidence(data);
+		const verifyHint = `Outcome recorded — verify in the ${meta.redirectTab || "relevant"} tab.`;
 		return (
 			<div
 				className={`vb-action-result rounded-xl p-3.5 border text-xs vb-stage-pop ${
@@ -76,9 +78,34 @@ export default function ActionCard({
 					</div>
 				</div>
 				{success && data != null && (
-					<pre className="mt-2 text-[10px] font-mono text-ink3/70 whitespace-pre-wrap max-h-20 overflow-auto">
-						{typeof data === "string" ? data : safeStringify(data, 2)}
-					</pre>
+					<div className="mt-2 space-y-1.5">
+						{ev.message && <p className="text-ink2">{ev.message}</p>}
+						{ev.rows.length > 0 && (
+							<dl className="space-y-0.5">
+								{ev.rows.map((r) => (
+									<div
+										key={r.label}
+										className="flex items-baseline justify-between gap-3 text-[10px]"
+									>
+										<dt className="text-ink3 uppercase tracking-wide shrink-0">
+											{r.label}
+										</dt>
+										<dd className="text-ink2 font-mono text-right">{r.value}</dd>
+									</div>
+								))}
+							</dl>
+						)}
+						{ev.items.length > 0 && (
+							<ul className="list-disc ml-4 space-y-0.5">
+								{ev.items.map((it) => (
+									<li key={it} className="text-[10px] font-mono text-ink3">
+										{it}
+									</li>
+								))}
+							</ul>
+						)}
+						{ev.fallback && <p className="text-[10px] text-ink3">{verifyHint}</p>}
+					</div>
 				)}
 				{/* Presentation open-in-tab button */}
 				{success &&
@@ -117,7 +144,7 @@ export default function ActionCard({
 			{/* ── Clickable header ── */}
 			<button
 				className="w-full text-left p-3.5 flex items-center gap-2.5 flex-wrap cursor-pointer select-none hover:bg-surface2/30 transition-colors"
-				onClick={() => !action.result && setExpanded(!expanded)}
+				onClick={() => setExpanded(!expanded)}
 			>
 				<div
 					className={`w-7 h-7 rounded-lg flex items-center justify-center ${meta.bgColor} vb-stage-pop`}
@@ -132,17 +159,13 @@ export default function ActionCard({
 						Destructive
 					</span>
 				)}
-				{!action.result && (
-					<>
-						<span className="text-[8px] text-ink3 font-mono">
-							{expanded ? "CLICK TO COLLAPSE" : "CLICK TO EXPAND"}
-						</span>
-						{expanded ? (
-							<ChevronUp size={12} className="text-ink3" />
-						) : (
-							<ChevronDown size={12} className="text-ink3" />
-						)}
-					</>
+				<span className="text-[8px] text-ink3 font-mono">
+					{expanded ? "CLICK TO COLLAPSE" : "CLICK TO EXPAND"}
+				</span>
+				{expanded ? (
+					<ChevronUp size={12} className="text-ink3" />
+				) : (
+					<ChevronDown size={12} className="text-ink3" />
 				)}
 				{action.result?.success === true && (
 					<CheckCircle2 size={14} className="text-green-400" />

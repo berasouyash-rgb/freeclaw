@@ -15,6 +15,7 @@
 
 import { cors, isAdmin } from "./_auth.js";
 import supabase from "./_db-client.js";
+import { logger } from "./_observability.js";
 
 // ─── Constants ────────────────────────────────────────────────────
 const STALE_THRESHOLD_DAYS = 7; // Reports open > 7 days are stale
@@ -320,9 +321,7 @@ export async function detectSuggestions(options = {}) {
 	}
 
 	const latencyMs = Date.now() - startTime;
-	console.log(
-		`[PROACTIVE] Detected ${limited.length} suggestions in ${latencyMs}ms`,
-	);
+	logger.info("proactive", `Detected ${limited.length} suggestions`, { latency_ms: latencyMs });
 
 	return {
 		suggestions: limited,

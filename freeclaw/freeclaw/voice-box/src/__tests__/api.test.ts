@@ -10,15 +10,28 @@
 //   7. uploadImage server path + data-URL fallback
 //   8. paginated / postPaginated URL and body shaping
 //   9. Module-load flush when a previous session left queued writes
+//  10. ApiError carries the HTTP status so callers can tell a real 404 from
+//      a failed request (pages used to render "not found" for both)
+//  11. Retry-After handling: 429s carry the server's backoff hint, GETs
+//      auto-retry only when the wait is short, writes are never queued past
+//      a throttle, and the surfaced message is honest about the wait
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+	ApiError,
 	api,
 	clearAdminSession,
 	hasAdminSession,
+	isNotFound,
+	isSessionDeadError,
+	resetConcurrencyForTests,
 	setAdminSession,
 } from "../lib/api";
 import { queuedCount } from "../lib/offline";
+
+beforeEach(() => {
+	resetConcurrencyForTests();
+});
 
 function okResponse(body: unknown = {}) {
 	return {
@@ -29,12 +42,18 @@ function okResponse(body: unknown = {}) {
 	};
 }
 
-function errResponse(status: number, body: unknown = {}) {
+function errResponse(status: number, body: unknown = {}, headers?: Record<string, string>) {
+	// Header keys are case-insensitive in HTTP but case-sensitive in JS objects,
+	// so normalize to lowercase for lookup.
+	const h = new Map(
+		Object.entries(headers ?? {}).map(([k, v]) => [k.toLowerCase(), v]),
+	);
 	return {
 		ok: false,
 		status,
 		json: async () => body,
 		text: async () => JSON.stringify(body),
+		headers: { get: (name: string) => h.get(name.toLowerCase()) ?? null },
 	};
 }
 
@@ -182,6 +201,45 @@ describe("api request behavior", () => {
 			expect(fetchMock).toHaveBeenCalledTimes(2);
 		});
 
+		it("does not share a cached response across admin and public viewers", async () => {
+			fetchMock
+				.mockResolvedValueOnce(okResponse({ scope: "admin" }))
+				.mockResolvedValueOnce(okResponse({ scope: "public" }));
+
+			setAdminSession("admin-token-a", Date.now() + 60_000);
+			await expect(api.get("/api/private-context-7f31")).resolves.toEqual({
+				scope: "admin",
+			});
+
+			clearAdminSession();
+			await expect(api.get("/api/private-context-7f31")).resolves.toEqual({
+				scope: "public",
+			});
+			expect(fetchMock).toHaveBeenCalledTimes(2);
+		});
+
+		it("does not share an in-flight response across admin and public viewers", async () => {
+			let resolveFirst!: (value: unknown) => void;
+			fetchMock
+				.mockImplementationOnce(
+					() =>
+						new Promise((resolve) => {
+							resolveFirst = resolve;
+						}),
+				)
+				.mockResolvedValueOnce(okResponse({ scope: "public" }));
+
+			setAdminSession("admin-token-b", Date.now() + 60_000);
+			const adminRead = api.get("/api/private-inflight-4a92");
+			clearAdminSession();
+			const publicRead = api.get("/api/private-inflight-4a92");
+
+			expect(fetchMock).toHaveBeenCalledTimes(2);
+			resolveFirst(okResponse({ scope: "admin" }));
+			await expect(adminRead).resolves.toEqual({ scope: "admin" });
+			await expect(publicRead).resolves.toEqual({ scope: "public" });
+		});
+
 		it("deduplicates two simultaneous in-flight GETs", async () => {
 			let resolveFetch!: (v: unknown) => void;
 			fetchMock.mockImplementation(
@@ -259,9 +317,9 @@ describe("api request behavior", () => {
 
 			const p = api.get("/api/slow");
 			const rejection = expect(p).rejects.toThrow(
-				"Request timed out — check your connection and retry.",
+				"Server is taking too long",
 			);
-			await vi.advanceTimersByTimeAsync(8000);
+			await vi.advanceTimersByTimeAsync(15000);
 			await rejection;
 			expect(fetchMock).toHaveBeenCalledTimes(1);
 		});
@@ -295,7 +353,7 @@ describe("api request behavior", () => {
 			expect(queuedCount()).toBe(1);
 		});
 
-		it("queues a write that times out (AbortError)", async () => {
+		it("never queues a write that times out (AbortError) — ambiguous outcome", async () => {
 			vi.useFakeTimers();
 			const abortError = (): Error =>
 				Object.assign(new Error("Aborted"), { name: "AbortError" });
@@ -308,11 +366,13 @@ describe("api request behavior", () => {
 
 			const p = api.post("/api/posts", { title: "slow" });
 			const rejection = expect(p).rejects.toThrow(
-				"Request timed out — check your connection and retry.",
+				"Server is taking too long",
 			);
-			await vi.advanceTimersByTimeAsync(8000);
+			await vi.advanceTimersByTimeAsync(15000);
 			await rejection;
-			expect(queuedCount()).toBe(1);
+			// The write may already be applied server-side — replaying it
+			// later would double-apply, so it must NOT enter the queue.
+			expect(queuedCount()).toBe(0);
 		});
 
 		it("never queues GET requests", async () => {
@@ -351,6 +411,41 @@ describe("api request behavior", () => {
 			await expect(api.post("/api/inbox/send", {})).rejects.toThrow(
 				"Failed to fetch",
 			);
+			expect(queuedCount()).toBe(0);
+		});
+
+		it("never queues poll votes or poll creates — replay would duplicate polls and split vote totals", async () => {
+			vi.useFakeTimers();
+			fetchMock.mockRejectedValue(new TypeError("Failed to fetch"));
+			await expect(
+				api.post("/api/polls", {
+					action: "vote",
+					poll_id: "poll_1",
+					choices: [0],
+				}),
+			).rejects.toThrow("Failed to fetch");
+			await expect(
+				api.post("/api/polls", { title: "Should we fix the lift?" }),
+			).rejects.toThrow("Failed to fetch");
+			expect(queuedCount()).toBe(0);
+		});
+
+		it("never queues pre-publish analysis calls", async () => {
+			vi.useFakeTimers();
+			fetchMock.mockRejectedValue(new TypeError("Failed to fetch"));
+			await expect(
+				api.post("/api/pre-publish", { title: "safe report" }),
+			).rejects.toThrow("Failed to fetch");
+			expect(queuedCount()).toBe(0);
+		});
+
+		it("never offline-queues an admin write", async () => {
+			vi.useFakeTimers();
+			setAdminSession("admin-token-queue", Date.now() + 60_000);
+			fetchMock.mockRejectedValue(new TypeError("Failed to fetch"));
+			await expect(
+				api.post("/api/admin", { action: "bulk_update" }),
+			).rejects.toThrow("Failed to fetch");
 			expect(queuedCount()).toBe(0);
 		});
 
@@ -428,6 +523,7 @@ describe("api module-load flush", () => {
 
 	it("schedules a flush when a previous session left queued items", async () => {
 		vi.useFakeTimers();
+		localStorage.setItem("vb:anonId", "anon_legacy");
 		localStorage.setItem(
 			"vb:offlineQueue",
 			JSON.stringify([
@@ -437,6 +533,7 @@ describe("api module-load flush", () => {
 					path: "/api/legacy",
 					body: { old: true },
 					queuedAt: new Date().toISOString(),
+					ownerId: "anon_legacy",
 				},
 			]),
 		);
@@ -486,25 +583,33 @@ describe("api uploadImage", () => {
 		});
 	});
 
-	it("falls back to a data URL when the server upload fails", async () => {
+	it("throws a clear error when the server upload fails", async () => {
 		fetchMock.mockRejectedValue(new TypeError("Failed to fetch"));
 		await expect(
 			api.uploadImage("aGVsbG8=", "image/png", "user-1"),
-		).resolves.toBe("data:image/png;base64,aGVsbG8=");
+		).rejects.toThrow(/storage unavailable/i);
 	});
 
-	it("falls back to a data URL when the upload rejects with a non-Error value", async () => {
+	it("throws a clear error when the upload rejects with a non-Error value", async () => {
 		fetchMock.mockRejectedValue("raw failure");
 		await expect(
 			api.uploadImage("aGVsbG8=", "image/png", "user-1"),
-		).resolves.toBe("data:image/png;base64,aGVsbG8=");
+		).rejects.toThrow(/storage unavailable/i);
 	});
 
-	it("falls back to a data URL when the server returns no URL", async () => {
+	it("throws a clear error when the server returns no URL", async () => {
 		fetchMock.mockResolvedValue(okResponse({}));
 		await expect(
 			api.uploadImage("aGVsbG8=", "image/png", "user-1"),
-		).resolves.toBe("data:image/png;base64,aGVsbG8=");
+		).rejects.toThrow(/no URL/i);
+	});
+
+	it("rejects oversized images before any upload attempt", async () => {
+		const big = "a".repeat(3 * 1024 * 1024);
+		await expect(
+			api.uploadImage(big, "image/png", "user-1"),
+		).rejects.toThrow(/too large/i);
+		expect(fetchMock).not.toHaveBeenCalled();
 	});
 });
 
@@ -561,5 +666,209 @@ describe("api paginated helpers", () => {
 			role: "admin",
 			paginate: true,
 		});
+	});
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// HTTP status must survive the throw.
+//
+// REGRESSION: PostDetail / CommunityDetail / the admin report preview all
+// collapsed every failure into "not found", so a 429 or a timeout told users
+// their own content had been deleted. They now branch on isNotFound, which is
+// only true for a genuine 404 — this suite pins that contract.
+// ═══════════════════════════════════════════════════════════════════
+describe("api error status", () => {
+	let fetchMock: ReturnType<typeof vi.fn>;
+
+	beforeEach(() => {
+		localStorage.clear();
+		sessionStorage.clear();
+		fetchMock = vi.fn();
+		vi.stubGlobal("fetch", fetchMock);
+	});
+
+	afterEach(() => {
+		vi.unstubAllGlobals();
+		vi.useRealTimers();
+	});
+
+	it("isNotFound is true only for an ApiError carrying 404", () => {
+		expect(isNotFound(new ApiError("gone", 404))).toBe(true);
+		expect(isNotFound(new ApiError("busy", 429))).toBe(false);
+		expect(isNotFound(new ApiError("boom", 500))).toBe(false);
+	});
+
+	it("isNotFound rejects everything that is not an ApiError", () => {
+		// A bare object with status 404 must NOT count — only the real error
+		// type the wrapper throws, otherwise any thrown shape could be mistaken
+		// for a missing resource.
+		expect(isNotFound(Object.assign(new Error("x"), { status: 404 }))).toBe(
+			false,
+		);
+		expect(isNotFound(new Error("network down"))).toBe(false);
+		expect(isNotFound("404")).toBe(false);
+		expect(isNotFound(null)).toBe(false);
+		expect(isNotFound(undefined)).toBe(false);
+	});
+
+	it("a 404 response throws an ApiError whose status is 404", async () => {
+		fetchMock.mockResolvedValue(errResponse(404, { error: "Post not found" }));
+
+		await expect(api.get("/api/posts?id=nope")).rejects.toMatchObject({
+			name: "ApiError",
+			status: 404,
+			message: "Post not found",
+		});
+	});
+
+	it("a 429 response still throws, but is NOT reported as not-found", async () => {
+		fetchMock.mockResolvedValue(
+			errResponse(429, { error: "Too many requests" }),
+		);
+
+		let caught: unknown;
+		try {
+			await api.get("/api/posts?id=p1");
+		} catch (e) {
+			caught = e;
+		}
+		expect(caught).toBeInstanceOf(ApiError);
+		expect((caught as ApiError).status).toBe(429);
+		expect(isNotFound(caught)).toBe(false);
+	});
+
+	it("translates session_unrecoverable into recovery guidance, keeping the code", async () => {
+		// The server code is what lets the UI distinguish "retry may help"
+		// from "this browser needs a fresh ID". The raw server text
+		// ("Invalid session identity") names no recovery, so the wrapper
+		// substitutes actionable guidance while preserving the code.
+		fetchMock.mockResolvedValue(
+			errResponse(403, { error: "Invalid session identity", code: "session_unrecoverable" }),
+		);
+		let caught: unknown;
+		try {
+			await api.get("/api/me?anon_id=anon_x");
+		} catch (e) {
+			caught = e;
+		}
+		expect(caught).toBeInstanceOf(ApiError);
+		expect((caught as ApiError).status).toBe(403);
+		expect((caught as ApiError).code).toBe("session_unrecoverable");
+		expect((caught as ApiError).message).toContain("Settings");
+		expect(isSessionDeadError(caught)).toBe(true);
+	});
+
+	it("isSessionDeadError rejects ordinary and codeless errors", () => {
+		expect(isSessionDeadError(new ApiError("nope", 403))).toBe(false);
+		expect(isSessionDeadError(new ApiError("nope", 403, 0, "other_code"))).toBe(false);
+		expect(isSessionDeadError(new Error("x"))).toBe(false);
+		expect(isSessionDeadError(null)).toBe(false);
+	});
+
+	it("falls back to a status-labelled message when the body has no error", async () => {
+		fetchMock.mockResolvedValue(errResponse(500, {}));
+		await expect(api.get("/api/x")).rejects.toThrow("Request failed (500)");
+	});
+
+	it("carries the Retry-After header and an honest wait message on 429", async () => {
+		fetchMock.mockResolvedValue(
+			errResponse(429, { error: "Rate limit exceeded" }, { "Retry-After": "25" }),
+		);
+		await expect(api.get("/api/throttled")).rejects.toMatchObject({
+			name: "ApiError",
+			status: 429,
+			retryAfter: 25,
+			message: "Slow down a little — try again in 25s.",
+		});
+	});
+
+	it("falls back to the body's retry_after when no header is present", async () => {
+		fetchMock.mockResolvedValue(
+			errResponse(429, { error: "Too many requests", retry_after: 12 }),
+		);
+		await expect(api.get("/api/throttled2")).rejects.toMatchObject({
+			status: 429,
+			retryAfter: 12,
+		});
+	});
+
+	it("keeps the server's message when a 429 has no backoff hint", async () => {
+		fetchMock.mockResolvedValue(errResponse(429, { error: "Too many requests" }));
+		await expect(api.get("/api/throttled3")).rejects.toMatchObject({
+			status: 429,
+			retryAfter: 0,
+			message: "Too many requests",
+		});
+	});
+
+	it("auto-retries a GET 429 once when the wait is short (≤3s)", async () => {
+		vi.useFakeTimers();
+		fetchMock
+			.mockResolvedValueOnce(
+				errResponse(429, { error: "Temporarily rate limited" }, { "Retry-After": "2" }),
+			)
+			.mockResolvedValueOnce(okResponse({ recovered: true }));
+
+		const p = api.get("/api/throttled-retry");
+		// retryAfter=2s → delay 2000ms (clamped to ≤3000ms)
+		await vi.advanceTimersByTimeAsync(2000);
+		await expect(p).resolves.toEqual({ recovered: true });
+		expect(fetchMock).toHaveBeenCalledTimes(2);
+	});
+
+	it("auto-retries a GET 503 once when the shed backoff is short (≤3s)", async () => {
+		vi.useFakeTimers();
+		fetchMock
+			.mockResolvedValueOnce(
+				errResponse(503, { error: "Server busy — retry shortly." }, { "Retry-After": "2" }),
+			)
+			.mockResolvedValueOnce(okResponse({ recovered: true }));
+
+		const p = api.get("/api/shed-retry");
+		await vi.advanceTimersByTimeAsync(2000);
+		await expect(p).resolves.toEqual({ recovered: true });
+		expect(fetchMock).toHaveBeenCalledTimes(2);
+	});
+
+	it("does NOT retry a GET 503 without a backoff hint", async () => {
+		vi.useFakeTimers();
+		fetchMock.mockResolvedValue(
+			errResponse(503, { error: "Server busy — retry shortly." }),
+		);
+
+		const p = api.get("/api/shed-naked");
+		const rejection = expect(p).rejects.toThrow("Server busy — retry shortly.");
+		await vi.advanceTimersByTimeAsync(10000);
+		await rejection;
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+	});
+
+	it("does NOT retry a GET 429 whose wait is long (>3s)", async () => {
+		vi.useFakeTimers();
+		fetchMock.mockResolvedValue(
+			errResponse(429, { error: "Hourly rate limit exceeded" }, { "Retry-After": "30" }),
+		);
+
+		const p = api.get("/api/throttled-long");
+		const rejection = expect(p).rejects.toThrow(
+			"Slow down a little — try again in 30s.",
+		);
+		// Even after far longer than any retry delay, only ONE fetch must have
+		// happened — a 30s backoff is the server demanding real backoff.
+		await vi.advanceTimersByTimeAsync(10000);
+		await rejection;
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+	});
+
+	it("never offline-queues a write that was 429'd", async () => {
+		vi.useFakeTimers();
+		fetchMock.mockResolvedValue(
+			errResponse(429, { error: "Rate limit exceeded", retry_after: 20 }),
+		);
+		await expect(api.post("/api/posts", { title: "x" })).rejects.toThrow(
+			"Slow down a little — try again in 20s.",
+		);
+		// Flushing a queued write later would bypass the server's backoff.
+		expect(queuedCount()).toBe(0);
 	});
 });

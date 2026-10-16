@@ -308,6 +308,151 @@ describe("useInfiniteScroll", () => {
 		expect(result.current.hasMore).toBe(false);
 	});
 
+	// SMOOTHNESS: a filter change must not blank the list. softReset reloads
+	// from the first page while KEEPING the current rows on screen (stale
+	// while revalidate), so the table never flashes empty/skeletons; the new
+	// page swaps in atomically when it lands.
+	it("softReset keeps the current rows until the new page lands", async () => {
+		let resolveSecond!: (r: AnyPage) => void;
+		const fetcher: any = vi
+			.fn()
+			.mockResolvedValueOnce({
+				data: [{ id: "a" }, { id: "b" }],
+				nextCursor: "c2",
+				total: 2,
+			});
+		fetcher.mockImplementationOnce(
+			() =>
+				new Promise((res) => {
+					resolveSecond = res;
+				}),
+		);
+		const { result } = renderHook(() => useInfiniteScroll<any>(fetcher));
+		await waitFor(() => expect(result.current.items).toHaveLength(2));
+
+		act(() => {
+			result.current.softReset();
+		});
+
+		// Rows stay on screen; only the paging/total state resets.
+		expect(result.current.items).toEqual([{ id: "a" }, { id: "b" }]);
+		expect(result.current.hasMore).toBe(true);
+		expect(result.current.total).toBe(0);
+		expect(fetcher).toHaveBeenCalledTimes(2);
+		expect(fetcher).toHaveBeenLastCalledWith({ cursor: null, limit: 30 });
+
+		await act(async () => {
+			resolveSecond({ data: [{ id: "z" }], nextCursor: null, total: 1 });
+		});
+		expect(result.current.items).toEqual([{ id: "z" }]);
+		expect(result.current.hasMore).toBe(false);
+		expect(result.current.total).toBe(1);
+	});
+
+	// CORRECTNESS: a filter change re-bases the list. A page request that was
+	// already in flight for the PREVIOUS filter set must be discarded, not
+	// merged — otherwise its rows land under (or over) the new first page and
+	// the list shows off-filter posts appearing from the top and the bottom.
+	it("drops an in-flight page from a superseded list after softReset", async () => {
+		const resolvers: Array<(r: AnyPage) => void> = [];
+		const fetcher: any = vi.fn(
+			() =>
+				new Promise((res) => {
+					resolvers.push(res);
+				}),
+		);
+		const { result } = renderHook(() => useInfiniteScroll<any>(fetcher));
+		await act(async () => {
+			resolvers[0]!({ data: [{ id: "a" }], nextCursor: "c2", total: 1 });
+		});
+		expect(result.current.items).toEqual([{ id: "a" }]);
+
+		// Page 2 of the old filter set is in flight…
+		act(() => result.current.loadMore());
+		expect(fetcher).toHaveBeenCalledTimes(2);
+
+		// …when the filter changes and re-bases the list.
+		act(() => result.current.softReset());
+		expect(fetcher).toHaveBeenCalledTimes(3);
+
+		// The stale page lands late: its rows must NOT be merged in.
+		await act(async () => {
+			resolvers[1]!({ data: [{ id: "stale" }], nextCursor: "c9", total: 99 });
+		});
+		expect(result.current.items).toEqual([{ id: "a" }]);
+
+		// The replacement request still settles the list normally.
+		await act(async () => {
+			resolvers[2]!({ data: [{ id: "new" }], nextCursor: null, total: 1 });
+		});
+		expect(result.current.items).toEqual([{ id: "new" }]);
+		expect(result.current.initialLoading).toBe(false);
+		expect(result.current.loading).toBe(false);
+	});
+
+	// DEDUPE: rows injected from outside (realtime prepends, backfill,
+	// optimistic edits) must register in the dedupe set, or the next page
+	// appends them a second time — the same post rendered top and bottom.
+	it("does not re-append a row that was injected through setItems", async () => {
+		const fetcher: any = vi
+			.fn()
+			.mockResolvedValueOnce({
+				data: [{ id: "a" }],
+				nextCursor: "c2",
+				total: 1,
+			});
+		const { result } = renderHook(() => useInfiniteScroll<any>(fetcher));
+		await waitFor(() => expect(result.current.initialLoading).toBe(false));
+
+		await act(async () => {
+			result.current.setItems((prev) => [{ id: "live" }, ...prev]);
+		});
+		expect(result.current.items.map((i) => i.id)).toEqual(["live", "a"]);
+
+		// A later page happens to include the injected row again.
+		fetcher.mockResolvedValueOnce({
+			data: [{ id: "live" }, { id: "b" }],
+			nextCursor: null,
+			total: 3,
+		});
+		await act(async () => {
+			result.current.loadMore();
+		});
+		await waitFor(() => expect(result.current.loading).toBe(false));
+
+		expect(result.current.items.map((i) => i.id)).toEqual(["live", "a", "b"]);
+	});
+
+	// replaceItems is a genuine replacement: the dedupe set re-seeds from the
+	// new rows, so a row dropped by replaceItems can appear again later.
+	it("re-seeds dedupe on replaceItems", async () => {
+		const fetcher: any = vi
+			.fn()
+			.mockResolvedValueOnce({
+				data: [{ id: "a" }],
+				nextCursor: "c2",
+				total: 1,
+			});
+		const { result } = renderHook(() => useInfiniteScroll<any>(fetcher));
+		await waitFor(() => expect(result.current.initialLoading).toBe(false));
+
+		await act(async () => {
+			result.current.replaceItems([{ id: "x" }]);
+		});
+
+		fetcher.mockResolvedValueOnce({
+			data: [{ id: "a" }],
+			nextCursor: null,
+			total: 2,
+		});
+		await act(async () => {
+			result.current.loadMore();
+		});
+		await waitFor(() => expect(result.current.loading).toBe(false));
+
+		expect(result.current.items.map((i) => i.id)).toEqual(["x", "a"]);
+	});
+
 	it("replaceItems and setItems update the item list", async () => {
 		const fetcher: any = vi
 			.fn()

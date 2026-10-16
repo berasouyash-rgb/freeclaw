@@ -2,13 +2,13 @@
 // Called on app load so every live browser shows up in admin immediately,
 // and so banned/suspended users see their status.
 
-import { clean, cors, rateLimitResponse } from "./_auth.js";
+import { clean, clientIp, cors, rateLimitResponse } from "./_auth.js";
 import supabase from "./_db-client.js";
 import { sanitizeError } from "./_error.js";
 
-// Simple in-memory IP rate limiter: max `limit` requests per `windowMs`
+// Simple in-memory rate limiter: max `limit` requests per `windowMs` for a key.
 const ipHits = new Map();
-function ipRateLimited(ip, windowMs = 60000, limit = 10) {
+function ipRateLimited(key, windowMs = 60000, limit = 10) {
 	const now = Date.now();
 	// Lazy prune — serverless-safe (no module-scope timers: they are frozen
 	// between invocations and never fire reliably).
@@ -18,9 +18,9 @@ function ipRateLimited(ip, windowMs = 60000, limit = 10) {
 			if (v.start < cutoff) ipHits.delete(k);
 		}
 	}
-	const entry = ipHits.get(ip);
+	const entry = ipHits.get(key);
 	if (!entry || now - entry.start > windowMs) {
-		ipHits.set(ip, { start: now, count: 1 });
+		ipHits.set(key, { start: now, count: 1 });
 		return false;
 	}
 	entry.count++;
@@ -34,15 +34,26 @@ export default async function handler(req, res) {
 		return res.status(405).json({ error: "Method not allowed" });
 
 	try {
-		// Rate limit by IP: max 10 requests per 60s. x-forwarded-for can carry
-		// multiple hops ("client, proxy1, …") — key on the first (client) hop
-		// only, consistent with _admin.js and v3/_security.js.
-		const fwd = req.headers["x-forwarded-for"];
-		const clientIp =
-			(fwd ? String(fwd).split(",")[0].trim() : "") ||
-			req.socket?.remoteAddress ||
-			"unknown";
-		if (ipRateLimited(clientIp)) {
+		// Key on clientIp (x-real-ip / RIGHTMOST x-forwarded-for hop / socket) so
+		// a caller cannot mint unlimited buckets by rewriting the leftmost hop.
+		const clientIpKey = clientIp(req);
+		const claimed = clean(
+			req.headers["x-anon-id"] || req.body?.anon_id,
+			40,
+		).toLowerCase();
+
+		// This endpoint is the app-load heartbeat: every live browser calls it,
+		// and callers read their own ban/suspension status from the reply. The
+		// bucket used to be keyed on IP alone, so an entire school behind one
+		// NAT shared 10 requests/minute — five page loads and nobody behind that
+		// address could register or see their account status. Key on identity
+		// instead (falling back to IP), exactly as checkAbuse does in
+		// _security.js, and keep a looser per-IP backstop so a caller cannot mint
+		// unlimited buckets by rotating the header.
+		const identityKey = claimed.startsWith("anon_")
+			? `id:${claimed}`
+			: `ip:${clientIpKey}`;
+		if (ipRateLimited(identityKey, 60000, 20) || ipRateLimited(`ip:${clientIpKey}`, 60000, 120)) {
 			return rateLimitResponse(
 				res,
 				60,
@@ -50,7 +61,7 @@ export default async function handler(req, res) {
 			);
 		}
 
-		const anon_id = clean(req.body?.anon_id, 40).toLowerCase();
+		const anon_id = claimed;
 		if (!anon_id || !anon_id.startsWith("anon_"))
 			return res.status(400).json({ error: "Invalid anonymous ID" });
 

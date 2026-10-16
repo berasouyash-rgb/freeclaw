@@ -2,6 +2,7 @@
 // Structured logging, request tracing, performance metrics,
 // error tracking, and system health monitoring.
 import supabase from "./_db-client.js";
+import { clientIp } from "./_auth.js";
 
 // ─── Log Levels ─────────────────────────────────────────────────
 const LEVELS = { DEBUG: 0, INFO: 1, WARN: 2, ERROR: 3, CRITICAL: 4 };
@@ -60,7 +61,7 @@ export function traceRequest(req, operation) {
 		operation,
 		method: req.method,
 		path: req.url?.split("?")[0],
-		ip: req.headers?.["x-forwarded-for"]?.split(",")[0]?.trim() || "unknown",
+		ip: clientIp(req),
 		userAgent: req.headers?.["user-agent"]?.slice(0, 200) || "unknown",
 		startTime,
 	};

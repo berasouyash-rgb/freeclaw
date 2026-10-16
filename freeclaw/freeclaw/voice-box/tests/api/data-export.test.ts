@@ -12,6 +12,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const from = vi.fn();
+const verifyCallerIdentity = vi.fn();
 
 vi.mock("../../api/_db-client.js", () => ({
 	default: { from },
@@ -22,6 +23,8 @@ vi.mock("../../api/_auth.js", () => ({
 	rateLimitResponse: vi.fn((res) =>
 		res.status(429).json({ error: "Too many requests" }),
 	),
+	verifyCallerIdentity,
+	clientIp: vi.fn(() => "test-ip"),
 }));
 
 function response() {
@@ -115,6 +118,7 @@ function mockTables(tables: Record<string, unknown>) {
 beforeEach(() => {
 	vi.resetModules();
 	vi.clearAllMocks();
+	verifyCallerIdentity.mockResolvedValue({ ok: true, callerId: "anon-1" });
 	mockTables({});
 });
 
@@ -236,5 +240,73 @@ describe("GET /api/data-export", () => {
 			);
 		}
 		expect(res.statusCode).toBe(429);
+	});
+});
+
+describe("GET /api/data-export identity gate (FIX-#2)", () => {
+	it("403s and exports NOTHING when the caller identity cannot be verified", async () => {
+		verifyCallerIdentity.mockResolvedValue({
+			ok: false,
+			status: 403,
+			error: "Cannot operate on another user's data",
+		});
+		mockTables(FULL);
+		const { default: handler } = await import("../../api/_export.js");
+		const res = response();
+		await handler(
+			{
+				method: "GET",
+				query: { anon_id: "anon-2" },
+				body: {},
+				headers: { "x-forwarded-for": "9.9.9.9" },
+			},
+			res,
+		);
+		expect(res.statusCode).toBe(403);
+		expect(res.body).toEqual({
+			error: "Cannot operate on another user's data",
+		});
+		// Nothing was read from the database for the unverified caller
+		expect(from).not.toHaveBeenCalled();
+	});
+
+	it("calls the gate with the claimed anon_id (not caller-derived)", async () => {
+		verifyCallerIdentity.mockResolvedValue({ ok: true, callerId: "anon-1" });
+		mockTables(FULL);
+		const { default: handler } = await import("../../api/_export.js");
+		const res = response();
+		await handler(
+			{
+				method: "GET",
+				query: { anon_id: "anon-1" },
+				body: {},
+				headers: { "x-forwarded-for": "9.9.9.9", "x-anon-id": "anon-1" },
+			},
+			res,
+		);
+		expect(verifyCallerIdentity).toHaveBeenCalledWith(
+			expect.anything(),
+			expect.anything(),
+			"anon-1",
+		);
+		expect(res.statusCode).toBe(200);
+	});
+
+	it("lets admins export on behalf of the system (gate returns ok)", async () => {
+		verifyCallerIdentity.mockResolvedValue({ ok: true, callerId: "anon-1" });
+		mockTables(FULL);
+		const { default: handler } = await import("../../api/_export.js");
+		const res = response();
+		await handler(
+			{
+				method: "GET",
+				query: { anon_id: "anon-1" },
+				body: {},
+				headers: { "x-forwarded-for": "9.9.9.9" },
+			},
+			res,
+		);
+		expect(res.statusCode).toBe(200);
+		expect(res.body.posts).toMatchObject([{ id: "p1" }]);
 	});
 });

@@ -1,17 +1,19 @@
 // ─── Communities — browse + create your own group with a discussion feed ───
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router";
 import {
 	Eye,
 	EyeOff,
 	MessageSquare,
 	Plus,
+	RefreshCw,
 	Trash2,
 	Users,
 } from "lucide-react";
 import { Modal } from "../components/ui";
 import { useApp } from "../contexts/AppContext";
 import { api, hasAdminSession } from "../lib/api";
+import { useRealtime } from "../lib/useRealtime";
 
 export interface CommunityCard {
 	slug: string;
@@ -43,28 +45,71 @@ export default function Communities() {
 	const [photoDraft, setPhotoDraft] = useState<{ base64: string; type: string } | null>(null);
 	const fileRef = useRef<HTMLInputElement | null>(null);
 
-	const load = async () => {
+	const sigRef = useRef<string | null>(null);
+
+	const load = useCallback(async (quiet = false) => {
 		try {
 			const r = await api.get<{ communities: CommunityCard[] }>(
 				"/api/communities?action=list",
 			);
-			setCommunities(r.communities);
+			const list = r.communities || [];
+			// Churn guard (hybrid merge): the tick must never reorder the
+			// grid under a finger when nothing changed. New arrays always
+			// re-render, so compare a content signature first.
+			const sig = list
+				.map((c) =>
+					[c.slug, c.name, c.description, c.avatar, c.member_count, c.post_count, c.hidden].join(":"),
+				)
+				.join("|");
+			if (sigRef.current !== sig) {
+				sigRef.current = sig;
+				// A null payload must mean "empty", never the loading state:
+				// communities === null renders skeletons, so null would spin forever.
+				setCommunities(list);
+			}
 			setError("");
 		} catch (e: unknown) {
-			setError(e instanceof Error ? e.message : "Failed to load communities");
+			// A failed background tick must not clobber a good list with a
+			// banner every 10s — only the explicit load may report.
+			if (!quiet) setError(e instanceof Error ? e.message : "Failed to load communities");
 		}
-	};
+	}, []);
 
 	useEffect(() => {
 		void load();
-		const iv = setInterval(() => void load(), 30000);
-		const onVis = () => !document.hidden && void load();
-		document.addEventListener("visibilitychange", onVis);
-		return () => {
-			clearInterval(iv);
-			document.removeEventListener("visibilitychange", onVis);
+	}, [load]);
+
+	// ── Visible-only background tick (contract evolution 2026-10-05) ──
+	// The communities table is outside the anon realtime contract, so no
+	// subscription can announce a creation — without this, a community
+	// made on another device appears only after a manual Refresh. The
+	// list changes rarely, so 10s while visible (plus focus/return) is
+	// plenty; the signature guard above keeps quiet ticks render-free.
+	useEffect(() => {
+		const tick = () => {
+			if (
+				typeof document !== "undefined" &&
+				document.visibilityState === "hidden"
+			)
+				return;
+			void load(true);
 		};
-	}, []);
+		const id = window.setInterval(tick, 10_000);
+		window.addEventListener("focus", tick);
+		document.addEventListener("visibilitychange", tick);
+		return () => {
+			window.clearInterval(id);
+			window.removeEventListener("focus", tick);
+			document.removeEventListener("visibilitychange", tick);
+		};
+	}, [load]);
+
+	// ── Realtime: post_count on each card derives from `posts`, so a new post
+	// in any community should bump the count immediately instead of waiting
+	// for the 10s tick. The tick stays as the fallback for community
+	// create/join/leave (settings-KV rows, which carry no realtime events).
+	// The signature guard in load() makes an unchanged list render-free.
+	useRealtime(["posts"], () => void load(true), 2_000);
 
 	const adminOp = async (slug: string, op: "hide" | "unhide" | "delete") => {
 		setBusy(slug);
@@ -144,12 +189,22 @@ export default function Communities() {
 						Groups with their own discussion feeds — create one or join the conversation.
 					</p>
 				</div>
-				<button
-					className="btn btn-primary !py-2 !px-4 !text-sm"
-					onClick={() => setCreateOpen(true)}
-				>
-					<Plus size={15} /> New community
-				</button>
+				<div className="flex items-center gap-2">
+					<button
+						className="btn btn-ghost !py-2 !px-3 !text-sm"
+						onClick={() => void load()}
+						aria-label="Refresh communities"
+						title="Refresh communities"
+					>
+						<RefreshCw size={15} /> Refresh
+					</button>
+					<button
+						className="btn btn-primary !py-2 !px-4 !text-sm"
+						onClick={() => setCreateOpen(true)}
+					>
+						<Plus size={15} /> New community
+					</button>
+				</div>
 			</div>
 
 			{error && (
@@ -159,7 +214,7 @@ export default function Communities() {
 			)}
 
 			{communities === null ? (
-				<div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
+				<div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
 					{[0, 1, 2].map((i) => (
 						<div key={i} className="card p-5 animate-pulse bg-surface2/60">
 							<div className="h-4 w-1/3 rounded bg-surface3 mb-3" />
@@ -182,7 +237,7 @@ export default function Communities() {
 					</button>
 				</div>
 			) : (
-				<div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
+				<div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
 					{communities.map((c) => (
 						<div key={c.slug} className="card p-5 flex flex-col hover:shadow-md transition-shadow">
 							<div className="flex items-start gap-3 mb-3">
@@ -190,6 +245,8 @@ export default function Communities() {
 									<img
 										src={c.photo}
 										alt={c.name}
+										loading="lazy"
+										decoding="async"
 										className="w-12 h-12 rounded-2xl object-cover flex-shrink-0 vb-avatar"
 									/>
 								) : (
@@ -228,6 +285,7 @@ export default function Communities() {
 									<>
 										<button
 											className="btn btn-ghost !text-xs !p-1.5"
+											disabled={busy === c.slug}
 											title={c.hidden ? "Unhide" : "Hide"}
 											onClick={() => adminOp(c.slug, c.hidden ? "unhide" : "hide")}
 										>
@@ -235,6 +293,7 @@ export default function Communities() {
 										</button>
 										<button
 											className="btn btn-ghost !text-xs !p-1.5 !text-bad"
+											disabled={busy === c.slug}
 											title="Delete community"
 											onClick={() => {
 												if (confirm(`Delete "${c.name}"? This removes all its discussions.`))

@@ -1,0 +1,379 @@
+// ═══════════════════════════════════════════════════════════════════
+// ReportDeck — the admin presentation surface
+// ═══════════════════════════════════════════════════════════════════
+// One click from the admin desk → animated slide deck from LIVE data
+// (GET /api/report-deck, the same spec the PPT export renders). The admin
+// ticks which pages go in (Complaints / Feed / Reports / Polls / Trends /
+// Actions, or All); the viewer AND the PPT honour exactly that pick.
+// Anonymity-safe by construction: the spec carries no identities —
+// titles, categories, counts only. Empty DB → honest empty, never filler.
+// ═══════════════════════════════════════════════════════════════════
+
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import ReportDeck from "../pages/admin/ReportDeck";
+import { cannedSpec, emptySpec } from "./deckSpecFixture";
+
+const mocks = vi.hoisted(() => ({
+	getSlow: vi.fn(),
+	post: vi.fn(),
+	get: vi.fn(),
+	put: vi.fn(),
+	del: vi.fn(),
+	toast: vi.fn(),
+	buildPptx: vi.fn(async () => {}),
+	// Present-aloud: the component imports readAlong / stopReading /
+	// speechOutputSupported from lib/speech. speechOutputSupported is a
+	// plain const in the real module, so a mutable field mirrors it here.
+	readAlong: vi.fn(() => () => {}),
+	stopReading: vi.fn(),
+	speechOutputSupported: true,
+}));
+
+vi.mock("../lib/api", () => ({
+	api: {
+		get: mocks.get,
+		getSlow: mocks.getSlow,
+		post: mocks.post,
+		put: mocks.put,
+		del: mocks.del,
+	},
+}));
+
+vi.mock("../contexts/AppContext", () => ({
+	useApp: () => ({ toast: mocks.toast }),
+}));
+
+vi.mock("../lib/deckExport", () => ({
+	buildPptx: mocks.buildPptx,
+}));
+
+vi.mock("../lib/speech", () => ({
+	readAlong: mocks.readAlong,
+	stopReading: mocks.stopReading,
+	get speechOutputSupported() {
+		return mocks.speechOutputSupported;
+	},
+}));
+
+beforeEach(() => {
+	vi.clearAllMocks();
+	mocks.speechOutputSupported = true;
+});
+
+function renderDeck() {
+	return render(<ReportDeck />);
+}
+
+describe("ReportDeck section selection", () => {
+	it("offers every page with All selected by default", async () => {
+		mocks.getSlow.mockResolvedValueOnce(cannedSpec());
+		renderDeck();
+		for (const label of [
+			/Complaints/,
+			/Feed/,
+			/Reports/,
+			/Polls/,
+			/Trends/,
+			/Actions/,
+		]) {
+			expect(await screen.findByRole("checkbox", { name: label })).toBeChecked();
+		}
+	});
+
+	it("unticking Polls removes the polls slide from the viewer", async () => {
+		mocks.getSlow.mockResolvedValueOnce(cannedSpec());
+		renderDeck();
+		await screen.findByRole("checkbox", { name: /Polls/ });
+		fireEvent.click(screen.getByRole("checkbox", { name: /Polls/ }));
+		await waitFor(() => {
+			expect(
+				screen.queryByText(/Sports day/),
+			).not.toBeInTheDocument();
+		});
+		// The kept sections still render from live rows.
+		expect(screen.getByText(/Fix the lab taps/)).toBeInTheDocument();
+	});
+
+	it("Export PPT sends ONLY the ticked sections", async () => {
+		mocks.getSlow.mockResolvedValueOnce(cannedSpec());
+		renderDeck();
+		await screen.findByRole("checkbox", { name: /Polls/ });
+		fireEvent.click(screen.getByRole("checkbox", { name: /Complaints/ }));
+		fireEvent.click(screen.getByRole("checkbox", { name: /Feed/ }));
+		fireEvent.click(screen.getByRole("checkbox", { name: /Reports/ }));
+		fireEvent.click(screen.getByRole("checkbox", { name: /Trends/ }));
+		fireEvent.click(screen.getByRole("checkbox", { name: /Actions/ }));
+		fireEvent.click(screen.getByRole("button", { name: /Export PPT/ }));
+		await waitFor(() => {
+			expect(mocks.buildPptx).toHaveBeenCalledTimes(1);
+		});
+		const [, sections] = mocks.buildPptx.mock.calls[0] as unknown as [
+			unknown,
+			string[],
+		];
+		expect(sections).toEqual(["polls"]);
+	});
+
+	it("Select all restores the full deck after clearing", async () => {
+		mocks.getSlow.mockResolvedValueOnce(cannedSpec());
+		renderDeck();
+		await screen.findByRole("checkbox", { name: /Polls/ });
+		fireEvent.click(screen.getByRole("button", { name: /Clear/ }));
+		expect(screen.getByRole("checkbox", { name: /Polls/ })).not.toBeChecked();
+		fireEvent.click(screen.getByRole("button", { name: /Select all/ }));
+		for (const label of [/Complaints/, /Feed/, /Reports/, /Polls/, /Trends/, /Actions/]) {
+			expect(screen.getByRole("checkbox", { name: label })).toBeChecked();
+		}
+	});
+});
+
+describe("ReportDeck honesty", () => {	it("renders an honest empty on an empty database — no fabricated numbers", async () => {
+		mocks.getSlow.mockResolvedValueOnce(emptySpec());
+		renderDeck();
+		expect(await screen.findByText(/No data yet/i)).toBeInTheDocument();
+		expect(screen.queryByText(/NaN/)).not.toBeInTheDocument();
+	});
+
+	it("names the source when the deck endpoint fails", async () => {
+		mocks.getSlow.mockRejectedValueOnce(new Error("boom"));
+		renderDeck();
+		expect(await screen.findByText(/report-deck/i)).toBeInTheDocument();
+	});
+
+	it("navigates slides with arrows and dots", async () => {
+		mocks.getSlow.mockResolvedValueOnce(cannedSpec());
+		renderDeck();
+		await screen.findByText(/Fix the lab taps/);
+		const next = screen.getByRole("button", { name: /Next slide/i });
+		fireEvent.click(next);
+		expect(
+			screen.getByRole("button", { name: /Previous slide/i }),
+		).toBeInTheDocument();
+	});
+});
+
+describe("ReportDeck presenter notes", () => {
+	it("renders the spec's rule notes under each slide", async () => {
+		mocks.getSlow.mockResolvedValueOnce(cannedSpec());
+		renderDeck();
+		expect(
+			await screen.findByText(/fix this category first/i),
+		).toBeInTheDocument();
+		expect(screen.getByText(/Rule notes/i)).toBeInTheDocument();
+	});
+
+	it("Narrate with AI swaps in engine-labeled notes", async () => {
+		mocks.getSlow.mockResolvedValueOnce(cannedSpec());
+		mocks.post.mockResolvedValueOnce({
+			engine: "test:test-model",
+			notes: {
+				cover: "AI cover line.",
+				complaints: "AI complaints line.",
+				feed: "AI feed line.",
+				reports: "AI reports line.",
+				polls: "AI polls line.",
+				trends: "AI trends line.",
+				actions: "AI actions line.",
+			},
+		});
+		renderDeck();
+		await screen.findByText(/fix this category first/i);
+		fireEvent.click(screen.getByRole("button", { name: /Narrate with AI/i }));
+		expect(await screen.findByText(/AI complaints line/)).toBeInTheDocument();
+		expect(screen.getByText(/Narrated by test:test-model/i)).toBeInTheDocument();
+	});
+
+	it("keeps rule notes and says so when AI is unavailable", async () => {
+		mocks.getSlow.mockResolvedValueOnce(cannedSpec());
+		mocks.post.mockResolvedValueOnce({ engine: "rules", notes: {} });
+		renderDeck();
+		await screen.findByText(/fix this category first/i);
+		fireEvent.click(screen.getByRole("button", { name: /Narrate with AI/i }));
+		await waitFor(() => {
+			expect(mocks.toast).toHaveBeenCalledWith(
+				expect.stringMatching(/AI unavailable/i),
+				"err",
+			);
+		});
+		expect(screen.getByText(/fix this category first/i)).toBeInTheDocument();
+	});
+
+	it("keeps rule notes when narration fails outright", async () => {
+		mocks.getSlow.mockResolvedValueOnce(cannedSpec());
+		mocks.post.mockRejectedValueOnce(new Error("down"));
+		renderDeck();
+		await screen.findByText(/fix this category first/i);
+		fireEvent.click(screen.getByRole("button", { name: /Narrate with AI/i }));
+		await waitFor(() => {
+			expect(mocks.toast).toHaveBeenCalledWith(
+				expect.stringMatching(/narration failed/i),
+				"err",
+			);
+		});
+		expect(screen.getByText(/fix this category first/i)).toBeInTheDocument();
+	});
+
+	it("exports the narrated notes as PPT speaker notes", async () => {
+		const aiNotes = {
+			cover: "AI cover line.",
+			complaints: "AI complaints line.",
+			feed: "AI feed line.",
+			reports: "AI reports line.",
+			polls: "AI polls line.",
+			trends: "AI trends line.",
+			actions: "AI actions line.",
+		};
+		mocks.getSlow.mockResolvedValueOnce(cannedSpec());
+		mocks.post.mockResolvedValueOnce({ engine: "test:test-model", notes: aiNotes });
+		renderDeck();
+		await screen.findByText(/fix this category first/i);
+		fireEvent.click(screen.getByRole("button", { name: /Narrate with AI/i }));
+		await screen.findByText(/AI complaints line/);
+		fireEvent.click(screen.getByRole("button", { name: /Export PPT/ }));
+		await waitFor(() => {
+			expect(mocks.buildPptx).toHaveBeenCalledTimes(1);
+		});
+		const args = mocks.buildPptx.mock.calls[0] as unknown as [
+			unknown,
+			string[],
+			unknown?,
+			Record<string, string>?,
+		];
+		expect(args[3]).toEqual(aiNotes);
+	});
+
+	it("sends the typed presentation prompt with the narrate request", async () => {
+		mocks.getSlow.mockResolvedValueOnce(cannedSpec());
+		mocks.post.mockResolvedValueOnce({ engine: "rules", notes: {} });
+		renderDeck();
+		await screen.findByText(/fix this category first/i);
+		fireEvent.change(screen.getByLabelText(/Describe this presentation/i), {
+			target: { value: "For parents, reassuring tone" },
+		});
+		fireEvent.click(screen.getByRole("button", { name: /Narrate with AI/i }));
+		await waitFor(() => {
+			expect(mocks.post).toHaveBeenCalledWith(
+				"/api/ai",
+				expect.objectContaining({
+					task: "narrate",
+					prompt: "For parents, reassuring tone",
+				}),
+			);
+		});
+	});
+
+	it("a tone preset fills the prompt box", async () => {
+		mocks.getSlow.mockResolvedValueOnce(cannedSpec());
+		renderDeck();
+		await screen.findByText(/fix this category first/i);
+		fireEvent.click(screen.getByRole("button", { name: /Parents tone/i }));
+		expect(screen.getByLabelText(/Describe this presentation/i)).toHaveValue(
+			"For parents, reassuring tone",
+		);
+	});
+});
+
+describe("ReportDeck present-aloud", () => {
+	async function loadedDeck() {
+		mocks.getSlow.mockResolvedValueOnce(cannedSpec());
+		renderDeck();
+		const tabs = await screen.findAllByRole("tab");
+		expect(tabs).toHaveLength(7);
+		return tabs;
+	}
+
+	function readAlongScript() {
+		const calls = mocks.readAlong.mock.calls as unknown as [
+			string[],
+			(index: number) => void,
+			() => void,
+		][];
+		expect(calls).toHaveLength(1);
+		return calls[0]!;
+	}
+
+	it("reads title + explainer per slide from the current slide", async () => {
+		await loadedDeck();
+		fireEvent.click(screen.getByRole("button", { name: /present aloud/i }));
+		const [script] = readAlongScript();
+		expect(script).toHaveLength(7);
+		expect(script[0]).toContain("School report — 2026-10-10");
+		expect(script[0]).toContain("10 posts in scope, 7 still open");
+		expect(
+			screen.getByRole("button", { name: /stop reading/i }),
+		).toBeInTheDocument();
+	});
+
+	it("follows along as segments advance", async () => {
+		const tabs = await loadedDeck();
+		fireEvent.click(screen.getByRole("button", { name: /present aloud/i }));
+		const [, onSegment] = readAlongScript();
+		act(() => {
+			onSegment(1);
+		});
+		expect(tabs[0]).toHaveAttribute("aria-selected", "false");
+		expect(tabs[1]).toHaveAttribute("aria-selected", "true");
+	});
+
+	it("Stop reading ends it through the returned cancel", async () => {
+		const cancel = vi.fn();
+		mocks.readAlong.mockReturnValueOnce(cancel);
+		await loadedDeck();
+		fireEvent.click(screen.getByRole("button", { name: /present aloud/i }));
+		fireEvent.click(screen.getByRole("button", { name: /stop reading/i }));
+		expect(cancel).toHaveBeenCalledTimes(1);
+		expect(
+			screen.getByRole("button", { name: /present aloud/i }),
+		).toBeInTheDocument();
+	});
+
+	it("manual navigation stops the reading", async () => {
+		const cancel = vi.fn();
+		mocks.readAlong.mockReturnValueOnce(cancel);
+		await loadedDeck();
+		fireEvent.click(screen.getByRole("button", { name: /present aloud/i }));
+		fireEvent.click(screen.getByRole("button", { name: /next slide/i }));
+		expect(cancel).toHaveBeenCalledTimes(1);
+	});
+
+	it("unmount stops the reading", async () => {
+		const cancel = vi.fn();
+		mocks.readAlong.mockReturnValueOnce(cancel);
+		mocks.getSlow.mockResolvedValueOnce(cannedSpec());
+		const { unmount } = renderDeck();
+		await screen.findAllByRole("tab");
+		fireEvent.click(screen.getByRole("button", { name: /present aloud/i }));
+		unmount();
+		expect(cancel).toHaveBeenCalledTimes(1);
+	});
+
+	it("arrow keys typed in the prompt box do not flip slides", async () => {
+		const tabs = await loadedDeck();
+		const prompt = screen.getByLabelText(/describe this presentation/i);
+		fireEvent.keyDown(prompt, { key: "ArrowRight", bubbles: true });
+		expect(tabs[0]).toHaveAttribute("aria-selected", "true");
+		expect(tabs[1]).toHaveAttribute("aria-selected", "false");
+	});
+
+	it("arrow keys on the deck navigate", async () => {
+		const tabs = await loadedDeck();
+		fireEvent.keyDown(window, { key: "ArrowRight" });
+		// waitFor, not bare assert: CI runners attach/deliver the window
+		// keydown on their own schedule. A broken handler still fails (the
+		// update never lands and this times out) — this only absorbs timing.
+		await waitFor(() => {
+			expect(tabs[1]).toHaveAttribute("aria-selected", "true");
+		});
+	});
+
+	it("hides Present aloud when speech output is unsupported", async () => {
+		mocks.speechOutputSupported = false;
+		mocks.getSlow.mockResolvedValueOnce(cannedSpec());
+		renderDeck();
+		await screen.findAllByRole("tab");
+		expect(
+			screen.queryByRole("button", { name: /present aloud|stop reading/i }),
+		).not.toBeInTheDocument();
+	});
+});

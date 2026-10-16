@@ -73,7 +73,7 @@ export default function About() {
 							Every student deserves a voice.
 						</h1>
 						<p className="text-lg text-ink2 max-w-2xl mx-auto leading-relaxed">
-							Voice Box exists because too many student concerns go unheard. We
+							Voice Flow exists because too many student concerns go unheard. We
 							believe anonymous feedback, combined with intelligent AI, can
 							transform how schools listen and respond.
 						</p>
@@ -102,7 +102,7 @@ export default function About() {
 						What We Believe
 					</h2>
 				</FadeIn>
-				<div className="grid md:grid-cols-2 gap-6">
+				<div className="grid grid-cols-1 md:grid-cols-2 gap-6">
 					{VALUES.map((v, i) => (
 						<FadeIn key={v.title} delay={i * 0.1}>
 							<div className="card p-6 h-full">

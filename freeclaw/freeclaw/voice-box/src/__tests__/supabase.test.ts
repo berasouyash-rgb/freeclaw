@@ -38,14 +38,15 @@ describe("supabase client module", () => {
 		expect(url).toBe("https://db.example.co");
 		expect(key).toBe("anon-key-123");
 		expect(opts).toEqual({
-			realtime: { params: { eventsPerSecond: 5 } },
+			// 10/s: bursts of votes/chat used to drop silently at 5.
+			realtime: { params: { eventsPerSecond: 10 } },
 			auth: { persistSession: false, autoRefreshToken: false },
 		});
 		expect(supabase).toBeDefined();
 	});
 
 	it("exports null instead of throwing when both credentials are missing", async () => {
-		const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		const errSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 		vi.stubEnv("VITE_SUPABASE_URL", undefined);
 		vi.stubEnv("VITE_SUPABASE_ANON_KEY", undefined);
 		vi.resetModules();
@@ -60,7 +61,7 @@ describe("supabase client module", () => {
 	});
 
 	it("exports null instead of throwing when the URL is malformed (non-URL junk)", async () => {
-		const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		const errSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 		vi.stubEnv("VITE_SUPABASE_URL", "not-a-url");
 		vi.stubEnv("VITE_SUPABASE_ANON_KEY", "anon-key-123");
 		vi.resetModules();
@@ -72,7 +73,7 @@ describe("supabase client module", () => {
 	});
 
 	it("exports null when the URL is missing but the key is set", async () => {
-		const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		const errSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 		vi.stubEnv("VITE_SUPABASE_URL", undefined);
 		vi.stubEnv("VITE_SUPABASE_ANON_KEY", "anon-key-123");
 		vi.resetModules();
@@ -84,7 +85,7 @@ describe("supabase client module", () => {
 	});
 
 	it("exports null when the URL is set but the key is missing", async () => {
-		const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		const errSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 		vi.stubEnv("VITE_SUPABASE_URL", "https://db.example.co");
 		vi.stubEnv("VITE_SUPABASE_ANON_KEY", undefined);
 		vi.resetModules();

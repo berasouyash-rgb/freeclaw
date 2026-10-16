@@ -1,17 +1,16 @@
 ﻿import {
 	ArrowUpRight,
 	BarChart3,
-	Bot,
 	Lightbulb,
 	Megaphone,
 	RefreshCcw,
-	Sparkles,
 	Trophy,
 	Users,
 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router";
 import { api } from "../lib/api";
+import { useRealtime } from "../lib/useRealtime";
 import { STATUS_META, timeAgo } from "../lib/utils";
 
 interface RankedItem {
@@ -22,6 +21,14 @@ interface RankedItem {
 	support?: number;
 	votes?: number;
 	score?: number;
+	breakdown?: {
+		support: number;
+		downvotes?: number;
+		comments: number;
+		freshness: number;
+		resolution: string;
+		depth: string;
+	};
 	created_at?: string;
 	type?: string;
 }
@@ -38,6 +45,11 @@ interface LeaderboardData {
 	leaderboard: RankedItem[];
 	ai_activity: AiActivityItem[];
 	generated_at?: string;
+	// Set when one of the count legs (reactions, comments, poll votes)
+	// failed and ranks were computed from partial data. The reader must
+	// see that, or a quiet board reads as an unpopular one.
+	degraded?: boolean;
+	estimated?: boolean;
 }
 
 const RANK_MEDALS = ["🥇", "🥈", "🥉"];
@@ -51,9 +63,13 @@ const TYPE_META: Record<
 };
 
 function RankRow({ item, rank }: { item: RankedItem; rank: number }) {
-	const meta = TYPE_META[item.type || "problem"]!;
+	// Unknown future types must degrade to the problem style, never crash
+	// the whole board on meta.icon.
+	const meta = TYPE_META[item.type || "problem"] ?? TYPE_META.problem!;
 	const Icon = meta.icon;
-	const score = item.score ?? item.support ?? item.votes ?? 0;
+	// AI-enhanced score: weighted composite of support, comments, and recency
+	const support = item.support ?? 0;
+	const score = item.score ?? support;
 	const status = item.status
 		? STATUS_META[item.status]?.label || item.status.replace("_", " ")
 		: null;
@@ -84,17 +100,25 @@ function RankRow({ item, rank }: { item: RankedItem; rank: number }) {
 					{item.created_at && <span>· {timeAgo(item.created_at)}</span>}
 				</p>
 			</div>
-			<div className="text-right shrink-0">
-				<p
-					className="font-display font-bold text-lg leading-none"
-					style={{ color: meta.color }}
-				>
-					{score}
-				</p>
-				<p className="text-[9px] text-ink3 uppercase tracking-wider">
-					{isClosed ? "final" : "supports"}
-				</p>
-			</div>
+		<div className="text-right shrink-0">
+			<p
+				className="font-display font-bold text-lg leading-none"
+				style={{ color: meta.color }}
+			>
+				{score}
+			</p>
+			<p className="text-[9px] text-ink3 uppercase tracking-wider">
+				{isClosed ? "final" : "score"}
+			</p>
+			{item.breakdown && (
+				<div className="hidden sm:block text-[8px] text-ink3 mt-1 space-y-0.5">
+					{item.breakdown.support > 0 && <div>Support: {item.breakdown.support}</div>}
+					{item.breakdown.comments > 0 && <div>Comments: {item.breakdown.comments}</div>}
+					{item.breakdown.resolution !== "—" && <div>Resolution: {item.breakdown.resolution}</div>}
+					{item.breakdown.depth !== "—" && <div>Depth: {item.breakdown.depth}</div>}
+				</div>
+			)}
+		</div>
 			<ArrowUpRight size={14} className="text-ink3/40 shrink-0" />
 		</Link>
 	);
@@ -104,9 +128,9 @@ export default function Leaderboard() {
 	const [data, setData] = useState<LeaderboardData | null>(null);
 	const [loading, setLoading] = useState(true);
 	const [error, setError] = useState("");
-	const [tab, setTab] = useState<
-		"all" | "problems" | "suggestions" | "polls" | "ai"
-	>("all");
+	const [tab, setTab] = useState<"all" | "problems" | "suggestions" | "polls">(
+		"all",
+	);
 
 	const load = useCallback(async (silent = false) => {
 		try {
@@ -124,13 +148,48 @@ export default function Leaderboard() {
 		load();
 	}, [load]);
 
+	// ── Visible-only silent revalidation (evolution 2026-10-06) ──
+	// Ranks move with every vote elsewhere, so a frozen board reads as
+	// broken. Every 30s while mounted AND visible (plus on focus/return),
+	// silently reload the same snapshot the Refresh button uses — no
+	// skeletons (silent), no error banners on transient blips.
+	useEffect(() => {
+		const tick = () => {
+			if (
+				typeof document !== "undefined" &&
+				document.visibilityState === "hidden"
+			)
+				return;
+			void load(true);
+		};
+		const id = window.setInterval(tick, 30_000);
+		window.addEventListener("focus", tick);
+		document.addEventListener("visibilitychange", tick);
+		return () => {
+			window.clearInterval(id);
+			window.removeEventListener("focus", tick);
+			document.removeEventListener("visibilitychange", tick);
+		};
+	}, [load]);
+
+	// ── Event-driven freshness (realtime wiring) ──
+	// The 30s tick above is the safety net; this makes ranks move the moment
+	// a post/poll/comment lands anywhere, without waiting for the interval.
+	// Silent (no skeletons, no error banners on transient blips) — the same
+	// contract as the tick. Debounced 2s so a burst of events coalesces into
+	// one reload.
+	useRealtime(["posts", "polls", "comments"], () => void load(true), 2_000);
+
 	const shown: RankedItem[] = (() => {
 		if (!data) return [];
+		// Server arrays are optional in practice — a missing/null list must
+		// render empty, never throw on .map.
 		if (tab === "problems")
-			return data.problems.map((p) => ({ ...p, type: "problem" }));
+			return (data.problems || []).map((p) => ({ ...p, type: "problem" }));
 		if (tab === "suggestions")
-			return data.suggestions.map((s) => ({ ...s, type: "suggestion" }));
-		if (tab === "polls") return data.polls.map((p) => ({ ...p, type: "poll" }));
+			return (data.suggestions || []).map((s) => ({ ...s, type: "suggestion" }));
+		if (tab === "polls")
+			return (data.polls || []).map((p) => ({ ...p, type: "poll" }));
 		return data.leaderboard || [];
 	})();
 
@@ -147,8 +206,9 @@ export default function Leaderboard() {
 				</h1>
 				<button
 					className="btn btn-ghost !text-xs"
+					// Silent refresh: keep the board on screen instead of
+					// flashing skeletons on every manual reload.
 					onClick={() => {
-						setLoading(true);
 						load();
 					}}
 					disabled={loading}
@@ -161,9 +221,19 @@ export default function Leaderboard() {
 				</button>
 			</div>
 			<p className="text-sm text-ink3 mb-5">
-				Top problems, suggestions, and polls ranked by community support —
-				alongside the AI agents working behind the scenes.
+				Top problems, suggestions, and polls ranked by real community
+				support — every score links back to its supporters.
 			</p>
+
+			{(data?.degraded || data?.estimated) && (
+				<p
+					role="status"
+					className="mb-4 rounded-lg border border-warn/30 bg-warn/[0.07] px-3 py-2 text-xs text-ink2"
+				>
+					Some counts failed to load — ranks may be incomplete. Refresh to
+					retry.
+				</p>
+			)}
 
 			{/* Tabs */}
 			<div className="mb-4 flex flex-wrap gap-2">
@@ -179,10 +249,6 @@ export default function Leaderboard() {
 							label: `💡 Suggestions (${data?.suggestions?.length || 0})`,
 						},
 						{ key: "polls", label: `📊 Polls (${data?.polls?.length || 0})` },
-						{
-							key: "ai",
-							label: `🤖 AI activity (${data?.ai_activity?.length || 0})`,
-						},
 					] as const
 				).map((t) => (
 					<button
@@ -200,8 +266,9 @@ export default function Leaderboard() {
 					<p className="text-bad text-sm">{error}</p>
 					<button
 						className="btn btn-soft mt-3"
+						// Silent retry: the error card stays honest without
+						// blanking to skeletons first.
 						onClick={() => {
-							setLoading(true);
 							load();
 						}}
 					>
@@ -217,57 +284,8 @@ export default function Leaderboard() {
 				</div>
 			)}
 
-			{/* ── AI activity tab ── */}
-			{!loading && tab === "ai" && (
-				<div className="space-y-2">
-					<div className="card p-4 border-l-4 border-l-purple-500 mb-3">
-						<p className="text-xs font-semibold flex items-center gap-2">
-							<Bot size={14} className="text-purple-400" /> AI agents are
-							working in real time
-						</p>
-						<p className="text-[11px] text-ink3 mt-1">
-							Every AI analysis, moderation pass, and learning record counts
-							toward keeping the school safer — automatically.
-						</p>
-					</div>
-					{(!data?.ai_activity || data.ai_activity.length === 0) && !error && (
-						<div className="card p-10 text-center">
-							<p className="text-3xl mb-2">🤖</p>
-							<p className="font-display font-semibold text-sm">
-								No AI activity yet
-							</p>
-							<p className="text-xs text-ink3 mt-1">
-								Agents become active once the platform processes content.
-							</p>
-						</div>
-					)}
-					{(data?.ai_activity || []).map((a, i) => (
-						<div key={i} className="card p-3 flex items-center gap-3 vb-rise">
-							<span
-								className={`shrink-0 w-8 h-8 rounded-lg grid place-items-center ${a.kind === "learning" ? "text-purple-400 bg-purple-400/10" : "text-accent bg-accent/10"}`}
-							>
-								{a.kind === "learning" ? (
-									<Sparkles size={14} />
-								) : (
-									<Bot size={14} />
-								)}
-							</span>
-							<div className="min-w-0 flex-1">
-								<p className="text-xs font-semibold truncate">{a.label}</p>
-								<p className="text-[10px] text-ink3 line-clamp-2">{a.detail}</p>
-							</div>
-							{a.at && (
-								<span className="text-[9px] text-ink3 shrink-0">
-									{timeAgo(a.at)}
-								</span>
-							)}
-						</div>
-					))}
-				</div>
-			)}
-
 			{/* ── Ranked lists ── */}
-			{!loading && tab !== "ai" && (
+			{!loading && (
 				<div className="space-y-2.5">
 					{shown.length === 0 && !error && (
 						<div className="card p-10 text-center">
@@ -306,10 +324,10 @@ export default function Leaderboard() {
 			)}
 
 			{/* Footer note */}
-			{!loading && tab !== "ai" && (
+			{!loading && (
 				<p className="text-center text-[10px] text-ink3 mt-5 flex items-center justify-center gap-1.5">
-					<Users size={10} /> Every anonymous support counts · <Bot size={10} />{" "}
-					AI agents moderate automatically
+					<Users size={10} /> Every anonymous support counts — scores update
+					live as the community votes
 				</p>
 			)}
 		</div>

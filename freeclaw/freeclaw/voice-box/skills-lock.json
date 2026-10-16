@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "skills": {
+    "nemo-fabric-integrate": {
+      "source": "nvidia/skills",
+      "sourceType": "github",
+      "skillPath": "skills/nemo-fabric-integrate/SKILL.md",
+      "computedHash": "fef2e056e9a44b45017b885a31a69a643f108a672d152f5559ed8240e9685023"
+    }
+  }
+}

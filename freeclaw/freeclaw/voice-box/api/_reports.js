@@ -11,9 +11,13 @@ import {
 	notifyUser,
 	rateLimited,
 	rateLimitResponse,
+	verifyCallerIdentity,
 } from "./_auth.js";
 import supabase from "./_db-client.js";
 import { sanitizeError } from "./_error.js";
+import { EVENT_TYPES, emitEventAndBridge } from "./_events.js";
+import { recordSafetyRepost, serverModerate } from "./_moderation.js";
+import { scanSlang } from "./_slang.js";
 
 // ─── Auto-moderation on report ───────────────────────────────────────
 // Every validated report now does REAL work, not just queue a row:
@@ -74,6 +78,88 @@ async function resolveTargetAuthor(targetType, targetId) {
 	}
 }
 
+/**
+ * Resolution verification (spec §23): a report is not resolved merely
+ * because an admin clicked "resolved". Compare the claim against the live
+ * target — if the target is already gone, the resolution is confirmed; if
+ * it is live but violates policy right now, enforce (hide) and report that;
+ * if it is live and clean, resolve as reviewed. Never fabricates: an
+ * unreadable target yields verified:false, never a false "verified".
+ */
+async function verifyReportResolution(report) {
+	const { target_type, target_id } = report || {};
+	const fail = (detail) => ({
+		verified: false,
+		target_state: "unknown",
+		action_taken: "none",
+		detail,
+	});
+	try {
+		if (target_type === "comment") {
+			const { data, error } = await supabase
+				.from("comments")
+				.select("id, body, hidden, deleted")
+				.eq("id", target_id)
+				.maybeSingle();
+			if (error) throw error;
+			if (!data)
+				return { verified: true, target_state: "gone", action_taken: "none", detail: "Target already removed." };
+			if (data.hidden || data.deleted)
+				return { verified: true, target_state: "hidden", action_taken: "none", detail: "Target already hidden." };
+			const mod = serverModerate("", String(data.body || ""));
+			if (mod.blocked) {
+				const flagTypes = mod.flags.map((f) => f.type).join(",");
+				await supabase.from("comments").update({ hidden: true }).eq("id", target_id);
+				await recordSafetyRepost(supabase, String(data.body || ""), (mod.flags[0] || {}).type || "policy");
+				await auditLog("moderation", "report_resolve_enforced", `comment ${target_id} hidden on resolve [${flagTypes}]`);
+				return { verified: true, target_state: "hidden", action_taken: "hidden", detail: `Violating comment hidden automatically (${flagTypes}).` };
+			}
+			return { verified: true, target_state: "live", action_taken: "none", detail: "Reviewed: no live violation on target." };
+		}
+		if (target_type === "poll") {
+			const { data, error } = await supabase
+				.from("polls")
+				.select("id, title, deleted")
+				.eq("id", target_id)
+				.maybeSingle();
+			if (error) throw error;
+			if (!data || data.deleted)
+				return { verified: true, target_state: "gone", action_taken: "none", detail: "Target already removed." };
+			const mod = serverModerate(String(data.title || ""), "");
+			if (mod.blocked) {
+				const flagTypes = mod.flags.map((f) => f.type).join(",");
+				await supabase.from("polls").update({ deleted: true }).eq("id", target_id);
+				await recordSafetyRepost(supabase, String(data.title || ""), (mod.flags[0] || {}).type || "policy");
+				await auditLog("moderation", "report_resolve_enforced", `poll ${target_id} removed on resolve [${flagTypes}]`);
+				return { verified: true, target_state: "hidden", action_taken: "hidden", detail: `Violating poll removed automatically (${flagTypes}).` };
+			}
+			return { verified: true, target_state: "live", action_taken: "none", detail: "Reviewed: no live violation on target." };
+		}
+		// default: post
+		const { data, error } = await supabase
+			.from("posts")
+			.select("id, title, description, hidden, deleted")
+			.eq("id", target_id)
+			.maybeSingle();
+		if (error) throw error;
+		if (!data)
+			return { verified: true, target_state: "gone", action_taken: "none", detail: "Target already removed." };
+		if (data.hidden || data.deleted)
+			return { verified: true, target_state: "hidden", action_taken: "none", detail: "Target already hidden." };
+		const mod = serverModerate(String(data.title || ""), String(data.description || ""));
+		if (mod.blocked) {
+			const flagTypes = mod.flags.map((f) => f.type).join(",");
+			await supabase.from("posts").update({ hidden: true }).eq("id", target_id);
+			await recordSafetyRepost(supabase, `${data.title || ""} ${data.description || ""}`.slice(0, 300), (mod.flags[0] || {}).type || "policy");
+			await auditLog("moderation", "report_resolve_enforced", `post ${target_id} hidden on resolve [${flagTypes}]`);
+			return { verified: true, target_state: "hidden", action_taken: "hidden", detail: `Violating post hidden automatically (${flagTypes}).` };
+		}
+		return { verified: true, target_state: "live", action_taken: "none", detail: "Reviewed: no live violation on target." };
+	} catch (err) {
+		return fail(`Verification failed: ${err?.message || err}`);
+	}
+}
+
 /** Enrich admin report rows with target_author_id (batched, bounded). */
 async function enrichAdminRows(rows) {
 	if (!rows || !rows.length) return rows;
@@ -114,6 +200,71 @@ async function enrichAdminRows(rows) {
 		...r,
 		target_author_id: map[r.target_id] || null,
 	}));
+}
+
+/**
+ * Attach the autonomous workers' OWN evidence to the reports they acted on.
+ *
+ * WHY: the moderation queue used to show a report's `status` and nothing else,
+ * so an admin saw "resolved" with no way to tell whether a human clicked a
+ * button or a worker actually removed content and proved it. A status flip is
+ * not evidence (spec §0 / §58).
+ *
+ * The workers already write a structured audit row the moment they act:
+ *   worker:report-disposition    -> report_dispositioned
+ *   worker:resolution-verification -> false_resolution_reopened
+ * with a JSON `detail` naming the report, the disposition, whether enforcement
+ * ran, and the observation it was based on. This joins that evidence back onto
+ * the row so the UI can show WHAT the AI did and WHY, sourced from the audit
+ * trail rather than from a worker's self-report at render time.
+ *
+ * Additive and fail-open: if the audit store is unreadable the queue still
+ * renders — it simply carries no worker evidence rather than a fabricated one.
+ */
+async function attachWorkerEvidence(rows) {
+	if (!rows || !rows.length) return rows;
+	const ids = new Set(rows.map((r) => String(r.id)));
+	// Only decisions recent enough to describe this queue are worth the read.
+	const since = new Date(Date.now() - 7 * 24 * 3600 * 1000).toISOString();
+	const { data, error } = await supabase
+		.from("activity_logs")
+		.select("actor, action, detail, created_at")
+		.in("actor", [
+			"worker:report-disposition",
+			"worker:resolution-verification",
+		])
+		.gte("created_at", since)
+		.order("created_at", { ascending: false })
+		.limit(500);
+	if (error) return rows;
+
+	const byId = new Map();
+	for (const log of data || []) {
+		let parsed = null;
+		try {
+			parsed = JSON.parse(log.detail);
+		} catch {
+			continue; // a malformed audit row proves nothing; skip it
+		}
+		const rid = parsed?.report_id == null ? null : String(parsed.report_id);
+		if (!rid || !ids.has(rid) || byId.has(rid)) continue;
+		// Rows are newest-first, so the first decision for a report wins — the
+		// latest thing the worker did, not a stale earlier pass.
+		const flags = Array.isArray(parsed.flags) ? parsed.flags : [];
+		byId.set(rid, {
+			worker: String(log.actor || "").replace(/^worker:/, ""),
+			action: log.action,
+			disposition: parsed.disposition || null,
+			enforced: parsed.enforced === true,
+			evidence: parsed.evidence || (flags.length ? flags.join(", ") : null),
+			target: parsed.target || null,
+			at: log.created_at,
+		});
+	}
+	return rows.map((r) => {
+		const ev = byId.get(String(r.id));
+		return ev ? { ...r, worker_action: ev } : r;
+	});
 }
 
 /**
@@ -255,6 +406,68 @@ async function enforceStrike(
 	return outcome;
 }
 
+// ── Slang auto-strike ──────────────────────────────────────────
+// School zero-tolerance already 403s ANY slang content at write time.
+// This adds the author-level consequence the content block alone lacks:
+// 4+ UNIQUE slang terms in a single blocked submission strikes the author
+// (progressive ladder shared with report strikes: 3/week → 7-day suspend,
+// 6 → ban; all reversible by admin). One strike per author per 24h.
+// Best-effort: never throws, never delays the caller's 403.
+const SLANG_STRIKE_TERMS = 4;
+export async function strikeSlangAbuse(authorId, targetType, text) {
+	const outcome = { strike_applied: false, strikes: 0, suspended: false, banned: false, already_struck: false };
+	try {
+		if (!authorId || !/^anon_/i.test(authorId) || authorId === "ADMIN") return outcome;
+		const terms = new Set(scanSlang(String(text || "")).map((h) => h.term));
+		if (terms.size < SLANG_STRIKE_TERMS) return outcome;
+		const since = new Date(Date.now() - STRIKE_DEDUPE_MS).toISOString();
+		const { data: metaPre } = await supabase.from("users_meta").select("warnings").eq("anon_id", authorId).maybeSingle();
+		const already = (metaPre?.warnings || []).some((w) => w.source === "auto_slang" && w.at && new Date(w.at) >= new Date(since));
+		if (already) { outcome.already_struck = true; return outcome; }
+		const { data: meta } = await supabase.from("users_meta").select("*").eq("anon_id", authorId).maybeSingle();
+		const warnings = Array.isArray(meta?.warnings) ? meta.warnings : [];
+		const strikes = meta?.strikes || 0;
+		const next = strikes + 1;
+		warnings.push({
+			text: `Blocked for heavy slang (${terms.size} terms) in a ${targetType}`,
+			at: new Date().toISOString(),
+			source: "auto_slang",
+			terms: [...terms].slice(0, 10),
+		});
+		const patch = { strikes: next, warnings, last_seen: new Date().toISOString() };
+		const lastWeek = new Date(Date.now() - 7 * 86400000).toISOString();
+		const weekStrikes = warnings.filter((w) => w.at && new Date(w.at) >= new Date(lastWeek)).length;
+		if (next >= STRIKE_BAN_AT) {
+			patch.banned = true;
+			outcome.banned = true;
+		} else if (weekStrikes >= STRIKE_SUSPEND_AT) {
+			patch.suspended_until = new Date(Date.now() + 7 * 86400000).toISOString();
+			outcome.suspended = true;
+		}
+		const { error: updErr } = meta
+			? await supabase.from("users_meta").update(patch).eq("anon_id", authorId)
+			: await supabase
+					.from("users_meta")
+					.insert({ anon_id: authorId, warnings: [], strikes: 0, last_seen: new Date().toISOString(), ...patch });
+		if (updErr) {
+			console.error("strikeSlangAbuse update failed:", updErr.message);
+			return outcome;
+		}
+		outcome.strike_applied = true;
+		outcome.strikes = next;
+		if (outcome.banned) {
+			await notifyUser(authorId, "warning", "Account permanently banned", "This anonymous ID has been permanently banned after repeated slang violations.");
+		} else if (outcome.suspended) {
+			await notifyUser(authorId, "warning", "Account temporarily suspended", "Your anonymous ID is suspended for 7 days after repeated slang violations.");
+		} else {
+			await notifyUser(authorId, "warning", `Strike ${next} issued`, `Blocked for heavy slang use — keep it clean to avoid suspension.`);
+		}
+		await auditLog("moderation", "slang_strike", `${authorId} [${targetType}] terms=${terms.size} strikes=${next}`);
+	} catch (e) {
+		console.error("strikeSlangAbuse error:", e.message);
+	}
+	return outcome;
+}
 export default async function handler(req, res) {
 	cors(res, req);
 	if (req.method === "OPTIONS") return res.status(204).end();
@@ -279,12 +492,27 @@ export default async function handler(req, res) {
 			// a per-row client lookup. The reports table has no author column, so this
 			// is resolved live — batched per target type for a bounded number of queries.
 			const enriched = await enrichAdminRows(cleanRows);
-			return res.status(200).json(enriched);
+			// Fold the workforce's own audit evidence onto the rows it acted on, so
+			// the queue shows real AI work instead of a status field.
+			const withEvidence = await attachWorkerEvidence(enriched);
+			return res.status(200).json(withEvidence);
 		}
 
 		if (req.method === "POST") {
 			const b = req.body || {};
-			const author_id = clean(b.author_id, 40);
+			// P0 SECURITY FIX: Derive author_id from x-anon-id header, NOT from client body
+			const headerId = clean(req.headers["x-anon-id"] || "", 40);
+			const admin = await isAdmin(req);
+			const author_id = headerId || (admin ? "ADMIN" : "");
+			if (!author_id)
+				return res.status(403).json({ error: "Missing session identity (x-anon-id header)" });
+			// Session binding: reports are attributed by author_id, so the
+			// header claim must match a live session — otherwise anyone
+			// knowing an id files reports as them.
+			if (!admin) {
+				const caller = await verifyCallerIdentity(req, res, author_id);
+				if (!caller.ok) return res.status(caller.status || 403).json({ error: caller.error, code: caller.code });
+			}
 			const gate = await checkUser(author_id);
 			if (!gate.ok) return res.status(403).json({ error: gate.error });
 			if (await rateLimited("reports", author_id, 300, 10)) {
@@ -336,6 +564,14 @@ export default async function handler(req, res) {
 				"report_filed",
 				`${row.target_type} ${row.target_id} by ${author_id}${enforcement.strike_applied ? " — auto-strike " + enforcement.strikes : ""}`,
 			);
+			// Emit event for workforce consumption (fire-and-forget)
+			emitEventAndBridge(EVENT_TYPES.USER_REPORTED, {
+				target_id: row.target_id,
+				target_type: row.target_type,
+				author_id,
+				strike_applied: enforcement.strike_applied,
+				strikes: enforcement.strikes,
+			}).catch(() => {});
 			// Privacy: the report row only goes back to the reporter. Never leak the
 			// full author id of the reported user (the UI truncates it everywhere
 			// else); admins get resolved authors via the admin-gated GET endpoint.
@@ -354,6 +590,15 @@ export default async function handler(req, res) {
 			if (!(await isAdmin(req)))
 				return res.status(403).json({ error: "Admin only" });
 			const b = req.body || {};
+			// Read the row first: resolution is verified against the live
+			// target (spec §23), never just a status flip.
+			const { data: existing, error: readErr } = await supabase
+				.from("reports")
+				.select("id, target_type, target_id, reason, status")
+				.eq("id", b.id)
+				.maybeSingle();
+			if (readErr) throw readErr;
+			if (!existing) return res.status(404).json({ error: "Report not found" });
 			const { data, error } = await supabase
 				.from("reports")
 				.update({ status: clean(b.status, 20) || "resolved" })
@@ -361,8 +606,23 @@ export default async function handler(req, res) {
 				.select()
 				.single();
 			if (error) throw error;
-			await auditLog("admin", "resolve_report", String(b.id));
-			return res.status(200).json(data);
+			let verification = {
+				verified: true,
+				target_state: "unknown",
+				action_taken: "none",
+				detail: "Status updated.",
+			};
+			if ((data?.status || "resolved") === "resolved") {
+				verification = await verifyReportResolution(existing);
+				await auditLog(
+					"admin",
+					"resolve_report",
+					`${b.id} verified=${verification.verified} target=${verification.target_state} action=${verification.action_taken}`,
+				);
+			} else {
+				await auditLog("admin", "resolve_report", String(b.id));
+			}
+			return res.status(200).json({ ...data, verification });
 		}
 
 		return res.status(405).json({ error: "Method not allowed" });

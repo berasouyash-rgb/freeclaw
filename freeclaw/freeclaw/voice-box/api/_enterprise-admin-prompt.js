@@ -1,12 +1,12 @@
-// Voice Box Enterprise Admin AI — System Prompt
+// Voice Flow Enterprise Admin AI — System Prompt
 // This is the canonical system prompt for the admin AI assistant.
 // It defines the AI's role, responsibilities, operating principles, and behavior.
 
-export const ENTERPRISE_ADMIN_SYSTEM_PROMPT = `# Voice Box Enterprise Admin AI
+export const ENTERPRISE_ADMIN_SYSTEM_PROMPT = `# Voice Flow Enterprise Admin AI
 
 ROLE
 
-You are the primary AI operating system for the Voice Box platform.
+You are the primary AI operating system for the Voice Flow platform.
 
 You are not a chatbot.
 

@@ -3,7 +3,7 @@ import { useMemo, useState } from "react";
 
 const FAQS = [
 	{
-		q: "Is Voice Box really anonymous?",
+		q: "Is Voice Flow really anonymous?",
 		a: "Yes. There is no registration, and we never ask for names, emails, or phone numbers. We don\u2019t log IP addresses against posts or use tracking scripts. Your only identifier is a random ID generated in your own browser.",
 	},
 	{
@@ -28,13 +28,26 @@ const FAQS = [
 	},
 	{
 		q: "How does voting work?",
-		a: "Each anonymous ID can support or disagree once per post, and vote once per poll (you can change your poll vote while it\u2019s open). Votes are counted anonymously.",
+		a: "Each anonymous ID can support a post once, and there is no downvote — if a post is wrong or harmful, report it instead. Vote once per poll, and vote once per poll (you can change your poll vote while it\u2019s open). Votes are counted anonymously.",
 	},
 	{
 		q: "Who runs the AI features?",
 		a: "AI summaries and analysis run on our server \u2014 your posts are processed to cluster duplicates and rank urgency, but no identity data exists to share. AI suggestions to admins are drafts only; a human must approve every action.",
 	},
 ];
+
+// FAQPage structured data — derived from FAQS so the JSON-LD always matches
+// the visible Q&A verbatim (schema.org requires it, and it is what lets AI
+// answer engines cite the page).
+const FAQ_SCHEMA = JSON.stringify({
+	"@context": "https://schema.org",
+	"@type": "FAQPage",
+	mainEntity: FAQS.map((f) => ({
+		"@type": "Question",
+		name: f.q,
+		acceptedAnswer: { "@type": "Answer", text: f.a },
+	})),
+});
 
 export default function Faq() {
 	const [open, setOpen] = useState<number | null>(0);
@@ -104,19 +117,22 @@ export default function Faq() {
 							className="card overflow-hidden vb-rise"
 							style={{ animationDelay: `${f.idx * 40}ms` }}
 						>
-							<button
-								className="w-full flex items-center justify-between gap-3 p-4 text-left"
-								onClick={() => setOpen(open === f.idx ? null : f.idx)}
-								aria-expanded={open === f.idx}
-							>
-								<span className="font-display font-semibold text-sm">
-									{f.q}
-								</span>
-								<ChevronDown
-									size={16}
-									className={`text-ink3 shrink-0 transition-transform ${open === f.idx ? "rotate-180" : ""}`}
-								/>
-							</button>
+							{/* h3 keeps every question crawlable as a heading */}
+							<h3 className="m-0">
+								<button
+									className="w-full flex items-center justify-between gap-3 p-4 text-left"
+									onClick={() => setOpen(open === f.idx ? null : f.idx)}
+									aria-expanded={open === f.idx}
+								>
+									<span className="font-display font-semibold text-sm">
+										{f.q}
+									</span>
+									<ChevronDown
+										size={16}
+										className={`text-ink3 shrink-0 transition-transform ${open === f.idx ? "rotate-180" : ""}`}
+									/>
+								</button>
+							</h3>
 							{open === f.idx && (
 								<p className="px-4 pb-4 text-sm text-ink2 leading-relaxed vb-rise">
 									{f.a}
@@ -126,6 +142,13 @@ export default function Faq() {
 					))}
 				</div>
 			)}
+
+			{/* FAQPage JSON-LD — mirrors FAQS exactly */}
+			<script
+				type="application/ld+json"
+				data-testid="faq-schema"
+				dangerouslySetInnerHTML={{ __html: FAQ_SCHEMA }}
+			/>
 		</div>
 	);
 }

@@ -4,10 +4,8 @@ import {
 	ArrowLeftRight,
 	Bot,
 	BotOff,
-	Check,
 	ChevronLeft,
 	CloudRain,
-	Copy,
 	Download,
 	Headphones,
 	Image as ImageIcon,
@@ -18,6 +16,7 @@ import {
 	MessageSquare,
 	Phone,
 	Plus,
+	RefreshCw,
 	Search,
 	Send,
 	Shield,
@@ -28,19 +27,49 @@ import {
 	X,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+	CopyButton,
+	DownloadButton,
+	QUICK_REPLIES,
+} from "../../components/admin/chat-utils";
 import { PromptDialog } from "../../components/ui";
+import UpdateNotice from "../../components/admin/UpdateNotice";
+import DraftProposal, { type DraftProposalData } from "../../components/admin/DraftProposal";
 import { useApp } from "../../contexts/AppContext";
+import { useUpdateSignal } from "../../hooks/useUpdateSignal";
+import { useAdminStream } from "../../hooks/useAdminStream";
 import { api } from "../../lib/api";
 import { renderMarkdown } from "../../lib/markdown";
 import { useRealtime } from "../../lib/useRealtime";
 import { fmtDate, timeAgo } from "../../lib/utils";
+import { useSearchParams } from "react-router";
 import type { ChatMessage } from "../../types";
+
+interface ThreadAISummary {
+	summary: string;
+	entities?: string[];
+	resolution_state?: string;
+	summarized_at?: string;
+	stale?: boolean;
+}
+
+interface ThreadTriage {
+	topic?: string;
+	priority?: string;
+	emotion?: string;
+	suggested_action?: string;
+	at?: string;
+}
 
 interface ThreadSummary {
 	thread_id: string;
+	title?: string;
 	source?: "inbox" | "chat";
 	last_message?: string;
 	summary?: string;
+	ai_summary?: ThreadAISummary | null;
+	triage?: ThreadTriage | null;
+	slang?: { count: number; terms: string[]; messages: number; at?: string } | null;
 	updated_at?: string;
 	last_at?: string;
 	ai_agent?: string;
@@ -62,61 +91,6 @@ interface ThreadState {
 	handoff?: boolean;
 	source?: string;
 	[k: string]: unknown;
-}
-
-/* ═══════════════════════════════════════════════════════════════
-   HELPERS — Copy, download
-   ═══════════════════════════════════════════════════════════════ */
-
-function CopyButton({ text }: { text: string }) {
-	const [copied, setCopied] = useState(false);
-	const copy = async () => {
-		try {
-			await navigator.clipboard.writeText(text);
-			setCopied(true);
-			setTimeout(() => setCopied(false), 2000);
-		} catch {
-			/* fallback */
-		}
-	};
-	return (
-		<button
-			onClick={copy}
-			className="p-1 rounded-md hover:bg-surface2 transition-colors"
-			title="Copy"
-		>
-			{copied ? (
-				<Check size={13} className="text-good" />
-			) : (
-				<Copy size={13} className="text-ink3" />
-			)}
-		</button>
-	);
-}
-
-function DownloadButton({ url, filename }: { url: string; filename?: string }) {
-	const download = async () => {
-		try {
-			const res = await fetch(url);
-			const blob = await res.blob();
-			const a = document.createElement("a");
-			a.href = URL.createObjectURL(blob);
-			a.download = filename || url.split("/").pop() || "attachment";
-			a.click();
-			URL.revokeObjectURL(a.href);
-		} catch {
-			window.open(url, "_blank");
-		}
-	};
-	return (
-		<button
-			onClick={download}
-			className="p-1 rounded-md hover:bg-surface2 transition-colors"
-			title="Download"
-		>
-			<Download size={13} className="text-ink3" />
-		</button>
-	);
 }
 
 /* ═══════════════════════════════════════════════════════════════
@@ -276,8 +250,6 @@ function ThreadItem({
 	const agent =
 		t.source === "inbox" ? t.ai_agent || t.state?.agent || "ai" : "direct";
 	const emotion = t.emotion?.level || t.state?.emotion?.level || "none";
-	const _EIcon = EMOTION_ICONS[emotion] || SmilePlus;
-
 	return (
 		<div
 			className={`relative group border-b border-border/50 cursor-pointer transition-all ${
@@ -313,14 +285,41 @@ function ThreadItem({
 
 					<div className="flex-1 min-w-0">
 						<div className="flex items-center gap-2">
-							<span className="text-xs font-bold text-ink truncate">
-								{t.thread_id.slice(0, 20)}
+							<span
+								className="text-xs font-bold text-ink truncate"
+								title={t.thread_id}
+							>
+								{t.title || `${t.thread_id.slice(0, 20)}`}
 							</span>
 							{emotion !== "none" && (
 								<span
 									className={`text-[9px] px-1.5 py-0.5 rounded-full border ${EMOTION_COLORS[emotion]}`}
 								>
 									{EMOTION_LABELS[emotion]}
+								</span>
+							)}
+							{t.triage?.topic && t.triage.topic !== "unknown" && (
+								<span
+									className="text-[9px] px-1.5 py-0.5 rounded-full bg-accent/10 text-accent border border-accent/20 truncate max-w-32"
+									title={`AI topic: ${t.triage.topic}`}
+								>
+									{t.triage.topic}
+								</span>
+							)}
+							{t.triage?.priority &&
+								(t.triage.priority === "high" ||
+									t.triage.priority === "urgent") && (
+									<span className="text-[9px] px-1.5 py-0.5 rounded-full bg-red-500/10 text-red-500 border border-red-500/20 font-bold">
+										{t.triage.priority}
+									</span>
+								)}
+							{!!t.slang?.count && (
+								<span
+									data-testid="slang-chip"
+									className="text-[9px] px-1.5 py-0.5 rounded-full bg-amber-500/10 text-amber-500 border border-amber-500/20 font-bold truncate max-w-32"
+									title={`Slang in this chat: ${(t.slang?.terms || []).join(", ")} — open the thread to review in the inbox`}
+								>
+									Slang · {t.slang?.terms?.slice(0, 2).join(", ")}{(t.slang?.terms?.length || 0) > 2 ? "…" : ""}
 								</span>
 							)}
 							{t.status === "closed" && (
@@ -332,9 +331,19 @@ function ThreadItem({
 								</span>
 							)}
 						</div>
-						<p className="text-[11px] text-ink3 truncate mt-0.5">
-							{t.last_message || t.summary || "No messages yet"}
-						</p>
+						{t.ai_summary?.summary ? (
+							<p
+								className={`text-[11px] truncate mt-0.5 ${t.ai_summary.stale ? "text-ink3 italic" : "text-ink2"}`}
+								title={t.ai_summary.stale ? "Summary outdated — open and re-summarize" : t.ai_summary.summary}
+							>
+								{t.ai_summary.stale ? "✎ " : "✦ "}
+								{t.ai_summary.summary}
+							</p>
+						) : (
+							<p className="text-[11px] text-ink3 truncate mt-0.5">
+								{t.last_message || t.summary || "No messages yet"}
+							</p>
+						)}
 						<div className="flex items-center gap-1.5 mt-1">
 							<span className="text-[10px] text-ink3">
 								{timeAgo((t.updated_at || t.last_at) ?? "")}
@@ -376,21 +385,24 @@ function ThreadItem({
    UNIFIED INBOX — merged AdminInbox + AdminChat
    ═══════════════════════════════════════════════════════════════ */
 
-const QUICK_REPLIES = [
-	"Thanks for reaching out — we're looking into this now.",
-	"Could you share more details (location, time, how often it happens)?",
-	"This has been forwarded to the responsible staff member.",
-	"Your issue has been verified and is now in progress. ✅",
-	"This has been resolved — please let us know if it happens again.",
-];
-
 export default function UnifiedInbox() {
 	const { toast } = useApp();
 
 	const [threads, setThreads] = useState<ThreadSummary[]>([]);
 	const [active, setActive] = useState<string | null>(null);
+	// Which thread the responses below belong to: briefing fetches can
+	// outlive a thread switch, and writing to `active` at resolve time
+	// shows thread A's summary on thread B (seen live with a blackmail
+	// summary on a hello-only thread). Every writer captures + checks.
+	const activeRef = useRef<string | null>(null);
+	useEffect(() => {
+		activeRef.current = active;
+	}, [active]);
+	const [searchParams, setSearchParams] = useSearchParams();
 	const [messages, setMessages] = useState<ChatMessage[]>([]);
 	const [threadState, setThreadState] = useState<ThreadState | null>(null);
+	// Which slice the server sent: admins get the last 5 days only.
+	const [historyWindow, setHistoryWindow] = useState<string | null>(null);
 	const [loading, setLoading] = useState(true);
 	// Platform-wide inbox AI switch (server gates generation too)
 	const [aiMode, setAiMode] = useState(true);
@@ -403,8 +415,21 @@ export default function UnifiedInbox() {
 	const [search, setSearch] = useState("");
 	const [showSearch, setShowSearch] = useState(false);
 	const [threadSearch, setThreadSearch] = useState("");
+	const [threadImportance, setThreadImportance] = useState<"important" | "slang" | "all">("important");
 	const [showScrollBtn, setShowScrollBtn] = useState(false);
 	const [showNew, setShowNew] = useState(false);
+
+	/* ── AI thread summary (spec §11/§51: never force the admin to read the
+	 * whole conversation) — fetched on demand from the real
+	 * POST /api/inbox {action:"summary"} endpoint and cached per thread. */
+	interface ThreadAISummary {
+		summary: string;
+		entities: string[];
+		resolution_state: string;
+	}
+	const [aiSummary, setAiSummary] = useState<ThreadAISummary | null>(null);
+	const [summaryBusy, setSummaryBusy] = useState(false);
+	const summaryCache = useRef<Record<string, ThreadAISummary>>({});
 
 	const bottomRef = useRef<HTMLDivElement>(null);
 	const scrollRef = useRef<HTMLDivElement>(null);
@@ -427,16 +452,32 @@ export default function UnifiedInbox() {
 	const handoff = threadState?.handoff || false;
 	const EIcon = EMOTION_ICONS[emotion] || SmilePlus;
 
+	// Important only: critical/high emotion, unread user mail, triage
+	// priority, or an admin takeover in progress. Search narrows further.
+	const isSlangThread = (t: ThreadSummary) => (t.slang?.count || 0) > 0;
+	const isImportantThread = (t: ThreadSummary) =>
+		t.emotion?.level === "critical" ||
+		t.emotion?.level === "high" ||
+		(t.unread ?? 0) > 0 ||
+		t.triage?.priority === "high" ||
+		t.triage?.priority === "urgent" ||
+		(t.handoff as boolean | undefined) === true ||
+		t.state?.handoff === true;
+
+	const importantCount = useMemo(() => threads.filter(isImportantThread).length, [threads]);
+	const slangCount = useMemo(() => threads.filter(isSlangThread).length, [threads]);
+
 	const filteredThreads = useMemo(() => {
-		if (!threadSearch) return threads;
+		const base = threadImportance === "important" ? threads.filter(isImportantThread) : threadImportance === "slang" ? threads.filter(isSlangThread) : threads;
+		if (!threadSearch) return base;
 		const q = threadSearch.toLowerCase();
-		return threads.filter(
+		return base.filter(
 			(t) =>
 				t.thread_id.toLowerCase().includes(q) ||
 				(t.last_message || "").toLowerCase().includes(q) ||
 				(t.summary || "").toLowerCase().includes(q),
 		);
-	}, [threads, threadSearch]);
+	}, [threads, threadSearch, threadImportance]);
 
 	/* ── Platform-wide inbox AI switch ───────────────────── */
 	useEffect(() => {
@@ -474,12 +515,15 @@ export default function UnifiedInbox() {
 	};
 
 	/* ── Load threads from BOTH APIs ──────────────────────── */
-	const loadThreads = useCallback(async () => {		try {
+	const loadThreads = useCallback(async (opts?: { fresh?: boolean }) => {		try {
+			// Fresh reads bypass the 5s GET cache: the peek revalidates
+			// precisely because the database has changed since the tick.
+			const reader = opts?.fresh ? api.getFresh : api.get;
 			const [inboxRes, chatRes] = await Promise.allSettled([
-				api.get<ThreadSummary[] | { threads: ThreadSummary[] }>(
+				reader<ThreadSummary[] | { threads: ThreadSummary[] }>(
 					"/api/inbox?threads=1",
 				),
-				api.get<ThreadSummary[] | { threads: ThreadSummary[] }>(
+				reader<ThreadSummary[] | { threads: ThreadSummary[] }>(
 					"/api/chat?threads=1",
 				),
 			]);
@@ -522,30 +566,39 @@ export default function UnifiedInbox() {
 	}, []);
 
 	/* ── Load messages — source-aware ─────────────────────── */
-	const loadMessages = useCallback(async (threadId: string) => {
+	const loadMessages = useCallback(async (threadId: string, opts?: { fresh?: boolean; quiet?: boolean }) => {
 		const t = threadsRef.current.find((x) => x.thread_id === threadId);
 		const source = t?.source || sourceRef.current[threadId] || "inbox";
+		// Fresh reads bypass the 5s GET cache; quiet skips the mark_read
+		// write (read state belongs to explicit open/send paths, never to
+		// a background tick — otherwise the peek would clear unread
+		// badges just by looking).
+		const reader = opts?.fresh ? api.getFresh : api.get;
 
 		try {
 			if (source === "chat") {
-				const data = await api.get<{
+				const data = await reader<{
 					messages: ChatMessage[];
 					thread: ThreadState;
 				}>(`/api/chat?thread_id=${threadId}`);
 				setMessages(data.messages || []);
 				setThreadState({ ...data.thread, source: "chat" });
-				await api.put("/api/chat", {
-					action: "mark_read",
-					thread_id: threadId,
-					as: "admin",
-				});
+				if (!opts?.quiet) {
+					await api.put("/api/chat", {
+						action: "mark_read",
+						thread_id: threadId,
+						as: "admin",
+					});
+				}
 			} else {
-				const data = await api.get<{
+				const data = await reader<{
 					messages?: ChatMessage[];
 					state?: ThreadState;
+					history_window?: string;
 				}>(`/api/inbox?thread_id=${threadId}`);
 				setMessages(data.messages || []);
 				setThreadState({ ...(data.state || {}), source: "inbox" });
+				setHistoryWindow(data.history_window ?? null);
 			}
 		} catch (e: unknown) {
 			console.warn(
@@ -559,7 +612,10 @@ export default function UnifiedInbox() {
 		loadThreads();
 	}, [loadThreads]);
 	useEffect(() => {
-		if (active) loadMessages(active);
+		if (active) {
+			loadMessages(active);
+			setAiSummary(summaryCache.current[active] ?? null);
+		}
 	}, [active, loadMessages]);
 
 	/* ── Pending chat target (e.g. "Message author" from another admin tab) ── */
@@ -595,26 +651,82 @@ export default function UnifiedInbox() {
 		setPendingTarget(null);
 	}, [threads, pendingTarget]);
 
-	// Realtime subscription (with built-in fallback polling in useRealtime)
-	// covers both threads list and active message thread — no raw setInterval needed.
-	// Single subscription covers both threads list and active message thread
-	const threadRefreshRef = useRef(0);
-	useRealtime(
-		["chat_messages", "chat_threads"],
-		(table) => {
-			loadThreads();
-			const now = Date.now();
-			if (
-				active &&
-				table === "chat_messages" &&
-				now - threadRefreshRef.current > 1500
-			) {
-				threadRefreshRef.current = now;
-				loadMessages(active);
-			}
-		},
-		500,
-	);
+	// Freshness signal, not a refetch: the old wiring reloaded the thread
+	// list on every chat event (500ms debounce) plus the open thread —
+	// under any conversation the whole inbox rebuilt twice a second and no
+	// admin work was possible. Realtime now only raises a badge; the admin
+	// pulls threads + the open conversation with the update notice. Own
+	// sends still refresh explicitly in send().
+	const { updatesAvailable, markUpdatesAvailable, clearUpdates } =
+		useUpdateSignal();
+
+	const handleInboxUpdate = useCallback(async () => {
+		await loadThreads();
+		if (active) await loadMessages(active);
+		clearUpdates();
+	}, [active, loadMessages, loadThreads, clearUpdates]);
+
+	useRealtime(["chat_messages", "chat_threads"], markUpdatesAvailable, 1_000);
+	// Admin stream covers what the anon channel cannot (neither table has
+	// anon read): same freshness pill, the 5s peek below stays as fallback.
+	useAdminStream(markUpdatesAvailable);
+
+	// ── Visible-only peek (contract evolution 2026-10-05) ──
+	// chat_messages / chat_threads are outside the anon realtime contract,
+	// so the subscription above can never deliver: new conversations and
+	// replies appeared only after a manual Refresh. Every 5s while mounted
+	// AND visible (plus on focus/return), revalidate the thread list and
+	// the open thread with fresh reads. Read-only by construction: the
+	// peek never issues mark_read and never touches loaders — read state
+	// still belongs to the explicit open/send paths.
+	const peekInbox = useCallback(async () => {
+		if (
+			typeof document !== "undefined" &&
+			document.visibilityState === "hidden"
+		)
+			return;
+		try {
+			await loadThreads({ fresh: true });
+			const open = activeRef.current;
+			if (open) await loadMessages(open, { fresh: true, quiet: true });
+		} catch {
+			/* offline ok */
+		}
+	}, [loadThreads, loadMessages]);
+
+	useEffect(() => {
+		const id = window.setInterval(() => {
+			void peekInbox();
+		}, 5_000);
+		const refetch = () => {
+			void peekInbox();
+		};
+		window.addEventListener("focus", refetch);
+		document.addEventListener("visibilitychange", refetch);
+		return () => {
+			window.clearInterval(id);
+			window.removeEventListener("focus", refetch);
+			document.removeEventListener("visibilitychange", refetch);
+		};
+	}, [peekInbox]);
+	// Deep-link (?thread=): digest rows land straight on the chat.
+	useEffect(() => {
+		const wanted = searchParams.get("thread");
+		if (wanted && threads.some((t) => t.thread_id === wanted)) setActive(wanted);
+	}, [threads, searchParams]);
+	const openThread = (id: string | null) => {
+		setActive(id);
+		setSearchParams(
+			(prev) => {
+				const p = new URLSearchParams(prev);
+				if (id) p.set("thread", id);
+				else p.delete("thread");
+				return p;
+			},
+			{ replace: true },
+		);
+	};
+
 
 	/* ── Auto-scroll ──────────────────────────────────────── */
 	useEffect(() => {
@@ -708,6 +820,93 @@ export default function UnifiedInbox() {
 		}
 	};
 
+	/* ── AI thread summary — subject/summary/entities/status without
+	 * reading all messages. Real endpoint, cached per thread. ─────── */
+	const summarize = async () => {
+		if (!active || summaryBusy) return;
+		const cached = summaryCache.current[active];
+		if (cached) {
+			setAiSummary(cached);
+			return;
+		}
+		setSummaryBusy(true);
+		try {
+			// Summarization runs the fast lane + full chain server-side (up to
+			// ~30s) — the default 15s budget timed out every real summary.
+			const requestedManual = active;
+			const r = await api.postLong<{
+				ok?: boolean;
+				summary?: string;
+				entities?: string[];
+				resolution_state?: string;
+				}>("/api/inbox", { thread_id: active, action: "summary" });
+			const s: ThreadAISummary = {
+				summary: r.summary || "",
+				entities: Array.isArray(r.entities) ? r.entities : [],
+				resolution_state: r.resolution_state || "open",
+			};
+			// Keyed write: a late arrival still belongs to its thread even
+			// when the admin moved on — only the DISPLAY is gated.
+			if (s.summary) summaryCache.current[requestedManual as string] = s;
+			if (requestedManual !== activeRef.current) return;
+			setAiSummary(s);
+			if (!s.summary)
+				toast("No summary yet — empty thread or AI unreachable", "info");
+		} catch (e: unknown) {
+			toast(e instanceof Error ? e.message : "Summary failed", "err");
+		}
+		setSummaryBusy(false);
+	};
+
+	/* ── Auto-summary on open (spec §11/§51: the admin never reads the whole
+	 * thread first). When a conversation with real substance (4+ messages)
+	 * opens with no cached summary, the agent briefs it once, silently —
+	 * failures stay silent (the manual Summarize button reports them). */
+	const autoTried = useRef<Set<string>>(new Set());
+	useEffect(() => {
+		if (!active) return;
+		// Cached briefings render regardless of message count — the length
+		// gate below is about fetch-worthiness, not display. (A cached
+		// summary must survive reopening even on short threads.)
+		if (summaryCache.current[active]) {
+			setAiSummary(summaryCache.current[active]);
+			return;
+		}
+		if (aiSummary || summaryBusy) return;
+		if (messages.length < 4) return;
+		if (autoTried.current.has(active)) return;
+		autoTried.current.add(active);
+		(async () => {
+			setSummaryBusy(true);
+			try {
+				// Same 28s budget as the manual path — auto-briefings die
+				// silently on timeout otherwise.
+				const requestedAuto = active;
+				const r = await api.postLong<{
+					ok?: boolean;
+					summary?: string;
+					entities?: string[];
+					resolution_state?: string;
+				}>("/api/inbox", { thread_id: active, action: "summary" });
+				const s: ThreadAISummary = {
+					summary: r.summary || "",
+					entities: Array.isArray(r.entities) ? r.entities : [],
+					resolution_state: r.resolution_state || "open",
+				};
+				// Cache only real briefings — an empty auto result must not
+				// poison the manual path (which reports honestly when empty).
+				if (s.summary) {
+					summaryCache.current[requestedAuto as string] = s;
+					if (requestedAuto === activeRef.current) setAiSummary(s);
+				}
+			} catch {
+				/* silent: manual Summarize reports failures */
+			} finally {
+				setSummaryBusy(false);
+			}
+		})();
+	}, [active, messages, aiSummary, summaryBusy]);
+
 	/* ── AI suggest ───────────────────────────────────────── */
 	const aiSuggest = async () => {
 		if (!messages.length) {
@@ -716,7 +915,8 @@ export default function UnifiedInbox() {
 		}
 		setAiBusy(true);
 		try {
-			const r = await api.post<{ reply?: string; engine?: string }>(
+			// Drafting runs the full chain (up to ~28s) — never the 15s default.
+			const r = await api.postLong<{ reply?: string; engine?: string }>(
 				"/api/assist",
 				{
 					task: "chat_reply",
@@ -727,7 +927,7 @@ export default function UnifiedInbox() {
 				setText(r.reply);
 				toast(
 					r.engine === "keyword"
-						? "Suggested reply (add ANTHROPIC_API_KEY for smarter AI)"
+						? "Suggested reply (add NVIDIA_API_KEY for smarter AI)"
 						: "AI reply drafted — edit before sending",
 					"info",
 				);
@@ -740,6 +940,57 @@ export default function UnifiedInbox() {
 	};
 
 	/* ── New conversation ─────────────────────────────────── */
+	/* Post-draft proposal (accept/reject popup) */
+	const [draftBusy, setDraftBusy] = useState(false);
+	const draftProposal = (threadState?.draft_proposal ?? null) as (DraftProposalData & { status?: string }) | null;
+	const draftOpen = !!draftProposal && draftProposal.status === "proposed";
+	const requestDraft = async () => {
+		if (!active || draftBusy) return;
+		setDraftBusy(true);
+		try {
+			const r = await api.post<{ ok?: boolean; proposal?: DraftProposalData | null }>("/api/inbox", {
+				action: "draft_post",
+				thread_id: active,
+			});
+			toast(r.proposal ? "Post draft ready — accept or reject below" : "No draft could be produced from this conversation yet", "info");
+			await loadMessages(active);
+		} catch (e: unknown) {
+			toast(e instanceof Error ? e.message : "Draft failed", "err");
+		} finally {
+			setDraftBusy(false);
+		}
+	};
+	const acceptDraft = async (visibility: "private" | "public") => {
+		if (!active || draftBusy) return;
+		setDraftBusy(true);
+		try {
+			const r = await api.post<{ ok?: boolean; post_id?: string; status?: string }>("/api/inbox", {
+				action: "accept_draft",
+				thread_id: active,
+				visibility,
+			});
+			toast(r.status === "pending_review" ? "Post created — held for review before going anywhere" : "Private post created from this conversation", "ok");
+			await loadMessages(active);
+		} catch (e: unknown) {
+			toast(e instanceof Error ? e.message : "Accept failed", "err");
+		} finally {
+			setDraftBusy(false);
+		}
+	};
+	const rejectDraft = async () => {
+		if (!active || draftBusy) return;
+		setDraftBusy(true);
+		try {
+			await api.post("/api/inbox", { action: "reject_draft", thread_id: active });
+			toast("Draft rejected — nothing was posted", "info");
+			await loadMessages(active);
+		} catch (e: unknown) {
+			toast(e instanceof Error ? e.message : "Reject failed", "err");
+		} finally {
+			setDraftBusy(false);
+		}
+	};
+
 	const startNew = (anonId: string) => {
 		const id = anonId.trim();
 		if (!id) return;
@@ -768,15 +1019,16 @@ export default function UnifiedInbox() {
 		const source = t?.source || sourceRef.current[tid] || "inbox";
 		try {
 			if (source === "chat") {
-				await api.del("/api/chat", { thread_id: tid });
+				await api.del(`/api/chat?thread_id=${encodeURIComponent(tid)}`, { thread_id: tid });
 			} else {
 				await api.post("/api/inbox", { thread_id: tid, action: "close" });
 			}
 			setThreads((prev) => prev.filter((x) => x.thread_id !== tid));
 			if (active === tid) {
-				setActive(null);
+				openThread(null);
 				setMessages([]);
 				setThreadState(null);
+				setAiSummary(null);
 			}
 			toast("Conversation removed", "ok");
 		} catch (e: unknown) {
@@ -837,6 +1089,15 @@ export default function UnifiedInbox() {
 				<div className="flex items-center gap-2">
 					<button
 						type="button"
+						onClick={() => void handleInboxUpdate()}
+						aria-label="Refresh inbox"
+						title="Pull the latest threads and messages"
+						className="shrink-0 inline-flex items-center gap-1 rounded-full border border-border bg-surface2 px-2 py-1 text-[10px] font-bold text-ink3 hover:text-accent transition-all"
+					>
+						<RefreshCw size={11} /> Refresh
+					</button>
+					<button
+						type="button"
 						onClick={toggleAiMode}
 						disabled={aiModeBusy}
 						role="switch"
@@ -886,6 +1147,41 @@ export default function UnifiedInbox() {
 					</div>
 				</div>
 
+				<div className="px-3 pt-2 flex flex-wrap items-center gap-2">
+					<div className="inline-flex rounded-xl bg-surface2 p-1 gap-0.5" role="tablist" aria-label="Thread importance">
+						{(["important", "slang", "all"] as const).map((m) => (
+							<button
+								key={m}
+								role="tab"
+								aria-selected={threadImportance === m}
+								onClick={() => setThreadImportance(m)}
+								className={`px-3 py-1.5 rounded-lg text-xs font-semibold capitalize transition-all ${threadImportance === m ? "bg-surface shadow-sm text-accent" : "text-ink3 hover:text-ink2"}`}
+							>
+								{m === "important" ? `Important${importantCount ? ` ${importantCount}` : ""}` : m === "slang" ? `Slang${slangCount ? ` ${slangCount}` : ""}` : `All${threads.length ? ` ${threads.length}` : ""}`}
+							</button>
+						))}
+					</div>
+					<div className="ml-auto flex items-center gap-1 text-[11px]">
+						<span className="text-ink3">Related:</span>
+						{([["reports", "Reports"], ["posts", "Feed"], ["polls", "Polls"]] as const).map(([k, label]) => (
+							<button
+								key={k}
+								type="button"
+								className="text-accent hover:underline"
+								onClick={() => window.dispatchEvent(new CustomEvent("vb:admin-tab", { detail: k }))}
+							>
+								{label}
+							</button>
+						))}
+					</div>
+				</div>
+				<div className="px-3 pt-2">
+					<UpdateNotice
+						count={updatesAvailable}
+						onViewUpdates={() => void handleInboxUpdate()}
+					/>
+				</div>
+
 				<div className="flex-1 overflow-y-auto">
 					{loading && (
 						<div className="space-y-2 p-3">
@@ -900,7 +1196,7 @@ export default function UnifiedInbox() {
 							<p className="text-xs text-ink3">
 								{threadSearch
 									? "No matching conversations"
-									: "No conversations yet"}
+									: threadImportance === "slang" ? "No slang-flagged threads" : "No conversations yet"}
 							</p>
 							{!threadSearch && (
 								<button
@@ -918,7 +1214,7 @@ export default function UnifiedInbox() {
 							t={t}
 							active={active === t.thread_id}
 							onClick={() => {
-								setActive(t.thread_id);
+								openThread(t.thread_id);
 								setShowScrollBtn(false);
 							}}
 							onDelete={() => deleteThread(t.thread_id)}
@@ -945,7 +1241,7 @@ export default function UnifiedInbox() {
 						<div className="flex items-center gap-3 px-5 py-3 border-b border-border bg-surface">
 							<button
 								className="md:hidden btn btn-ghost !p-1.5"
-								onClick={() => setActive(null)}
+								onClick={() => openThread(null)}
 							>
 								<ChevronLeft size={18} />
 							</button>
@@ -1022,6 +1318,21 @@ export default function UnifiedInbox() {
 								>
 									<Download size={13} />
 								</button>
+								<button
+									onClick={() => void summarize()}
+									disabled={summaryBusy}
+									className="btn btn-ghost !text-[11px] !py-1.5 !px-3"
+									title="AI summary — subject, key facts and status without reading every message"
+								>
+									{summaryBusy ? (
+										<Loader2 size={12} className="animate-spin" />
+									) : (
+										<Sparkles size={12} />
+									)}
+									<span className="ml-1">
+										{summaryBusy ? "Summarizing…" : "Summarize"}
+									</span>
+								</button>
 
 								{threadState?.source !== "chat" && agent !== "admin" && (
 									<button
@@ -1084,6 +1395,38 @@ export default function UnifiedInbox() {
 							</div>
 						</div>
 
+						{/* AI summary — the admin briefing for this conversation */}
+						{aiSummary && (
+							<div className="mx-5 mt-3 rounded-xl border border-accent/25 bg-accent-soft/40 p-3">
+								<p className="text-[10px] font-bold uppercase tracking-wider text-accent mb-1.5 flex items-center gap-1.5">
+									<Sparkles size={11} /> AI summary · status:{" "}
+									{aiSummary.resolution_state}
+								</p>
+								{aiSummary.summary ? (
+									<p className="text-xs text-ink leading-relaxed">
+										{aiSummary.summary}
+									</p>
+								) : (
+									<p className="text-xs text-ink3">
+										No summary yet — empty thread or AI unreachable. The
+										full conversation is below.
+									</p>
+								)}
+								{aiSummary.entities.length > 0 && (
+									<div className="flex flex-wrap gap-1.5 mt-2">
+										{aiSummary.entities.map((e) => (
+											<span
+												key={e}
+												className="text-[10px] px-2 py-0.5 rounded-full bg-surface border border-border text-ink2"
+											>
+												{e}
+											</span>
+										))}
+									</div>
+								)}
+							</div>
+						)}
+
 						{/* Search bar */}
 						{showSearch && (
 							<div className="px-5 py-2 border-b border-border bg-surface2/50 flex items-center gap-2 chat-msg-anim">
@@ -1107,6 +1450,9 @@ export default function UnifiedInbox() {
 							</div>
 						)}
 
+						{historyWindow === "5d" && (
+							<p className="px-4 pt-1 text-[10px] text-ink3">Showing the last 5 days — older history stays server-side.</p>
+						)}
 						{/* Messages */}
 						<div
 							ref={scrollRef}
@@ -1151,6 +1497,27 @@ export default function UnifiedInbox() {
 							</div>
 						)}
 
+						{draftOpen && draftProposal && (
+							<div className="px-4 pt-3">
+								<DraftProposal
+									proposal={draftProposal}
+									excerpt={messages.filter((m) => m.sender === "user").map((m) => m.body ?? "(attachment)").slice(-3)}
+									busy={draftBusy}
+									onAccept={acceptDraft}
+									onReject={rejectDraft}
+								/>
+							</div>
+						)}
+
+						{(() => {
+							const sl = (threadState?.slang_hits ?? null) as { count?: number; terms?: string[] } | null;
+							if (!sl || !(sl.count || 0)) return null;
+							return (
+								<p data-testid="slang-terms" className="px-4 pt-1 text-[10px] text-amber-500/90">
+									Slang in this chat ({sl.count}×): {(sl.terms || []).slice(0, 6).join(", ")}
+								</p>
+							);
+						})()}
 						{/* Input */}
 						<div className="border-t border-border bg-surface px-4 py-3">
 							<div className="flex gap-1.5 overflow-x-auto pb-2.5 scrollbar-none">
@@ -1165,6 +1532,18 @@ export default function UnifiedInbox() {
 										<Sparkles size={11} />
 									)}
 									{aiBusy ? "Thinking…" : "AI suggest"}
+								</button>
+								<button
+									className="chip shrink-0 cursor-pointer !text-accent hover:!border-accent disabled:opacity-50 !py-1"
+									onClick={requestDraft}
+									disabled={draftBusy}
+								>
+									{draftBusy ? (
+										<Loader2 size={11} className="animate-spin" />
+									) : (
+										<Plus size={11} />
+									)}
+									{draftBusy ? "Drafting…" : "Draft post"}
 								</button>
 								{QUICK_REPLIES.slice(0, 4).map((q) => (
 									<button

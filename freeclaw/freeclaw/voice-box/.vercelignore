@@ -1,3 +1,36 @@
+# Never deploy secrets or local-only bulk.
+.env*
+*.log
+logs/
+
+# Vercel installs dependencies itself — uploading these balloons the
+# deployment past the 100MB file limit and leaks nothing useful.
+node_modules/
+
+# Native-shell artifacts (built locally / in the Native workflow, never served).
+electron/dist/
+electron/dist-ssr/
+android/
+ios/
+resources/
+release/
+*.apk
+*.aab
+*.exe
+*.blockmap
+
+# Test output and local dev leftovers.
+test-results/
+playwright-report/
+blob-report/
+.playwright/
+coverage/
+dist/
+dist-ssr/
+_tmp_api.log
+.dev-server.log
+
+# Large local uploads (kept from before).
 api/me.js
 public/uploads/file_000000005ea47207b54f4a5b92ba3ba1.png
 public/uploads/file_0000000096a071fa8d5d4711a4ec4911.png

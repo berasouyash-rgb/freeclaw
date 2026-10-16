@@ -27,11 +27,15 @@ const h = vi.hoisted(() => ({
 	del: vi.fn(),
 	lsSet: vi.fn(),
 	anonSeq: ["anon-1", "anon-2", "anon-3", "anon-4"],
+	anonExtra: 0,
 	store: {} as Record<string, unknown>,
 }));
 
 vi.mock("../lib/identity", () => ({
-	getAnonId: () => h.anonSeq.shift() ?? "anon-1",
+	// Unique fallback per call: a fixed fallback would silently reuse an
+	// old anon id after the 4 canned ones, so the heartbeat effect would
+	// NOT re-run and the test would hang waiting for a change.
+	getAnonId: () => h.anonSeq.shift() ?? `anon-x${++h.anonExtra}`,
 	getDisplayName: () => "",
 	setDisplayName: () => {},
 	getProfile: () => ({ avatar: "", bio: "" }),
@@ -99,6 +103,7 @@ function Probe() {
 			</button>
 			<button onClick={() => app.markNotifsRead()}>mark-read</button>
 			<button onClick={() => app.clearNotifs()}>clear-notifs</button>
+			<button onClick={() => app.retireNotifsForLink("/x")}>retire</button>
 			<button onClick={() => app.refreshIdentity()}>refresh</button>
 			<button onClick={() => app.toggleBookmark("b1")}>toggle-bookmark</button>
 		</div>
@@ -131,6 +136,20 @@ beforeEach(() => {
 });
 
 describe("AppProvider — core behavior", () => {
+	it("does not install recurring heartbeat or notification poll timers", () => {
+		const intervalSpy = vi.spyOn(globalThis, "setInterval");
+		render(
+			<AppProvider>
+				<Probe />
+			</AppProvider>,
+		);
+
+		const intervals = intervalSpy.mock.calls.map(([, delay]) => delay);
+		expect(intervals).not.toContain(120_000);
+		expect(intervals).not.toContain(180_000);
+		intervalSpy.mockRestore();
+	});
+
 	it("throws when useApp is used outside the provider", () => {
 		expect(() => render(<Probe />)).toThrow(
 			/useApp must be used within <AppProvider>/,
@@ -257,6 +276,41 @@ describe("AppProvider — core behavior", () => {
 		);
 	});
 
+	it("collapses an identical immediate re-push into one notification", async () => {
+		const user = userEvent.setup();
+		render(
+			<AppProvider>
+				<Probe />
+			</AppProvider>,
+		);
+		await user.click(screen.getByRole("button", { name: "push" }));
+		await user.click(screen.getByRole("button", { name: "push" }));
+		await waitFor(() =>
+			expect(screen.getByTestId("notifs")).toHaveTextContent("info:Manual"),
+		);
+		// One entry, not two — a double-fire (double submit, re-mount replay)
+		// must never read as "2 posts are live" for a single event.
+		const parts = (screen.getByTestId("notifs").textContent || "").split("|");
+		expect(parts.filter((p) => p.includes("info:Manual"))).toHaveLength(1);
+	});
+
+	it("retires notices pointing at a deleted post", async () => {
+		const user = userEvent.setup();
+		render(
+			<AppProvider>
+				<Probe />
+			</AppProvider>,
+		);
+		await user.click(screen.getByRole("button", { name: "push" }));
+		await waitFor(() =>
+			expect(screen.getByTestId("notifs")).toHaveTextContent("info:Manual"),
+		);
+		await user.click(screen.getByRole("button", { name: "retire" }));
+		await waitFor(() =>
+			expect(screen.getByTestId("notifs")).not.toHaveTextContent("info:Manual"),
+		);
+	});
+
 	it("merges server-side admin notifications (warning/suspension/ban) into the list", async () => {
 		h.get.mockImplementation((url: string) => {
 			if (url.includes("/api/notifications"))
@@ -287,11 +341,13 @@ describe("AppProvider — core behavior", () => {
 		await waitFor(() =>
 			expect(screen.getByTestId("notifs").textContent).toContain("warning"),
 		);
-		// unread, mapped to info kind with the server title/body
-		expect(screen.getByTestId("notifs").textContent).toContain("[U]info:");
+		// unread, server kind preserved (a warning must stay a warning so the
+		// Notifications page can badge it — flattening to info hid severity
+		// and crashed KIND_META lookups for unmapped kinds).
+		expect(screen.getByTestId("notifs").textContent).toContain("[U]warning:");
 	});
 
-	it("does not duplicate server notifications on re-sync (dedupe by id)", async () => {
+	it("does not re-sync server notifications on visibility change", async () => {
 		let notifCalls = 0;
 		h.get.mockImplementation((url: string) => {
 			if (url.includes("/api/notifications")) {
@@ -324,11 +380,9 @@ describe("AppProvider — core behavior", () => {
 		await waitFor(() =>
 			expect(screen.getByTestId("notifs").textContent).toContain("Suspension lifted"),
 		);
-		// second engine pass (visibility change) returns the same notif → no dup
+		expect(notifCalls).toBe(1);
 		document.dispatchEvent(new Event("visibilitychange"));
-		await waitFor(() => expect(notifCalls).toBeGreaterThanOrEqual(2));
-		const text = screen.getByTestId("notifs").textContent ?? "";
-		expect(text.split("Suspension lifted")).toHaveLength(2); // appears once
+		expect(notifCalls).toBe(1);
 	});
 
 	it("mirrors mark-all-read to the server for admin-issued notifications", async () => {
@@ -446,7 +500,7 @@ describe("AppProvider — core behavior", () => {
 			});
 			expect(screen.getByTestId("toast")).toHaveTextContent("");
 
-			// heartbeat interval fires at 120s → another /api/users beat
+			// A long-open page does not create a second heartbeat request.
 			const usersCallsBefore = h.post.mock.calls.filter(
 				(c) => c[0] === "/api/users",
 			).length;
@@ -456,7 +510,7 @@ describe("AppProvider — core behavior", () => {
 			const usersCallsAfter = h.post.mock.calls.filter(
 				(c) => c[0] === "/api/users",
 			).length;
-			expect(usersCallsAfter).toBeGreaterThan(usersCallsBefore);
+			expect(usersCallsAfter).toBe(usersCallsBefore);
 		} finally {
 			vi.useRealTimers();
 		}
@@ -522,9 +576,18 @@ describe("AppProvider — core behavior", () => {
 		warn.mockRestore();
 	});
 
-	it("fires a ban notification + toast when the heartbeat detects a new ban", async () => {
+	it("resets the status baseline on an identity switch — no cross-identity popup, state still applies", async () => {
+		// Statuses shift per /api/users call: mount heartbeat + mount
+		// check-pass read (benign, benign); the refresh click switches to
+		// anon-2 whose account IS banned — both the re-run heartbeat and
+		// the re-run check pass read (banned, banned). Because the
+		// baseline ref resets on identity change, the ban is FIRST SIGHT
+		// (same rule as first sight on load): state applies, no popup
+		// fires off the previous identity's baseline.
 		const statuses: AccountStatus[] = [
 			{ banned: false, suspended: false, suspended_until: null, strikes: 0 },
+			{ banned: false, suspended: false, suspended_until: null, strikes: 0 },
+			{ banned: true, suspended: false, suspended_until: null, strikes: 1 },
 			{ banned: true, suspended: false, suspended_until: null, strikes: 1 },
 		];
 		h.post.mockImplementation((url: string) => {
@@ -544,52 +607,135 @@ describe("AppProvider — core behavior", () => {
 
 		await user.click(screen.getByRole("button", { name: "refresh" }));
 		await waitFor(() =>
-			expect(screen.getByTestId("toast")).toHaveTextContent(
-				"permanently banned",
-			),
+			expect(screen.getByTestId("status")).toHaveTextContent('"banned":true'),
 		);
-		expect(screen.getByTestId("notifs").textContent).toContain("banned");
+		// The ban banner shows, but no enforcement popup/toast and no
+		// ban notification may leak from the OLD identity's baseline.
+		expect(screen.getByTestId("toast").textContent).toBe("");
+		expect(screen.getByTestId("notifs").textContent).not.toContain(
+			"Your account has been banned",
+		);
+		// Baseline is now banned-identity's status: a subsequent same-
+		// identity wake comparing equal must not pop either.
+		expect(statuses.length).toBe(0);
+	});
+
+	it("refreshes account status on an SSE wake so an admin ban lands live", async () => {
+		// Fake EventSource capturing the "update" listener the provider
+		// attaches — dispatching it is the same wake the server emits
+		// (notif leg ≤10s) after update_user writes the notice.
+		const listeners: Record<string, () => void> = {};
+		function FakeEventSource() {
+			return {
+				addEventListener: (ev: string, fn: () => void) => {
+					listeners[ev] = fn;
+				},
+				close: vi.fn(),
+			};
+		}
+		vi.stubGlobal("EventSource", FakeEventSource);
+		try {
+			// Mount: heartbeat benign + mount check benign (no popup either
+			// way — prev is null on first sight). The wake then sees banned.
+			const statuses: AccountStatus[] = [
+				{ banned: false, suspended: false, suspended_until: null, strikes: 0 },
+				{ banned: false, suspended: false, suspended_until: null, strikes: 0 },
+				{ banned: true, suspended: false, suspended_until: null, strikes: 1 },
+			];
+			h.post.mockImplementation((url: string) => {
+				if (url === "/api/users")
+					return Promise.resolve(statuses.shift() ?? benignStatus);
+				return Promise.resolve({});
+			});
+			render(
+				<AppProvider>
+					<Probe />
+				</AppProvider>,
+			);
+			await waitFor(() =>
+				expect(screen.getByTestId("status")).toHaveTextContent('"banned":false'),
+			);
+			expect(screen.getByTestId("toast")).toHaveTextContent("");
+
+			await act(async () => {
+				listeners["update"]?.();
+			});
+			await waitFor(() =>
+				expect(screen.getByTestId("toast")).toHaveTextContent(
+					"permanently banned",
+				),
+			);
+			expect(screen.getByTestId("status")).toHaveTextContent('"banned":true');
+			expect(screen.getByTestId("notifs").textContent).toContain("banned");
+		} finally {
+			vi.unstubAllGlobals();
+		}
 	});
 
 	it("fires warning notifications + toasts when strikes increase (text and no-text paths)", async () => {
-		const statuses: AccountStatus[] = [
-			{ banned: false, suspended: false, suspended_until: null, strikes: 1 },
-			{
-				banned: false,
-				suspended: false,
-				suspended_until: null,
-				strikes: 2,
-				latest_warning: "Be nice",
-			},
-			{ banned: false, suspended: false, suspended_until: null, strikes: 3 },
-		];
-		h.post.mockImplementation((url: string) => {
-			if (url === "/api/users")
-				return Promise.resolve(statuses.shift() ?? benignStatus);
-			return Promise.resolve({});
-		});
-		const user = userEvent.setup();
-		render(
-			<AppProvider>
-				<Probe />
-			</AppProvider>,
-		);
-		await waitFor(() =>
-			expect(screen.getByTestId("status")).toHaveTextContent('"strikes":1'),
-		);
+		// Same-identity drives (SSE wakes re-run the check pass — the
+		// heartbeat itself only runs once per identity): mount reads
+		// strikes:1 twice (first sight, no popup), wake 1 sees strikes:2
+		// with warning text, wake 2 sees strikes:3 without text.
+		const listeners: Record<string, () => void> = {};
+		function FakeEventSource() {
+			return {
+				addEventListener: (ev: string, fn: () => void) => {
+					listeners[ev] = fn;
+				},
+				close: vi.fn(),
+			};
+		}
+		vi.stubGlobal("EventSource", FakeEventSource);
+		try {
+			const statuses: AccountStatus[] = [
+				{ banned: false, suspended: false, suspended_until: null, strikes: 1 },
+				{ banned: false, suspended: false, suspended_until: null, strikes: 1 },
+				{
+					banned: false,
+					suspended: false,
+					suspended_until: null,
+					strikes: 2,
+					latest_warning: "Be nice",
+				},
+				{ banned: false, suspended: false, suspended_until: null, strikes: 3 },
+			];
+			h.post.mockImplementation((url: string) => {
+				if (url === "/api/users")
+					return Promise.resolve(statuses.shift() ?? benignStatus);
+				return Promise.resolve({});
+			});
+			render(
+				<AppProvider>
+					<Probe />
+				</AppProvider>,
+			);
+			await waitFor(() =>
+				expect(screen.getByTestId("status")).toHaveTextContent('"strikes":1'),
+			);
+			expect(screen.getByTestId("toast").textContent).toBe("");
 
-		// anon-2 → strikes 2 with warning text
-		await user.click(screen.getByRole("button", { name: "refresh" }));
-		await waitFor(() =>
-			expect(screen.getByTestId("toast")).toHaveTextContent("Be nice"),
-		);
+			// wake 1 → strikes 2 with warning text
+			await act(async () => {
+				listeners["update"]?.();
+			});
+			await waitFor(() =>
+				expect(screen.getByTestId("toast")).toHaveTextContent("Be nice"),
+			);
 
-		// anon-3 → strikes 3 without warning text → generic strike toast
-		await user.click(screen.getByRole("button", { name: "refresh" }));
-		await waitFor(() =>
-			expect(screen.getByTestId("toast")).toHaveTextContent("Strike 3 of 3"),
-		);
-		expect(screen.getByTestId("notifs").textContent).toContain("warning");
+			// wake 2 → strikes 3 without warning text → generic strike toast
+			await act(async () => {
+				listeners["update"]?.();
+			});
+			await waitFor(() =>
+				expect(screen.getByTestId("toast")).toHaveTextContent("Strike 3 of 3"),
+			);
+			expect(screen.getByTestId("notifs").textContent).toContain("warning");
+			// Both wakes consumed their status read — nothing pending.
+			expect(statuses.length).toBe(0);
+		} finally {
+			vi.unstubAllGlobals();
+		}
 	});
 
 	it("detects status/reply/comment/chat/poll changes and fires notifications", async () => {
@@ -668,11 +814,97 @@ describe("AppProvider — core behavior", () => {
 		);
 		expect(screen.getByTestId("chat-unread")).toHaveTextContent("1");
 
-		// visibilitychange re-fires beat + check (no duplicate notifs: snapshot matches)
+		// Visibility changes do not trigger another full notification pass.
+		const callsBeforeVisibility = postsCalls;
 		document.dispatchEvent(new Event("visibilitychange"));
-		await waitFor(() => expect(postsCalls).toBeGreaterThanOrEqual(3));
+		await act(async () => {
+			await Promise.resolve();
+		});
+		expect(postsCalls).toBe(callsBeforeVisibility);
 		const notifsAfter = screen.getByTestId("notifs").textContent ?? "";
 		expect(notifsAfter).toContain("solved");
+	});
+
+	it("raises the inbox badge and a notification for AI replies, not just admin ones", async () => {		let chatCalls = 0;
+		h.get.mockImplementation((url: string) => {
+			if (url.includes("/api/saved")) return Promise.resolve({ saved: [] });
+			if (url.includes("/api/posts")) return Promise.resolve([]);
+			if (url.includes("/api/chat")) {
+				chatCalls++;
+				return chatCalls === 1
+					? Promise.resolve({ messages: [] })
+					: Promise.resolve({
+							messages: [{ sender: "ai", read: false }],
+						});
+			}
+			return Promise.resolve({});
+		});
+
+		const user = userEvent.setup();
+		render(
+			<AppProvider>
+				<Probe />
+			</AppProvider>,
+		);
+		await waitFor(() => expect(chatCalls).toBeGreaterThanOrEqual(1));
+
+		await user.click(screen.getByRole("button", { name: "refresh" }));
+		await waitFor(
+			() => {
+				expect(screen.getByTestId("chat-unread")).toHaveTextContent("1");
+				expect(
+					screen.getByTestId("notifs").textContent ?? "",
+				).toContain("New reply in your inbox");
+			},
+			{ timeout: 3000 },
+		);
+	});
+
+	it("pings the device once when updates piled up while the tab was hidden", async () => {
+		const shown: Array<{ title: string }> = [];
+		const Ctor = vi.fn(function (this: unknown, title: string) {
+			shown.push({ title });
+			return this;
+		}) as unknown as typeof Notification;
+		Object.defineProperty(Ctor, "permission", { value: "granted", configurable: true });
+		vi.stubGlobal("Notification", Ctor);
+		const hiddenDesc = Object.getOwnPropertyDescriptor(document, "hidden");
+		Object.defineProperty(document, "hidden", { value: true, configurable: true });
+
+		h.get.mockImplementation((url: string) => {
+			if (url.includes("/api/saved")) return Promise.resolve({ saved: [] });
+			if (url.includes("/api/posts")) return Promise.resolve([]);
+			if (url.includes("/api/chat"))
+				return Promise.resolve({ messages: [{ sender: "ai", read: false }] });
+			return Promise.resolve({});
+		});
+
+		render(
+			<AppProvider>
+				<Probe />
+			</AppProvider>,
+		);
+		// Mount run skips while hidden — nothing shown, nothing raised.
+		await act(async () => {
+			await Promise.resolve();
+		});
+		expect(shown).toHaveLength(0);
+
+		// Return + refresh identity re-runs the check with fresh items waiting.
+		Object.defineProperty(document, "hidden", { value: false, configurable: true });
+		const user = userEvent.setup();
+		await user.click(screen.getByRole("button", { name: "refresh" }));
+		await waitFor(
+			() => {
+				expect(screen.getByTestId("chat-unread")).toHaveTextContent("1");
+			},
+			{ timeout: 3000 },
+		);
+		expect(shown).toHaveLength(1);
+		expect(shown[0]?.title).toMatch(/away|reply|inbox|update/i);
+
+		if (hiddenDesc) Object.defineProperty(document, "hidden", hiddenDesc);
+		vi.unstubAllGlobals();
 	});
 });
 

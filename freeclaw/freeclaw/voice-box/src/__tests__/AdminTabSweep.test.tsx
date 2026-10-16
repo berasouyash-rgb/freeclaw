@@ -5,6 +5,7 @@
 // ═══════════════════════════════════════════════════════════════════
 
 import { render } from "@testing-library/react";
+import { MemoryRouter } from "react-router";
 import { describe, expect, it, vi } from "vitest";
 
 vi.mock("../lib/api", () => ({
@@ -14,6 +15,7 @@ vi.mock("../lib/api", () => ({
 		getSlow: vi.fn(async () => []),
 		postLong: vi.fn(async () => []),
 		getLong: vi.fn(async () => []),
+		postAgent: vi.fn(async () => ({})),
 		put: vi.fn(async () => ({})),
 		del: vi.fn(async () => ({})),
 	},
@@ -48,42 +50,40 @@ vi.mock("../lib/supabase", () => ({ default: null }));
 vi.mock("../components/PostPreviewCard", () => ({
 	default: () => <div data-testid="post-preview-card" />,
 }));
-vi.mock("../pages/admin/agent-office/Office3D", () => ({
-	default: () => <div data-testid="office-3d" />,
-}));
 
 // ── Candidate tabs (lazy modules) ──────────────────────────────────
 // default: unknown — modules have heterogeneous props (e.g. PostsTable
 // needs { type }); the test only needs the default export to render.
 const tabs: [string, () => Promise<{ default: unknown }>][] = [
-	["Overview", () => import("../pages/admin/Overview")],
-	["AdminAI", () => import("../pages/admin/AdminAI")],
-	["AIOperations", () => import("../pages/admin/AIOperations")],
-	["CommandCenter", () => import("../pages/admin/CommandCenter")],
+	["ActionCenter", () => import("../pages/admin/ActionCenter")],
+	["AgentChat", () => import("../pages/admin/AgentChat")],
+	["OpsCenter", () => import("../pages/admin/OpsCenter")],
+	["SystemHealth", () => import("../pages/admin/SystemHealth")],
+	["PerformanceCenter", () => import("../pages/admin/PerformanceCenter")],
+	["SecurityCenter", () => import("../pages/admin/SecurityCenter")],
+	["ActivityStream", () => import("../pages/admin/ActivityStream")],
+	["Reports", () => import("../pages/admin/Reports")],
+	["ReportDeck", () => import("../pages/admin/ReportDeck")],
 	["UnifiedInbox", () => import("../pages/admin/UnifiedInbox")],
-	["AiPanel", () => import("../pages/admin/AiPanel")],
-	["PostsTable", () => import("../pages/admin/PostsTable")],
-	["SuggestionsTable", () => import("../pages/admin/SuggestionsTable")],
-	["PollManager", () => import("../pages/admin/PollManager")],
-	["CommentMod", () => import("../pages/admin/CommentMod")],
-	["UserManager", () => import("../pages/admin/UserManager")],
-	["Logs", () => import("../pages/admin/Logs")],
-	["Categories", () => import("../pages/admin/Categories")],
-	["AdminSettings", () => import("../pages/admin/AdminSettings")],
 	["ErrorTracking", () => import("../pages/admin/ErrorTracking")],
-	["AdminLeaderboard", () => import("../pages/admin/AdminLeaderboard")],
-	["WorkforceConsole", () => import("../pages/admin/WorkforceConsole")],
-	["AgentOutputPage", () => import("../pages/admin/AgentOutputPage")],
-	["AgentDashboard", () => import("../pages/admin/AgentDashboard")],
-	["AgentTeamPanel", () => import("../pages/admin/AgentTeamPanel")],
-	["ContentReview", () => import("../pages/admin/ContentReview")],
-	["ProviderSettings", () => import("../pages/admin/ProviderSettings")],
-	["AdminChat", () => import("../pages/admin/AdminChat")],
+	["Logs", () => import("../pages/admin/Logs")],
+	["PostsTable", () => import("../pages/admin/PostsTable")],
+	["PollManager", () => import("../pages/admin/PollManager")],
+	["SlangLeaders", () => import("../pages/admin/SlangLeaders")],
+	["Communities", () => import("../pages/admin/Communities")],
+	["UserManager", () => import("../pages/admin/UserManager")],
+	["Categories", () => import("../pages/admin/Categories")],
+	["EmailTemplates", () => import("../pages/admin/EmailTemplates")],
+	["AiSystems", () => import("../pages/admin/AiSystems")],
+	["AdminSettings", () => import("../pages/admin/AdminSettings")],
 ];	describe("Admin tab render sweep — no tab may crash on mount", () => {
+		// Some tabs do parallel data loads (health, chunks, errors, telemetry) plus
+		// heavy dynamic imports. Under full-suite parallel-worker contention these
+		// mounts are far slower than in isolation — the sweep asserts "no crash on
+		// mount", not mount latency, so the budget is deliberately generous.
+		const heavyMounts = new Set(["ActionCenter", "Reports"]);
 		for (const [name, importFn] of tabs) {
-			// Heavy dynamic imports (chart/animation libs in Overview, AIOperations,
-			// AdminAI) can exceed the 5s default under full-suite load. Give each
-			// mount 30s — we're testing for crashes, not timing.
+			const timeout = heavyMounts.has(name) ? 90_000 : 30_000;
 			it(`renders ${name} without throwing`, async () => {
 			let Comp: any = null;
 			try {
@@ -98,11 +98,15 @@ const tabs: [string, () => Promise<{ default: unknown }>][] = [
 			// Wrap in try/catch so a throw surfaces as a clear assertion failure
 			let threw: unknown = null;
 			try {
-				render(<Comp />);
+				render(
+					<MemoryRouter initialEntries={["/admin"]}>
+						<Comp />
+					</MemoryRouter>,
+				);
 			} catch (e) {
 				threw = e;
 			}
 			expect(threw).toBeNull();
-		}, 30_000);
+		}, timeout);
 	}
 });

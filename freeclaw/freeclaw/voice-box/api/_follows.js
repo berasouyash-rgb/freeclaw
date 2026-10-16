@@ -9,7 +9,7 @@
 // `notifyFollowers` is exported for _posts.js to fan out a status-change /
 // admin-reply notification to everyone following a post.
 
-import { clean, cors, rateLimitResponse } from "./_auth.js";
+import { clean, cors, rateLimitResponse, verifyCallerIdentity } from "./_auth.js";
 import supabase from "./_db-client.js";
 import { getNotifyPrefs } from "./_notify-prefs.js";
 import { sendEmail, sendSms } from "./_dispatch.js";
@@ -121,6 +121,13 @@ export default async function handler(req, res) {
 	try {
 		const userId = clean(req.query.user_id || req.body?.user_id, 40);
 		if (!userId) return res.status(400).json({ error: "user_id required" });
+
+		// P0 SECURITY FIX: Verify caller identity on all operations
+		if (req.method !== "OPTIONS") {
+			const caller = await verifyCallerIdentity(req, res, userId);
+			if (!caller.ok)
+				return res.status(caller.status).json({ error: caller.error, code: caller.code });
+		}
 
 		if (req.method === "GET") {
 			const follows = await getFollows(userId);

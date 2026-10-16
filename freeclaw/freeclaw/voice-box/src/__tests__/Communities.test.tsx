@@ -2,6 +2,8 @@
 // Communities page — list rendering, create dialog, empty state
 // ═══════════════════════════════════════════════════════════════════
 import { render, screen } from "@testing-library/react";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import Communities from "../pages/Communities";
 
@@ -32,6 +34,14 @@ vi.mock("react-router", () => ({
 	),
 }));
 
+// Realtime wiring on the page opens a real channel in jsdom otherwise
+// (undici WebSocket → uncaught Event-class mismatch). The background-tick
+// behaviour under test is unaffected; wiring assertions live in
+// DerivedPages.realtime.test.tsx.
+vi.mock("../lib/useRealtime", () => ({
+	useRealtime: () => {},
+}));
+
 const listRes = {
 	communities: [
 		{
@@ -54,6 +64,30 @@ beforeEach(() => {
 });
 
 describe("Communities page", () => {
+	it("picks up a community created elsewhere, with no clicks (evolution 2026-10-05)", async () => {
+		render(<Communities />);
+		await screen.findByText("Study Gang");
+		// Another device creates a community after this screen loaded.
+		mocks.get.mockResolvedValue({
+			communities: [
+				...listRes.communities,
+				{
+					slug: "night-owls",
+					name: "Night Owls",
+					description: "Late study",
+					avatar: "🌙",
+					created_by: "anon_b",
+					created_at: new Date().toISOString(),
+					hidden: false,
+					member_count: 1,
+					post_count: 0,
+				},
+			],
+		});
+		// No Refresh click — the background tick merges it on its own.
+		await screen.findByText("Night Owls", undefined, { timeout: 15000 });
+	});
+
 	it("renders the community list from the API", async () => {
 		render(<Communities />);
 		expect(await screen.findByText("Study Gang")).toBeInTheDocument();
@@ -91,5 +125,15 @@ describe("Communities page", () => {
 		mocks.get.mockRejectedValue(new Error("network down"));
 		render(<Communities />);
 		expect(await screen.findByText("network down")).toBeInTheDocument();
+	});
+
+	it("owns exactly one visibility-guarded background timer", () => {
+		const source = readFileSync(
+			resolve(process.cwd(), "src/pages/Communities.tsx"),
+			"utf8",
+		);
+		const timers = source.match(/setInterval\s*\(/g) || [];
+		expect(timers.length).toBe(1);
+		expect(source).toContain('document.visibilityState === "hidden"');
 	});
 });

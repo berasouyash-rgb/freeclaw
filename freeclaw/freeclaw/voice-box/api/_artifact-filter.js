@@ -34,12 +34,21 @@ const isTestArtifact = (title = "") => {
 	if (/^test\s+(post|poll|question|problem|suggestion)\b/i.test(t)) return true;
 	// Yes/no polls auto-generated from a test post
 	if (/^do you agree:\s*test\b/i.test(t)) return true;
-	// Broad rule: any title containing the whole word "test" is a seeded QA/fuzz
-	// artifact ("Content Type Test", "Full CRUD Test 210145", "FV Test Post 210105",
-	// "Workflow Test Post", "Final Workflow Test", "Reaction Comment Test 210128").
-	// Accepted tradeoff: rare legitimate titles that mention "test" (e.g. a student
-	// writing about an exam) are hidden from every surface; the DB row is intact.
-	if (/\btest\b/i.test(t)) return true;
+	// Known seeded comment bodies from the original cleanup run. These are
+	// explicit fixture signatures, not a rule that removes ordinary comments
+	// merely because they use the word "test".
+	if (/^(?:this is a test comment|test body text)$/i.test(t)) return true;
+	// Known seeded harness titles. Do NOT use a broad /\btest\b/ rule here:
+	// "test" is ordinary school vocabulary, and hiding every title containing it
+	// makes a successfully published post disappear from My Activity. Only the
+	// explicit harness prefixes below are safe to remove without risking real
+	// student content (the DB row is still retained for audit/recovery).
+	if (
+		/^(?:content type|full crud|final workflow|workflow|fv|reaction comment)\s+test(?:\s+(?:post|poll|question|problem|suggestion))?(?:\s+\d+)?$/i.test(
+			t,
+		)
+	)
+		return true;
 	return false;
 };
 

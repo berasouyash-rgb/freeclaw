@@ -1,0 +1,11 @@
+# Voice Flow — anonymous school feedback platform
+User-agent: *
+Allow: /
+Disallow: /admin
+Disallow: /api/
+Disallow: /ui-preview.html
+
+# AI assistants: site overview with curated links
+# https://voice-box-psi.vercel.app/llms.txt
+
+Sitemap: https://voice-box-psi.vercel.app/sitemap.xml

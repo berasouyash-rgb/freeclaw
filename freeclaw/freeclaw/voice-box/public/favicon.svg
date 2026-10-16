@@ -1,5 +1,19 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
-  <rect width="64" height="64" rx="15" fill="#5652d6"/>
-  <path d="M18 26h14a10 10 0 0 1 0 20h-3v6l-8-6h-3a10 10 0 0 1 0-20z" fill="#fff" opacity=".95"/>
-  <path d="M40 14l3.2 6.8L50 24l-6.8 3.2L40 34l-3.2-6.8L30 24l6.8-3.2z" fill="#ffd166"/>
+  <defs>
+    <linearGradient id="vbfg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#8b85f5"/>
+      <stop offset="58%" stop-color="#5652d6"/>
+      <stop offset="100%" stop-color="#4038c7"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="15" fill="url(#vbfg)"/>
+  <g fill="#ffffff">
+    <circle cx="23" cy="23" r="8.5"/>
+    <path d="M9 51 C9 42 15 38 23 38 C31 38 37 42 37 51 Z"/>
+  </g>
+  <g fill="none" stroke="#ffffff" stroke-width="3.2" stroke-linecap="round" opacity=".9">
+    <path d="M40.4 22 A13 13 0 0 1 40.4 42"/>
+    <path d="M44.9 16.7 A20 20 0 0 1 44.9 47.3"/>
+    <path d="M49.3 11.3 A27 27 0 0 1 49.3 52.7"/>
+  </g>
 </svg>
