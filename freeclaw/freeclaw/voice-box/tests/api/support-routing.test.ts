@@ -64,6 +64,7 @@ vi.mock("../../api/_moderation.js", () => ({
 	checkSafetyRepost: vi.fn(async () => ({ blocked: false })),
 	spamAnalyze: vi.fn(() => ({ action: "allow", spam_score: 0, signals: {} })),
 	getSpamConfig: vi.fn(async () => ({})),
+	alertAdminThreat: vi.fn(async () => ({ alerted: false, reason: "not-a-threat" })),
 }));
 vi.mock("../../api/_follows.js", () => ({
 	notifyFollowers: vi.fn(),

@@ -1084,3 +1084,86 @@ export async function clearSafetyRepost(client, text) {
 		return false;
 	}
 }
+
+const THREAT_ALERT_TYPES = new Set(["threat", "violence"]);
+// One alert per author per window: a looped client burns model calls to
+// get blocked, and each block must not page a human again. Six hours is
+// long enough to stop floods, short enough that a next-day threat still
+// pages. The review queue stays the backstop either way.
+const THREAT_ALERT_COOLDOWN_MS = 6 * 60 * 60 * 1000;
+const ADMIN_NOTIFICATIONS_KEY = "notifications:admin";
+const ADMIN_NOTIFICATION_CAP = 50;
+
+/**
+ * Named admin alert on an immediate-stop block. A block stops the content;
+ * it does not tell a human WHO did it. This writes ONE entry to the admin
+ * notification store (the same row the admin inbox reads), naming the
+ * author's anonymous id and quoting the threat excerpt with the matched
+ * flag types, so a moderator can act fast.
+ *
+ * Never throws, never blocks a publish path: non-threat flags, a missing
+ * author, a cooldown hit, and any store failure all resolve to
+ * `{ alerted: false }` with a reason. Callers await it on the block path
+ * (correctness over latency — the request is already a 403).
+ */
+export async function alertAdminThreat({ surface, authorId, excerpt, flags }) {
+	try {
+		const types = (flags || [])
+			.map((f) => f && f.type)
+			.filter((t) => THREAT_ALERT_TYPES.has(t));
+		if (!types.length) return { alerted: false, reason: "not-a-threat" };
+		if (!authorId) return { alerted: false, reason: "no-author" };
+
+		const now = Date.now();
+		const { data: seen } = await supabase
+			.from("settings")
+			.select("value")
+			.eq("key", `threat_alert:${authorId}`)
+			.maybeSingle();
+		const lastAt = Date.parse(seen?.value?.at || "");
+		if (lastAt && now - lastAt < THREAT_ALERT_COOLDOWN_MS)
+			return { alerted: false, reason: "cooldown" };
+
+		const { data: existing } = await supabase
+			.from("settings")
+			.select("value")
+			.eq("key", ADMIN_NOTIFICATIONS_KEY)
+			.maybeSingle();
+		const notifs = existing?.value?.notifications || [];
+		notifs.unshift({
+			id: `threat_${now.toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
+			type: "threat_blocked",
+			title: "Threat blocked — action needed",
+			body: `${authorId} posted a blocked ${types.join("+")} threat on ${surface}: "${String(excerpt || "").slice(0, 120)}"`,
+			read: false,
+			created_at: new Date(now).toISOString(),
+		});
+		await supabase.from("settings").upsert(
+			{
+				key: ADMIN_NOTIFICATIONS_KEY,
+				value: {
+					notifications: notifs.slice(0, ADMIN_NOTIFICATION_CAP),
+					updated_at: new Date(now).toISOString(),
+				},
+			},
+			{ onConflict: "key" },
+		);
+		// Best-effort throttle marker: a failed marker write only means a
+		// possible duplicate alert, never a lost block (the 403 already
+		// landed before this helper ran).
+		try {
+			await supabase.from("settings").upsert(
+				{
+					key: `threat_alert:${authorId}`,
+					value: { at: new Date(now).toISOString() },
+				},
+				{ onConflict: "key" },
+			);
+		} catch {
+			/* duplicate alert beats lost alert */
+		}
+		return { alerted: true };
+	} catch {
+		return { alerted: false, reason: "error" };
+	}
+}

@@ -91,6 +91,7 @@ vi.mock("../../api/_moderation.js", () => ({
 		requiresReview: false,
 		flags: [],
 	})),
+	alertAdminThreat: vi.fn(async () => ({ alerted: false, reason: "not-a-threat" })),
 }));
 
 // Route verdicts come from the unified safety pipeline: mock the seam

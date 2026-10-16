@@ -17,7 +17,7 @@ import supabase from "./_db-client.js";
 import { sanitizeError } from "./_error.js";
 import { invalidateCounts } from "./_counts.js";
 import { EVENT_TYPES, emitEventAndBridge } from "./_events.js";
-import { recordSafetyRepost, checkSafetyRepost } from "./_moderation.js";
+import { recordSafetyRepost, checkSafetyRepost, alertAdminThreat } from "./_moderation.js";
 import { evaluateContentDeep } from "./_safety-pipeline.js";
 import { strikeSlangAbuse } from "./_reports.js";
 
@@ -231,6 +231,14 @@ export default async function handler(req, res) {
 						rawBody,
 						(decision.flags[0] || {}).type || "policy",
 					);
+					// Threats page a human (same contract as posts: block stops
+					// the content, the alert names who did it for fast action).
+					await alertAdminThreat({
+						surface: "comment",
+						authorId: author_id,
+						excerpt: rawBody,
+						flags: decision.flags,
+					});
 					// Slang auto-strike (same rule as posts).
 					if (decision.flags.some((f) => f.type === "profanity")) {
 						await strikeSlangAbuse(author_id, "comment", rawBody);

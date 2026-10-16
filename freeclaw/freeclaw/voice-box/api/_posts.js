@@ -32,6 +32,7 @@ import {
 	checkSafetyRepost,
 	spamAnalyze,
 	getSpamConfig,
+	alertAdminThreat,
 } from "./_moderation.js";
 
 const CATEGORIES = [
@@ -819,6 +820,16 @@ export default async function handler(req, res) {
 					`${title} ${description}`,
 					(decision.flags[0] || {}).type || "policy",
 				);
+				// Threats page a human: the block above stops the content;
+				// the alert names WHO (anonymous id + excerpt + flag types)
+				// so a moderator can act fast. Non-threat blocks stay
+				// silent inside alertAdminThreat — no per-type branching here.
+				await alertAdminThreat({
+					surface: "post",
+					authorId: author_id,
+					excerpt: `${title} ${description}`,
+					flags: decision.flags,
+				});
 				// Slang auto-strike: 4+ unique slang terms in one blocked
 				// submission strikes the author (best-effort, never delays 403).
 				if (decision.flags.some((f) => f.type === "profanity")) {

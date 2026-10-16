@@ -39,6 +39,7 @@ vi.mock("../../api/_moderation.js", () => ({
 	recordModerationDecision: vi.fn(() => Promise.resolve()),
 	recordSafetyRepost: vi.fn(() => Promise.resolve(false)),
 	checkSafetyRepost: vi.fn(() => Promise.resolve({ blocked: false })),
+	alertAdminThreat: vi.fn(async () => ({ alerted: false, reason: "not-a-threat" })),
 }));
 vi.mock("../../api/_safety-pipeline.js", () => ({
 	evaluateContentAsync: vi.fn(async () => ({ blocked: false, flags: [] })),

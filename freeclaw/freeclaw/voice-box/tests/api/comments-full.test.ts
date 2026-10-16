@@ -61,6 +61,7 @@ vi.mock("../../api/_moderation.js", () => ({
 	})),
 	recordSafetyRepost: vi.fn(async () => false),
 	checkSafetyRepost: vi.fn(async () => ({ blocked: false })),
+	alertAdminThreat: vi.fn(async () => ({ alerted: false, reason: "not-a-threat" })),
 }));
 
 // Route verdicts come from the unified safety pipeline, not inline

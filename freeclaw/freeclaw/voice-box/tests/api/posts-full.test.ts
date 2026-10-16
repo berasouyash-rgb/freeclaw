@@ -80,6 +80,7 @@ vi.mock("../../api/_moderation.js", () => ({
 	recordModerationDecision: vi.fn(() => Promise.resolve()),
 	recordSafetyRepost: vi.fn(() => Promise.resolve(false)),
 	checkSafetyRepost: vi.fn(() => Promise.resolve({ blocked: false })),
+	alertAdminThreat: vi.fn(async () => ({ alerted: false, reason: "not-a-threat" })),
 	getSpamConfig: vi.fn(() =>
 		Promise.resolve({ flag: 40, review: 60, quarantine: 80 }),
 	),

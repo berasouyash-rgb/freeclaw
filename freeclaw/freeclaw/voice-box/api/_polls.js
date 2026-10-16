@@ -19,6 +19,7 @@ import { trackError } from "./_observability.js";
 import { EVENT_TYPES, emitEventAndBridge } from "./_events.js";
 import { sendPollClosedEmail } from "./_email.js";
 import { evaluateContentDeep, messageFor } from "./_safety-pipeline.js";
+import { alertAdminThreat } from "./_moderation.js";
 
 // Failed realtime liveness touches on `polls`. The ballot write itself has
 // already succeeded when this runs, so the vote is not lost — but `poll_votes`
@@ -523,6 +524,13 @@ export default async function handler(req, res) {
 					"poll_blocked",
 					`${author_id}: ${title.slice(0, 60)} [${pollDecision.flags.map((f) => f.type).join(", ")}]`,
 				);
+				// Threats page a human (same contract as posts and comments).
+				await alertAdminThreat({
+					surface: "poll",
+					authorId: author_id,
+					excerpt: `${title} ${options.join(" ")}`,
+					flags: pollDecision.flags,
+				});
 				const pollCode = isPII ? "PII_BLOCKED" : pollDecision.code;
 				return res.status(403).json({
 					error: messageFor("poll", pollCode),
