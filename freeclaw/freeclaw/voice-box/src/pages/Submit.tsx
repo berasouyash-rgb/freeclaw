@@ -1150,6 +1150,8 @@ export default function Submit() {
 				relevance={relevance}
 				text={liveText}
 				checking={modChecking}
+				hasSafetyFlags={modFlags.length > 0}
+				safetyPending={aiChecking}
 			/>
 			{moderation && modFlags.length > 0 && (
 				<div

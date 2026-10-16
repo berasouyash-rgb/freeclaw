@@ -203,4 +203,47 @@ describe("RelevanceNote", () => {
 		expect(screen.getByText(/reads like a school problem/i)).toBeInTheDocument();
 		expect(screen.queryByText("Why we said this")).not.toBeInTheDocument();
 	});
+
+	it("hides the posting invitation while safety flags are on screen", () => {
+		// The verdict explanation stays (it is informative); only the
+		// "post it anyway" invitation goes — inviting a post over an
+		// active safety flag reads as permission.
+		render(
+			<RelevanceNote
+				relevance={verdict({
+					verdict: "unclear",
+					route: "post_with_note",
+					confidence: "low",
+					reasons: [],
+					explanation: "We could not tell whether this is a school issue.",
+					askUserToConfirm: true,
+				})}
+				text="Something happened after class and I need help right now"
+				hasSafetyFlags
+			/>,
+		);
+		expect(screen.getByText(/could not tell whether/i)).toBeInTheDocument();
+		expect(screen.queryByText(/only a suggestion/i)).not.toBeInTheDocument();
+		expect(screen.queryByText(/you can post it as it is/i)).not.toBeInTheDocument();
+	});
+
+	it("hides the posting invitation while the model pass is still judging", () => {
+		render(
+			<RelevanceNote
+				relevance={verdict({
+					verdict: "unclear",
+					route: "post_with_note",
+					confidence: "low",
+					reasons: [],
+					explanation: "We could not tell whether this is a school issue.",
+					askUserToConfirm: true,
+				})}
+				text="Something happened after class and I need help right now"
+				safetyPending
+			/>,
+		);
+		expect(screen.getByText(/could not tell whether/i)).toBeInTheDocument();
+		expect(screen.queryByText(/only a suggestion/i)).not.toBeInTheDocument();
+		expect(screen.queryByText(/you can post it as it is/i)).not.toBeInTheDocument();
+	});
 });

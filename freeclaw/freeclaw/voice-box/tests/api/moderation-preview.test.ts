@@ -89,10 +89,33 @@ describe("contextual layer catches what a word list cannot", () => {
 		["Rahul you're dead", "threat"],
 		["don't come to school tomorrow", "threat"],
 		["you are finished", "threat"],
+		// Live miss (school screenshot): a direct second-person assault
+		// verb with no name on it previewed clean while the page invited
+		// the author to post it. "kick" was simply absent from the threat
+		// lexicon while slap/punch/beat were all present.
+		["i will kick you", "threat"],
+		["I will kick him tomorrow", "threat"],
+		["Rahul kicked him yesterday", "threat"],
 	])("blocks %j as %s", async (text, expected) => {
 		const { body } = await call(text);
 		expect(body.serverBlocked).toBe(true);
 		expect(types(body)).toContain(expected);
+	});
+});
+
+describe("violence verbs with innocent tails are not assault", () => {
+	// "kick out" (expelled) and "kick off" (begin) are not attacks. The
+	// kick entries only fire on person objects, and a hit followed by
+	// out/off is dropped — otherwise team expulsions and event notices
+	// would 403 as threats.
+	it.each([
+		["they kicked him out of the club", "threat"],
+		["Rahul kicked me out of the team", "threat"],
+		["the event kicks off monday", "threat"],
+		["we will kick off the drive on friday", "threat"],
+	])("does not flag %j as %s", async (text, notExpected) => {
+		const { body } = await call(text);
+		expect(types(body)).not.toContain(notExpected);
 	});
 });
 

@@ -1908,3 +1908,144 @@ describe("Submit — distress auto-private lock", () => {
 		).not.toBeDisabled();
 	});
 });
+
+// ═══════════════════════════════════════════════════════════════════
+// The relevance note must never invite posting over an unresolved or
+// failed safety check. Its invitation ("you can post it anyway / as
+// it is") is advice about RELEVANCE, but rendered under a flagged or
+// still-checking draft it reads as permission — the exact failure in
+// the school screenshot ("i will kick you" + "you can post it anyway").
+// The verdict explanation stays (it is informative); only the
+// invitation hides, and only while flags are present or the model pass
+// is still in flight for the current text.
+// ═══════════════════════════════════════════════════════════════════
+describe("Submit — relevance never invites posting past safety", () => {
+	const INVITING_RELEVANCE = {
+		policyVersion: "test",
+		verdict: "unclear",
+		route: "post_with_note",
+		confidence: "low",
+		reasons: [],
+		explanation: "We could not tell whether this is a school issue.",
+		askUserToConfirm: true,
+		limits: [],
+	};
+
+	function mockChecks(
+		fast: (body?: Record<string, unknown>) => Promise<unknown>,
+		ai?: (body?: Record<string, unknown>) => Promise<unknown>,
+	) {
+		mocks.post.mockImplementation(
+			(url: string, body?: Record<string, unknown>) => {
+				if (String(url).includes("/api/assist")) return Promise.resolve({});
+				if (String(url).includes("/api/pre-publish"))
+					return Promise.resolve(APPROVED);
+				if (String(url).includes("/api/moderate"))
+					return body?.aiJudge === true
+						? (ai ?? fast)(body)
+						: fast(body);
+				return Promise.resolve({});
+			},
+		);
+	}
+
+	it("hides the invitation while flags are on screen", {
+		timeout: 20000,
+	}, async () => {
+		mockChecks(async () => ({
+			checked: true,
+			safe: false,
+			overallSeverity: "high",
+			flags: [
+				{
+					category: "privacy",
+					severity: "high",
+					message: "Phone number detected — remove personal contact info.",
+					matched: "123-456-7890",
+				},
+			],
+			serverBlocked: true,
+			aiChecked: false,
+			relevance: INVITING_RELEVANCE,
+		}));
+		renderPage();
+		fireEvent.change(screen.getByRole("textbox", { name: "Title *" }), {
+			target: { value: "Contact me about the room" },
+		});
+		fireEvent.change(screen.getByRole("textbox", { name: "Description *" }), {
+			target: { value: "Call me on my number 123-456-7890 any time" },
+		});
+
+		// The flag panel speaks; the relevance excuse to post anyway must not.
+		await waitFor(
+			() => {
+				expect(screen.getByText(/phone number detected/i)).toBeInTheDocument();
+			},
+			{ timeout: 8000 },
+		);
+		expect(screen.queryByText(/post it as it is/i)).not.toBeInTheDocument();
+		expect(screen.queryByText(/post it anyway/i)).not.toBeInTheDocument();
+	});
+
+	it("hides the invitation while the model pass is still judging", {
+		timeout: 20000,
+	}, async () => {
+		let resolveAI!: (v: unknown) => void;
+		const aiGate = new Promise((r) => {
+			resolveAI = r;
+		});
+		const AI_CLEAN = {
+			checked: true,
+			safe: true,
+			overallSeverity: "none",
+			flags: [],
+			serverBlocked: false,
+			aiChecked: true,
+			relevance: INVITING_RELEVANCE,
+		};
+		mockChecks(
+			async () => ({
+				checked: true,
+				safe: true,
+				overallSeverity: "none",
+				flags: [],
+				serverBlocked: false,
+				aiChecked: false,
+				relevance: INVITING_RELEVANCE,
+			}),
+			() => aiGate,
+		);
+		renderPage();
+		fireEvent.change(screen.getByRole("textbox", { name: "Title *" }), {
+			target: { value: "Broken benches near the basketball court" },
+		});
+		fireEvent.change(screen.getByRole("textbox", { name: "Description *" }), {
+			target: {
+				value: "Several benches by the court have loose planks and wobble.",
+			},
+		});
+
+		// Fast verdict first: the invitation would normally show here.
+		// Then the model pass goes in flight — the invitation must drop
+		// until the model has spoken, never inviting a post over an
+		// unfinished safety check.
+		await waitFor(
+			() => {
+				expect(
+					screen.getByText(/The AI is reviewing your draft/i),
+				).toBeInTheDocument();
+			},
+			{ timeout: 8000 },
+		);
+		expect(screen.queryByText(/post it as it is/i)).not.toBeInTheDocument();
+		expect(screen.queryByText(/post it anyway/i)).not.toBeInTheDocument();
+
+		resolveAI(AI_CLEAN);
+		await waitFor(
+			() => {
+				expect(screen.getByText(/post it as it is/i)).toBeInTheDocument();
+			},
+			{ timeout: 8000 },
+		);
+	});
+});

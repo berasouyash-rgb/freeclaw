@@ -26,6 +26,18 @@ interface RelevanceNoteProps {
 	text: string;
 	/** True while a check is in flight; render nothing rather than a stale claim. */
 	checking?: boolean;
+	/**
+	 * True while safety flags are on screen for the same text. The verdict
+	 * explanation still renders, but the "you can post it anyway"
+	 * invitation is hidden — inviting a post over an active safety flag
+	 * reads as permission (the failure in the school screenshot).
+	 */
+	hasSafetyFlags?: boolean;
+	/**
+	 * True while the model pass is still judging the same text. Same rule:
+	 * no posting invitation until the safety check has spoken.
+	 */
+	safetyPending?: boolean;
 }
 
 /** Minimum length before a verdict is worth showing. */
@@ -42,6 +54,8 @@ export default function RelevanceNote({
 	relevance,
 	text,
 	checking,
+	hasSafetyFlags,
+	safetyPending,
 }: RelevanceNoteProps) {
 	if (checking || !relevance) return null;
 	if (text.trim().length < MIN_CHARS) return null;
@@ -122,8 +136,9 @@ export default function RelevanceNote({
 				</details>
 			)}
 
-			{/* An invitation, never a requirement. */}
-			{relevance.askUserToConfirm && !isSupport && (
+			{/* An invitation, never a requirement — and never over an
+			    unresolved or failed safety check. */}
+			{relevance.askUserToConfirm && !isSupport && !hasSafetyFlags && !safetyPending && (
 				<p className="text-ink3 mt-1.5">
 					This is only a suggestion — you can post it as it is.
 				</p>

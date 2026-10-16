@@ -134,6 +134,17 @@ const THREAT_TERMS = [
 	"gonna get you", "going to get you", "i will get you", "we will get you",
 	"jaan se", "jaan se maar", "khoon", "khatam", "maar", "maro",
 	"marunga", "marungi", "pitai", "pitunga", "thrash him", "jump him",
+	// Assault verb missing until a school screenshot proved it: "i will
+	// kick you" previewed clean while slapping/punching/beating were all
+	// covered. Person objects only — bare "kick the habit" style uses do
+	// not match these entries; bare "kick" itself is covered for phrasings
+	// like "gonna kick ur ass" (the matched span must still survive the
+	// out/off guard below, so team expulsions and event notices stay clean).
+	"kick", "kicks", "kicked", "kicking",
+	"kick you", "kick him", "kick her", "kick them",
+	"kicks you", "kicks him", "kicks her", "kicks them",
+	"kicked you", "kicked him", "kicked her", "kicked them",
+	"kicking you", "kicking him", "kicking her", "kicking them",
 ];
 
 const HOSTILITY_TERMS = [
@@ -318,7 +329,20 @@ export function extractSignals(rawText) {
 	};
 
 	const crisisHits = findHits(THREAT_CRISIS_RE);
-	const threatHits = findHits(THREAT_RE);
+	// "kick out" (expelled from a team) and "kick off" (an event begins)
+	// are not assault. The kick entries above only fire on person objects,
+	// but bare "kick" still matches the verb in those phrases — so a kick
+	// hit with out/off within a few words after it is dropped. That window
+	// also covers "kicked me out" (bare "kick" matched, person after it).
+	// Unambiguous assault ("i will kick you") never has that tail;
+	// ambiguous phrasings fall through to the model judge instead of an
+	// instant block.
+	const threatHits = findHits(THREAT_RE).filter((h) => {
+		if (!/^kick(?:s|ed|ing)?(?:\s+(?:me|you|him|her|them))?$/i.test(h.term))
+			return true;
+		const after = norm.slice(h.index + h.term.length, h.index + h.term.length + 12);
+		return !/\b(out|off)\b/i.test(after);
+	});
 	const hostilityHits = findHits(HOSTILITY_RE);
 	const profanityHits = findHits(PROFANITY_ONLY_RE);
 
