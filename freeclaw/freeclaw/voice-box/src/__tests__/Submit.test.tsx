@@ -2049,3 +2049,270 @@ describe("Submit — relevance never invites posting past safety", () => {
 		);
 	});
 });
+
+// ═══════════════════════════════════════════════════════════════════
+// Real user paths the suite never exercised: image guard, private
+// publish, suggestion apply, revision queueing, cooldown, poll-tab
+// publish. Each pins end-user behavior (lock tests — the behavior
+// exists and must keep working), lifting the page toward the 90%
+// statement bar without inventing any new behavior.
+// ═══════════════════════════════════════════════════════════════════
+describe("Submit — uncovered user paths", () => {
+	function quietMocks(
+		assist?: (body?: Record<string, unknown>) => Promise<unknown>,
+	) {
+		mocks.post.mockImplementation(
+			(url: string, body?: Record<string, unknown>) => {
+				if (String(url).includes("/api/assist"))
+					return assist ? assist(body) : Promise.resolve({});
+				if (String(url).includes("/api/pre-publish"))
+					return Promise.resolve(APPROVED);
+				if (String(url).includes("/api/moderate"))
+					return Promise.resolve({
+						checked: true,
+						safe: true,
+						overallSeverity: "none",
+						flags: [],
+						serverBlocked: false,
+					});
+				if (String(url).includes("/api/posts"))
+					return Promise.resolve({ id: "post_new", title: body?.title ?? "" });
+				return Promise.resolve({});
+			},
+		);
+	}
+
+	it("rejects an oversized image before any upload is attempted", {
+		timeout: 20000,
+	}, async () => {
+		quietMocks();
+		renderPage();
+		const input = document.querySelector(
+			'input[type="file"]',
+		) as HTMLInputElement;
+		expect(input).not.toBeNull();
+		const big = new File(["x"], "huge.png", { type: "image/png" });
+		Object.defineProperty(big, "size", { value: 4 * 1024 * 1024 });
+		fireEvent.change(input, { target: { files: [big] } });
+		await waitFor(
+			() => {
+				expect(mocks.toast).toHaveBeenCalledWith(
+					"Image must be under 3 MB",
+					"err",
+				);
+			},
+			{ timeout: 8000 },
+		);
+		expect(mocks.uploadImage).not.toHaveBeenCalled();
+		expect(document.querySelector("img[alt='Upload preview']")).toBeNull();
+	});
+
+	it("publishes privately when the switch is on", {
+		timeout: 20000,
+	}, async () => {
+		let published: Record<string, unknown> | null = null;
+		mocks.post.mockImplementation((url: string, body?: Record<string, unknown>) => {
+			if (String(url).includes("/api/assist")) return Promise.resolve({});
+			if (String(url).includes("/api/pre-publish"))
+				return Promise.resolve(APPROVED);
+			if (String(url).includes("/api/moderate"))
+				return Promise.resolve({
+					checked: true,
+					safe: true,
+					overallSeverity: "none",
+					flags: [],
+					serverBlocked: false,
+				});
+			if (String(url).includes("/api/posts")) {
+				published = body ?? null;
+				return Promise.resolve({ id: "post_1", title: body?.title ?? "" });
+			}
+			return Promise.resolve({});
+		});
+		renderPage();
+		fireEvent.click(screen.getByRole("switch", { name: /private post/i }));
+		expect(screen.getByRole("switch", { name: /private post/i })).toHaveAttribute(
+			"aria-checked",
+			"true",
+		);
+		fillAndPublish("Broken locker 114 rattles at night", "The locker door hinge is loose and slams loudly every time someone opens it near my class.");
+		await waitFor(
+			() => {
+				expect(published).not.toBeNull();
+			},
+			{ timeout: 10000 },
+		);
+		expect((published as Record<string, unknown>).visibility).toBe("private");
+	});
+
+	it("applies the AI-suggested category", {
+		timeout: 20000,
+	}, async () => {
+		quietMocks(async (body) => {
+			if (String(body?.task) === "suggest")
+				return { category: "Food", confidence: 0.9, tags: [] };
+			return {};
+		});
+		renderPage();
+		fireEvent.change(screen.getByRole("textbox", { name: "Title *" }), {
+			target: { value: "Canteen food is stale" },
+		});
+		fireEvent.change(screen.getByRole("textbox", { name: "Description *" }), {
+			target: { value: "The lunch served today was cold and stale again." },
+		});
+		await waitFor(
+			() => {
+				expect(screen.getByText(/AI suggestions/i)).toBeInTheDocument();
+			},
+			{ timeout: 8000 },
+		);
+		fireEvent.click(screen.getByText(/apply/i));
+		await waitFor(
+			() => {
+				expect(
+					(screen.getByLabelText("Category") as HTMLSelectElement).value,
+				).toBe("Food");
+			},
+			{ timeout: 8000 },
+		);
+		expect(mocks.toast).toHaveBeenCalledWith("Category → Food", "ok");
+	});
+
+	it("queues a revision-flagged post for review with an honest toast", {
+		timeout: 20000,
+	}, async () => {
+		let published: Record<string, unknown> | null = null;
+		mocks.post.mockImplementation((url: string, body?: Record<string, unknown>) => {
+			if (String(url).includes("/api/assist")) return Promise.resolve({});
+			if (String(url).includes("/api/pre-publish"))
+				return Promise.resolve({
+					...APPROVED,
+					decision: "revision",
+					reason: "Needs a clearer location",
+					risk_score: 40,
+				});
+			if (String(url).includes("/api/moderate"))
+				return Promise.resolve({
+					checked: true,
+					safe: true,
+					overallSeverity: "none",
+					flags: [],
+					serverBlocked: false,
+				});
+			if (String(url).includes("/api/posts")) {
+				published = body ?? null;
+				return Promise.resolve({ id: "post_rev", title: body?.title ?? "" });
+			}
+			return Promise.resolve({});
+		});
+		renderPage();
+		fillAndPublish(
+			"Broken locker 114 rattles at night",
+			"The locker door hinge is loose and slams loudly every time someone opens it near my class.",
+		);
+		await waitFor(
+			() => {
+				expect(mocks.toast).toHaveBeenCalledWith(
+					expect.stringContaining("reviewed before going public"),
+					"info",
+				);
+			},
+			{ timeout: 10000 },
+		);
+		expect(published).not.toBeNull();
+		expect((published as Record<string, unknown>).pending_review).toBe(true);
+	});
+
+	it("blocks a second rapid publish with a cooldown toast, not a twin", {
+		timeout: 20000,
+	}, async () => {
+		let postsCalls = 0;
+		mocks.post.mockImplementation((url: string) => {
+			if (String(url).includes("/api/assist")) return Promise.resolve({});
+			if (String(url).includes("/api/pre-publish"))
+				return Promise.resolve(APPROVED);
+			if (String(url).includes("/api/moderate"))
+				return Promise.resolve({
+					checked: true,
+					safe: true,
+					overallSeverity: "none",
+					flags: [],
+					serverBlocked: false,
+				});
+			if (String(url).includes("/api/posts")) {
+				postsCalls += 1;
+				return Promise.resolve({ id: `post_${postsCalls}` });
+			}
+			return Promise.resolve({});
+		});
+		renderPage();
+		fillAndPublish(
+			"Broken locker 114 rattles at night",
+			"The locker door hinge is loose and slams loudly every time someone opens it near my class.",
+		);
+		await waitFor(
+			() => {
+				expect(postsCalls).toBe(1);
+			},
+			{ timeout: 10000 },
+		);
+		fireEvent.click(screen.getByRole("button", { name: /publish anonymously/i }));
+		await waitFor(
+			() => {
+				expect(mocks.toast).toHaveBeenCalledWith(
+					expect.stringContaining("Cooldown active"),
+					"err",
+				);
+			},
+			{ timeout: 10000 },
+		);
+		expect(postsCalls).toBe(1);
+	});
+
+	it("publishes a standalone poll from the poll tab", {
+		timeout: 20000,
+	}, async () => {
+		let pollBody: Record<string, unknown> | null = null;
+		mocks.post.mockImplementation((url: string, body?: Record<string, unknown>) => {
+			if (String(url).includes("/api/assist")) return Promise.resolve({});
+			if (String(url).includes("/api/pre-publish"))
+				return Promise.resolve(APPROVED);
+			if (String(url).includes("/api/moderate"))
+				return Promise.resolve({
+					checked: true,
+					safe: true,
+					overallSeverity: "none",
+					flags: [],
+					serverBlocked: false,
+				});
+			if (String(url).includes("/api/polls")) {
+				pollBody = body ?? null;
+				return Promise.resolve({ id: "poll_1" });
+			}
+			return Promise.resolve({});
+		});
+		renderPage();
+		fireEvent.click(screen.getByRole("tab", { name: /poll/i }));
+		fireEvent.change(screen.getByRole("textbox", { name: /poll question/i }), {
+			target: { value: "Should the library stay open until 8pm?" },
+		});
+		// Yes/No polls carry no option fields — switch to a choice poll so
+		// the option inputs exist (the real user path).
+		fireEvent.click(screen.getByRole("button", { name: /single choice/i }));
+		const options = screen.getAllByPlaceholderText(/Option \d/);
+		fireEvent.change(options[0], { target: { value: "Yes, keep it open" } });
+		fireEvent.change(options[1], { target: { value: "No, close on time" } });
+		fireEvent.click(screen.getByRole("button", { name: /publish anonymously/i }));
+		await waitFor(
+			() => {
+				expect(pollBody).not.toBeNull();
+			},
+			{ timeout: 10000 },
+		);
+		expect((pollBody as Record<string, unknown>).title).toContain("library");
+		expect(mocks.post).not.toHaveBeenCalledWith(
+			"/api/posts",
+			expect.anything(),
+		);
+	});
+});
