@@ -5,6 +5,11 @@
   "description": "Voice Flow — anonymous school feedback platform for students and administrators.",
   "author": "Voice Flow",
   "license": "UNLICENSED",
+  "overrides": {
+    "pptxgenjs": {
+      "image-size": "2.0.4"
+    }
+  },
   "homepage": "https://voice-box-psi.vercel.app",
   "type": "module",
   "engines": {
