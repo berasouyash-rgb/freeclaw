@@ -1,7 +1,7 @@
 // Image upload to Supabase Storage (anonymous, size-capped)
 // FALLBACK: If Supabase Storage fails, returns a data-URL so images always work.
 
-import { checkUser, clean, cors, rateLimited, rateLimitResponse } from "./_auth.js";
+import { auditLog, checkUser, clean, cors, rateLimited, rateLimitResponse } from "./_auth.js";
 import supabase from "./_db-client.js";
 import { sanitizeError } from "./_error.js";
 
@@ -31,6 +31,46 @@ function matchesImageMagic(buffer, contentType) {
 		);
 	}
 	return false;
+}
+
+/** Deep inspection for executable code, webshells, script injection, and polyglots. */
+function containsMaliciousPayload(buffer) {
+	if (buffer.length >= 2 && buffer[0] === 0x4d && buffer[1] === 0x5a) return "executable_pe";
+	if (buffer.length >= 4 && buffer[0] === 0x7f && buffer[1] === 0x45 && buffer[2] === 0x4c && buffer[3] === 0x46) return "executable_elf";
+
+	const str = buffer.toString("latin1");
+	const lower = str.toLowerCase();
+
+	const MALICIOUS_PATTERNS = [
+		/<\?php/i,
+		/<\?=/i,
+		/<script\b/i,
+		/javascript\s*:/i,
+		/<html\b/i,
+		/<svg\b/i,
+		/<!doctype\s+html/i,
+		/<!entity\s+/i,
+		/\bonerror\s*=/i,
+		/\bonload\s*=/i,
+		/\bdocument\.cookie\b/i,
+		/\bwindow\.location\b/i,
+		/\beval\s*\(/i,
+		/\bbase64_decode\s*\(/i,
+		/\bsystem\s*\(/i,
+		/\bshell_exec\s*\(/i,
+		/\bpassthru\s*\(/i,
+		/<%[\s\S]*%>/i,
+		/<jsp:/i,
+		/powershell(\.exe)?\b/i,
+		/cmd(\.exe)?\s+\/c/i,
+	];
+
+	for (const pattern of MALICIOUS_PATTERNS) {
+		if (pattern.test(lower)) {
+			return pattern.source;
+		}
+	}
+	return null;
 }
 
 export default async function handler(req, res) {
@@ -63,6 +103,24 @@ export default async function handler(req, res) {
 			return res
 				.status(400)
 				.json({ error: "File content does not match its declared image type." });
+		}
+
+		// Deep malware and polyglot scan: reject files containing executable or script payloads
+		const threat = containsMaliciousPayload(buffer);
+		if (threat) {
+			try {
+				await auditLog(
+					"security",
+					"malicious_upload_blocked",
+					`${clean(author_id, 40)}: detected ${threat}`,
+				);
+			} catch {
+				/* best effort audit */
+			}
+			return res.status(400).json({
+				error: "Security violation: Malicious or executable content detected in file.",
+				code: "MALICIOUS_FILE_BLOCKED",
+			});
 		}
 
 		// Try each available bucket
