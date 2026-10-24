@@ -13,7 +13,7 @@
 	ShieldAlert,
 	Trash2,
 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router";
 import type { NotificationKind } from "../contexts/AppContext";
 import { useApp } from "../contexts/AppContext";
@@ -79,6 +79,19 @@ export default function Notifications() {
 	const [filter, setFilter] = useState<NotificationKind | "all">("all");
 	const [showUnreadOnly, setShowUnreadOnly] = useState(false);
 
+	/* "2m ago" is rendered, not stored — without a tick it freezes at the
+	 * string computed on first paint and a page left open all morning still
+	 * says "just now". Re-render on a slow visible-only interval; a hidden tab
+	 * does no work at all. */
+	const [, setClockTick] = useState(0);
+	useEffect(() => {
+		const id = window.setInterval(() => {
+			if (document.visibilityState !== "visible") return;
+			setClockTick((t) => t + 1);
+		}, 30_000);
+		return () => window.clearInterval(id);
+	}, []);
+
 	const filtered = useMemo(() => {
 		let list = [...notifications];
 		if (filter !== "all") list = list.filter((n) => n.kind === filter);
@@ -86,15 +99,31 @@ export default function Notifications() {
 		const sorted = list.sort(
 			(a, b) => new Date(b.at).getTime() - new Date(a.at).getTime(),
 		);
-		// Group consecutive notifications with same kind + link (e.g. multiple comments on same post)
-		const grouped: (typeof sorted[0] & { _count?: number; _latest?: string })[] = [];
+		/* Group consecutive notifications sharing kind + link (several comments
+		 * on one post). Sorted newest-first, the head of a group IS the newest
+		 * entry, so its body and timestamp stay authoritative — an older
+		 * sibling must never overwrite them. A group reads as unread while ANY
+		 * member is unread, and opening it clears every member; otherwise the
+		 * header badge would keep counting rows the list already showed read. */
+		type Grouped = (typeof sorted)[number] & {
+			_count?: number;
+			_unread?: boolean;
+			_ids?: string[];
+		};
+		const grouped: Grouped[] = [];
 		for (const n of sorted) {
 			const last = grouped[grouped.length - 1];
-			if (last && last.kind === n.kind && last.link === n.link && last.body !== n.body) {
+			if (
+				last &&
+				last.kind === n.kind &&
+				last.link === n.link &&
+				last.body !== n.body
+			) {
 				last._count = (last._count || 1) + 1;
-				last._latest = n.at; // keep the newest timestamp
+				last._ids = [...(last._ids ?? [last.id]), n.id];
+				last._unread = last._unread || !n.read;
 			} else {
-				grouped.push({ ...n });
+				grouped.push({ ...n, _count: 1, _ids: [n.id], _unread: !n.read });
 			}
 		}
 		return grouped;
@@ -143,14 +172,19 @@ export default function Notifications() {
 			</div>
 
 			{/* Filters */}
-			<div className="flex flex-wrap items-center gap-2" role="group" aria-label="Filter notifications">
-				<Filter size={13} className="text-ink3" />					<button
-						onClick={() => setFilter("all")}
-						aria-pressed={filter === "all"}
-						className={`px-3 py-1 rounded-full text-xs font-semibold transition-all duration-150 ${filter === "all" ? "bg-accent text-on-accent shadow-sm" : "text-ink3 hover:text-ink2 hover:bg-surface2"}`}
-					>
-						All ({counts.all})
-					</button>
+			<div
+				className="flex flex-wrap items-center gap-2"
+				role="group"
+				aria-label="Filter notifications"
+			>
+				<Filter size={13} className="text-ink3" aria-hidden />
+				<button
+					onClick={() => setFilter("all")}
+					aria-pressed={filter === "all"}
+					className={`px-3 py-1 rounded-full text-xs font-semibold transition-all duration-150 ${filter === "all" ? "bg-accent text-on-accent shadow-sm" : "text-ink3 hover:text-ink2 hover:bg-surface2"}`}
+				>
+					All ({counts.all})
+				</button>
 				{ALL_KINDS.map(
 					(k) =>
 						(counts[k] ?? 0) > 0 && (
@@ -167,13 +201,13 @@ export default function Notifications() {
 				)}
 				<div className="ml-auto flex items-center gap-2">
 					<label className="flex items-center gap-1.5 text-xs text-ink3 cursor-pointer">
-					<input
-						type="checkbox"
-						name="unread-only"
-						checked={showUnreadOnly}
-						onChange={(e) => setShowUnreadOnly(e.target.checked)}
-						className="w-3.5 h-3.5 rounded border-border accent-accent"
-					/>
+						<input
+							type="checkbox"
+							name="unread-only"
+							checked={showUnreadOnly}
+							onChange={(e) => setShowUnreadOnly(e.target.checked)}
+							className="w-3.5 h-3.5 rounded border-border accent-accent"
+						/>
 						Unread only
 					</label>
 				</div>
@@ -203,32 +237,42 @@ export default function Notifications() {
 					// instead of crashing on meta.icon.
 					const meta = KIND_META[n.kind] ?? KIND_META.info;
 					const Icon = meta.icon;
+					const ids = n._ids ?? [n.id];
 					return (
 						<Link
 							key={n.id}
 							to={n.link || "#"}
-							onClick={() => markNotifRead(n.id)}
-							className={`vb-notif-item flex items-start gap-3 px-4 py-3 rounded-xl ${!n.read ? "bg-accent-soft/30" : ""}`}
+							onClick={() => {
+								for (const id of ids) markNotifRead(id);
+							}}
+							className={`vb-notif-item flex items-start gap-3 px-4 py-3 rounded-xl ${n._unread ? "bg-accent-soft/30" : ""}`}
 						>
-							<div className={`mt-0.5 ${meta.color}`}>
+							<div className={`mt-0.5 shrink-0 ${meta.color}`} aria-hidden>
 								<Icon size={16} />
-							</div>								<div className="flex-1 min-w-0">
-									<p className="text-sm font-medium">
-										{n.title}
-										{(n._count ?? 0) > 1 && (
-											<span className="ml-1.5 text-[10px] font-semibold bg-accent/10 text-accent rounded-full px-1.5 py-0.5">
-												×{n._count}
-											</span>
-										)}
-									</p>
-									<p className="text-xs text-ink3 truncate mt-0.5">{n.body}</p>
-								</div>
-								<div className="flex items-center gap-2 shrink-0">
-									{!n.read && <span className="w-2 h-2 rounded-full bg-accent" />}
-									<span className="text-[10px] text-ink3 flex items-center gap-1">
-										<Clock size={10} /> {timeAgo(n._latest || n.at)}
-									</span>
-								</div>
+							</div>
+							<div className="flex-1 min-w-0">
+								<p className="text-sm font-medium">
+									{n.title}
+									{(n._count ?? 0) > 1 && (
+										<span className="ml-1.5 text-[10px] font-semibold bg-accent/10 text-accent rounded-full px-1.5 py-0.5">
+											×{n._count}
+										</span>
+									)}
+									{n._unread && <span className="sr-only"> (unread)</span>}
+								</p>
+								<p className="text-xs text-ink3 truncate mt-0.5">{n.body}</p>
+							</div>
+							<div className="flex items-center gap-2 shrink-0">
+								{n._unread && (
+									<span
+										className="w-2 h-2 rounded-full bg-accent"
+										aria-hidden
+									/>
+								)}
+								<span className="text-[10px] text-ink3 flex items-center gap-1">
+									<Clock size={10} aria-hidden /> {timeAgo(n.at)}
+								</span>
+							</div>
 						</Link>
 					);
 				})}

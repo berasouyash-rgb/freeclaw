@@ -64,6 +64,7 @@ import {
 	type AlertRow,
 } from "../../components/admin/CriticalAlertBanner";
 import UpdateNotice from "../../components/admin/UpdateNotice";
+import CountUp from "../../components/CountUp";
 import ErrorBoundary from "../../components/ErrorBoundary";
 import ActionCenter from "./ActionCenter";
 import ThreadDrawer from "../../components/admin/ThreadDrawer";
@@ -1442,7 +1443,8 @@ const queueCounts: Record<QueueKey, number> = {
 				{[
 					{
 						icon: <Megaphone size={16} className="text-accent" />,
-						value: String(postsWeek.length),
+						num: postsWeek.length,
+						suffix: "",
 						label: "Posts this week",
 						sub: `${postsToday.length} today · ${postsMonth.length} this month`,
 						spark: postsByDay,
@@ -1452,7 +1454,8 @@ const queueCounts: Record<QueueKey, number> = {
 					},
 					{
 						icon: <CheckCircle2 size={16} className="text-good" />,
-						value: `${resolutionRate}%`,
+						num: resolutionRate,
+						suffix: "%",
 						label: "Resolution rate",
 						sub:
 							avgSolve === null
@@ -1465,7 +1468,8 @@ const queueCounts: Record<QueueKey, number> = {
 					},
 					{
 						icon: <TrendingUp size={16} className="text-accent" />,
-						value: String(engagement),
+						num: engagement,
+						suffix: "",
 						label: "Engagement",
 						sub: `${reactionTotal} reactions · ${comments.length} comments`,
 						spark: postsByDay.map((v, i) => v + (commentsByDay[i] ?? 0)),
@@ -1473,7 +1477,8 @@ const queueCounts: Record<QueueKey, number> = {
 					},
 					{
 						icon: <MessageSquare size={16} className="text-ink2" />,
-						value: String(commentsWeek.length),
+						num: commentsWeek.length,
+						suffix: "",
 						label: "Comments this week",
 						sub: "community discussion",
 						spark: commentsByDay,
@@ -1486,7 +1491,8 @@ const queueCounts: Record<QueueKey, number> = {
 					},
 					{
 						icon: <Users size={16} className="text-ink2" />,
-						value: String(usersCount),
+						num: usersCount,
+						suffix: "",
 						label: "Anonymous users",
 						sub: "known anonymous IDs",
 						spark: [],
@@ -1494,7 +1500,8 @@ const queueCounts: Record<QueueKey, number> = {
 					},
 					{
 						icon: <Flag size={16} className="text-bad" />,
-						value: String(openReports.length),
+						num: openReports.length,
+						suffix: "",
 						label: "Open reports",
 						sub: "moderation queue",
 						spark: reportsByDay,
@@ -1508,7 +1515,8 @@ const queueCounts: Record<QueueKey, number> = {
 					},
 					{
 						icon: <Sparkles size={16} className="text-warn" />,
-						value: String(suggestions.length),
+						num: suggestions.length,
+						suffix: "",
 						label: "Suggestions",
 						sub: "improvement ideas",
 						spark: suggByDay,
@@ -1516,7 +1524,8 @@ const queueCounts: Record<QueueKey, number> = {
 					},
 					{
 						icon: <Table2 size={16} className="text-ink2" />,
-						value: String(problems.length + suggestions.length),
+						num: problems.length + suggestions.length,
+						suffix: "",
 						label: "Total content",
 						sub: "problems + ideas",
 						spark: [],
@@ -1533,7 +1542,9 @@ const queueCounts: Record<QueueKey, number> = {
 							{t.chip}
 						</div>
 						<p className="font-display font-bold text-2xl mt-1.5">
-							<span className="tabular-nums">{t.value}</span>
+							<span className="tabular-nums">
+								<CountUp value={t.num} suffix={t.suffix} />
+							</span>
 						</p>
 						<p className="text-xs font-semibold">{t.label}</p>
 						<div className="flex items-end justify-between gap-2">

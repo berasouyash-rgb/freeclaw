@@ -7,6 +7,7 @@ import {
 	SlidersHorizontal,
 } from "lucide-react";
 import { useEffect, useState } from "react";
+import { ConfirmDialog } from "../../components/ui";
 import { useApp } from "../../contexts/AppContext";
 import { api, clearAdminSession } from "../../lib/api";
 import { sha256 } from "../../lib/utils";
@@ -97,16 +98,13 @@ export default function AdminSettings() {
 			.catch(() => setCleanupStats(null));
 	}, []);
 
-	const toggleAgentActions = async () => {
-		if (agentSaving || agentActions === null) return;
-		const next = !agentActions;
-		if (
-			next === false &&
-			!window.confirm(
-				"Stop all autonomous agent actions? Agents will keep observing and reporting, but will change nothing until you re-enable this.",
-			)
-		)
-			return;
+	// Stopping the agents is a destructive, site-wide action: confirm it in the
+	// app's own themed dialog instead of a blocking window.confirm() (which
+	// can't be styled, can't be dismissed with Esc on some browsers, and reads
+	// as a phishing prompt inside the admin surface).
+	const [confirmStopAgents, setConfirmStopAgents] = useState(false);
+
+	const applyAgentActions = async (next: boolean) => {
 		setAgentSaving(true);
 		try {
 			const r = await api.post<{ enabled: boolean }>("/api/admin", {
@@ -121,9 +119,19 @@ export default function AdminSettings() {
 				"ok",
 			);
 		} catch (e: unknown) {
+			// Never flip the switch locally on failure — the server is the
+			// authority, so the UI keeps showing the last confirmed state.
 			toast(e instanceof Error ? e.message : "Failed to update agent switch", "err");
+		} finally {
+			setAgentSaving(false);
 		}
-		setAgentSaving(false);
+	};
+
+	const toggleAgentActions = () => {
+		if (agentSaving || agentActions === null) return;
+		// Enabling is safe and instant; stopping everything asks first.
+		if (agentActions) setConfirmStopAgents(true);
+		else void applyAgentActions(true);
 	};
 
 		const saveRetention = async () => {
@@ -345,6 +353,16 @@ const saveSpamConfig = async () => {
 					</button>
 				</div>
 			</div>
+
+			<ConfirmDialog
+				open={confirmStopAgents}
+				onClose={() => setConfirmStopAgents(false)}
+				onConfirm={() => applyAgentActions(false)}
+				title="Stop all agent actions?"
+				message="Agents will keep observing and reporting, but will change nothing — no quarantine, mask, archive or reconcile — until you re-enable this switch. Every past action stays audited."
+				confirmLabel="Stop agent actions"
+				danger
+			/>
 
 			<div className="card p-5 mb-4">
 				<h2 className="font-display font-semibold text-sm flex items-center gap-2 mb-1">

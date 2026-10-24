@@ -30,14 +30,9 @@ const PROVIDERS = {
 	},
 };
 
-vi.mock("lucide-react", () => ({
-	Bot: () => null,
-	KeyRound: () => null,
-	List: () => null,
-	LogOut: () => null,
-	ShieldCheck: () => null,
-	SlidersHorizontal: () => null,
-}));
+// No lucide-react mock: the real icon set is used by every other suite in this
+// repo. A hand-enumerated partial mock silently drifts the moment a shared
+// component (e.g. ConfirmDialog's danger icon) starts using another icon.
 
 const get = vi.fn();
 const post = vi.fn();
