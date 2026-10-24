@@ -1,4 +1,4 @@
-﻿// Agent Cron — Vercel cron endpoint for autonomous agent execution.
+// Agent Cron — Vercel cron endpoint for autonomous agent execution.
 import { timingSafeEqual } from "node:crypto";
 import {
 	ALL_AGENTS,
@@ -13,6 +13,7 @@ import {
 // agent_executions via _runner.runAgent so the Agent Office dashboard
 // shows real working/results stats. Supervisor scan runs after agents.
 import { cors, isAdmin } from "./_auth.js";
+import { sanitizeError } from "./_error.js";
 import { runImprovementScans } from "./_improve-scan.js";
 import supabase from "./_db-client.js";
 import { patrol } from "./_workforce.js";
@@ -472,7 +473,6 @@ export default async function handler(req, res) {
 				workforce,
 			});
 	} catch (err) {
-		console.error("[agent-cron] Fatal error:", err.message);
-		return res.status(500).json({ error: err.message });
+		return sanitizeError(res, err, "agent-cron");
 	}
 }

@@ -68,6 +68,26 @@ function isNativeOrigin(origin) {
 	return false;
 }
 
+export function isAllowedOrigin(origin) {
+	if (!origin) return false;
+	if (ALLOWED_ORIGINS.includes(origin)) return true;
+	if (isNativeOrigin(origin)) return true;
+	if (/^https:\/\/voice-box(-[a-z0-9-]+)?\.vercel\.app$/i.test(origin)) return true;
+	return false;
+}
+
+export function isNativeShell(req) {
+	const origin = req?.headers?.origin || "";
+	const ua = req?.headers?.["user-agent"] || "";
+	return (
+		origin === "null" ||
+		origin === "file://" ||
+		origin.startsWith("capacitor://") ||
+		origin.startsWith("ionic://") ||
+		ua.includes("Electron")
+	);
+}
+
 export function cors(res, req) {
 	const origin = req?.headers?.origin || "";
 	if (origin && (ALLOWED_ORIGINS.includes(origin) || isNativeOrigin(origin))) {
@@ -85,9 +105,13 @@ export function cors(res, req) {
 		"Access-Control-Allow-Headers",
 		"Content-Type, Authorization, X-Admin-Token, x-anon-id, x-session-token, x-request-id, x-vercel-cron-secret, x-cron-secret",
 	);
+	const exposeHeaders = ["X-Request-Id", "Retry-After"];
+	if (isNativeShell(req)) {
+		exposeHeaders.push("X-Session-Token");
+	}
 	res.setHeader(
 		"Access-Control-Expose-Headers",
-		"X-Session-Token, X-Request-Id, Retry-After",
+		exposeHeaders.join(", "),
 	);
 	res.setHeader("Access-Control-Allow-Credentials", "true");
 	res.setHeader("Vary", "Origin");
@@ -111,15 +135,24 @@ export async function isAdmin(req) {
 	const now = Date.now();
 	const cached = _adminTokenCache.get(token);
 	if (cached && cached.expiresAt > now) return cached.valid;
-	const { data } = await supabase
-		.from("settings")
-		.select("value")
-		.eq("key", "admin_sessions")
-		.maybeSingle();
-	const tokens = data?.value?.tokens || [];
-	const valid = tokens.some((s) => s.t === token && s.exp > now);
-	cacheAdminToken(token, valid, now);
-	return valid;
+	try {
+		const { data, error } = await supabase
+			.from("settings")
+			.select("value")
+			.eq("key", "admin_sessions")
+			.maybeSingle();
+		if (error) {
+			console.error("[auth] isAdmin DB error:", error.message);
+			return false; // H5: fail closed
+		}
+		const tokens = data?.value?.tokens || [];
+		const valid = tokens.some((s) => s.t === token && s.exp > now);
+		cacheAdminToken(token, valid, now);
+		return valid;
+	} catch (err) {
+		console.error("[auth] isAdmin error:", err?.message || err);
+		return false; // H5: fail closed
+	}
 }
 
 /**
@@ -168,23 +201,32 @@ export async function checkUser(authorId) {
 	}
 	// Case-insensitive: IDs are stored lowercase; normalize incoming values
 	const id = authorId.toLowerCase();
-	const { data } = await supabase
-		.from("users_meta")
-		.select("*")
-		.eq("anon_id", id)
-		.maybeSingle();
-	if (data?.banned)
-		return {
-			ok: false,
-			error: "This anonymous ID has been permanently banned.",
-		};
-	if (data?.suspended_until && new Date(data.suspended_until) > new Date()) {
-		return {
-			ok: false,
-			error: `This anonymous ID is suspended until ${new Date(data.suspended_until).toLocaleDateString()}.`,
-		};
+	try {
+		const { data, error } = await supabase
+			.from("users_meta")
+			.select("*")
+			.eq("anon_id", id)
+			.maybeSingle();
+		if (error) {
+			console.error("[auth] checkUser DB error:", error.message);
+			return { ok: false, error: "Authentication service temporarily unavailable." }; // H5: fail closed
+		}
+		if (data?.banned)
+			return {
+				ok: false,
+				error: "This anonymous ID has been permanently banned.",
+			};
+		if (data?.suspended_until && new Date(data.suspended_until) > new Date()) {
+			return {
+				ok: false,
+				error: `This anonymous ID is suspended until ${new Date(data.suspended_until).toLocaleDateString()}.`,
+			};
+		}
+		return { ok: true, meta: data };
+	} catch (err) {
+		console.error("[auth] checkUser exception:", err?.message || err);
+		return { ok: false, error: "Authentication service temporarily unavailable." }; // H5: fail closed
 	}
-	return { ok: true, meta: data };
 }
 
 /** Ensure a users_meta row exists for an anonymous id */
@@ -304,17 +346,23 @@ export async function notifyUser(anonId, type, title, body) {
 export let auditFailedCount = 0;
 export async function auditLog(actor, action, detail) {
 	try {
+		if (!actor || typeof actor !== "string" || !actor.trim()) {
+			auditFailedCount += 1;
+			console.error("[auth] auditLog denied: missing or invalid actor", { action });
+			return false; // H8: fail closed on audit actor
+		}
+		const cleanActor = actor.trim().slice(0, 80);
 		// PostgREST reports a rejected insert through the returned `{ error }`
 		// — it never throws. Ignoring it meant this function returned `true`
 		// for rows that never landed, so callers believed the audit succeeded
 		// and `auditFailedCount` could never move.
 		const { error } = await supabase
 			.from("activity_logs")
-			.insert({ actor, action, detail: String(detail || "").slice(0, 500) });
+			.insert({ actor: cleanActor, action, detail: String(detail || "").slice(0, 500) });
 		if (error) {
 			auditFailedCount += 1;
 			console.error("[auth] auditLog failed", {
-				actor,
+				actor: cleanActor,
 				action,
 				error: error.message || String(error),
 			});
@@ -569,17 +617,26 @@ export async function rateLimited(table, authorId, seconds, limit) {
 	}
 	// New window — do a real DB count and seed the in-memory counter
 	const since = new Date(now - windowMs).toISOString();
-	const { count } = await supabase
+	const { count, error } = await supabase
 		.from(table)
 		.select("*", { count: "exact", head: true })
 		.eq("author_id", authorId)
 		.gte("created_at", since);
+	if (error) {
+		console.error("[auth] rateLimited DB error:", error.message);
+		return true; // H5: fail closed
+	}
 	const currentCount = count || 0;
 	_rateLimitState.set(key, { count: currentCount + 1, windowStart: now });
 	// Prune stale entries periodically (max 5000 keys)
 	if (_rateLimitState.size > 5000) {
 		for (const [k, v] of _rateLimitState) {
 			if (now - v.windowStart > windowMs) _rateLimitState.delete(k);
+		}
+		while (_rateLimitState.size > 5000) {
+			const oldest = _rateLimitState.keys().next();
+			if (oldest.done) break;
+			_rateLimitState.delete(oldest.value);
 		}
 	}
 	return currentCount >= limit;
@@ -702,7 +759,10 @@ export function setSessionCookie(res, token, req) {
 	];
 	if (proto === "https") attrs.push("Secure");
 	res.setHeader("Set-Cookie", attrs.join("; "));
-	if (res?.setHeader) res.setHeader("X-Session-Token", token);
+	// H2: Do not leak the session token to browser JS.
+	// Only provide header fallback for native shells (Electron file:// or Capacitor)
+	// that cannot use standard HttpOnly cookies across origins/schemes.
+	if (isNativeShell(req) && res?.setHeader) res.setHeader("X-Session-Token", token);
 }
 
 function sessionKey(id) {

@@ -208,7 +208,7 @@ export default async function handler(req, res) {
 
 		if (error) {
 			logger.error("admin-export", "query_failed", { resource, error: error.message });
-			return res.status(500).json({ error: "Query failed", detail: error.message });
+			return res.status(500).json({ error: "Query failed" });
 		}
 
 		const rows = data || [];

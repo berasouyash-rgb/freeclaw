@@ -26,7 +26,7 @@ import resolutionEvidence from "./_resolution-evidence.js";
 import announcement from "./_announcement.js";
 import assist from "./_assist.js";
 import auditTrail from "./_audit-trail.js";
-import { cors as corsFn } from "./_auth.js";
+import { cors as corsFn, isAllowedOrigin } from "./_auth.js";
 import badges from "./_badges.js";
 import { cleanupCache } from "./_cache.js";
 import categories from "./_categories.js";
@@ -307,6 +307,21 @@ export default async function handler(req, res) {
 	res.setHeader("X-Request-ID", requestId);
 	req.requestId = requestId;
 
+	// C1: Origin allowlist on state-changing routes (kills CSRF)
+	const isMutating = req.method === "POST" || req.method === "PUT" || req.method === "PATCH" || req.method === "DELETE";
+	if (isMutating) {
+		const secFetchSite = req.headers["sec-fetch-site"];
+		if (secFetchSite === "cross-site") {
+			corsFn(res, req);
+			return res.status(403).json({ error: "Cross-site request blocked", requestId });
+		}
+		const origin = req.headers["origin"];
+		if (origin && !isAllowedOrigin(origin)) {
+			corsFn(res, req);
+			return res.status(403).json({ error: "Invalid origin / CSRF blocked", requestId });
+		}
+	}
+
 	// Reject an oversized declared body before reading a stream. The bounded
 	// parser below also enforces the limit when Content-Length is absent.
 	const declaredSizeCheck = validateRequestSize(req);
@@ -393,7 +408,7 @@ export default async function handler(req, res) {
 		});
 	}
 
-	const routeHandler = routes[endpoint];
+	const routeHandler = Object.hasOwn(routes, endpoint) ? routes[endpoint] : null;
 	if (!routeHandler) {
 		corsFn(res, req);
 		recordRequest(0, 404, pathname);

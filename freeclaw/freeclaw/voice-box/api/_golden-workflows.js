@@ -449,6 +449,11 @@ export default async function handler(req, res) {
   cors(res, req);
   if (req.method === "OPTIONS") return res.status(204).end();
 
+  // M1: Authorize admin session before allowing workflow execution or history reads
+  if (!(await isAdmin(req))) {
+    return res.status(401).json({ error: "Admin access required" });
+  }
+
   try {
     if (req.method === "GET") {
       const { action } = req.query;

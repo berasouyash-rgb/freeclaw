@@ -279,15 +279,16 @@ function checkRateLimit(agentId) {
 const BRIDGE_SECRET = process.env.WORKFORCE_BRIDGE_SECRET || "";
 
 function isAuthenticated(req) {
-	// In development (no secret configured), allow localhost only
 	if (!BRIDGE_SECRET) {
-		const host = req.headers?.host || "";
-		return host.startsWith("localhost") || host.startsWith("127.");
+		const ip = req.socket?.remoteAddress || "";
+		return ip === "127.0.0.1" || ip === "::1" || ip === "::ffff:127.0.0.1";
 	}
 	const provided = req.headers?.["x-bridge-secret"] || "";
 	// Timing-safe comparison to prevent timing attacks
 	try {
-		return crypto.timingSafeEqual(Buffer.from(provided), Buffer.from(BRIDGE_SECRET));
+		const a = Buffer.from(provided);
+		const b = Buffer.from(BRIDGE_SECRET);
+		return a.length === b.length && crypto.timingSafeEqual(a, b);
 	} catch {
 		return false;
 	}
@@ -301,10 +302,11 @@ export default async function handler(req, res) {
 		return res.end(JSON.stringify({ error: "POST required" }));
 	}
 
-	// Auth: require shared secret or localhost
-	if (!isAuthenticated(req)) {
+	// Auth: require shared secret, verified loopback, or admin session
+	const authorized = isAuthenticated(req) || (await isAdmin(req));
+	if (!authorized) {
 		res.writeHead(401, { "Content-Type": "application/json" });
-		return res.end(JSON.stringify({ error: "Unauthorized: missing or invalid bridge secret" }));
+		return res.end(JSON.stringify({ error: "Unauthorized: missing or invalid bridge credentials" }));
 	}
 
 	const { action, params = {}, agent_id = "unknown", task_id = "" } = req.body || {};

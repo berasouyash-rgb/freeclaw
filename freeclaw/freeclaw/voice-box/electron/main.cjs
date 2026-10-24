@@ -179,6 +179,18 @@ function createWindow() {
 		if (/^https?:\/\//i.test(url)) void shell.openExternal(url);
 		return { action: "deny" };
 	});
+	// H7: Never allow top-level renderer navigation away from the bundled app.
+	// Prevents phishing, open redirects, and malicious site takeovers.
+	// External http(s) links are routed to the OS default browser.
+	win.webContents.on("will-navigate", (event, navigationUrl) => {
+		if (navigationUrl.startsWith("file://") && navigationUrl.includes("index.html")) {
+			return;
+		}
+		event.preventDefault();
+		if (/^https?:\/\//i.test(navigationUrl)) {
+			void shell.openExternal(navigationUrl);
+		}
+	});
 	return win;
 }
 

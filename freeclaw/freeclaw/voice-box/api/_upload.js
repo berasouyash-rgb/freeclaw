@@ -1,7 +1,7 @@
 // Image upload to Supabase Storage (anonymous, size-capped)
 // FALLBACK: If Supabase Storage fails, returns a data-URL so images always work.
 
-import { auditLog, checkUser, clean, cors, rateLimited, rateLimitResponse } from "./_auth.js";
+import { auditLog, checkUser, clean, cors, isAdmin, rateLimited, rateLimitResponse, verifyCallerIdentity } from "./_auth.js";
 import supabase from "./_db-client.js";
 import { sanitizeError } from "./_error.js";
 
@@ -109,8 +109,21 @@ export default async function handler(req, res) {
 		return res.status(405).json({ error: "Method not allowed" });
 
 	try {
-		const { fileBase64, contentType, author_id } = req.body || {};
-		const gate = await checkUser(clean(author_id, 40));
+		const { fileBase64, contentType } = req.body || {};
+		// H6: Trust session / x-anon-id over body for uploads
+		const headerId = clean(req.headers["x-anon-id"] || "", 40);
+		const admin = await isAdmin(req);
+		const author_id = headerId || (admin ? "ADMIN" : "");
+		if (!author_id) {
+			return res.status(403).json({ error: "Missing session identity (x-anon-id header)" });
+		}
+		if (!admin) {
+			const caller = await verifyCallerIdentity(req, res, author_id);
+			if (!caller.ok) {
+				return res.status(caller.status || 403).json({ error: caller.error, code: caller.code });
+			}
+		}
+		const gate = await checkUser(author_id);
 		if (!gate.ok) return res.status(403).json({ error: gate.error });
 		if (!fileBase64) return res.status(400).json({ error: "No file" });
 		if (!/^image\/(png|jpe?g|gif|webp)$/.test(contentType || "")) {

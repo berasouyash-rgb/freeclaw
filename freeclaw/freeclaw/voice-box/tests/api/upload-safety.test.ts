@@ -5,6 +5,8 @@ vi.mock("../../api/_auth.js", () => ({
 	cors: vi.fn(),
 	clean: (val: string) => String(val || "").trim(),
 	checkUser: vi.fn().mockResolvedValue({ ok: true }),
+	isAdmin: vi.fn().mockResolvedValue(false),
+	verifyCallerIdentity: vi.fn().mockResolvedValue({ ok: true, callerId: "mock_user" }),
 	rateLimited: vi.fn().mockResolvedValue(false),
 	rateLimitResponse: vi.fn(),
 	auditLog: vi.fn().mockResolvedValue(undefined),
@@ -24,7 +26,9 @@ vi.mock("../../api/_db-client.js", () => ({
 function createMockReqRes(body: Record<string, unknown>) {
 	const req = {
 		method: "POST",
-		headers: {},
+		headers: {
+			"x-anon-id": (body?.author_id as string) || "test_user_safety",
+		},
 		body,
 	};
 	let statusCode = 200;

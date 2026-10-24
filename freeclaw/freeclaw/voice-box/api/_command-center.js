@@ -20,7 +20,7 @@ async function listConversations(req, res) {
 		.order("last_message_at", { ascending: false })
 		.range(Number(offset), Number(offset) + Number(limit) - 1);
 
-	if (error) return res.status(500).json({ error: error.message });
+	if (error) return res.status(500).json({ error: "Failed to fetch conversations" });
 	return res.status(200).json({ conversations: data || [] });
 }
 
@@ -34,7 +34,7 @@ async function createConversation(req, res) {
 		.select()
 		.single();
 
-	if (error) return res.status(500).json({ error: error.message });
+	if (error) return res.status(500).json({ error: "Failed to create conversation" });
 	return res.status(200).json({ conversation: data });
 }
 
@@ -48,7 +48,7 @@ async function getConversationHistory(req, res) {
 		.order("last_message_at", { ascending: false })
 		.limit(Number(limit));
 
-	if (error) return res.status(500).json({ error: error.message });
+	if (error) return res.status(500).json({ error: "Failed to fetch conversation history" });
 	return res.status(200).json({ conversations: data || [] });
 }
 
@@ -66,7 +66,7 @@ async function getMessages(req, res) {
 		.order("created_at", { ascending: true })
 		.range(Number(offset), Number(offset) + Number(limit) - 1);
 
-	if (error) return res.status(500).json({ error: error.message });
+	if (error) return res.status(500).json({ error: "Failed to fetch messages" });
 	return res.status(200).json({ messages: data || [] });
 }
 
@@ -106,7 +106,7 @@ async function sendMessage(req, res) {
 	};
 
 	const { error: msgErr } = await supabase.from("messages").insert(userMsg);
-	if (msgErr) return res.status(500).json({ error: msgErr.message });
+	if (msgErr) return res.status(500).json({ error: "Failed to send message" });
 
 	// Update conversation timestamp
 	await supabase
@@ -502,7 +502,7 @@ async function setAgentGoal(req, res) {
 		.select()
 		.single();
 
-	if (error) return res.status(500).json({ error: error.message });
+	if (error) return res.status(500).json({ error: "Failed to create goal" });
 	return res.status(200).json({ goal: data });
 }
 
@@ -514,7 +514,7 @@ async function getTabs(req, res) {
 		.select("*, conversations(id, title, agent_id)")
 		.order("position", { ascending: true });
 
-	if (error) return res.status(500).json({ error: error.message });
+	if (error) return res.status(500).json({ error: "Failed to fetch tabs" });
 	return res.status(200).json({ tabs: data || [] });
 }
 
@@ -537,7 +537,7 @@ async function saveTabs(req, res) {
 
 	if (tabInserts.length > 0) {
 		const { error } = await supabase.from("admin_tabs").insert(tabInserts);
-		if (error) return res.status(500).json({ error: error.message });
+		if (error) return res.status(500).json({ error: "Failed to save tabs" });
 	}
 
 	return res.status(200).json({ ok: true });

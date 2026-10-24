@@ -230,7 +230,7 @@ export default async function handler(req, res) {
 				action,
 				error: error.message,
 			});
-			return res.status(500).json({ error: "Operation failed", detail: error.message });
+			return res.status(500).json({ error: "Operation failed" });
 		}
 
 		const processed = data?.length || 0;

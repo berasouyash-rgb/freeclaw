@@ -11,6 +11,7 @@
 // ═══════════════════════════════════════════════════════════════════
 
 import { cors, isAdmin } from "./_auth.js";
+import { sanitizeError } from "./_error.js";
 import { setSecurityHeaders } from "./_security.js";
 import { runWorkforceProof, getProofResults, getProofSummary } from "./_workforce-proof.js";
 import { getMemoryStats, queryMemory, discardStaleMemories } from "./_worker-memory.js";
@@ -94,6 +95,6 @@ export default async function handler(req, res) {
 			}
 		}
 	} catch (err) {
-		return res.status(500).json({ ok: false, error: err.message });
+		return sanitizeError(res, err, "workforce-proof");
 	}
 }

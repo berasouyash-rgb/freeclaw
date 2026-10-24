@@ -111,6 +111,22 @@ export function detectPromptInjection(text) {
 // Key: composite of "identity:ip" — shared-NAT users get per-user buckets;
 // anonymous users fall back to IP-only key so they don't share one bucket.
 const _abuseTracker = new Map(); // key → { timestamps: number[], errors: number[], blocked: boolean, blockedUntil: number }
+const MAX_ABUSE_TRACKER_ENTRIES = 5000;
+
+function pruneAbuseTracker(now) {
+	if (_abuseTracker.size >= MAX_ABUSE_TRACKER_ENTRIES) {
+		for (const [key, tracker] of _abuseTracker) {
+			if (now - (tracker.windowStart || 0) > 3600000 && (!tracker.blocked || tracker.blockedUntil < now)) {
+				_abuseTracker.delete(key);
+			}
+		}
+		while (_abuseTracker.size >= MAX_ABUSE_TRACKER_ENTRIES) {
+			const oldest = _abuseTracker.keys().next();
+			if (oldest.done) break;
+			_abuseTracker.delete(oldest.value);
+		}
+	}
+}
 
 // Disable test: disable this limiter for 24h → a scripted client can hammer
 // every endpoint unthrottled (measured: the app itself costs ~10 API calls per
@@ -140,7 +156,8 @@ export const ABUSE_LIMITS = {
 function _rateLimitKey(ip, identity) {
 	const safeIp = ip || "unknown";
 	if (identity && typeof identity === "string" && identity.trim()) {
-		return `id:${identity.trim().toLowerCase()}:${safeIp}`;
+		const cleanId = identity.trim().toLowerCase().slice(0, 40);
+		return `id:${cleanId}:${safeIp}`;
 	}
 	return `ip:${safeIp}`;
 }
@@ -167,6 +184,7 @@ export function checkAbuse(ip, identity = null) {
 
 	// Initialize tracker (or reset window after 1 hour)
 	if (!tracker || now - (tracker.windowStart || 0) > 3600000) {
+		pruneAbuseTracker(now);
 		_abuseTracker.set(key, {
 			timestamps: [],
 			errors: [],
@@ -358,9 +376,9 @@ export function cleanupAbuseTracker() {
 	_lastCleanup = now;
 
 	for (const [key, tracker] of _abuseTracker) {
-		// Remove entries older than 1 hour with no recent activity
+		// Remove entries older than 1 hour with no recent activity or expired blocks
 		if (
-			tracker.timestamps.length === 0 &&
+			now - (tracker.windowStart || 0) > 3600000 &&
 			(!tracker.blocked || tracker.blockedUntil < now)
 		) {
 			_abuseTracker.delete(key);

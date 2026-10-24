@@ -47,6 +47,25 @@
   --vb-good: #10774f; /* 2.75:1 -> 4.57:1 (was #16a06a) */
   --vb-warn: #915c07; /* 2.27:1 -> 4.61:1 (was #d98a0b) */
   --vb-bad: #c82727; /* 3.35:1 -> 4.57:1 (was #dc4b4b) */
+  /* --vb-bad as a bare "R G B" triplet. The aurora bloom needs the raw
+     channels because it dials its own alpha per tier; a hex or colour value
+     cannot be split. Keep the two in sync. */
+  --vb-bad-rgb: 200 39 39;
+  /* ── Aurora bloom (primary action) ─────────────────────────
+     The light a primary action throws when it is pressed: the warm→green→
+     cyan→blue→violet drift of white light through a prism, not a single
+     tinted halo. Five hues, warm at the left edge to cool at the right.
+     Stored as bare "R G B" triplets so one alpha variable per tier dials
+     the whole arc at once and `box-shadow` can interpolate between states
+     without changing its layer count (which would make it snap).
+     Consumed as `rgb(var(--vb-aurora-N) / var(--vb-a-*))`. Space-separated
+     rgb() is Chrome 65+ / Safari 12.1+ / Firefox 52+ — all below the
+     lightningcss targets in vite.config.ts, so nothing rewrites it. */
+  --vb-aurora-1: 255 157 92;   /* amber  — warm end */
+  --vb-aurora-2: 47 208 122;   /* jade */
+  --vb-aurora-3: 35 196 224;   /* cyan */
+  --vb-aurora-4: 79 125 255;   /* azure */
+  --vb-aurora-5: 157 107 255;  /* violet — cool end */
   /* Text colour for use ON --vb-accent. Must be a token, not a literal
      `#fff`: the accent flips to a light purple in dark mode, where white
      text drops to 3.10:1. In dark mode this becomes the dark background,
@@ -87,6 +106,14 @@
   --vb-good: #35c68d;
   --vb-warn: #eaa93c;
   --vb-bad: #f06d6d;
+  --vb-bad-rgb: 240 109 109;
+  /* Aurora hues lift in dark mode: the same pigments over lacquer need more
+     lightness to read as light rather than as stained glass. */
+  --vb-aurora-1: 255 179 122;
+  --vb-aurora-2: 88 227 155;
+  --vb-aurora-3: 74 217 238;
+  --vb-aurora-4: 110 149 255;
+  --vb-aurora-5: 180 140 255;
   --vb-on-accent: #0e0e16; /* 6.19:1 on --vb-accent (white would be 3.10:1) */
   /* Dark mode shadows — subtler, more purple-tinted */
   --vb-shadow-xs: 0 1px 2px rgba(0,0,0,0.2);
@@ -654,16 +681,78 @@ h1,h2,h3,h4 { font-family: var(--font-display); letter-spacing: -0.01em; }
 }
 .btn:active:not(:disabled) { transform: scale(0.97); }
 .btn:disabled { opacity: .5; cursor: not-allowed; }
-.btn-primary { background: var(--vb-accent); color: var(--vb-on-accent); box-shadow: var(--vb-shadow-sm), inset 0 1px 0 rgba(255,255,255,0.12); }
+.btn-primary {
+  background: var(--vb-accent); color: var(--vb-on-accent);
+  /* Base drop shadow lives in its own variable so states can swap the
+     elevation tier without touching the bloom — `box-shadow` only animates
+     when both ends of the transition have the same layer count, and both
+     --vb-shadow-sm and --vb-shadow-md expand to exactly two layers. */
+  --vb-elev: var(--vb-shadow-sm), inset 0 1px 0 rgba(255,255,255,0.12);
+  --vb-a-near: 0%;
+  --vb-a-far: 0%;
+  /* Ambient bloom for the primary action (publish / post / submit …).
+     An aurora arc in ten layers. The five near layers sit close to the rim
+     but are nudged sideways (−12px … +12px) so the warm end, the greens and
+     the cool end each keep their own footing; pack them any tighter and they
+     overlap into one colourless pale wash. The five far layers drift wider
+     and softer, so the light separates warm at the lower-left through jade
+     and cyan to violet at the right — white light through a prism.
+     Only the two alpha variables above change between states, so this list
+     is written once and every state is the same shape — the transition
+     glides instead of snapping. It lives on box-shadow rather than a
+     pseudo-element because .btn sets overflow: hidden, which would clip a
+     child or ::after glow. Static — a light, not a pulse. */
+  --vb-bloom:
+    -12px  3px 20px -6px rgb(var(--vb-aurora-1) / var(--vb-a-near)),
+     -6px  4px 19px -6px rgb(var(--vb-aurora-2) / var(--vb-a-near)),
+      0px  4px 18px -6px rgb(var(--vb-aurora-3) / var(--vb-a-near)),
+      6px  4px 19px -6px rgb(var(--vb-aurora-4) / var(--vb-a-near)),
+     12px  3px 20px -6px rgb(var(--vb-aurora-5) / var(--vb-a-near)),
+    -30px  9px 60px -20px rgb(var(--vb-aurora-1) / var(--vb-a-far)),
+    -15px 12px 58px -20px rgb(var(--vb-aurora-2) / var(--vb-a-far)),
+      0px 12px 56px -20px rgb(var(--vb-aurora-3) / var(--vb-a-far)),
+     15px 12px 58px -20px rgb(var(--vb-aurora-4) / var(--vb-a-far)),
+     30px  9px 60px -20px rgb(var(--vb-aurora-5) / var(--vb-a-far));
+  box-shadow: var(--vb-elev), var(--vb-bloom);
+}
+/* Re-tint the bloom when the fill has been overridden. A destructive
+   button that glows violet under a red fill reads as a bug, not a light.
+   Collapsing all five hues to one makes it a red halo, which is the point:
+   an aurora under a red button would read as a rendering fault. */
+.btn-bloom-danger {
+  --vb-aurora-1: var(--vb-bad-rgb);
+  --vb-aurora-2: var(--vb-bad-rgb);
+  --vb-aurora-3: var(--vb-bad-rgb);
+  --vb-aurora-4: var(--vb-bad-rgb);
+  --vb-aurora-5: var(--vb-bad-rgb);
+}
 /* Text sitting on an accent fill. Use this instead of text-white: the accent
    flips to a light purple in dark mode, where white text is 3.10:1. */
 .text-on-accent { color: var(--vb-on-accent); }
+/* Hover lifts one elevation tier and wakes the bloom to a third — a hint
+   that the button is live, not the full press. Deliberately no box-shadow
+   declaration here: one would outrank the var-driven one above. */
 .btn-primary:hover:not(:disabled) {
   background: var(--vb-accent2);
-  box-shadow: var(--vb-shadow-md), 0 4px 20px -4px color-mix(in srgb, var(--vb-accent) 45%, transparent);
+  --vb-elev: var(--vb-shadow-md), inset 0 1px 0 rgba(255,255,255,0.12);
+  --vb-a-near: 34%;
+  --vb-a-far: 15%;
   transform: translateY(-1px);
 }
-.btn-primary:active:not(:disabled) { transform: translateY(0) scale(0.98); box-shadow: var(--vb-shadow-xs); }
+/* Press / tap: the button lights up like a prism under the finger.
+   This is the rule that gives touch users the same feedback desktop gets
+   from :hover — a finger down is a press, not a hover. */
+.btn-primary:active:not(:disabled) {
+  transform: translateY(0) scale(0.98);
+  --vb-a-near: 72%;
+  --vb-a-far: 36%;
+}
+/* Keyboard parity — focus lights the same bloom, a touch quieter, so
+   tabbing to Publish reads the same as pressing it. */
+.btn-primary:focus-visible {
+  --vb-a-near: 46%;
+  --vb-a-far: 21%;
+}
 .btn-ghost { background: transparent; color: var(--vb-ink2); border-color: var(--vb-border); }
 .btn-ghost:hover:not(:disabled) { border-color: var(--vb-accent); color: var(--vb-accent); background: var(--vb-accent-soft); }
 .btn-ghost:active:not(:disabled) { transform: scale(0.97); }
@@ -1575,6 +1664,17 @@ html[data-scale="110"] { font-size: 110%; }
     transform: scale(0.97) !important;
     opacity: 0.85 !important;
   }
+  /* A tap puts the button in :hover AND :active at once, so the global
+     reset above would cancel the bloom exactly when the finger lands.
+     Re-assert it here — this is the one shadow the touch fix must keep,
+     because it only exists while pressed and cannot get stuck.
+     The 0.85 dim from the rule above is also undone for primary buttons:
+     their press feedback is now the aurora brightening, and receding at
+     that instant reads as contradictory. */
+  .btn-primary:active:not(:disabled) {
+    box-shadow: var(--vb-elev), var(--vb-bloom) !important;
+    opacity: 1 !important;
+  }
   .card-hover:active {
     transform: scale(0.985) !important;
   }
@@ -1605,6 +1705,12 @@ html[data-scale="110"] { font-size: 110%; }
   .animate-shimmer-slide,
   [style*="border-beam-rotate"] {
     animation: none !important;
+  }
+  /* The press bloom still appears — it is feedback, not decoration — but
+     it snaps on instantly instead of fading, so nothing sweeps or glides. */
+  .btn-primary:active:not(:disabled),
+  .btn-primary:focus-visible {
+    transition: none;
   }
 }
 
