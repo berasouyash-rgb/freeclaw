@@ -4,7 +4,7 @@
 
 import { auditLog, clean, cors, isAdmin } from "./_auth.js";
 import supabase from "./_db-client.js";
-import { callLLMChain } from "./_providers.js";
+import { callLLMChain, callNvidiaFast } from "./_providers.js";
 
 const DEPARTMENTS = [
 	"Academics",
@@ -328,12 +328,14 @@ Provide a JSON response with:
 Return ONLY valid JSON.`;
 
 	try {
-		const result = await callLLMChain(
+		const fast = await callNvidiaFast(
 			"You are a school complaint resolution AI assistant.",
 			prompt,
-		);
-		if (result?.text) {
-			const cleaned = result.text
+			8000,
+		).catch(() => null);
+		const text = fast?.text || (await callLLMChain("You are a school complaint resolution AI assistant.", prompt))?.text;
+		if (text) {
+			const cleaned = text
 				.replace(/```json\n?/g, "")
 				.replace(/```\n?/g, "")
 				.trim();

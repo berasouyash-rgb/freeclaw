@@ -13,6 +13,7 @@
 
 import { clientIp, cors, rateLimited, rateLimitResponse, clean } from "./_auth.js";
 import supabase from "./_db-client.js";
+import { callNvidiaFast } from "./_providers.js";
 
 const NVIDIA_API_KEY = process.env.NVIDIA_API_KEY || "";
 const NVIDIA_API_URL = "https://integrate.api.nvidia.com/v1/chat/completions";
@@ -106,10 +107,38 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: "title or description required" });
     }
 
-    // Deterministic summary + keywords (always available, no AI needed)
-    const summary = deterministicSummary(cleanTitle, cleanDesc);
-    const keywords = extractKeywords(cleanTitle, cleanDesc);
-    const categorySuggestion = suggestCategory(cleanTitle, cleanDesc);
+    // Baseline summary + keywords
+    let summary = deterministicSummary(cleanTitle, cleanDesc);
+    let keywords = extractKeywords(cleanTitle, cleanDesc);
+    let categorySuggestion = suggestCategory(cleanTitle, cleanDesc);
+    let method = "deterministic";
+    let model = null;
+
+    // Real LLM call (Groq openai/gpt-oss-120b or NVIDIA NIM) for genuine AI summarization
+    try {
+      const systemPrompt = `You are an expert school complaint analyst. Generate a concise, objective 1-2 sentence executive summary of the issue, extract 3-5 key topical tags (keywords array), and suggest the best category among: Academics, Facilities, Canteen, Transport, Bullying, Security, Technology, Library, Cleanliness, Sports, Medical, Other. Return ONLY valid JSON in format: {"summary": "...", "keywords": ["..."], "category": "..."}`;
+      const userPrompt = `Title: ${cleanTitle}\nDescription: ${cleanDesc || "None"}`;
+      const aiRes = await callNvidiaFast(systemPrompt, userPrompt, 6000);
+      if (aiRes?.text) {
+        const jsonMatch = aiRes.text.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+          const parsed = JSON.parse(jsonMatch[0]);
+          if (parsed.summary && typeof parsed.summary === "string") {
+            summary = parsed.summary.trim();
+            method = "real_llm";
+            model = `${aiRes.provider}:${aiRes.model}`;
+          }
+          if (Array.isArray(parsed.keywords) && parsed.keywords.length > 0) {
+            keywords = parsed.keywords.map(String).slice(0, 5);
+          }
+          if (parsed.category && typeof parsed.category === "string") {
+            categorySuggestion = parsed.category.trim();
+          }
+        }
+      }
+    } catch {
+      /* fall back to deterministic if LLM times out */
+    }
 
     // Store the summary if post_id is provided
     if (post_id) {
@@ -127,7 +156,8 @@ export default async function handler(req, res) {
       summary,
       keywords,
       category_suggestion: categorySuggestion || category || "Other",
-      method: "deterministic",
+      method,
+      model,
     });
   } catch (err) {
     console.error("[ai-summary] error:", err?.message);

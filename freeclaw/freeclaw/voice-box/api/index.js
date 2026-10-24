@@ -118,6 +118,7 @@ import upload from "./_upload.js";
 import users from "./_users.js";
 import version from "./version.js";
 import workforce from "./_workforce.js";
+import autonomousHarnesses from "./_autonomous-harnesses.js";
 import agentCron from "./agent-cron.js";
 import learning from "./learning.js";
 import v3Audit from "./v3/_audit.js";
@@ -197,6 +198,7 @@ const routes = {
 	"ai-chat": protect(aiChat, "ai-chat"),
 	"command-center": protect(commandCenter, "command-center"),
 	workforce: protect(workforce, "workforce"),
+	"autonomous-harnesses": protect(autonomousHarnesses, "autonomous-harnesses"),
 	proactive: protect(proactive, "proactive"),
 	learning: protect(learning, "learning"),
 	follows: protect(follows, "follows"),

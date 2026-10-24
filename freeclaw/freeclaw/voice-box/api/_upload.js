@@ -73,6 +73,35 @@ function containsMaliciousPayload(buffer) {
 	return null;
 }
 
+/** Check image text chunks, metadata, and captions for inappropriate/NSFW content */
+function checkImageAppropriateness(buffer, meta = {}) {
+	// 1. Check user-supplied metadata fields (caption, filename, altText)
+	const userTexts = [meta.caption, meta.altText, meta.filename, meta.title]
+		.filter(Boolean)
+		.join(" ")
+		.toLowerCase();
+
+	// 2. Extract printable strings from buffer (EXIF tags, PNG tEXt chunks, comments)
+	const str = buffer.toString("latin1");
+	const printable = str.replace(/[^\x20-\x7E]/g, " ").toLowerCase();
+	const combined = `${userTexts} ${printable}`;
+
+	const INAPPROPRIATE_PATTERNS = [
+		/\b(?:porn|nsfw|xxx|nude|nudes|nudity|striptease|hentai|erotic|gore|snuff)\b/i,
+		/\b(?:kill\s+your\s*self|kys|i\s+will\s+kill\s+you|hang\s+your\s*self)\b/i,
+		/\b(?:i\s+will\s+not\s+leave\s+you|watch\s+your\s+back|tujhe\s+chhodunga\s+nahi|dekh\s+lunga)\b/i,
+		/\b(?:nigger|faggot|chink|kike|retard)\b/i,
+		/\b(?:post\s+your\s+nudes|leak\s+your\s+nudes)\b/i,
+	];
+
+	for (const pattern of INAPPROPRIATE_PATTERNS) {
+		if (pattern.test(combined)) {
+			return pattern.source;
+		}
+	}
+	return null;
+}
+
 export default async function handler(req, res) {
 	cors(res, req);
 	if (req.method === "OPTIONS") return res.status(204).end();
@@ -120,6 +149,24 @@ export default async function handler(req, res) {
 			return res.status(400).json({
 				error: "Security violation: Malicious or executable content detected in file.",
 				code: "MALICIOUS_FILE_BLOCKED",
+			});
+		}
+
+		// Appropriate image check: reject files with inappropriate or abusive metadata / text chunks
+		const inappropriate = checkImageAppropriateness(buffer, req.body || {});
+		if (inappropriate) {
+			try {
+				await auditLog(
+					"moderation",
+					"inappropriate_image_blocked",
+					`${clean(author_id, 40)}: detected ${inappropriate}`,
+				);
+			} catch {
+				/* best effort audit */
+			}
+			return res.status(400).json({
+				error: "Image rejected: Content or metadata violates school safety policy. Only appropriate school-related images are permitted.",
+				code: "INAPPROPRIATE_IMAGE",
 			});
 		}
 

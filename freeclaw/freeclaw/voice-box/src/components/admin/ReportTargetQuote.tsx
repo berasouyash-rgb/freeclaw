@@ -49,6 +49,58 @@ function QuoteBadge({ text, color, bg }: { text: string; color: string; bg: stri
 	);
 }
 
+/** Highlight flagged phrases or threats in quoted text so admins spot violations instantly */
+function HighlightFlaggedText({ text, reason }: { text: string; reason?: string }) {
+	if (!text) return null;
+
+	const tokens: string[] = [
+		"not leave you",
+		"kill",
+		"threat",
+		"chhodunga nahi",
+		"dekh lunga",
+		"watch your back",
+		"hate you",
+		"idiot",
+		"loser",
+		"die",
+		"nudes",
+		"stalk",
+		"stupid",
+		"kys",
+	];
+	if (reason && reason.length > 3) {
+		const reasonWords = reason.split(/\s+/).filter((w) => w.length > 3 && !/report|spam|other/i.test(w));
+		tokens.push(...reasonWords);
+	}
+
+	const pattern = new RegExp(`(${tokens.map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})`, "gi");
+	const parts = text.split(pattern);
+
+	if (parts.length <= 1) {
+		return <>{text}</>;
+	}
+
+	return (
+		<>
+			{parts.map((part, i) => {
+				const isMatch = tokens.some((t) => t.toLowerCase() === part.toLowerCase());
+				if (isMatch) {
+					return (
+						<mark
+							key={i}
+							className="rounded px-1 py-0.5 font-bold bg-bad/20 text-bad border border-bad/30 inline-block animate-pulse"
+						>
+							{part}
+						</mark>
+					);
+				}
+				return <span key={i}>{part}</span>;
+			})}
+		</>
+	);
+}
+
 function loadQuote(
 	targetType: string,
 	targetId: string,
@@ -138,10 +190,14 @@ export default function ReportTargetQuote({
 	reportId,
 	targetType,
 	targetId,
+	reason,
+	isOpen = false,
 }: {
 	reportId: number | string;
 	targetType: string;
 	targetId: string;
+	reason?: string;
+	isOpen?: boolean;
 }) {
 	const [status, setStatus] = useState<Status>({ state: "loading" });
 
@@ -169,21 +225,31 @@ export default function ReportTargetQuote({
 	return (
 		<div
 			data-testid={`report-quote-${reportId}`}
-			className="mt-2 rounded-lg border-l-2 px-2.5 py-1.5 text-xs"
-			style={{
-				borderColor: "rgba(220,170,50,0.7)",
-				background: "rgba(220,170,50,0.06)",
-			}}
+			className={`mt-2 rounded-xl border-l-4 px-3 py-2 text-xs transition-all ${
+				isOpen
+					? "border-amber-500 bg-amber-500/10 dark:bg-amber-500/5 shadow-sm ring-1 ring-amber-500/20"
+					: "border-border bg-surface2/40"
+			}`}
 		>
-			<p className="text-[10px] font-bold uppercase tracking-wider text-ink3 mb-0.5">
-				Reported {targetType}
-			</p>
+			<div className="flex items-center justify-between gap-2 mb-1">
+				<p className="text-[10px] font-bold uppercase tracking-wider text-ink3 flex items-center gap-1.5">
+					<span className="inline-block w-1.5 h-1.5 rounded-full bg-amber-500 animate-ping"></span>
+					Reported {targetType}
+				</p>
+				{targetType === "post" && (
+					<span className="text-[10px] text-ink3 font-mono opacity-80">
+						id: {targetId.slice(0, 10)}…
+					</span>
+				)}
+			</div>
 			{status.state === "loading" && (
 				<p className="text-ink3 animate-pulse">Loading reported content…</p>
 			)}
 			{status.state === "ready" && (
 				<>
-					<p className="font-semibold text-ink leading-snug">{status.quote.title}</p>
+					<p className="font-semibold text-ink leading-snug">
+						<HighlightFlaggedText text={status.quote.title} reason={reason} />
+					</p>
 					{/* State badges: live content shows none; anything else says
 					    exactly why it is not public — REMOVED (moderation hide),
 					    DELETED (author removal, terminal), UNDER REVIEW (not public
@@ -217,8 +283,8 @@ export default function ReportTargetQuote({
 						/>
 					)}
 					{status.quote.body && (
-						<p className="text-ink2 mt-0.5 leading-relaxed line-clamp-3">
-							{status.quote.body}
+						<p className="text-ink2 mt-1 leading-relaxed line-clamp-3 bg-surface/40 p-2 rounded-lg border border-border/50">
+							<HighlightFlaggedText text={status.quote.body} reason={reason} />
 						</p>
 					)}
 				</>

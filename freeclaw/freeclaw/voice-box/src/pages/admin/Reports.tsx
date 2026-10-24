@@ -31,6 +31,7 @@ import { useUpdateSignal } from "../../hooks/useUpdateSignal";
 import { useAdminStream } from "../../hooks/useAdminStream";
 import PostPreviewCard from "../../components/PostPreviewCard";
 import ReportTargetQuote from "../../components/admin/ReportTargetQuote";
+import AutonomousHarnessesBanner from "../../components/admin/AutonomousHarnessesBanner";
 import WorkItem from "../../components/admin/WorkItem";
 import type { WorkItemData } from "../../components/admin/WorkItem";
 import { useApp } from "../../contexts/AppContext";
@@ -1439,6 +1440,9 @@ export default function Reports() {
 				</div>
 			)}
 
+			{/* ── 24/7 Smart Autonomous Harnesses Status ── */}
+			<AutonomousHarnessesBanner />
+
 			{/* ── Tabs ───────────────────────────────────────────────── */}
 			<div className="flex gap-1.5 mb-5 flex-wrap">
 				{TAB_META.map((t) => (
@@ -1602,7 +1606,14 @@ export default function Reports() {
 										const commentPostId = r.target_type === "comment" ? commentStates[r.target_id]?.postId : null;
 										const openDetail = () => setSelectedReport(reportDetailPayload(r, reports, commentPostId));
 									return (
-									<div key={r.id} className="glass-card rounded-xl overflow-hidden">
+									<div
+										key={r.id}
+										className={`glass-card rounded-xl overflow-hidden border transition-all duration-300 ${
+											isInboxUrgent(r)
+												? "border-bad/60 shadow-lg shadow-bad/15 ring-2 ring-bad/50 animate-pulse"
+												: "border-border hover:border-amber-500/40 hover:shadow-md ring-1 ring-amber-500/25"
+										}`}
+									>
 										<div
 											className="p-4 flex items-start gap-3 cursor-pointer hover:bg-surface2/30 transition-colors"
 											onClick={() => openDetail()}
@@ -1623,13 +1634,18 @@ export default function Reports() {
 												<div className="flex items-center gap-2 mb-1 flex-wrap">
 													<TargetTypeChip type={r.target_type} targetId={r.target_id} postId={r.target_type === "comment" ? commentStates[r.target_id]?.postId : null} />
 												<span
-													className="chip !text-[9px] !py-0.5"
+													className="chip !text-[9px] !py-0.5 inline-flex items-center gap-1 font-bold"
 													style={{
 														color: "var(--vb-warn)",
-														borderColor: "rgba(220,170,50,0.3)",
+														borderColor: "rgba(220,170,50,0.4)",
+														background: "rgba(220,170,50,0.12)",
 													}}
 												>
-													Pending
+													<span className="relative flex h-1.5 w-1.5">
+														<span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-warn opacity-75"></span>
+														<span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-warn"></span>
+													</span>
+													Pending Review
 												</span>
 												{isInboxUrgent(r) && (
 													<span
@@ -1701,7 +1717,17 @@ export default function Reports() {
 													</span>
 											)}
 										</div>
-												<p className="text-sm font-medium">🚩 {r.reason}</p>
+												<div className="my-1.5 p-2 rounded-lg bg-surface2/40 border border-border/70 flex items-center gap-2 flex-wrap">
+													<span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] font-bold tracking-wide uppercase bg-bad/15 text-bad border border-bad/30">
+														<Flag size={12} className="text-bad" />
+														<span>{r.reason}</span>
+													</span>
+													{r.details && (
+														<span className="text-xs text-ink2 italic">
+															&ldquo;{r.details}&rdquo;
+														</span>
+													)}
+												</div>
 												<p className="text-xs text-ink2 mt-1" data-testid={`report-story-text-${r.id}`}>
 													Reported by <span className="font-semibold">{String(r.author_id || "unknown")}</span>
 													{r.target_author_id ? (
@@ -1709,7 +1735,7 @@ export default function Reports() {
 													) : null}{" "}
 													· {String(r.target_type || "content")} {String(r.target_id || "").slice(0, 20)} · {timeAgo(r.created_at)}
 												</p>
-												<ReportTargetQuote reportId={r.id} targetType={String(r.target_type || "")} targetId={String(r.target_id || "")} />
+												<ReportTargetQuote reportId={r.id} targetType={String(r.target_type || "")} targetId={String(r.target_id || "")} reason={r.reason} isOpen={true} />
 											</div>
 							<div className="flex items-center gap-2 shrink-0">
 								<button
