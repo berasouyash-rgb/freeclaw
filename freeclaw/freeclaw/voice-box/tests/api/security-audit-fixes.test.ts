@@ -3,7 +3,7 @@ import handler from "../../api/index.js";
 import goldenWorkflowsHandler from "../../api/_golden-workflows.js";
 import techDebtHandler from "../../api/_tech-debt.js";
 import uploadHandler from "../../api/_upload.js";
-import { checkUser, isAllowedOrigin, isAdmin } from "../../api/_auth.js";
+import { isAllowedOrigin } from "../../api/_auth.js";
 
 function createMockReqRes({
 	url = "/api/posts",
@@ -59,12 +59,18 @@ describe("Security Audit Fixes Verification", () => {
 			expect(isAllowedOrigin("https://voice-box.vercel.app")).toBe(true);
 			expect(isAllowedOrigin("https://voice-box-preview-123.vercel.app")).toBe(true);
 			expect(isAllowedOrigin("http://localhost:5173")).toBe(true);
+			expect(isAllowedOrigin("http://localhost:5174")).toBe(true);
+			expect(isAllowedOrigin("http://127.0.0.1:8080")).toBe(true);
+			expect(isAllowedOrigin("http://192.168.1.50:5173")).toBe(true);
 			expect(isAllowedOrigin("capacitor://localhost")).toBe(true);
+			expect(isAllowedOrigin("https://custom-school.edu", { headers: { host: "custom-school.edu" } } as any)).toBe(true);
 		});
 
 		it("isAllowedOrigin blocks malicious origins", () => {
 			expect(isAllowedOrigin("https://evil-attacker.com")).toBe(false);
 			expect(isAllowedOrigin("https://phishing-voice-box.com")).toBe(false);
+			expect(isAllowedOrigin("https://attacker-voice-box.vercel.app")).toBe(false);
+			expect(isAllowedOrigin("https://evilvoice-box.vercel.app")).toBe(false);
 		});
 
 		it("handler blocks cross-origin state-changing POST requests with invalid origin", async () => {

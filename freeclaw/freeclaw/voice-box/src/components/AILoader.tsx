@@ -25,7 +25,7 @@ const AILoader: FC<AILoaderProps> = ({ size = 48, className = "", label }) => {
 					<span className="ai-loader-blur-3" />
 					<span className="ai-loader-blur-4" />
 					<div className="ai-loader-core">
-						<span className="ai-loader-pulse-dot" />
+						<div className="ai-loader-pulse-dot" />
 					</div>
 				</div>
 			</div>

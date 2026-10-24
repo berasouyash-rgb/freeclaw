@@ -1,4 +1,4 @@
-﻿import {
+import {
 	AlertTriangle,
 	BarChart3,
 	CheckCircle2,
@@ -1284,7 +1284,7 @@ export default function Submit() {
 						<ShieldCheck size={13} />
 						<span>
 							{aiReview
-								? "Automated safety checks passed — final AI review runs when you publish"
+								? "The AI check couldn't run — full review still runs when you publish"
 								: "Quick checks passed — final AI review runs when you publish"}
 						</span>
 					</div>

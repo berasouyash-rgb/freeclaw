@@ -2,8 +2,17 @@
 // Locks in the audit fixes: FAQPage JSON-LD that mirrors the visible Q&A
 // verbatim, and questions wrapped as h3 headings.
 import { fireEvent, render, screen } from "@testing-library/react";
+import { MemoryRouter } from "react-router";
 import { describe, expect, it } from "vitest";
 import Faq from "../pages/Faq";
+
+function renderFaq() {
+	return render(
+		<MemoryRouter>
+			<Faq />
+		</MemoryRouter>,
+	);
+}
 
 function schema() {
 	const script = document.querySelector('script[data-testid="faq-schema"]');
@@ -13,7 +22,7 @@ function schema() {
 
 describe("Faq", () => {
 	it("emits a FAQPage JSON-LD block mirroring the visible questions", () => {
-		render(<Faq />);
+		renderFaq();
 		const data = schema();
 		expect(data["@context"]).toBe("https://schema.org");
 		expect(data["@type"]).toBe("FAQPage");
@@ -30,7 +39,7 @@ describe("Faq", () => {
 	});
 
 	it("renders one h3 heading per question, each wrapping its button", () => {
-		render(<Faq />);
+		renderFaq();
 		const headings = screen.getAllByRole("heading", { level: 3 });
 		expect(headings.length).toBe(schema().mainEntity.length);
 
@@ -48,7 +57,7 @@ describe("Faq", () => {
 	});
 
 	it("collapses and re-expands a question on click", () => {
-		render(<Faq />);
+		renderFaq();
 		const first = screen.getByRole("button", {
 			name: /is voice flow really anonymous/i,
 		});

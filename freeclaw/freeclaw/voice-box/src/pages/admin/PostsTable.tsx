@@ -50,12 +50,16 @@ import {
 import type { PostData, PostStatus } from "../../types";
 
 export default function PostsTable({
-	type,
+	type = "all",
 }: {
-	type: "problem" | "suggestion";
+	type?: "all" | "problem" | "suggestion" | "poll";
 }) {
 	const { toast } = useApp();
-	const categories = useCategories();
+	const categories = useCategories();
+	const [typeFilter, setTypeFilter] = useState<string>(type || "all");
+	useEffect(() => {
+		if (type) setTypeFilter(type);
+	}, [type]);
 	const [query, setQuery] = useState("");
 	const [statusF, setStatusF] = useState("all");
 	const [catF, setCatF] = useState("All");
@@ -130,7 +134,7 @@ export default function PostsTable({
 	const fetchPosts = useCallback(
 		async ({ cursor, limit }: { cursor: string | null; limit: number }) => {
 			const result = await api.paginated<PostData>(
-				`/api/posts?all=1&type=${type}`,
+				`/api/posts?all=1${typeFilter !== "all" ? `&type=${typeFilter}` : ""}`,
 				{ cursor, limit, query: serverFilters },
 			);
 			// Never page a tombstoned row back in.
@@ -143,7 +147,7 @@ export default function PostsTable({
 				total: result.total || 0,
 			};
 		},
-		[type, serverFilters],
+		[typeFilter, serverFilters],
 	);
 
 	const PAGE_SIZE = 100;
@@ -174,7 +178,7 @@ export default function PostsTable({
 			return;
 		}
 		softReset();
-	}, [serverFilters, softReset]);
+	}, [serverFilters, typeFilter, softReset]);
 
 	// Load-all: the admin feed shows posts matching the filters without
 	// requiring the admin to scroll to an unfired sentinel. After each page
@@ -250,7 +254,7 @@ export default function PostsTable({
 			// the header total with the whole-dataset count, so both the rows
 			// and the "N total" figure jumped on every realtime event.
 			const r = await api.getFresh<{ data: PostData[]; total: number }>(
-				`/api/posts?all=1&type=${type}&paginate=1&limit=30${filterQuery ? `&${filterQuery}` : ""}`,
+				`/api/posts?all=1${typeFilter !== "all" ? `&type=${typeFilter}` : ""}&paginate=1&limit=30${filterQuery ? `&${filterQuery}` : ""}`,
 			);
 			const tomb = tombstonesRef.current;
 			const fresh = (Array.isArray(r?.data) ? r.data : []).filter(
@@ -332,7 +336,7 @@ export default function PostsTable({
 		} catch {
 			// Transient failure — keep current rows; the next event will retry.
 		}
-	}, [type, setItems, filterQuery]);
+	}, [typeFilter, setItems, filterQuery]);
 
 	// ─── Freshness signal, not a refetch ──────────────────────────
 	// Realtime covers the post rows themselves — NOT reactions, poll votes
@@ -363,15 +367,25 @@ export default function PostsTable({
 		}
 	}, [refresh, clearUpdates]);
 
+	const onRealtimeUpdate = useCallback(() => {
+		const scrolledDeep =
+			typeof window !== "undefined" && window.scrollY > SCROLLED_DEEP_PX;
+		if (scrolledDeep) {
+			markUpdatesAvailable();
+		} else {
+			void handleRefresh();
+		}
+	}, [markUpdatesAvailable, handleRefresh]);
+
 	useRealtime(
 		["posts"],
-		markUpdatesAvailable,
+		onRealtimeUpdate,
 		1_000,
 	);
 	// Admin stream is a no-op extra here (posts are already live on the
 	// anon channel) — kept for uniformity so every admin surface shares
 	// the same two-leg freshness story.
-	useAdminStream(markUpdatesAvailable);
+	useAdminStream(onRealtimeUpdate);
 
 	// Flush parked newcomers to the top of the list (pill click).
 	const showParked = useCallback(() => {
@@ -406,7 +420,7 @@ export default function PostsTable({
 		let guard = 0;
 		do {
 			const r: { data: PostData[]; nextCursor: string | null; total: number } =
-				await api.paginated<PostData>(`/api/posts?all=1&type=${type}`, {
+				await api.paginated<PostData>(`/api/posts?all=1${typeFilter !== "all" ? `&type=${typeFilter}` : ""}`, {
 				cursor,
 				limit: 100,
 				query: serverFilters,
@@ -443,7 +457,7 @@ export default function PostsTable({
 			// screen — an admin exporting "last 30 days" expects every matching
 			// report, not the 30 that happen to be loaded.
 			const rows = await exportRows();
-			const csv = buildComplianceCSV(rows, range, type);
+			const csv = buildComplianceCSV(rows, range, typeFilter);
 			const label =
 				dateRangePreset === "all"
 					? "all-time"
@@ -454,7 +468,7 @@ export default function PostsTable({
 				priorityF !== "all" ? priorityF : null,
 			].filter(Boolean);
 			const filterLabel = parts.length ? `-${parts.join("-")}` : "";
-			const filename = `voicebox-${type === "problem" ? "complaints" : "suggestions"}${filterLabel}-${label}.csv`;
+			const filename = `voicebox-${typeFilter === "all" ? "content" : typeFilter === "problem" ? "complaints" : typeFilter === "suggestion" ? "suggestions" : "polls"}${filterLabel}-${label}.csv`;
 			downloadFile(filename, csv, "text/csv;charset=utf-8");
 			toast(
 				`Exported ${rows.length} filtered row${rows.length === 1 ? "" : "s"} (${label}${parts.length ? `, ${parts.join(", ")}` : ""})`,
@@ -626,8 +640,14 @@ export default function PostsTable({
 		}
 	};
 
-	const filtered = useMemo(() => {
-		let list = posts;
+	const filtered = useMemo(() => {
+		// The content-type filter is NOT applied here: it is a server-side
+		// filter (`fetchPosts` / `refresh` / the export pager all request
+		// `?type=`), so `posts` only ever holds rows of the selected type.
+		// Re-filtering in the browser used to drop rows the server had just
+		// returned — most visibly every poll, because a poll is a post whose
+		// `type` is still problem/suggestion and only `linked_poll` marks it.
+		let list = posts;
 		if (statusF !== "all") list = list.filter((p) => p.status === statusF);
 		if (catF !== "All") list = list.filter((p) => p.category === catF);
 		if (priorityF !== "all") list = list.filter((p) => p.priority === priorityF);
@@ -652,7 +672,7 @@ export default function PostsTable({
 	// Clear selection when filters change
 	useEffect(
 		() => setSelectedIds(new Set()),
-		[statusF, catF, priorityF, query, dateRangePreset],
+		[typeFilter, statusF, catF, priorityF, query, dateRangePreset],
 	);
 
 	// Count of rows currently visible after every filter is applied. Shown in
@@ -733,7 +753,15 @@ export default function PostsTable({
 		<div>
 			<div className="flex items-center justify-between mb-4 vb-tab-enter">
 				<h1 className="flex items-center gap-2 font-display font-bold text-2xl tracking-tight">
-					<span className="vb-gradient-text">{type === "problem" ? "Complaint Management" : "Suggestions"}</span>
+					<span className="vb-gradient-text">
+						{typeFilter === "problem"
+							? "Complaint Management"
+							: typeFilter === "suggestion"
+							? "Suggestions"
+							: typeFilter === "poll"
+							? "Polls & Surveys"
+							: "Feed & Posts"}
+					</span>
 				</h1>
 				<div className="flex items-center gap-3 flex-wrap">
 					<select
@@ -828,6 +856,17 @@ export default function PostsTable({
 							{v.label}
 						</option>
 					))}
+				</select>
+				<select
+					className="input !w-auto !py-2 text-sm font-medium"
+					aria-label="Filter by type"
+					value={typeFilter}
+					onChange={(e) => setTypeFilter(e.target.value)}
+				>
+					<option value="all">All types</option>
+					<option value="problem">Problem</option>
+					<option value="suggestion">Suggestion</option>
+					<option value="poll">Poll</option>
 				</select>
 			</div>
 
@@ -1051,8 +1090,8 @@ export default function PostsTable({
 							onClick={() => {
 								const selectedPosts = posts.filter((p) => selectedIds.has(p.id));
 								const range: DateRange = { preset: "all" };
-								const csv = buildComplianceCSV(selectedPosts, range, type);
-								const filename = `voicebox-selected-${selectedIds.size}-${type}s.csv`;
+								const csv = buildComplianceCSV(selectedPosts, range, typeFilter);
+								const filename = `voicebox-selected-${selectedIds.size}-${typeFilter}s.csv`;
 								downloadFile(filename, csv, "text/csv;charset=utf-8");
 								toast(`Exported ${selectedIds.size} selected posts`, "ok");
 							}}
@@ -1388,7 +1427,7 @@ export default function PostsTable({
 							>
 								<BarChart3 size={13} /> Convert to poll
 							</button>
-							{type === "suggestion" && (
+							{(typeFilter === "suggestion" || selected.type === "suggestion") && (
 								<button
 									className="btn btn-ghost !text-xs"
 									onClick={() =>

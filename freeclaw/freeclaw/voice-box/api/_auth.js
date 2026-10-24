@@ -65,14 +65,40 @@ function isNativeOrigin(origin) {
 	if (!origin) return true; // no Origin header: curl, Electron file:// GET, same-origin
 	if (origin === "null") return true; // Electron file:// fetch
 	if (origin === "file://") return true;
+	if (typeof origin === "string" && (origin.startsWith("capacitor://") || origin.startsWith("ionic://"))) return true;
 	return false;
 }
 
-export function isAllowedOrigin(origin) {
+export function isAllowedOrigin(origin, req) {
 	if (!origin) return false;
 	if (ALLOWED_ORIGINS.includes(origin)) return true;
 	if (isNativeOrigin(origin)) return true;
+	// Voice Box Vercel deployment preview or alias: strictly anchored to voice-box prefix
 	if (/^https:\/\/voice-box(-[a-z0-9-]+)?\.vercel\.app$/i.test(origin)) return true;
+	if (/^https:\/\/voice-box-[a-z0-9]+-[a-z0-9-]+\.vercel\.app$/i.test(origin)) return true;
+	// Non-production only: local dev loopback, Android emulator, and LAN testing
+	if (process.env.NODE_ENV !== "production") {
+		// Any localhost or loopback port (dev servers, test runners, mobile forwarders)
+		if (/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(origin)) return true;
+		// Android emulator loopback
+		if (/^https?:\/\/10\.0\.2\.2(:\d+)?$/i.test(origin)) return true;
+		// Local LAN IPs for testing APK / device over local Wi-Fi
+		if (/^https?:\/\/(192\.168\.\d+\.\d+|10\.\d+\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+)(:\d+)?$/i.test(origin)) return true;
+	}
+	// Environment-configured extra origins
+	if (process.env.ALLOWED_ORIGINS) {
+		const extras = process.env.ALLOWED_ORIGINS.split(",").map((s) => s.trim());
+		if (extras.includes(origin)) return true;
+	}
+	// Same-origin check: Host or X-Forwarded-Host matches origin host
+	const rawHost = req?.headers?.["x-forwarded-host"] || req?.headers?.host;
+	if (rawHost) {
+		try {
+			const host = String(rawHost).split(",")[0].trim();
+			const u = new URL(origin);
+			if (u.host === host || u.hostname === host || u.host === host.split(":")[0]) return true;
+		} catch {}
+	}
 	return false;
 }
 
@@ -90,8 +116,8 @@ export function isNativeShell(req) {
 
 export function cors(res, req) {
 	const origin = req?.headers?.origin || "";
-	if (origin && (ALLOWED_ORIGINS.includes(origin) || isNativeOrigin(origin))) {
-		res.setHeader("Access-Control-Allow-Origin", origin === "null" ? "null" : origin || "null");
+	if (origin && isAllowedOrigin(origin, req)) {
+		res.setHeader("Access-Control-Allow-Origin", origin === "null" ? "null" : origin);
 	} else if (!origin) {
 		// file:// / curl with no Origin: answer with null so credentialed
 		// cross-origin fetches from the desktop shell still pass the check.

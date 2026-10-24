@@ -24,6 +24,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock("../lib/api", () => ({
 	api: {
 		get: mocks.get,
+		getFresh: mocks.get,
 		put: mocks.put,
 		post: mocks.post,
 		postLong: (...args: unknown[]) =>

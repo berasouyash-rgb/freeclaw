@@ -44,6 +44,7 @@ export default function Download() {
 	const [failed, setFailed] = useState(false);
 	const device = detectDevicePlatform();
 	const pick = feed ? pickDownload(feed, device) : null;
+	const hasAnyRelease = feed && Object.values(feed).some((p) => p && p.url);
 
 	useEffect(() => {
 		let live = true;
@@ -91,6 +92,15 @@ export default function Download() {
 				<div className="space-y-4 mb-8" aria-hidden>
 					<div className="skeleton h-32 rounded-2xl" />
 					<div className="skeleton h-24 rounded-2xl" />
+				</div>
+			)}
+
+			{/* No Releases Published Yet */}
+			{feed && !hasAnyRelease && (
+				<div className="card p-6 text-center border-border bg-surface mb-8">
+					<p className="text-sm text-ink2">
+						No packaged releases published yet — the web app keeps working meanwhile.
+					</p>
 				</div>
 			)}
 

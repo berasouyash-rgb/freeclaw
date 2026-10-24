@@ -1,4 +1,5 @@
 import {
+	AlertTriangle,
 	ArrowUpRight,
 	BarChart3,
 	CheckCircle2,
@@ -17,8 +18,10 @@ import {
 	Scale,
 	Search,
 	Shield,
+	ShieldAlert,
 	ShieldCheck,
 	ShieldX,
+	Sparkles,
 	Tag,
 	Trash2,
 	Unlock,
@@ -1374,6 +1377,52 @@ export default function Reports() {
 		};
 	};
 
+	const hideTargetAndResolve = async (r: ReportRow) => {
+		setBusy(`hide:${r.id}`);
+		try {
+			if (r.target_type === "post") {
+				try {
+					await api.del(`/api/posts?id=${encodeURIComponent(r.target_id)}`, { id: r.target_id });
+				} catch {
+					await api.put("/api/posts", { id: r.target_id, status: "rejected" });
+				}
+			} else if (r.target_type === "comment") {
+				try {
+					await api.del(`/api/comments?id=${encodeURIComponent(r.target_id)}`, { id: r.target_id });
+				} catch {
+					await api.put("/api/comments", { id: r.target_id, hidden: true });
+				}
+			}
+			await api.put("/api/reports", { id: r.id, status: "resolved" });
+			toast("Offending content hidden & report resolved ✓", "ok");
+			load();
+		} catch (e: unknown) {
+			toast(e instanceof Error ? `Failed to take down content: ${e.message}` : "Failed to take down content", "err");
+		} finally {
+			setBusy(null);
+		}
+	};
+
+	const applyAiRecommendation = async (r: ReportRow) => {
+		const g = getReportGuidance(r);
+		if (g.tone === "critical") {
+			await escalateReport(r.id);
+		} else if (g.tone === "urgent" || g.tone === "warn") {
+			if (r.target_author_id) {
+				try {
+					await moderateAuthor(r, "warn");
+				} catch (err) {
+					console.warn("[reports] author warning non-fatal:", err);
+				}
+			}
+			await hideTargetAndResolve(r);
+		} else if (g.tone === "info") {
+			await hideTargetAndResolve(r);
+		} else {
+			await resolve(r.id);
+		}
+	};
+
 	const visibleOpenReports = openReports.filter((r) => {
 		if (reportFilter === "urgent" && !isUrgentOrBullying(r)) return false;
 		if (reportFilter === "comments" && r.target_type !== "comment") return false;
@@ -1866,17 +1915,18 @@ export default function Reports() {
 										const commentPostId = r.target_type === "comment" ? commentStates[r.target_id]?.postId : null;
 										const openDetail = () => setSelectedReport(reportDetailPayload(r, reports, commentPostId));
 										const guidance = getReportGuidance(r);
+										const urgent = isInboxUrgent(r) || isUrgentOrBullying(r);
 									return (
 									<div
 										key={r.id}
-										className={`glass-card rounded-xl overflow-hidden border transition-all duration-300 ${
-											isInboxUrgent(r) || isUrgentOrBullying(r)
-												? "border-bad/60 shadow-lg shadow-bad/15 ring-2 ring-bad/50 animate-pulse"
-												: "border-border hover:border-amber-500/40 hover:shadow-md ring-1 ring-amber-500/25"
+										className={`glass-card rounded-2xl overflow-hidden border transition-all duration-300 shadow-sm ${
+											urgent
+												? "border-bad/60 shadow-lg shadow-bad/10 ring-1 ring-bad/50 bg-bad/[0.02]"
+												: "border-border hover:border-accent/40 hover:shadow-md"
 										}`}
 									>
 										<div
-											className="p-4 flex items-start gap-3 cursor-pointer hover:bg-surface2/30 transition-colors"
+											className="p-4 sm:p-5 flex flex-col gap-3 cursor-pointer hover:bg-surface2/20 transition-colors"
 											onClick={() => openDetail()}
 											onDoubleClick={() => openDetail()}
 											onKeyDown={(e) => {
@@ -1889,49 +1939,49 @@ export default function Reports() {
 											role="button"
 											tabIndex={0}
 											aria-label={`Open report ${r.id}: ${r.reason || "Report"}`}
-											// (detail payload lives in reportDetailPayload — shared by click, double-click, Enter)
 										>
-											<div className="min-w-0 flex-1">
-												<div className="flex items-center gap-2 mb-1.5 flex-wrap">
+											{/* Header: Targets, tags, and time */}
+											<div className="flex items-center justify-between gap-2 flex-wrap">
+												<div className="flex items-center gap-2 flex-wrap">
 													<TargetTypeChip type={r.target_type} targetId={r.target_id} postId={r.target_type === "comment" ? commentStates[r.target_id]?.postId : null} />
-												<span
-													className="chip !text-[9px] !py-0.5 inline-flex items-center gap-1 font-bold"
-													style={{
-														color: "var(--vb-warn)",
-														borderColor: "rgba(220,170,50,0.4)",
-														background: "rgba(220,170,50,0.12)",
-													}}
-												>
-													<span className="relative flex h-1.5 w-1.5">
-														<span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-warn opacity-75"></span>
-														<span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-warn"></span>
-													</span>
-													Pending Review
-												</span>
-												{isInboxUrgent(r) && (
 													<span
-														className="chip !text-[9px] !py-0.5"
+														className="chip !text-[9px] !py-0.5 inline-flex items-center gap-1 font-bold"
 														style={{
-															color: "#fff",
-															background: "rgba(220,75,75,0.85)",
-															borderColor: "rgba(220,75,75,1)",
-														}}
-														role="alert"
-													>
-														🚨 URGENT — inbox
-													</span>
-												)}
-												{isInboxRow(r) && !isInboxUrgent(r) && (
-													<span
-														className="chip !text-[9px] !py-0.5"
-														style={{
-															color: "var(--vb-accent)",
-															borderColor: "rgba(86,82,214,0.3)",
+															color: "var(--vb-warn)",
+															borderColor: "rgba(220,170,50,0.4)",
+															background: "rgba(220,170,50,0.12)",
 														}}
 													>
-														{r.target_type === "inbox" ? "📥 inbox" : "🛡 backstop"}
+														<span className="relative flex h-1.5 w-1.5">
+															<span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-warn opacity-75"></span>
+															<span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-warn"></span>
+														</span>
+														Pending Review
 													</span>
-												)}
+													{urgent && (
+														<span
+															className="chip !text-[9px] !py-0.5 font-bold animate-pulse"
+															style={{
+																color: "#fff",
+																background: "rgba(220,75,75,0.9)",
+																borderColor: "rgba(220,75,75,1)",
+															}}
+															role="alert"
+														>
+															🚨 URGENT SAFETY ACTION
+														</span>
+													)}
+													{isInboxRow(r) && !isInboxUrgent(r) && (
+														<span
+															className="chip !text-[9px] !py-0.5"
+															style={{
+																color: "var(--vb-accent)",
+																borderColor: "rgba(86,82,214,0.3)",
+															}}
+														>
+															{r.target_type === "inbox" ? "📥 inbox" : "🛡 backstop"}
+														</span>
+													)}
 													{r.target_author_id && (
 														<span
 															className="chip !text-[9px] !py-0.5"
@@ -1945,7 +1995,7 @@ export default function Reports() {
 													)}
 													{r.enforcement?.strike_applied && (
 														<span
-															className="chip !text-[9px] !py-0.5"
+															className="chip !text-[9px] !py-0.5 font-bold"
 															style={{
 																color: "var(--vb-bad)",
 																borderColor: "rgba(220,75,75,0.3)",
@@ -1955,82 +2005,213 @@ export default function Reports() {
 														</span>
 													)}
 													{r.enforcement?.banned && (
-														<span className="chip !text-[9px] !py-0.5 !bg-bad/10 !text-bad">
+														<span className="chip !text-[9px] !py-0.5 !bg-bad/10 !text-bad font-bold">
 															🚫 auto-banned
 														</span>
 													)}
-											{r.enforcement?.suspended && (
-												<span className="chip !text-[9px] !py-0.5 !bg-warn/10 !text-warn">
-													⏸ auto-suspended
-												</span>
-											)}
-											{r.worker_action && (
-												<span
-													className="chip !text-[9px] !py-0.5"
-													style={{
-														color: "var(--vb-accent)",
-														borderColor: "rgba(86,82,214,0.4)",
-													}}
-														title="Recorded by an automated worker — expand the row to see its evidence"
-													>
-														Auto: {r.worker_action.disposition || r.worker_action.action}
-														{r.worker_action.enforced ? " · removed" : ""}
-													</span>
-											)}
-										</div>
-
-												{/* ── High-Clarity "Why Reported" Context Card ── */}
-												<div className={`my-2 p-3 rounded-xl border transition-all ${
-													isUrgentOrBullying(r)
-														? "bg-bad/10 border-bad/40 shadow-sm"
-														: "bg-surface2/60 border-border/80"
-												}`}>
-													<div className="flex items-center justify-between gap-2 flex-wrap mb-1.5">
-														<div className="flex items-center gap-2 flex-wrap">
-															<span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-bold tracking-wide uppercase ${
-																isUrgentOrBullying(r)
-																	? "bg-bad text-white shadow-[0_0_8px_rgba(220,75,75,0.4)] animate-pulse"
-																	: "bg-bad/15 text-bad border border-bad/30"
-															}`}>
-																<Flag size={13} className={isUrgentOrBullying(r) ? "text-white" : "text-bad"} />
-																<span>Violation: {r.reason}</span>
-															</span>
-															<span className="text-[10px] font-bold text-ink2 px-2 py-0.5 rounded bg-surface border border-border/60 uppercase tracking-wider">
-																{guidance.badge}
-															</span>
-														</div>
-														<span className="text-[10px] text-ink3 font-medium">
-															{timeAgo(r.created_at)}
+													{r.enforcement?.suspended && (
+														<span className="chip !text-[9px] !py-0.5 !bg-warn/10 !text-warn font-bold">
+															⏸ auto-suspended
 														</span>
-													</div>
-
-													{r.details ? (
-														<p className="text-xs text-ink leading-relaxed font-medium bg-surface/50 p-2 rounded-lg border border-border/40 my-1">
-															<span className="text-[10px] uppercase font-bold text-ink3 block mb-0.5">Reporter&apos;s Stated Reason:</span>
-															&ldquo;{r.details}&rdquo;
-														</p>
-													) : (
-														<p className="text-[11px] text-ink3 italic my-1">Direct flag submitted without extra notes.</p>
 													)}
+													{r.worker_action && (
+														<span
+															className="chip !text-[9px] !py-0.5"
+															style={{
+																color: "var(--vb-accent)",
+																borderColor: "rgba(86,82,214,0.4)",
+															}}
+															title="Recorded by an automated worker"
+														>
+															Auto: {r.worker_action.disposition || r.worker_action.action}
+															{r.worker_action.enforced ? " · removed" : ""}
+														</span>
+													)}
+												</div>
+												<span className="text-[11px] text-ink3 font-medium shrink-0">
+													{timeAgo(r.created_at)}
+												</span>
+											</div>
 
-													<div className="mt-2 pt-1.5 border-t border-border/40 flex items-center gap-2 text-xs text-ink2">
-														<span className="font-bold text-[10px] uppercase text-accent tracking-wider">Action Guide:</span>
-														<span className="text-xs font-medium text-ink">{guidance.action}</span>
+											{/* Reason and Reporter note card */}
+											<div className={`p-3 rounded-xl border transition-all ${
+												urgent
+													? "bg-bad/10 border-bad/40 shadow-xs"
+													: "bg-surface2/60 border-border/80"
+											}`}>
+												<div className="flex items-center justify-between gap-2 flex-wrap mb-1.5">
+													<div className="flex items-center gap-2 flex-wrap">
+														<span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-bold tracking-wide uppercase ${
+															urgent
+																? "bg-bad text-white shadow-xs"
+																: "bg-bad/15 text-bad border border-bad/30"
+														}`}>
+															<Flag size={13} className={urgent ? "text-white" : "text-bad"} />
+															<span>Violation: {r.reason}</span>
+														</span>
+														<span className="text-[10px] font-bold text-ink2 px-2 py-0.5 rounded bg-surface border border-border/60 uppercase tracking-wider">
+															{guidance.badge}
+														</span>
 													</div>
 												</div>
 
-												<p className="text-xs text-ink2 mt-1" data-testid={`report-story-text-${r.id}`}>
-													Reported by <span className="font-semibold">{String(r.author_id || "unknown")}</span>
-													{r.target_author_id ? (
-														<> against <span className="font-semibold">{String(r.target_author_id)}</span></>
-													) : null}{" "}
-													· {String(r.target_type || "content")} {String(r.target_id || "").slice(0, 20)} · {timeAgo(r.created_at)}
-												</p>
-												<ReportTargetQuote reportId={r.id} targetType={String(r.target_type || "")} targetId={String(r.target_id || "")} reason={r.reason} isOpen={true} />
+												{r.details ? (
+													<p className="text-xs text-ink leading-relaxed font-medium bg-surface/60 p-2.5 rounded-lg border border-border/40 my-1.5">
+														<span className="text-[10px] uppercase font-bold text-ink3 block mb-0.5">Reporter&apos;s Stated Reason:</span>
+														&ldquo;{r.details}&rdquo;
+													</p>
+												) : (
+													<p className="text-[11px] text-ink3 italic my-1">Direct flag submitted without extra notes.</p>
+												)}
 											</div>
-							<div className="flex items-center gap-2 shrink-0">
-								<button
-													className="btn btn-ghost !p-2 text-purple-400"
+
+											{/* Test requirement: reported by and target story text */}
+											<p className="text-xs text-ink2" data-testid={`report-story-text-${r.id}`}>
+												Reported by <span className="font-semibold">{String(r.author_id || "unknown")}</span>
+												{r.target_author_id ? (
+													<> against <span className="font-semibold">{String(r.target_author_id)}</span></>
+												) : null}{" "}
+												· {String(r.target_type || "content")} {String(r.target_id || "").slice(0, 20)} · {timeAgo(r.created_at)}
+											</p>
+
+											{/* Targeted content preview quote */}
+											<ReportTargetQuote reportId={r.id} targetType={String(r.target_type || "")} targetId={String(r.target_id || "")} reason={r.reason} isOpen={true} />
+
+											{/* ── Smart AI Decision Banner ── */}
+											<div className="my-1 p-3 rounded-xl bg-accent/[0.08] border border-accent/25 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+												<div className="flex items-center gap-2.5 min-w-0">
+													<div className="w-8 h-8 rounded-lg bg-accent/20 flex items-center justify-center text-accent shrink-0">
+														<Sparkles size={16} />
+													</div>
+													<div className="min-w-0">
+														<div className="flex items-center gap-2">
+															<span className="text-xs font-bold text-ink">AI Decision Advice:</span>
+															<span className="text-[10px] font-bold text-accent bg-accent/15 px-2 py-0.5 rounded-full border border-accent/30">{guidance.badge}</span>
+														</div>
+														<p className="text-xs text-ink2 mt-0.5 truncate">{guidance.action}</p>
+													</div>
+												</div>
+												<button
+													type="button"
+													onClick={(e) => {
+														e.stopPropagation();
+														void applyAiRecommendation(r);
+													}}
+													disabled={busy !== null || actingId !== null}
+													className="btn !bg-accent hover:!bg-accent-hover !text-white !px-3.5 !py-1.5 !rounded-xl !text-xs font-bold shrink-0 flex items-center gap-1.5 shadow-sm active:scale-95 transition-all"
+													title="Automatically execute the AI suggested moderation move"
+												>
+													<Sparkles size={13} />
+													<span>1-Click Apply</span>
+												</button>
+											</div>
+										</div>
+
+										{/* ── The Crystal-Clear 3-Action Quick Triage Bar ── */}
+										<div className="px-4 py-3 bg-surface2/50 border-t border-border flex items-center justify-between gap-2 flex-wrap">
+											<div className="flex items-center gap-2 flex-wrap">
+												{/* 1. Green: Dismiss / Resolve */}
+												<button
+													type="button"
+													className="btn !bg-emerald-600/15 hover:!bg-emerald-600/25 !text-emerald-400 !border-emerald-500/30 !px-3.5 !py-2 !rounded-xl !text-xs font-bold flex items-center gap-1.5 transition-all active:scale-95 shadow-sm"
+													onClick={(e) => {
+														e.stopPropagation();
+														resolve(r.id);
+													}}
+													disabled={busy === `resolve:${r.id}`}
+													aria-label={`Resolve report ${r.id}`}
+												>
+													<CheckCircle2 size={14} className="text-emerald-400" />
+													<span>Resolve</span>
+													<span className="text-[10px] font-normal opacity-70 hidden sm:inline">(Safe)</span>
+												</button>
+
+												{/* 2. Red: Hide / Remove Content */}
+												<button
+													type="button"
+													className="btn !bg-rose-600/15 hover:!bg-rose-600/25 !text-rose-400 !border-rose-500/30 !px-3.5 !py-2 !rounded-xl !text-xs font-bold flex items-center gap-1.5 transition-all active:scale-95 shadow-sm"
+													onClick={(e) => {
+														e.stopPropagation();
+														void hideTargetAndResolve(r);
+													}}
+													disabled={busy === `hide:${r.id}` || busy === `resolve:${r.id}`}
+													aria-label={`Hide content for report ${r.id}`}
+													title="Immediately hide offending content from public view and resolve the report"
+												>
+													<ShieldAlert size={14} className="text-rose-400" />
+													<span>🚫 Hide Content</span>
+													<span className="text-[10px] font-normal opacity-70 hidden sm:inline">(Take Down)</span>
+												</button>
+
+												{/* 3. Amber: Warn + strike */}
+												{(r.target_author_id || r.target_type === "post" || r.target_type === "comment") && (
+													<button
+														type="button"
+														className="btn !bg-amber-600/15 hover:!bg-amber-600/25 !text-amber-400 !border-amber-500/30 !px-3.5 !py-2 !rounded-xl !text-xs font-bold flex items-center gap-1.5 transition-all active:scale-95 shadow-sm"
+														onClick={(e) => {
+															e.stopPropagation();
+															moderateAuthor(r, "warn");
+														}}
+														disabled={actingId === r.id}
+														aria-label="Warn author"
+													>
+														<AlertTriangle size={14} className="text-amber-400" />
+														<span>⚠ Warn + strike</span>
+													</button>
+												)}
+
+												{/* Quick author discipline shortcuts */}
+												{(r.target_author_id || r.target_type === "post" || r.target_type === "comment") && (
+													<>
+														<button
+															type="button"
+															className="text-[11px] px-2.5 py-1.5 rounded-lg font-semibold transition-all hover:brightness-110 active:scale-95"
+															style={{
+																background: "rgba(22,160,106,0.12)",
+																color: "#16a06a",
+																border: "1px solid rgba(22,160,106,0.25)",
+															}}
+															disabled={actingId === r.id}
+															onClick={(e) => {
+																e.stopPropagation();
+																moderateAuthor(r, "suspend");
+															}}
+														>
+															⏸ Suspend 7d
+														</button>
+														<button
+															type="button"
+															className="text-[11px] px-2.5 py-1.5 rounded-lg font-semibold transition-all hover:brightness-110 active:scale-95"
+															style={{
+																background: "rgba(220,75,75,0.12)",
+																color: "#dc4b4b",
+																border: "1px solid rgba(220,75,75,0.25)",
+															}}
+															disabled={actingId === r.id}
+															onClick={(e) => {
+																e.stopPropagation();
+																moderateAuthor(r, "ban");
+															}}
+														>
+															🚫 Ban
+														</button>
+													</>
+												)}
+
+												{/* Unlock comment if hidden */}
+												{commentRowAction(r)}
+
+												{actingId === r.id && (
+													<span className="text-[10px] text-ink3 animate-pulse">
+														applying…
+													</span>
+												)}
+											</div>
+
+											<div className="flex items-center gap-1.5 ml-auto">
+												<button
+													type="button"
+													className="btn btn-ghost !p-2 text-purple-400 hover:bg-purple-500/10 rounded-xl"
 													title="Escalate to Approval Center"
 													onClick={(e) => {
 														e.stopPropagation();
@@ -2039,76 +2220,24 @@ export default function Reports() {
 													disabled={busy === `esc-report:${r.id}`}
 													aria-label={`Escalate report ${r.id}`}
 												>
-													<ArrowUpRight size={14} />
+													<ArrowUpRight size={15} />
 												</button>
 												<button
-													className="btn btn-soft !text-xs"
+													type="button"
+													className="btn btn-ghost !text-xs !px-3 !py-1.5 rounded-xl text-ink2 hover:text-ink flex items-center gap-1"
 													onClick={(e) => {
 														e.stopPropagation();
-														resolve(r.id);
+														openDetail();
 													}}
-													disabled={busy === `resolve:${r.id}`}
-													aria-label={`Resolve report ${r.id}`}
 												>
-													<CheckCircle2 size={13} /> Resolve
+													<Eye size={13} />
+													<span>Context</span>
 												</button>
-											{commentRowAction(r)}
 											</div>
 										</div>
 
-										{/* Direct moderation actions — strike/warn/suspend/ban the reported author */}
-										{(r.target_author_id ||
-											r.target_type === "post" ||
-											r.target_type === "comment") && (
-											<div className="px-4 pb-3 border-t border-border flex items-center gap-1.5 flex-wrap">
-												<span className="text-[10px] text-ink3 mr-1 font-semibold">
-													Moderate author:
-												</span>
-												<button
-													className="text-[10px] px-2 py-1 rounded-lg font-semibold transition-all hover:brightness-110"
-													style={{
-														background: "rgba(217,138,11,0.14)",
-														color: "#d98a0b",
-													}}
-													disabled={actingId === r.id}
-													onClick={() => moderateAuthor(r, "warn")}
-												>
-													⚠ Warn + strike
-												</button>
-												<button
-													className="text-[10px] px-2 py-1 rounded-lg font-semibold transition-all hover:brightness-110"
-													style={{
-														background: "rgba(22,160,106,0.14)",
-														color: "#16a06a",
-													}}
-													disabled={actingId === r.id}
-													onClick={() => moderateAuthor(r, "suspend")}
-												>
-													⏸ Suspend 7d
-												</button>
-												<button
-													className="text-[10px] px-2 py-1 rounded-lg font-semibold transition-all hover:brightness-110"
-													style={{
-														background: "rgba(220,75,75,0.14)",
-														color: "#dc4b4b",
-													}}
-													disabled={actingId === r.id}
-													onClick={() => moderateAuthor(r, "ban")}
-												>
-													🚫 Ban
-												</button>
-												{actingId === r.id && (
-													<span className="text-[10px] text-ink3 animate-pulse">
-														applying…
-													</span>
-												)}
-											</div>
-										)}
-
-										{/* What the workforce actually did on this report, from its audit
-										    trail — not a status flip. */}
+										{/* Workforce Audit Evidence */}
 										<WorkerEvidence r={r} />
-
 									</div>
 								);
 							})}

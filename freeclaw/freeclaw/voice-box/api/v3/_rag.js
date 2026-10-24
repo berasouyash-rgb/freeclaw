@@ -20,6 +20,14 @@ export default async function handler(req, res) {
 	cors(res, req);
 	if (req.method === "OPTIONS") return res.status(204).end();
 
+	// This endpoint reads the internal knowledge_base table (content, source,
+	// verification state) and returns RAG prompt scaffolding. `protect()` in
+	// api/index.js only adds headers — it does NOT authenticate — so without
+	// this gate any anonymous caller could dump KB rows and analytics.
+	// isAdmin was imported for exactly this check but was never invoked.
+	if (!(await isAdmin(req)))
+		return res.status(403).json({ error: "Admin only" });
+
 	try {
 		const body = req.body || {};
 

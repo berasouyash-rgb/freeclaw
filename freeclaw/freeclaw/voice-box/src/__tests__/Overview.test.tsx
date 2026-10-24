@@ -1254,8 +1254,8 @@ describe("Overview — dashboard visuals derive from the snapshot", () => {
 		]) {
 			expect(stats.getByText(label)).toBeTruthy();
 		}
-		expect(stats.getByText("50%")).toBeTruthy();
-		expect(stats.getByText("no solves yet")).toBeTruthy();
+		expect(await stats.findByText("50%")).toBeTruthy();
+		expect(await stats.findByText("no solves yet")).toBeTruthy();
 
 		expect(screen.getByTestId("dash-activity")).toBeTruthy();
 		expect(screen.getByTestId("dash-categories")).toBeTruthy();

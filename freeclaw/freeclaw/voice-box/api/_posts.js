@@ -172,6 +172,39 @@ const feedSWR = staleWhileRevalidate(fetchFeedRows, {
 	keyPrefix: "postsfeed",
 });
 
+// ── Content-type filters ────────────────────────────────────────
+// `posts.type` only ever holds "problem" or "suggestion": a poll is a post
+// with a `polls` row pointing back at it through `post_id`. So
+// `.eq("type", "poll")` matches nothing — a "polls only" feed has to resolve
+// the linked post ids first. `polls.post_id` carries no foreign key, which
+// rules out a PostgREST embed, so this is an explicit id-set lookup.
+//
+// The id set travels back to PostgREST inside one `.in()` predicate, i.e. it
+// is URL-encoded into the request line. POLL_LINK_SCAN_LIMIT is the ceiling
+// that keeps that predicate bounded; past it the feed still works, it just
+// shows the most recent N polls rather than every poll ever created.
+const POLL_LINK_SCAN_LIMIT = 300;
+// Portable "match no rows": PostgREST has no FALSE literal in a filter chain,
+// and an impossible id keeps every branch the same shape as the populated one.
+const MATCH_NOTHING_ID = "__no_such_post__";
+const POST_TYPE_FILTERS = new Set(["problem", "suggestion", "poll"]);
+
+/** Post ids that currently have a poll attached, newest poll first. */
+async function resolvePollPostIds() {
+	const { data, error } = await supabase
+		.from("polls")
+		.select("post_id")
+		.not("post_id", "is", null)
+		.order("created_at", { ascending: false })
+		.limit(POLL_LINK_SCAN_LIMIT);
+	if (error) throw error;
+	const seen = new Set();
+	for (const row of data || []) {
+		if (row && row.post_id) seen.add(row.post_id);
+	}
+	return [...seen];
+}
+
 /**
  * A cursor is an opaque ISO timestamp WE issued as nextCursor. Anything else
  * (cursor=0, hand-typed garbage, a leaked internal id) must read as page 1:
@@ -357,6 +390,14 @@ export default async function handler(req, res) {
 				to,
 			} = req.query;
 
+			// Content-type filter. "all" (and anything absent/unknown) means
+			// unfiltered; a recognised type is applied in SQL. Two values are
+			// normalised rather than rejected so old links keep working:
+			// `all` = no filter, and an unrecognised value keeps the historic
+			// "matches nothing" behaviour instead of silently widening the feed.
+			const rawType = clean(type, 20).toLowerCase();
+			const listType = rawType === "all" ? "" : rawType;
+
 			// ── Server-side list filters ─────────────────────────────
 			// These MUST run in SQL. The admin table pages 30 rows at a time, so
 			// filtering in the browser only ever filtered the rows that happened
@@ -410,6 +451,27 @@ export default async function handler(req, res) {
 				}
 				return out;
 			};
+
+			// Resolved once per request, and only for a polls-only list — the row
+			// fetch and the deeper-page count both narrow by the same id set.
+			const pollPostIds =
+				listType === "poll" && !id && !ids && !author
+					? await resolvePollPostIds()
+					: [];
+
+			/** Narrow any posts query by the requested content type. */
+			const applyTypeFilter = (query) => {
+				if (!listType) return query;
+				if (listType === "poll") {
+					return pollPostIds.length
+						? query.in("id", pollPostIds)
+						: query.eq("id", MATCH_NOTHING_ID);
+				}
+				if (!POST_TYPE_FILTERS.has(listType))
+					return query.eq("id", MATCH_NOTHING_ID);
+				return query.eq("type", listType);
+			};
+
 			const admin = all === "1" ? await isAdmin(req) : false;
 			const isPaginated = paginate === "1" || paginate === "true";
 			// Clamp on both ends: NaN/0 falls back to 30, negatives would produce
@@ -467,7 +529,7 @@ export default async function handler(req, res) {
 				// Widen the fetch window: the JS artifact filter below can thin the set.
 				q = q.limit(2000);
 			} else {
-				if (type) q = q.eq("type", type);
+				q = applyTypeFilter(q);
 				if (!admin)
 					q = q
 						.eq("hidden", false)
@@ -494,7 +556,11 @@ export default async function handler(req, res) {
 			// query path against its own mocked data (no cross-test pollution).
 			// Filtered requests must never read the shared feed cache — the cache
 			// key describes the unfiltered feed, so serving it here would return
-			// rows that do not match the requested filters.
+			// rows that do not match the requested filters. The same is true of a
+			// polls-only list: `fetchFeedRows` narrows by `posts.type`, and no post
+			// carries that type, so a cached poll feed would always come back empty.
+			const typeIsFeedCacheable =
+				!listType || listType === "problem" || listType === "suggestion";
 			const canUseFeedCache =
 				!process.env.VITEST &&
 				freshParam !== "1" &&
@@ -504,8 +570,8 @@ export default async function handler(req, res) {
 				!id &&
 				!ids &&
 				!author &&
+				typeIsFeedCacheable &&
 				!hasListFilters;
-			const feedCacheKey = `${type || "all"}|${cursor || ""}|${PAGE_LIMIT}`;
 			const fetchRows = async () => {
 				const r = await q;
 				if (r.error) throw r.error;
@@ -513,7 +579,7 @@ export default async function handler(req, res) {
 			};
 			const data = canUseFeedCache
 				? await feedSWR({
-						type: type || null,
+						type: listType || null,
 						cursor: cursor || null,
 					})
 				: await fetchRows();
@@ -576,7 +642,7 @@ export default async function handler(req, res) {
 					let totalQ = supabase
 						.from("posts")
 						.select("id", { count: "exact", head: true });
-					if (type) totalQ = totalQ.eq("type", type);
+					totalQ = applyTypeFilter(totalQ);
 					if (!admin)
 						totalQ = totalQ
 							.eq("hidden", false)

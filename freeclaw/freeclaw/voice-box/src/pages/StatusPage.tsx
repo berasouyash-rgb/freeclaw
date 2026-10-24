@@ -1,7 +1,6 @@
 import {
 	ArrowLeft,
 	CheckCircle2,
-	Radio,
 } from "lucide-react";
 import { useNavigate } from "react-router";
 import FadeIn from "../components/FadeIn";
@@ -26,7 +25,7 @@ const STATIC_INCIDENTS = [
 			"Database optimization and cache warming. All operations completed seamlessly with zero user impact during the maintenance window.",
 	},
 	{
-		date: "2025-12-20",
+		date: "2026-09-20",
 		title: "Elevated AI Gateway Latency",
 		status: "resolved",
 		duration: "15 minutes",
@@ -34,7 +33,7 @@ const STATIC_INCIDENTS = [
 			"Increased response times on AI classification endpoints due to upstream cloud provider rate limiting. Resolved immediately via automatic circuit breaker fallback.",
 	},
 	{
-		date: "2025-11-05",
+		date: "2026-08-15",
 		title: "Brief Real-time Connection Interruption",
 		status: "resolved",
 		duration: "5 minutes",
@@ -67,16 +66,19 @@ export default function StatusPage() {
 						>
 							<ArrowLeft size={15} /> Back
 						</button>
-						<div className="inline-flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider text-good bg-good/10 rounded-full px-3 py-1.5 mb-4 border border-good/20">
-							<Radio size={12} className="animate-pulse" /> Live Telemetry Monitored
-						</div>
 						<h1 className="text-4xl md:text-5xl font-display font-bold text-ink mb-4">
-							Platform Systems Status
+							System Status
 						</h1>
-						<p className="text-sm sm:text-base text-ink2 max-w-xl mx-auto leading-relaxed">
-							Live performance metrics, uptime guarantees, and incident reports
-							for Voice Flow's nationwide educational infrastructure.
-						</p>
+						<div className="mx-auto max-w-2xl space-y-2 text-ink2 text-sm mb-4">
+							<p className="font-medium text-ink">
+								Static snapshot — not a live health check.
+							</p>
+							<p>
+								This page shows illustrative service history and incidents from
+								the status-page dataset; it does not fetch current production
+								availability.
+							</p>
+						</div>
 					</FadeIn>
 				</div>
 			</section>

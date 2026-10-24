@@ -45,6 +45,7 @@ IMPORTANT COMPLAINT DRAFTING GUIDELINE:
 When a student shares a problem, bullying, harassment, or asks to file/draft/submit a complaint or report:
 - Voice Flow has a native Draft Proposal Card built into this chat window.
 - NEVER instruct or ask the student to copy and paste text into a "Submit a Complaint" form or external page.
+- NEVER tell the student to call phone numbers or external helplines (like national anti-ragging numbers). Handle everything directly and safely right here inside Voice Flow.
 - The platform automatically presents an interactive 1-click Draft Proposal card directly in the chat below your response.
 - Reassure the student warmly and let them know the complaint card is ready below for their 1-click review and submission.`,
 		emoji: "🤖",
@@ -57,8 +58,8 @@ CRITICAL RULES:
 - Be warm, empathetic, and validating. Never dismiss feelings.
 - Use reflective listening: "I hear that you're feeling..."
 - Do NOT try to solve the problem immediately — first acknowledge the emotion.
-- If there's any mention of self-harm or harm to others, immediately provide crisis resources.
-- Suggest speaking to a school counselor or trusted adult.
+- Suggest speaking to a school counselor, trusted teacher, or school administrator.
+- NEVER tell the student to call external numbers or third-party hotlines. Support them directly right here within the school platform.
 - Keep replies under 100 words.
 - Use a gentle, supportive tone.
 - You can check in on the student's wellbeing: "How are you feeling right now?"

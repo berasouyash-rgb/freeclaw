@@ -104,6 +104,7 @@ export default function Faq() {
 			{/* Schema.org JSON-LD */}
 			<script
 				type="application/ld+json"
+				data-testid="faq-schema"
 				dangerouslySetInnerHTML={{ __html: FAQ_SCHEMA }}
 			/>
 
@@ -175,9 +176,9 @@ export default function Faq() {
 						<span className="text-xs font-bold uppercase tracking-wider text-accent flex items-center gap-1.5 mb-1">
 							<Sparkles size={13} /> Visual Architecture Explanations
 						</span>
-						<h3 className="font-display font-bold text-base text-ink">
+						<h4 className="font-display font-bold text-base text-ink">
 							Curious how Zero-Knowledge and the Solving Pipeline work?
-						</h3>
+						</h4>
 						<p className="text-xs text-ink2 mt-0.5">
 							Toggle our interactive diagrams to see the mathematical privacy flow.
 						</p>
@@ -212,26 +213,28 @@ export default function Faq() {
 									: "border-border/80 bg-surface/80 hover:border-accent/20"
 							}`}
 						>
-							<button
-								type="button"
-								onClick={() => setOpen(isOpen ? null : idx)}
-								className="w-full p-4 sm:p-5 text-left flex items-center justify-between gap-4"
-								aria-expanded={isOpen}
-								aria-controls={`faq-answer-${idx}`}
-							>
-								<span className="font-display font-semibold text-sm sm:text-base text-ink">
-									{q}
-								</span>
-								<span
-									className={`w-7 h-7 rounded-lg grid place-items-center shrink-0 transition-transform duration-200 ${
-										isOpen
-											? "rotate-180 bg-accent text-white"
-											: "bg-surface2 text-ink3"
-									}`}
+							<h3 className="m-0">
+								<button
+									type="button"
+									onClick={() => setOpen(isOpen ? null : idx)}
+									className="w-full p-4 sm:p-5 text-left flex items-center justify-between gap-4"
+									aria-expanded={isOpen}
+									aria-controls={`faq-answer-${idx}`}
 								>
-									<ChevronDown size={16} />
-								</span>
-							</button>
+									<span className="font-display font-semibold text-sm sm:text-base text-ink">
+										{q}
+									</span>
+									<span
+										className={`w-7 h-7 rounded-lg grid place-items-center shrink-0 transition-transform duration-200 ${
+											isOpen
+												? "rotate-180 bg-accent text-white"
+												: "bg-surface2 text-ink3"
+										}`}
+									>
+										<ChevronDown size={16} />
+									</span>
+								</button>
+							</h3>
 
 							{isOpen && (
 								<div
@@ -258,9 +261,9 @@ export default function Faq() {
 
 			{/* Still have questions CTA */}
 			<div className="card p-6 sm:p-8 text-center border border-border/80 bg-surface2/40">
-				<h3 className="font-display font-bold text-base sm:text-lg text-ink mb-1.5">
+				<h4 className="font-display font-bold text-base sm:text-lg text-ink mb-1.5">
 					Have a question not listed here?
-				</h3>
+				</h4>
 				<p className="text-xs sm:text-sm text-ink2 max-w-md mx-auto mb-5">
 					Reach out directly to our platform support team or counseling advisors.
 					All contact submissions remain completely confidential.

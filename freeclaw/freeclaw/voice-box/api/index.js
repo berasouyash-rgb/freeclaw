@@ -135,7 +135,13 @@ import v3Verify from "./v3/_verify.js";
 // Body parsing is handled by the bounded parser in _request-body.js.
 
 // Auto-cleanup on cold start (7-day retention, runs once per instance)
-triggerAutoCleanup();
+if (!process.env.VITEST && (process.env.VITE_SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL)) {
+	try {
+		triggerAutoCleanup();
+	} catch (e) {
+		console.warn("[cleanup] Auto-cleanup skipped on cold start:", e?.message);
+	}
+}
 
 // Periodic cleanup of observability metrics and cache
 cleanupMetrics();
@@ -316,7 +322,7 @@ export default async function handler(req, res) {
 			return res.status(403).json({ error: "Cross-site request blocked", requestId });
 		}
 		const origin = req.headers["origin"];
-		if (origin && !isAllowedOrigin(origin)) {
+		if (origin && !isAllowedOrigin(origin, req)) {
 			corsFn(res, req);
 			return res.status(403).json({ error: "Invalid origin / CSRF blocked", requestId });
 		}

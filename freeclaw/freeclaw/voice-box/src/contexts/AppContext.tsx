@@ -12,6 +12,7 @@ import { api } from "../lib/api";
 import { showBrowserNotification } from "../lib/browserNotify";
 import {
 	getAnonId,
+	resetAnonId,
 	getDisplayName,
 	getProfile,
 	lsGet,
@@ -574,6 +575,31 @@ export function AppProvider({ children }: { children: ReactNode }) {
 		};
 		window.addEventListener("storage", handleStorage);
 		return () => window.removeEventListener("storage", handleStorage);
+	}, [refreshIdentity]);
+
+	// Auto-recovery for dead anonymous sessions — offer an immediate 1-click
+	// "Start Fresh" toast action to instantly mint a clean anonymous ID.
+	useEffect(() => {
+		let lastToast = 0;
+		const handleSessionDead = () => {
+			const now = Date.now();
+			if (now - lastToast < 10000) return;
+			lastToast = now;
+			toast(
+				"Anonymous session lost on this device (cookies or storage cleared).",
+				"err",
+				{
+					label: "Start Fresh",
+					fn: () => {
+						resetAnonId();
+						refreshIdentity();
+						toast("Started fresh with a new anonymous ID!", "ok");
+					},
+				},
+			);
+		};
+		window.addEventListener("vb:session-dead", handleSessionDead);
+		return () => window.removeEventListener("vb:session-dead", handleSessionDead);
 	}, [refreshIdentity]);
 
 	// ---------- presence heartbeat ----------

@@ -128,7 +128,7 @@ const GET_CACHE_TTL_MS = 20_000;
 // socket exhaustion and 429 storms when the whole room loads at once
 // (feed + leaderboard + realtime refresh firing together × 100 users).
 // Timer-free promise chaining — no interaction with fake-timer tests.
-const MAX_INFLIGHT = 16;
+const MAX_INFLIGHT = 6;
 let inflightCount = 0;
 const waitQueue: Array<() => void> = [];
 
@@ -363,6 +363,13 @@ async function request<T = unknown>(
 				// message ("Invalid session identity") the user cannot act on.
 				const sessionDead =
 					serverCode !== undefined && SESSION_DEAD_CODES.has(serverCode);
+				if (sessionDead && typeof window !== "undefined") {
+					window.dispatchEvent(
+						new CustomEvent("vb:session-dead", {
+							detail: { message: SESSION_DEAD_MESSAGE },
+						}),
+					);
+				}
 				throw new ApiError(
 					res.status === 429 && retryAfter > 0
 						? `Slow down a little — try again in ${retryAfter}s.`

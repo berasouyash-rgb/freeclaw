@@ -20,6 +20,7 @@ export default defineConfig({
 		// prevents worker exits from being reported as false-positive passes.
 		pool: "forks",
 		forks: {
+			singleFork: true,
 			execArgv: ["--max-old-space-size=4096"],
 		},
 		maxWorkers: 1,

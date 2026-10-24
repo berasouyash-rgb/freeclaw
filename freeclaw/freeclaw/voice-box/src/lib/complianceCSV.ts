@@ -138,13 +138,14 @@ const COLUMNS: Column[] = [
 export function buildComplianceCSV(
 	posts: PostData[],
 	range: DateRange,
-	type: "problem" | "suggestion",
+	type: "problem" | "suggestion" | "poll" | "all" | string = "all",
 ): string {
 	const filtered = filterByDateRange(posts, range);
 	const lines: string[] = [];
 	lines.push(COLUMNS.map((c) => cell(c.label)).join(","));
+	const targetType = type === "problem" || type === "suggestion" || type === "poll" ? type : undefined;
 	for (const p of filtered) {
-		lines.push(COLUMNS.map((c) => cell(c.extract({ ...p, type }))).join(","));
+		lines.push(COLUMNS.map((c) => cell(c.extract(targetType ? { ...p, type: targetType } : p))).join(","));
 	}
 	return "\uFEFF" + lines.join("\r\n");
 }

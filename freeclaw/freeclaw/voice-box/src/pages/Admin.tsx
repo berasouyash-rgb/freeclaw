@@ -570,7 +570,7 @@ export default function Admin() {
 						)}
 						{tab === "posts" && (
 							<ErrorBoundary key="posts">
-								<PostsTable type="problem" />
+								<PostsTable type="all" />
 							</ErrorBoundary>
 						)}
 						{tab === "users" && (

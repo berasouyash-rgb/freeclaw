@@ -56,17 +56,9 @@ export default function ThreadDrawer({
 					}
 				}
 			})
-			.catch(async () => {
+			.catch((e: unknown) => {
 				if (!isMounted()) return;
-				try {
-					const chatRes = await api.get<{ messages?: DrawerMessage[] }>(
-						`/api/chat?thread_id=${encodeURIComponent(id)}`,
-					);
-					if (isMounted()) setMessages(Array.isArray(chatRes?.messages) ? chatRes.messages : []);
-				} catch (e: unknown) {
-					if (isMounted())
-						setError(e instanceof Error ? e.message : "Failed to load conversation");
-				}
+				setError(e instanceof Error ? e.message : "Failed to load conversation");
 			});
 	};
 

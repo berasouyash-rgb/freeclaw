@@ -1629,7 +1629,18 @@ export async function storeToolEvidence(toolCallId, evidence, context = {}) {
 	try {
 		const { default: supabase } = await import("./_db-client.js");
 		const { toolName, params, result, latencyMs, conversationId } = evidence;
-		const { role = "admin", actorId = "admin", ipAddress = null } = context;
+		// Default role MUST match executeTool()'s default ("student"). When it
+		// did not, a non-admin tool call was written to the evidence table with
+		// actor_id "admin", so the audit trail claimed an admin did work that
+		// executeTool had just authorised as a student. actor_id falls back to
+		// "unknown" (the same convention api/_audit.js uses) rather than inventing
+		// an actor we cannot identify.
+		const {
+			role = "student",
+			actorId = null,
+			ipAddress = null,
+			ip = null,
+		} = context;
 
 		// Determine action type from tool name
 		const actionType = determineActionType(toolName);
@@ -1642,9 +1653,11 @@ export async function storeToolEvidence(toolCallId, evidence, context = {}) {
 			action_type: actionType,
 			input_params: params || {},
 			output_result: result || {},
-			actor_id: actorId,
+			actor_id: actorId || (role === "admin" ? "admin" : "unknown"),
 			actor_type: role === "admin" ? "admin" : "user",
-			ip_address: ipAddress,
+			// Callers pass `ip` (v3/_tools.js does); accept both spellings so the
+			// source IP is not silently dropped.
+			ip_address: ipAddress || ip,
 			risk_level: riskLevel,
 			requires_approval: riskLevel === "high" || riskLevel === "critical",
 			verification_status: "pending",

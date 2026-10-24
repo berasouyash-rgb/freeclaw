@@ -518,7 +518,7 @@ export default function UnifiedInbox() {
 	const loadThreads = useCallback(async (opts?: { fresh?: boolean }) => {		try {
 			// Fresh reads bypass the 5s GET cache: the peek revalidates
 			// precisely because the database has changed since the tick.
-			const reader = opts?.fresh ? api.getFresh : api.get;
+			const reader = opts?.fresh && typeof api.getFresh === "function" ? api.getFresh : api.get;
 			const [inboxRes, chatRes] = await Promise.allSettled([
 				reader<ThreadSummary[] | { threads: ThreadSummary[] }>(
 					"/api/inbox?threads=1",
@@ -556,6 +556,12 @@ export default function UnifiedInbox() {
 			for (const t of sorted)
 				if (t.source) sourceRef.current[t.thread_id] = t.source;
 			setThreads(sorted);
+
+			// If no important threads exist, ensure importance switches to "all" so conversations are visible
+			const hasImportant = sorted.some(isImportantThread);
+			if (!hasImportant && sorted.length > 0) {
+				setThreadImportance((curr) => (curr === "important" ? "all" : curr));
+			}
 		} catch (e: unknown) {
 			console.warn(
 				"[UnifiedInbox] Failed to load threads:",
@@ -573,7 +579,7 @@ export default function UnifiedInbox() {
 		// write (read state belongs to explicit open/send paths, never to
 		// a background tick — otherwise the peek would clear unread
 		// badges just by looking).
-		const reader = opts?.fresh ? api.getFresh : api.get;
+		const reader = opts?.fresh && typeof api.getFresh === "function" ? api.getFresh : api.get;
 
 		try {
 			if (source === "chat") {
@@ -595,7 +601,7 @@ export default function UnifiedInbox() {
 							setHistoryWindow(inboxData.history_window ?? null);
 							return;
 						}
-					} catch {}
+					} catch { /* ignore */ }
 				}
 				setMessages(data.messages || []);
 				setThreadState({ ...data.thread, source: "chat" });
@@ -624,7 +630,7 @@ export default function UnifiedInbox() {
 							setThreadState({ ...chatData.thread, source: "chat" });
 							return;
 						}
-					} catch {}
+					} catch { /* ignore */ }
 				}
 				setMessages(data.messages || []);
 				setThreadState({ ...(data.state || {}), source: "inbox" });
@@ -742,23 +748,33 @@ export default function UnifiedInbox() {
 	// Deep-link (?thread=): digest rows land straight on the chat.
 	useEffect(() => {
 		const wanted = searchParams.get("thread");
-		if (wanted && active !== wanted) {
-			setActive(wanted);
-			if (!threadsRef.current.some((t) => t.thread_id === wanted)) {
-				setThreads((prev) => [
-					{
-						thread_id: wanted,
-						title: `Chat ${wanted.slice(0, 8)}`,
-						last_message: "Emergency / direct conversation",
-						updated_at: new Date().toISOString(),
-						unread_count: 0,
-						source: "inbox",
-					},
-					...prev.filter((x) => x.thread_id !== wanted),
-				]);
+		if (wanted) {
+			if (active !== wanted) {
+				setActive(wanted);
+				if (!threadsRef.current.some((t) => t.thread_id === wanted)) {
+					setThreads((prev) => [
+						{
+							thread_id: wanted,
+							title: `Chat ${wanted.slice(0, 8)}`,
+							last_message: "Emergency / direct conversation",
+							updated_at: new Date().toISOString(),
+							unread_count: 0,
+							source: "inbox",
+						},
+						...prev.filter((x) => x.thread_id !== wanted),
+					]);
+				}
+				loadMessages(wanted, { fresh: true });
 			}
+			setThreadImportance((curr) => {
+				const target = threadsRef.current.find((t) => t.thread_id === wanted);
+				if (curr === "important" && target && !isImportantThread(target)) {
+					return "all";
+				}
+				return curr;
+			});
 		}
-	}, [searchParams, active]);
+	}, [searchParams, active, loadMessages]);
 	const openThread = (id: string | null) => {
 		setActive(id);
 		setSearchParams(
@@ -1238,12 +1254,25 @@ export default function UnifiedInbox() {
 					{!loading && filteredThreads.length === 0 && (
 						<div className="text-center py-12 px-4">
 							<MessageSquare size={28} className="mx-auto text-ink3/40 mb-3" />
-							<p className="text-xs text-ink3">
+							<p className="text-xs text-ink3 font-medium">
 								{threadSearch
 									? "No matching conversations"
-									: threadImportance === "slang" ? "No slang-flagged threads" : "No conversations yet"}
+									: threads.length === 0
+									? "No conversations yet"
+									: threadImportance === "slang"
+									? "No slang-flagged threads"
+									: "No important threads"}
 							</p>
-							{!threadSearch && (
+							{threadImportance === "important" && threads.length > 0 && (
+								<button
+									type="button"
+									className="btn btn-primary !text-xs mt-3 shadow-xs"
+									onClick={() => setThreadImportance("all")}
+								>
+									View all ({threads.length}) conversations
+								</button>
+							)}
+							{!threadSearch && threads.length === 0 && (
 								<button
 									className="btn btn-soft !text-xs mt-3"
 									onClick={() => setShowNew(true)}

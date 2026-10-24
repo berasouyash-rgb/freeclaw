@@ -14,5 +14,9 @@ export default defineConfig({
 		// 'onUserConsoleLog' was pending" and failing the suite even though all
 		// 843 tests pass. Verified: full suite is green under --pool=forks.
 		pool: "forks",
+		forks: {
+			singleFork: true,
+			execArgv: ["--max-old-space-size=4096"],
+		},
 	},
 });

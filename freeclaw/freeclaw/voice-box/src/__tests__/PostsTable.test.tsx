@@ -304,9 +304,10 @@ describe("PostsTable — filters", () => {
 		render(<PostsTable type="problem" />);
 		await screen.findByText("Broken lift in block C");
 
-		const selects = screen.getAllByRole("combobox");
-		// selects: [date range, global status, global category, row1 status, row2 status]
-		await user.selectOptions(selects[1] as HTMLSelectElement, "in_progress");
+		await user.selectOptions(
+			screen.getByLabelText("Filter by status"),
+			"in_progress",
+		);
 		expect(screen.queryByText("Broken lift in block C")).not.toBeInTheDocument();
 		expect(screen.getByText("Add a nap room")).toBeInTheDocument();
 	});
@@ -316,8 +317,7 @@ describe("PostsTable — filters", () => {
 		render(<PostsTable type="problem" />);
 		await screen.findByText("Broken lift in block C");
 
-		const selects = screen.getAllByRole("combobox");
-		await user.selectOptions(selects[2] as HTMLSelectElement, "Academics");
+		await user.selectOptions(screen.getByLabelText("Filter by category"), "Academics");
 		expect(screen.queryByText("Broken lift in block C")).not.toBeInTheDocument();
 		expect(screen.getByText("Add a nap room")).toBeInTheDocument();
 	});
@@ -1012,6 +1012,120 @@ describe("PostsTable — realtime refresh stability", () => {
 			const last = updaters[updaters.length - 1] as (prev: typeof POST2[]) => typeof POST2[];
 			const next = last([POST, POST2]);
 			expect(next[0]).toMatchObject({ id: "post_3" });
+		} finally {
+			Object.defineProperty(window, "scrollY", {
+				configurable: true,
+				value: 0,
+			});
+		}
+	});
+});
+
+// ══════════════════════════════════════════════════════════════════
+// PostsTable — live append semantics.
+// A realtime event must ADD the new post to the list. It must never
+// replace the list, and it must never drop a row the admin already has
+// on screen. Both the near-top path (auto-refresh) and the parked path
+// (pill flush while scrolled deep) are covered.
+// ══════════════════════════════════════════════════════════════════
+describe("PostsTable — live append semantics", () => {
+	it("adds a newer post while keeping every row already on screen", async () => {
+		render(<PostsTable type="problem" />);
+		await screen.findByText("Broken lift in block C");
+		expect(screen.getByText("Add a nap room")).toBeInTheDocument();
+
+		const NEWER = {
+			...POST,
+			id: "post_new",
+			title: "Just submitted",
+			created_at: "2026-08-01T10:00:00.000Z",
+		};
+		mocks.getFresh.mockResolvedValue({
+			data: [NEWER, { ...POST }, { ...POST2 }],
+			total: 3,
+		});
+		mocks.setItems.mockClear();
+
+		await userEvent
+			.setup()
+			.click(screen.getByRole("button", { name: "Refresh list" }));
+		await waitFor(() => {
+			expect(mocks.setItems).toHaveBeenCalled();
+		});
+
+		const arrays = mocks.setItems.mock.calls
+			.map((c) => c[0])
+			.filter((a): a is unknown[] => Array.isArray(a));
+		const merged = arrays.at(-1) as { id: string }[];
+		// Added at the top, but the two existing rows are still there —
+		// the list grew, it was not swapped out for the new snapshot.
+		expect(merged.map((p) => p.id)).toEqual(["post_new", "post_1", "post_2"]);
+	});
+
+	it("keeps every existing row when the parked pill flushes newcomers", async () => {
+		Object.defineProperty(window, "scrollY", {
+			configurable: true,
+			value: 800,
+		});
+		try {
+			render(<PostsTable type="problem" />);
+			await screen.findByText("Broken lift in block C");
+
+			const NEW1 = {
+				...POST,
+				id: "post_n1",
+				title: "Parked one",
+				created_at: "2026-08-02T10:00:00.000Z",
+			};
+			const NEW2 = {
+				...POST,
+				id: "post_n2",
+				title: "Parked two",
+				created_at: "2026-08-01T10:00:00.000Z",
+			};
+			mocks.getFresh.mockResolvedValue({
+				data: [NEW1, NEW2, { ...POST }, { ...POST2 }],
+				total: 4,
+			});
+			await act(async () => {
+				await mocks.realtimeCb?.();
+			});
+
+			// The badge counts coalesced realtime signals, not parked rows —
+			// one event always reads "View 1 new update".
+			await userEvent
+				.setup()
+				.click(screen.getByRole("button", { name: /View .* new update/ }));
+			await userEvent
+				.setup()
+				.click(
+					await screen.findByRole(
+						"button",
+						{ name: /2 new posts/ },
+						{ timeout: 3000 },
+					),
+				);
+
+			// The flush is an updater so it composes with whatever is on
+			// screen at click time; drive it with the seeded rows.
+			const updaters = mocks.setItems.mock.calls
+				.map((c) => c[0])
+				.filter((f) => typeof f === "function");
+			expect(updaters.length).toBeGreaterThan(0);
+			const last = updaters[updaters.length - 1] as (
+				prev: typeof POST2[],
+			) => typeof POST2[];
+			const next = last([POST, POST2]);
+
+			expect(next.map((p) => p.id)).toEqual([
+				"post_n1",
+				"post_n2",
+				"post_1",
+				"post_2",
+			]);
+			// Explicit: nothing the admin already had is lost.
+			expect(next).toContainEqual(expect.objectContaining({ id: "post_1" }));
+			expect(next).toContainEqual(expect.objectContaining({ id: "post_2" }));
 		} finally {
 			Object.defineProperty(window, "scrollY", {
 				configurable: true,

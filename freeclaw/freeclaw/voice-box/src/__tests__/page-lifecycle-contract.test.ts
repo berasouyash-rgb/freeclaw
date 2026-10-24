@@ -218,9 +218,12 @@ describe("page lifecycle contracts", () => {
 				// alone may route its lane through the named liveness
 				// handler (single-row GETs only, badge fallback intact,
 				// pinned by the dedicated guardrail test below).
+				// Admin feed auto-prepends new posts when near top (onRealtimeUpdate).
 				if (
-					file.endsWith("PollManager.tsx") &&
-					handler === "handlePollLiveness"
+					(file.endsWith("PollManager.tsx") &&
+						handler === "handlePollLiveness") ||
+					(file.endsWith("PostsTable.tsx") &&
+						handler === "onRealtimeUpdate")
 				)
 					continue;
 				expect(
