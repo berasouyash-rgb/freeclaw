@@ -562,6 +562,19 @@ export function AppProvider({ children }: { children: ReactNode }) {
 		setRecentlyViewed(lsGet("vb:recentlyViewed", []));
 	}, []);
 
+	// Cross-tab identity synchronization — when another browser tab resets,
+	// pairs, or updates the anonymous identity, synchronize this tab's state
+	// immediately to prevent stale-session 403 lockouts across open tabs.
+	useEffect(() => {
+		const handleStorage = (e: StorageEvent) => {
+			if (!e.key || e.key === "vb:anonId" || e.key === "vb:sessionToken") {
+				refreshIdentity();
+			}
+		};
+		window.addEventListener("storage", handleStorage);
+		return () => window.removeEventListener("storage", handleStorage);
+	}, [refreshIdentity]);
+
 	// ---------- presence heartbeat ----------
 	// One lightweight last_seen touch per minute while the tab is visible so
 	// the admin Users table can show real "online now" presence. Paused when

@@ -676,14 +676,19 @@ export function setSessionCookie(res, token, req) {
 	const maxAge = SESSION_COOKIE_MAX_AGE_S;
 	const proto = String(req?.headers?.["x-forwarded-proto"] || "").toLowerCase();
 	const origin = String(req?.headers?.origin || "");
+	const isLocalhost =
+		origin.startsWith("http://localhost") ||
+		origin.startsWith("https://localhost") ||
+		origin.startsWith("http://127.0.0.1") ||
+		origin.startsWith("https://127.0.0.1");
 	const crossSite =
 		!origin ||
 		origin === "null" ||
 		origin === "file://" ||
-		origin === "https://localhost" ||
-		origin === "http://localhost" ||
+		isLocalhost ||
 		origin.startsWith("capacitor://") ||
-		origin.startsWith("ionic://");
+		origin.startsWith("ionic://") ||
+		(typeof req?.headers?.host === "string" && !origin.includes(req.headers.host));
 	// SameSite=None requires Secure, and Secure cookies are rejected over
 	// plain http — so None is only used when the request actually arrived
 	// over https (Vercel prod). Localhost http keeps Lax (dev only).
