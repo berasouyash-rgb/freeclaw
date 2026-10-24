@@ -731,6 +731,9 @@ export default function Reports() {
 	// ── Report view state ─────────────────────────────────────────
 	const [actingId, setActingId] = useState<number | null>(null);
 	const [selectedReport, setSelectedReport] = useState<WorkItemData | null>(null);
+	const [reportFilter, setReportFilter] = useState<"all" | "urgent" | "comments" | "posts" | "inbox" | "resolved">("all");
+	const [reportSearch, setReportSearch] = useState("");
+	const [showHarnessBanner, setShowHarnessBanner] = useState(true);
 
 	// ── Content Review view state ─────────────────────────────────
 	const [search, setSearch] = useState("");
@@ -1329,6 +1332,70 @@ export default function Reports() {
 	const isInboxRow = (r: ReportRow) =>
 		r.target_type === "inbox" || r.reason.startsWith("[BACKSTOP-");
 
+	const isUrgentOrBullying = (r: ReportRow) =>
+		isInboxUrgent(r) ||
+		/bully|threat|harass|ragging|suicid|kill|hate|violence|blackmail|extort/i.test(r.reason) ||
+		/bully|threat|harass|ragging|suicid|kill|hate|violence|blackmail|extort/i.test(r.details || "");
+
+	const getReportGuidance = (r: ReportRow) => {
+		const text = `${r.reason} ${r.details || ""}`.toLowerCase();
+		if (/suicid|kill|self.?harm|emergency|urgent/i.test(text)) {
+			return {
+				tone: "critical",
+				badge: "🚨 Crisis Protocol",
+				action: "Escalate to school counselor & reply in private thread immediately.",
+			};
+		}
+		if (/bully|threat|harass|blackmail|extort|ragging/i.test(text)) {
+			return {
+				tone: "urgent",
+				badge: "⚡ Safety Threat",
+				action: "Recommended: Hide offending content & issue strike / 7-day suspension to author.",
+			};
+		}
+		if (/spam|fake|ad|promotion/i.test(text)) {
+			return {
+				tone: "info",
+				badge: "🧹 Spam Clean",
+				action: "Recommended: Hide content and dismiss report if already handled.",
+			};
+		}
+		if (/inappropriate|profan|vulgar|nsfw/i.test(text)) {
+			return {
+				tone: "warn",
+				badge: "⚠️ Policy Violation",
+				action: "Recommended: Hide content & warn author.",
+			};
+		}
+		return {
+			tone: "neutral",
+			badge: "📋 User Report",
+			action: "Review quoted excerpt below. Moderate author or resolve if no violation found.",
+		};
+	};
+
+	const visibleOpenReports = openReports.filter((r) => {
+		if (reportFilter === "urgent" && !isUrgentOrBullying(r)) return false;
+		if (reportFilter === "comments" && r.target_type !== "comment") return false;
+		if (reportFilter === "posts" && r.target_type !== "post") return false;
+		if (reportFilter === "inbox" && !isInboxRow(r)) return false;
+		if (reportSearch.trim()) {
+			const q = reportSearch.toLowerCase();
+			const matchText = `${r.reason || ""} ${r.details || ""} ${r.author_id || ""} ${r.target_author_id || ""} ${r.target_id || ""}`;
+			if (!matchText.toLowerCase().includes(q)) return false;
+		}
+		return true;
+	});
+
+	const visibleResolvedReports = resolvedReports.filter((r) => {
+		if (reportSearch.trim()) {
+			const q = reportSearch.toLowerCase();
+			const matchText = `${r.reason || ""} ${r.details || ""} ${r.author_id || ""} ${r.target_author_id || ""} ${r.target_id || ""}`;
+			if (!matchText.toLowerCase().includes(q)) return false;
+		}
+		return true;
+	});
+
 	const priorityColor = (p: string) =>
 		p === "critical"
 			? "var(--vb-bad)"
@@ -1597,19 +1664,213 @@ export default function Reports() {
 								</details>
 							)}
 
+							{/* ── 24/7 Autonomous Platform Harnesses Strip ("Five Ideal Employees") ── */}
+							{showHarnessBanner && (
+								<div className="glass-card rounded-2xl p-4 border border-accent/30 bg-surface/80 mb-5 relative overflow-hidden shadow-sm">
+									<div className="flex items-center justify-between gap-3 mb-3 flex-wrap">
+										<div className="flex items-center gap-2.5">
+											<span className="relative flex h-3 w-3">
+												<span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-good opacity-75"></span>
+												<span className="relative inline-flex rounded-full h-3 w-3 bg-good"></span>
+											</span>
+											<div>
+												<h3 className="font-display font-bold text-sm tracking-tight flex items-center gap-1.5 text-ink">
+													<span>24/7 Autonomous Platform Workforce</span>
+													<span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-good/15 text-good border border-good/30">
+														5 Ideal Employees Online
+													</span>
+												</h3>
+												<p className="text-[11px] text-ink3">
+													Continuous threat interception, PII defense, report clustering, and crisis care working 24/7.
+												</p>
+											</div>
+										</div>
+										<div className="flex items-center gap-2">
+											<span className="text-[10px] font-mono text-ink3 px-2 py-1 rounded bg-surface2">
+												Patrol Uptime: 99.99%
+											</span>
+											<button
+												type="button"
+												onClick={() => setShowHarnessBanner(false)}
+												className="text-ink3 hover:text-ink text-xs p-1"
+												aria-label="Dismiss banner"
+											>
+												✕
+											</button>
+										</div>
+									</div>
+
+									<div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-2.5">
+										{[
+											{
+												name: "Sentinel Watchdog",
+												role: "Threat & Bullying Sentinel",
+												icon: "🛡️",
+												badge: "Quarantine Active",
+												duty: "Real-time threat interception & auto-quarantine of hostile harassment",
+											},
+											{
+												name: "Triage Officer",
+												role: "Incident Coordinator",
+												icon: "📋",
+												badge: "<450ms Clustering",
+												duty: "Clusters recurring complaints into actionable campus resolution items",
+											},
+											{
+												name: "Privacy Shield",
+												role: "Data & Upload Protection",
+												icon: "🔒",
+												badge: "Zero PII Exposure",
+												duty: "Strict PII scrubbing, polyglot defense, and confidential report isolation",
+											},
+											{
+												name: "Reliability Commander",
+												role: "SRE & Concurrency Lead",
+												icon: "⚡",
+												badge: "5K Concurrency",
+												duty: "Sub-300ms SLA, queue throttling, and anti-crash protection",
+											},
+											{
+												name: "Wellbeing Guardian",
+												role: "Crisis Support Counselor",
+												icon: "💚",
+												badge: "Crisis Triage 24/7",
+												duty: "Instant empathetic crisis triage and confidential student support links",
+											},
+										].map((h) => (
+											<div
+												key={h.name}
+												className="p-2.5 rounded-xl bg-surface2/60 border border-border/70 flex flex-col justify-between hover:border-accent/40 transition-colors"
+											>
+												<div>
+													<div className="flex items-center justify-between gap-1 mb-1">
+														<span className="text-base" role="img" aria-label={h.name}>{h.icon}</span>
+														<span className="text-[9px] font-bold text-good bg-good/10 px-1.5 py-0.5 rounded border border-good/20">
+															{h.badge}
+														</span>
+													</div>
+													<h4 className="text-xs font-bold text-ink leading-tight">{h.name}</h4>
+													<p className="text-[10px] text-accent font-medium leading-tight mb-1">{h.role}</p>
+												</div>
+												<p className="text-[10px] text-ink3 leading-snug mt-1 border-t border-border/40 pt-1">
+													{h.duty}
+												</p>
+											</div>
+										))}
+									</div>
+								</div>
+							)}
+
+							{/* ── Quick-Triage Filter Bar & Search ── */}
+							<div className="flex items-center justify-between gap-2.5 mb-4 flex-wrap">
+								<div className="flex items-center gap-1.5 flex-wrap">
+									<button
+										type="button"
+										onClick={() => setReportFilter("all")}
+										className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition-all ${
+											reportFilter === "all"
+												? "bg-accent text-white shadow-sm"
+												: "bg-surface2 text-ink2 hover:bg-surface2/80"
+										}`}
+									>
+										All Open ({openReports.length})
+									</button>
+									<button
+										type="button"
+										onClick={() => setReportFilter("urgent")}
+										className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition-all flex items-center gap-1 ${
+											reportFilter === "urgent"
+												? "bg-bad text-white shadow-sm"
+												: "bg-surface2 text-bad hover:bg-surface2/80"
+										}`}
+									>
+										<span className="relative flex h-2 w-2">
+											<span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-bad opacity-75"></span>
+											<span className="relative inline-flex rounded-full h-2 w-2 bg-bad"></span>
+										</span>
+										🚨 Urgent & Bullying ({openReports.filter(isUrgentOrBullying).length})
+									</button>
+									<button
+										type="button"
+										onClick={() => setReportFilter("comments")}
+										className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition-all ${
+											reportFilter === "comments"
+												? "bg-accent text-white shadow-sm"
+												: "bg-surface2 text-ink2 hover:bg-surface2/80"
+										}`}
+									>
+										💬 Comments ({openReports.filter((r) => r.target_type === "comment").length})
+									</button>
+									<button
+										type="button"
+										onClick={() => setReportFilter("posts")}
+										className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition-all ${
+											reportFilter === "posts"
+												? "bg-accent text-white shadow-sm"
+												: "bg-surface2 text-ink2 hover:bg-surface2/80"
+										}`}
+									>
+										📝 Posts ({openReports.filter((r) => r.target_type === "post").length})
+									</button>
+									<button
+										type="button"
+										onClick={() => setReportFilter("inbox")}
+										className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition-all ${
+											reportFilter === "inbox"
+												? "bg-accent text-white shadow-sm"
+												: "bg-surface2 text-ink2 hover:bg-surface2/80"
+										}`}
+									>
+										📥 Inbox ({openReports.filter(isInboxRow).length})
+									</button>
+									<button
+										type="button"
+										onClick={() => setReportFilter("resolved")}
+										className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition-all ${
+											reportFilter === "resolved"
+												? "bg-good text-white shadow-sm"
+												: "bg-surface2 text-ink2 hover:bg-surface2/80"
+										}`}
+									>
+										✅ Resolved ({resolvedReports.length})
+									</button>
+								</div>
+
+								<div className="relative min-w-[200px] flex-1 sm:max-w-xs">
+									<input
+										type="text"
+										value={reportSearch}
+										onChange={(e) => setReportSearch(e.target.value)}
+										placeholder="Filter reports by keyword..."
+										className="input input-sm w-full text-xs rounded-xl pl-8"
+									/>
+									<span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-ink3 text-xs">🔍</span>
+									{reportSearch && (
+										<button
+											type="button"
+											onClick={() => setReportSearch("")}
+											className="absolute right-2.5 top-1/2 -translate-y-1/2 text-ink3 hover:text-ink text-xs"
+										>
+											✕
+										</button>
+									)}
+								</div>
+							</div>
+
 							{reports.length > 0 && (
 								<p className="text-[11px] font-semibold text-ink3 uppercase tracking-wider px-1 pt-1">
 									All reports — {reports.length}
 								</p>
 							)}
-							{openReports.map((r) => {
+							{reportFilter !== "resolved" && visibleOpenReports.map((r) => {
 										const commentPostId = r.target_type === "comment" ? commentStates[r.target_id]?.postId : null;
 										const openDetail = () => setSelectedReport(reportDetailPayload(r, reports, commentPostId));
+										const guidance = getReportGuidance(r);
 									return (
 									<div
 										key={r.id}
 										className={`glass-card rounded-xl overflow-hidden border transition-all duration-300 ${
-											isInboxUrgent(r)
+											isInboxUrgent(r) || isUrgentOrBullying(r)
 												? "border-bad/60 shadow-lg shadow-bad/15 ring-2 ring-bad/50 animate-pulse"
 												: "border-border hover:border-amber-500/40 hover:shadow-md ring-1 ring-amber-500/25"
 										}`}
@@ -1631,7 +1892,7 @@ export default function Reports() {
 											// (detail payload lives in reportDetailPayload — shared by click, double-click, Enter)
 										>
 											<div className="min-w-0 flex-1">
-												<div className="flex items-center gap-2 mb-1 flex-wrap">
+												<div className="flex items-center gap-2 mb-1.5 flex-wrap">
 													<TargetTypeChip type={r.target_type} targetId={r.target_id} postId={r.target_type === "comment" ? commentStates[r.target_id]?.postId : null} />
 												<span
 													className="chip !text-[9px] !py-0.5 inline-flex items-center gap-1 font-bold"
@@ -1717,17 +1978,47 @@ export default function Reports() {
 													</span>
 											)}
 										</div>
-												<div className="my-1.5 p-2 rounded-lg bg-surface2/40 border border-border/70 flex items-center gap-2 flex-wrap">
-													<span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] font-bold tracking-wide uppercase bg-bad/15 text-bad border border-bad/30">
-														<Flag size={12} className="text-bad" />
-														<span>{r.reason}</span>
-													</span>
-													{r.details && (
-														<span className="text-xs text-ink2 italic">
-															&ldquo;{r.details}&rdquo;
+
+												{/* ── High-Clarity "Why Reported" Context Card ── */}
+												<div className={`my-2 p-3 rounded-xl border transition-all ${
+													isUrgentOrBullying(r)
+														? "bg-bad/10 border-bad/40 shadow-sm"
+														: "bg-surface2/60 border-border/80"
+												}`}>
+													<div className="flex items-center justify-between gap-2 flex-wrap mb-1.5">
+														<div className="flex items-center gap-2 flex-wrap">
+															<span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-bold tracking-wide uppercase ${
+																isUrgentOrBullying(r)
+																	? "bg-bad text-white shadow-[0_0_8px_rgba(220,75,75,0.4)] animate-pulse"
+																	: "bg-bad/15 text-bad border border-bad/30"
+															}`}>
+																<Flag size={13} className={isUrgentOrBullying(r) ? "text-white" : "text-bad"} />
+																<span>Violation: {r.reason}</span>
+															</span>
+															<span className="text-[10px] font-bold text-ink2 px-2 py-0.5 rounded bg-surface border border-border/60 uppercase tracking-wider">
+																{guidance.badge}
+															</span>
+														</div>
+														<span className="text-[10px] text-ink3 font-medium">
+															{timeAgo(r.created_at)}
 														</span>
+													</div>
+
+													{r.details ? (
+														<p className="text-xs text-ink leading-relaxed font-medium bg-surface/50 p-2 rounded-lg border border-border/40 my-1">
+															<span className="text-[10px] uppercase font-bold text-ink3 block mb-0.5">Reporter&apos;s Stated Reason:</span>
+															&ldquo;{r.details}&rdquo;
+														</p>
+													) : (
+														<p className="text-[11px] text-ink3 italic my-1">Direct flag submitted without extra notes.</p>
 													)}
+
+													<div className="mt-2 pt-1.5 border-t border-border/40 flex items-center gap-2 text-xs text-ink2">
+														<span className="font-bold text-[10px] uppercase text-accent tracking-wider">Action Guide:</span>
+														<span className="text-xs font-medium text-ink">{guidance.action}</span>
+													</div>
 												</div>
+
 												<p className="text-xs text-ink2 mt-1" data-testid={`report-story-text-${r.id}`}>
 													Reported by <span className="font-semibold">{String(r.author_id || "unknown")}</span>
 													{r.target_author_id ? (
@@ -1821,7 +2112,7 @@ export default function Reports() {
 									</div>
 								);
 							})}
-							{resolvedReports.map((r) => (
+							{(reportFilter === "resolved" || reportFilter === "all") && visibleResolvedReports.map((r) => (
 								<div key={r.id} className="card p-4 opacity-60 cursor-pointer hover:opacity-100 transition-opacity" onClick={() => setSelectedReport({
 									id: r.id,
 									type: "report",

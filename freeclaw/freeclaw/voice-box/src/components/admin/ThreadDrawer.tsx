@@ -27,22 +27,55 @@ export default function ThreadDrawer({
 	const [messages, setMessages] = useState<DrawerMessage[] | null>(null);
 	const [error, setError] = useState("");
 
+	const loadThreadData = (id: string, isMounted: () => boolean) => {
+		api
+			.get<{ messages?: DrawerMessage[] }>(
+				`/api/inbox?thread_id=${encodeURIComponent(id)}`,
+			)
+			.then(async (r) => {
+				if (!isMounted()) return;
+				if (Array.isArray(r?.messages) && r.messages.length > 0) {
+					setMessages(r.messages);
+				} else {
+					// Fallback to /api/chat if inbox has 0 messages
+					try {
+						const chatRes = await api.get<{ messages?: DrawerMessage[] }>(
+							`/api/chat?thread_id=${encodeURIComponent(id)}`,
+						);
+						if (isMounted()) {
+							setMessages(
+								Array.isArray(chatRes?.messages) && chatRes.messages.length > 0
+									? chatRes.messages
+									: Array.isArray(r?.messages)
+									? r.messages
+									: [],
+							);
+						}
+					} catch {
+						if (isMounted()) setMessages(Array.isArray(r?.messages) ? r.messages : []);
+					}
+				}
+			})
+			.catch(async () => {
+				if (!isMounted()) return;
+				try {
+					const chatRes = await api.get<{ messages?: DrawerMessage[] }>(
+						`/api/chat?thread_id=${encodeURIComponent(id)}`,
+					);
+					if (isMounted()) setMessages(Array.isArray(chatRes?.messages) ? chatRes.messages : []);
+				} catch (e: unknown) {
+					if (isMounted())
+						setError(e instanceof Error ? e.message : "Failed to load conversation");
+				}
+			});
+	};
+
 	useEffect(() => {
 		if (!threadId) return;
 		let on = true;
 		setMessages(null);
 		setError("");
-		api
-			.get<{ messages?: DrawerMessage[] }>(
-				`/api/inbox?thread_id=${encodeURIComponent(threadId)}`,
-			)
-			.then((r) => {
-				if (on) setMessages(Array.isArray(r?.messages) ? r.messages : []);
-			})
-			.catch((e: unknown) => {
-				if (on)
-					setError(e instanceof Error ? e.message : "Failed to load conversation");
-			});
+		loadThreadData(threadId, () => on);
 		return () => {
 			on = false;
 		};
@@ -81,15 +114,7 @@ export default function ThreadDrawer({
 						onClick={() => {
 							setError("");
 							setMessages(null);
-							if (!threadId) return;
-							api
-								.get<{ messages?: DrawerMessage[] }>(
-									`/api/inbox?thread_id=${encodeURIComponent(threadId)}`,
-								)
-								.then((r) => setMessages(Array.isArray(r?.messages) ? r.messages : []))
-								.catch((e: unknown) =>
-									setError(e instanceof Error ? e.message : "Failed to load conversation"),
-								);
+							if (threadId) loadThreadData(threadId, () => true);
 						}}
 					>
 						Retry

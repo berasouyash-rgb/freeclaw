@@ -581,6 +581,22 @@ export default function UnifiedInbox() {
 					messages: ChatMessage[];
 					thread: ThreadState;
 				}>(`/api/chat?thread_id=${threadId}`);
+				if (!data.messages || data.messages.length === 0) {
+					// Fallback to /api/inbox if /api/chat returned no messages
+					try {
+						const inboxData = await reader<{
+							messages?: ChatMessage[];
+							state?: ThreadState;
+							history_window?: string;
+						}>(`/api/inbox?thread_id=${threadId}`);
+						if (inboxData?.messages && inboxData.messages.length > 0) {
+							setMessages(inboxData.messages);
+							setThreadState({ ...(inboxData.state || {}), source: "inbox" });
+							setHistoryWindow(inboxData.history_window ?? null);
+							return;
+						}
+					} catch {}
+				}
 				setMessages(data.messages || []);
 				setThreadState({ ...data.thread, source: "chat" });
 				if (!opts?.quiet) {
@@ -596,6 +612,20 @@ export default function UnifiedInbox() {
 					state?: ThreadState;
 					history_window?: string;
 				}>(`/api/inbox?thread_id=${threadId}`);
+				if (!data.messages || data.messages.length === 0) {
+					// Fallback to /api/chat if /api/inbox returned no messages
+					try {
+						const chatData = await reader<{
+							messages: ChatMessage[];
+							thread: ThreadState;
+						}>(`/api/chat?thread_id=${threadId}`);
+						if (chatData?.messages && chatData.messages.length > 0) {
+							setMessages(chatData.messages);
+							setThreadState({ ...chatData.thread, source: "chat" });
+							return;
+						}
+					} catch {}
+				}
 				setMessages(data.messages || []);
 				setThreadState({ ...(data.state || {}), source: "inbox" });
 				setHistoryWindow(data.history_window ?? null);
@@ -712,8 +742,23 @@ export default function UnifiedInbox() {
 	// Deep-link (?thread=): digest rows land straight on the chat.
 	useEffect(() => {
 		const wanted = searchParams.get("thread");
-		if (wanted && threads.some((t) => t.thread_id === wanted)) setActive(wanted);
-	}, [threads, searchParams]);
+		if (wanted && active !== wanted) {
+			setActive(wanted);
+			if (!threadsRef.current.some((t) => t.thread_id === wanted)) {
+				setThreads((prev) => [
+					{
+						thread_id: wanted,
+						title: `Chat ${wanted.slice(0, 8)}`,
+						last_message: "Emergency / direct conversation",
+						updated_at: new Date().toISOString(),
+						unread_count: 0,
+						source: "inbox",
+					},
+					...prev.filter((x) => x.thread_id !== wanted),
+				]);
+			}
+		}
+	}, [searchParams, active]);
 	const openThread = (id: string | null) => {
 		setActive(id);
 		setSearchParams(

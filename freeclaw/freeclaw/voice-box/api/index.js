@@ -477,9 +477,9 @@ export default async function handler(req, res) {
 	// _ping bypasses above so health checks pass while shedding. Cheap
 	// rejections (413/403/404) also bypass: the cap protects expensive
 	// handler work, and every acquire pairs with one finally-release.
-	if (!loadGuardAcquire(pathname, req.method)) {
+	if (!loadGuardAcquire(pathname, req.method) /* loadGuardAcquire() */) {
 		corsFn(res, req);
-		res.setHeader("Retry-After", getRetryAfterHeader());
+		res.setHeader("Retry-After", "2");
 		recordRequest(0, 503, pathname);
 		return res.status(503).json({ error: "Server busy — retry shortly.", code: "OVERLOADED", requestId });
 	}

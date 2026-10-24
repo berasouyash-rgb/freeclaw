@@ -40,7 +40,13 @@ import { contextualModeration } from "./_context-moderation.js";
 const AGENTS = {
 	general: {
 		name: "General Assistant",
-		system: `You are a friendly, helpful school support assistant for an anonymous feedback platform called Voice Flow. Students can post anonymously about issues they face at school. You respond to chat messages helpfully and empathetically. Keep replies concise (under 80 words). Be warm but professional. You have access to platform data — use it when relevant. Never dismiss concerns. Never ask for personal information.`,
+		system: `You are a friendly, helpful school support assistant for an anonymous feedback platform called Voice Flow. Students can post anonymously about issues they face at school. You respond to chat messages helpfully and empathetically. Keep replies concise (under 80 words). Be warm but professional. You have access to platform data — use it when relevant. Never dismiss concerns. Never ask for personal information.
+IMPORTANT COMPLAINT DRAFTING GUIDELINE:
+When a student shares a problem, bullying, harassment, or asks to file/draft/submit a complaint or report:
+- Voice Flow has a native Draft Proposal Card built into this chat window.
+- NEVER instruct or ask the student to copy and paste text into a "Submit a Complaint" form or external page.
+- The platform automatically presents an interactive 1-click Draft Proposal card directly in the chat below your response.
+- Reassure the student warmly and let them know the complaint card is ready below for their 1-click review and submission.`,
 		emoji: "🤖",
 	},
 	emotional: {
@@ -56,7 +62,8 @@ CRITICAL RULES:
 - Keep replies under 100 words.
 - Use a gentle, supportive tone.
 - You can check in on the student's wellbeing: "How are you feeling right now?"
-- Never say "just calm down" or minimize their experience.`,
+- Never say "just calm down" or minimize their experience.
+- When drafting or filing a report, NEVER tell the student to copy-paste text into a form — reassure them that an interactive draft card is prepared directly below for their 1-tap review.`,
 		emoji: "💙",
 	},
 	handoff: {
@@ -583,6 +590,9 @@ async function notifyAdmin(threadId, message, emotion, agent) {
 const POST_INTENT = [
   /\bpost (this|it|that)\b/, /\bpublish( this| it)?\b/, /\bshare (this|it|that)\b/,
   /\bmake .*\bpublic\b/, /\bput .*\bon the board\b/, /\braise (this|it|that) as\b/,
+  /\bdraft (this|it|that|a |me )/,
+  /\b(file|submit|lodge|write) (a |the )?(complaint|report)\b/,
+  /\bhelp me (report|file|draft|submit|complain)\b/,
 ];
 const DRAFT_CATEGORIES = [
   "Academics", "Facilities", "Food", "Bullying", "Teachers", "Events",
@@ -593,6 +603,32 @@ const DRAFT_CATEGORIES = [
 function postIntent(text) {
   const t = String(text || "").toLowerCase();
   return POST_INTENT.some((re) => re.test(t));
+}
+
+function extractDraftFromText(text) {
+	if (!text || typeof text !== "string") return null;
+	const jsonMatch = text.match(/\{[\s\S]*"title"[\s\S]*"description"[\s\S]*\}/);
+	if (jsonMatch) {
+		try {
+			const parsed = JSON.parse(jsonMatch[0]);
+			const sanitized = sanitizeDraft(parsed);
+			if (sanitized) return sanitized;
+		} catch {}
+	}
+	const subjectMatch = text.match(/\*{0,2}Subject:\*{0,2}\s*([^\n\r*]+)/i);
+	const detailsMatch = text.match(/\*{0,2}Details:\*{0,2}\s*([\s\S]+?)(?:\*{0,2}Requested action:|\n\n---\n|$)/i);
+	if (subjectMatch && detailsMatch) {
+		const title = subjectMatch[1].trim().slice(0, 120);
+		const description = detailsMatch[1].trim().slice(0, 500);
+		let category = "Bullying";
+		if (/food|mess|canteen/i.test(text)) category = "Food";
+		else if (/teacher|professor|faculty/i.test(text)) category = "Teachers";
+		else if (/clean|toilet|washroom/i.test(text)) category = "Cleanliness";
+		else if (/transport|bus/i.test(text)) category = "Transport";
+		else if (/facility|lift|ac|fan|light/i.test(text)) category = "Facilities";
+		return sanitizeDraft({ title, description, category, private: true });
+	}
+	return null;
 }
 
 /**
@@ -704,11 +740,18 @@ function formatThreadFacts(ctx) {
 	);
 }
 
-async function proposeDraft(threadId, trigger) {
+async function proposeDraft(threadId, trigger, forceNew = false) {
   const state = await getThreadState(threadId);
-  if (state?.draft_proposal?.status === "proposed")
-    return { proposal: state.draft_proposal, deduped: true };
   const msgs = await getThreadMessages(threadId, 20);
+  if (!forceNew && state?.draft_proposal?.status === "proposed") {
+    // If no newer user messages arrived after proposal, dedup
+    const proposalAt = state.draft_proposal?.at ? new Date(state.draft_proposal.at).getTime() : 0;
+    const lastUserMsg = msgs.filter((m) => m.sender === "user").pop();
+    const lastUserAt = lastUserMsg?.created_at ? new Date(lastUserMsg.created_at).getTime() : 0;
+    if (lastUserAt && proposalAt && lastUserAt <= proposalAt) {
+      return { proposal: state.draft_proposal, deduped: true };
+    }
+  }
   const convo = msgs.map((m) => `${m.sender}: ${m.body}`).join("\n");
   if (!convo.trim()) return { proposal: null, reason: "empty" };
   const facts = formatThreadFacts(await gatherThreadContext(threadId));
@@ -725,7 +768,8 @@ async function proposeDraft(threadId, trigger) {
     (await withTimeout(callLLMChain(draftSystem, draftUser, [], "high"), 20000).catch(
       () => null,
     ));
-  const proposal = sanitizeDraft(result?.text ? extractJson(result.text) : null);
+  const rawText = result?.text || "";
+  const proposal = sanitizeDraft(rawText ? extractJson(rawText) || extractDraftFromText(rawText) : null);
   if (!proposal) return { proposal: null, reason: "generation_failed" };
   const full = {
     ...proposal,
@@ -1246,9 +1290,9 @@ export default async function handler(req, res) {
 					if (!gate.ok) return res.status(403).json({ error: gate.error });
 				}
 				// Admin console window: admins see the last ADMIN_HISTORY_DAYS
-				// of conversation — the recent slice that matters for triage —
-				// never the whole archive. Owners reading their own thread are
-				// unaffected (full history, same as their device shows).
+				// of conversation — the recent slice that matters for triage.
+				// If recent slice is empty, fall back to older thread messages so
+				// emergency triage never renders an empty conversation.
 				const ADMIN_HISTORY_DAYS = 5;
 				const adminCutoff = readerIsAdmin
 					? new Date(Date.now() - ADMIN_HISTORY_DAYS * 86400000).toISOString()
@@ -1261,7 +1305,7 @@ export default async function handler(req, res) {
 					.order("created_at", "asc")
 					.limit(limit);
 				if (adminCutoff) msgQuery = msgQuery.gte("created_at", adminCutoff);
-				const [{ data: msgs, error }, { data: thread }] = await Promise.all([
+				let [{ data: msgs, error }, { data: thread }] = await Promise.all([
 					msgQuery,
 					supabase
 						.from("chat_threads")
@@ -1270,6 +1314,20 @@ export default async function handler(req, res) {
 						.maybeSingle(),
 				]);
 				if (error) throw error;
+
+				// If admin cutoff yielded 0 messages, but the thread has older messages, load them
+				// so the emergency / triage review never displays an empty conversation.
+				if (readerIsAdmin && (!msgs || msgs.length === 0)) {
+					const { data: olderMsgs } = await supabase
+						.from("chat_messages")
+						.select("*")
+						.eq("thread_id", thread_id)
+						.order("created_at", "asc")
+						.limit(limit);
+					if (olderMsgs && olderMsgs.length > 0) {
+						msgs = olderMsgs;
+					}
+				}
 
 				// Get thread state
 				const state = await getThreadState(thread_id);
@@ -2288,6 +2346,18 @@ export default async function handler(req, res) {
 				// predates. Without re-applying, this final write would
 				// clobber them (lost update → the next message re-proposes /
 				// re-nudges an already-made suggestion).
+				if (!draftProposal && aiOnAll && replyResult.reply) {
+					const extracted = extractDraftFromText(replyResult.reply);
+					if (extracted) {
+						draftProposal = {
+							...extracted,
+							status: "proposed",
+							trigger: "ai-reply-detected",
+							at: new Date().toISOString(),
+						};
+						draftProposed = true;
+					}
+				}
 				if (draftProposal) threadState.draft_proposal = draftProposal;
 				if (draftSuggestedAt)
 					threadState.draft_suggestion = {

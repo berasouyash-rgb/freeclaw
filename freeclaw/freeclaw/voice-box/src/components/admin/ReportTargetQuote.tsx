@@ -72,6 +72,15 @@ function HighlightFlaggedText({ text, reason }: { text: string; reason?: string 
 		"stalk",
 		"stupid",
 		"kys",
+		"pencil box",
+		"blackmail",
+		"extort",
+		"bully",
+		"ragging",
+		"harass",
+		"steal",
+		"beating",
+		"worthless",
 	];
 	if (reason && reason.length > 3) {
 		const reasonWords = reason.split(/\s+/).filter((w) => w.length > 3 && !/report|spam|other/i.test(w));
@@ -93,7 +102,7 @@ function HighlightFlaggedText({ text, reason }: { text: string; reason?: string 
 					return (
 						<mark
 							key={i}
-							className="rounded px-1.5 py-0.5 font-bold bg-bad/20 text-bad border border-bad/30 inline-block shadow-xs transition-colors"
+							className="rounded px-1.5 py-0.5 font-bold bg-bad/25 text-bad border border-bad/50 inline-block shadow-[0_0_8px_rgba(220,75,75,0.35)] animate-pulse transition-all"
 						>
 							{part}
 						</mark>
