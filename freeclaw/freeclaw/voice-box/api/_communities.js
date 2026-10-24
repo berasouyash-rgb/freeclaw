@@ -18,9 +18,11 @@
 // The value is the full community record (members + posts). Nothing here is
 // faked: every mutation reads the current row, applies the change, and upserts.
 
-import { clean, cors, isAdmin } from "./_auth.js";
+import { clean, cors, isAdmin, verifyCallerIdentity } from "./_auth.js";
 import supabase from "./_db-client.js";
 import { sanitizeError } from "./_error.js";
+import { evaluateContentDeep } from "./_safety-pipeline.js";
+import { isTestArtifact } from "./_artifact-filter.js";
 
 const MAX_COMMUNITIES_PER_USER = 5;
 const MAX_MEMBERS = 500;
@@ -71,7 +73,8 @@ function slugify(name) {
 
 function summarize(c, admin) {
 	const isHidden = !!c.hidden;
-	if (isHidden && !admin) return null;		return {
+	if (isHidden && !admin) return null;
+	return {
 		slug: c.slug,
 		name: c.name,
 		description: c.description || "",
@@ -81,8 +84,17 @@ function summarize(c, admin) {
 		created_at: c.created_at,
 		hidden: isHidden,
 		member_count: Array.isArray(c.members) ? c.members.length : 0,
-		post_count: Array.isArray(c.posts) ? c.posts.length : 0,
+		post_count: cleanPosts(c.posts).length,
 	};
+}
+
+// Test/fuzz runs also seed community discussion feeds. Same contract as the
+// shared post surfaces: rows stay in storage, only the public listing hides
+// them — never delete.
+function cleanPosts(posts) {
+	return (Array.isArray(posts) ? posts : []).filter(
+		(p) => p && !isTestArtifact(p?.text),
+	);
 }
 
 function publicPost(p, anonId) {
@@ -100,7 +112,9 @@ function publicPost(p, anonId) {
 			Object.entries(p.reactions || {}).map(([k, v]) => [k, Array.isArray(v) && anonId ? v.includes(anonId) : false]),
 		),
 		poll: p.poll ? publicPoll(p.poll, anonId) : null,
-		comments: (p.comments || []).map((c) => ({
+		comments: (p.comments || [])
+			.filter((c) => c && !isTestArtifact(c?.text))
+			.map((c) => ({
 			id: c.id,
 			anon_id: c.anon_id,
 			author: c.author || "",
@@ -157,6 +171,20 @@ export default async function handler(req, res) {
 		const b = req.method === "GET" ? { ...(req.query || {}) } : req.body || {};
 		const action = req.method === "GET" ? req.query.action : b.action;
 
+		// Session binding (same model as the main posts/comments writes):
+		// community posts/comments expose full anon_ids to any viewer, so the
+		// body-claimed anon_id must match the x-anon-id header AND the session
+		// cookie. Without this, anyone knowing a student's id could post,
+		// vote, or delete as them. Reads (list/get) stay open; the admin op
+		// carries no anon_id and keeps its admin-token gate below.
+		if (action !== "list" && action !== "get" && action !== "admin") {
+			const claimed = clean(b.anon_id || "", 40).toLowerCase();
+			if (!claimed) return res.status(400).json({ error: "anon_id required" });
+			const gate = await verifyCallerIdentity(req, res, claimed);
+			if (!gate.ok)
+				return res.status(gate.status || 403).json({ error: gate.error, code: gate.code });
+		}
+
 		// ── LIST ────────────────────────────────────────────────
 		if (action === "list") {
 			const admin = await isAdmin(req).catch(() => false);
@@ -166,10 +194,20 @@ export default async function handler(req, res) {
 				.ilike("key", "community:%")
 				.limit(200);
 			const communities = (rows || [])
-				.map((r) => summarize(r.value, admin))
-				.filter(Boolean)
+				.map((r) => {
+					// The KV key is the routing authority: a legacy row whose value
+					// lost its `slug` field must still produce a link that resolves
+					// (otherwise "Open" navigates to /communities/undefined → 404).
+					const v = r.value || {};
+					const keySlug = String(r.key || "").replace(/^community:/, "");
+					return summarize({ ...v, slug: v.slug || keySlug }, admin);
+				})
+				.filter((c) => c && !isTestArtifact(c.name))
 				.sort((a, b) => b.created_at.localeCompare(a.created_at));
-			res.setHeader("Cache-Control", "public, max-age=30, s-maxage=30");
+			// Dynamic list: member/post counts change on every join and new post —
+			// match the other list endpoints (`private, no-cache`) so nothing serves
+			// a stale count for 30s.
+			res.setHeader("Cache-Control", "private, no-cache");
 			return res.status(200).json({ communities });
 		}
 
@@ -181,12 +219,16 @@ export default async function handler(req, res) {
 			const c = await getCommunity(slug);
 			if (!c || (c.hidden && !admin))
 				return res.status(404).json({ error: "Community not found" });
+			// The requested key slug is canonical for routing.
+			c.slug = slug;
 			return res.status(200).json({
 				...summarize(c, admin),
 				members: Array.isArray(c.members) ? c.members.slice(0, MAX_MEMBERS) : [],
 				is_member: anonId ? (c.members || []).includes(anonId) : false,
 				is_creator: anonId ? c.created_by === anonId : false,
-				posts: (c.posts || []).slice(-50).map((p) => publicPost(p, anonId)),
+				posts: cleanPosts(c.posts)
+					.slice(-50)
+					.map((p) => publicPost(p, anonId)),
 			});
 		}
 
@@ -204,6 +246,22 @@ export default async function handler(req, res) {
 			const photo = clean(b.photo, 400).trim();
 			if (photo && !PHOTO_RE.test(photo))
 				return res.status(400).json({ error: "Photo must be an image URL" });
+
+			// School-safe gate — a community's name and description are
+			// reader-facing text too, and this surface has NO review queue,
+			// so anything the policy blocks is refused outright. Same Deep
+			// pipeline as posts/comments (L1 keywords + deterministic
+			// contextual scan + bounded model pass): layers only ever make
+			// the verdict stricter, never more permissive.
+			const gate = await evaluateContentDeep(
+				[name, description].filter(Boolean).join("\n"),
+				"direct",
+				null,
+				{ taskKey: "communities.write" },
+			);
+			if (gate.blocked) {
+				return res.status(403).json({ error: gate.message, code: gate.code });
+			}
 
 			const slug = slugify(name);
 			const existing = await getCommunity(slug);
@@ -277,6 +335,38 @@ export default async function handler(req, res) {
 			if (cooldown > 0)
 				return res.status(429).json({ error: `Please wait ${cooldown}s between messages` });
 
+			// School-safe gate — same unified pipeline as comments/posts.
+			// Runs on the raw text (plus poll question/options when present)
+			// so tricks and obfuscation face detection, not just the wordlist.
+			// DEEP path: keywords + deterministic contextual scan + bounded
+			// model judging — this surface has no review queue, so anything
+			// flagged as blocked is refused outright rather than held.
+			{
+				const pollQuestion =
+					b.poll && typeof b.poll === "object"
+						? clean(b.poll.question, 80).trim()
+						: "";
+				const pollOptions =
+					b.poll && typeof b.poll === "object" && Array.isArray(b.poll.options)
+						? b.poll.options
+								.map((o) => clean(o, 40).trim())
+								.filter((o) => o.length > 0)
+								.slice(0, MAX_POLL_OPTIONS)
+						: [];
+				const decision = await evaluateContentDeep(
+					[text, pollQuestion, ...pollOptions].filter(Boolean).join("\n"),
+					"direct",
+					null,
+					{ taskKey: "communities.write" },
+				);
+				if (decision.blocked) {
+					return res.status(403).json({
+						error: decision.message,
+						code: decision.code,
+					});
+				}
+			}
+
 			// Optional attached poll: { question, options: string[2..4] }
 			let poll = null;
 			if (b.poll && typeof b.poll === "object") {
@@ -323,6 +413,23 @@ export default async function handler(req, res) {
 			const text = clean(b.text, 400).trim();
 			if (!anonId) return res.status(400).json({ error: "anon_id required" });
 			if (!text) return res.status(400).json({ error: "Comment cannot be empty" });
+			{
+				// DEEP path, same as main-feed comments: keywords + deterministic
+				// contextual scan + bounded model pass. Community comments have
+				// no review queue, so blocked means refused.
+				const decision = await evaluateContentDeep(
+					text,
+					"direct",
+					null,
+					{ taskKey: "communities.comment" },
+				);
+				if (decision.blocked) {
+					return res.status(403).json({
+						error: decision.message,
+						code: decision.code,
+					});
+				}
+			}
 			const c = await getCommunity(slug);
 			if (!c || c.hidden) return res.status(404).json({ error: "Community not found" });
 			const posts = (c.posts || []).slice();
@@ -494,6 +601,6 @@ export default async function handler(req, res) {
 		return res.status(400).json({ error: "Unknown action" });
 	} catch (err) {
 		console.error("[communities] error:", err.message);
-		return res.status(500).json({ error: sanitizeError(err) || "Internal error" });
+		return sanitizeError(res, err, "communities");
 	}
 }

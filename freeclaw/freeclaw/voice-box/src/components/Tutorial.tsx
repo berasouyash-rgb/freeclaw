@@ -160,7 +160,7 @@ export default function Tutorial() {
 						</button>
 					) : (
 						<button className="btn btn-primary flex-1" onClick={finish}>
-							Start using Voice Box
+							Start using Voice Flow
 						</button>
 					)}
 				</div>

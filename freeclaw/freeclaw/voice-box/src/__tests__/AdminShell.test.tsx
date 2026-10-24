@@ -2,7 +2,7 @@
 // Admin console shell — navigation, default tab, View site
 // ═══════════════════════════════════════════════════════════════════
 // Covers:
-//   • default tab is Dashboard (not Ops Center) — the outcome-first home
+//   • default tab is Dashboard / Command Center
 //   • View site link jumps straight into the user space
 //   • sidebar group navigation switches tabs
 //   • tab search (⌘K) finds and opens sections
@@ -56,9 +56,9 @@ function asAdmin() {
 	);
 }
 
-function renderShell() {
+function renderShell(initialEntry = "/admin") {
 	return render(
-		<MemoryRouter>
+		<MemoryRouter initialEntries={[initialEntry]}>
 			<Admin />
 		</MemoryRouter>,
 	);
@@ -73,7 +73,9 @@ describe("Admin console shell", () => {
 	it("defaults to the Dashboard tab on open", async () => {
 		renderShell();
 		await waitFor(() => {
-			const dash = screen.getByRole("button", { name: /^Dashboard$/ });
+			// Exact name: the Overview group also holds "My Board", and a
+			// loose /Dashboard/ regex would match both.
+			const dash = screen.getByRole("button", { name: "Dashboard" });
 			expect(dash.getAttribute("aria-current")).toBe("page");
 		});
 	});
@@ -86,35 +88,40 @@ describe("Admin console shell", () => {
 		expect(links[0]!.getAttribute("href")).toBe("/");
 	});
 
-	it("navigates to the Ops Center via the sidebar", async () => {
+	it("navigates to Reports via the sidebar", async () => {
 		renderShell();
-		const ops = await screen.findByRole("button", { name: /Ops Center/ });
-		fireEvent.click(ops);
+		const reports = await screen.findByRole("button", { name: "Reports" });
+		fireEvent.click(reports);
 		await waitFor(() => {
-			expect(ops.getAttribute("aria-current")).toBe("page");
+			expect(reports.getAttribute("aria-current")).toBe("page");
 		});
-		// The Dashboard tab is no longer current
-		expect(
-			screen.getByRole("button", { name: /^Dashboard$/ }).getAttribute(
-				"aria-current",
-			),
-		).toBeNull();
+	});
+
+	it("redirects removed autonomous UI controls while keeping operations controls", async () => {
+		renderShell("/admin?tab=ops-center");
+		await waitFor(() => {
+			expect(
+				screen.getByRole("button", { name: "Dashboard" }).getAttribute("aria-current"),
+			).toBe("page");
+		});
+		expect(screen.queryByRole("button", { name: /Ops Center/ })).not.toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: /AI Coworker/ })).not.toBeInTheDocument();
+		expect(screen.getByRole("button", { name: "Errors" })).toBeInTheDocument();
+		expect(screen.getByRole("button", { name: "Logs" })).toBeInTheDocument();
 	});
 
 	it("finds and opens a section via tab search", async () => {
 		renderShell();
 		const search = await screen.findByLabelText("Search admin sections");
-		fireEvent.change(search, { target: { value: "polls" } });
-		// The search dropdown + the sidebar both list Polls — pick the dropdown
-		// result (it is scoped to the open search panel below the input).
-		const results = await screen.findAllByRole("button", { name: /^Polls/ });
+		fireEvent.change(search, { target: { value: "email" } });
+		const results = await screen.findAllByRole("button", { name: /^Email/ });
 		const dropdownResult = results.find(
 			(b) => b.closest("div.absolute") !== null,
 		);
 		fireEvent.click(dropdownResult ?? results[0]!);
 		await waitFor(() => {
 			expect(
-				screen.getByRole("button", { name: /^Polls/ }).getAttribute(
+				screen.getByRole("button", { name: /^Email/ }).getAttribute(
 					"aria-current",
 				),
 			).toBe("page");

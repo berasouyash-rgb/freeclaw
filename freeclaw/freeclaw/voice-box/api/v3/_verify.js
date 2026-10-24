@@ -11,7 +11,7 @@ import {
 	buildVerificationSummary,
 	verifyAnswer,
 	verifyAnswers,
-} from "../_verification.js";
+} from "../_agent-verification.js";
 
 export default async function handler(req, res) {
 	cors(res, req);

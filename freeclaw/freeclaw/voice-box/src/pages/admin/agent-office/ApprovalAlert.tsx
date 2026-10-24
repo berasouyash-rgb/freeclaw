@@ -111,6 +111,9 @@ export default function ApprovalAlert({ pollMs = 12000 }: { pollMs?: number }) {
 			}
 		};
 		check();
+		// Approval popups are an intentional safety exception: a newly blocked
+		// task must reach the administrator even while the page is otherwise
+		// quiet. This component is mounted only for that alert workflow.
 		const iv = setInterval(check, pollMs);
 		const onVis = () => {
 			if (!document.hidden) check();

@@ -7,9 +7,9 @@
 // wiring, error toasts.
 // ═══════════════════════════════════════════════════════════════════
 
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import UserManager from "../pages/admin/UserManager";
 
 const mocks = vi.hoisted(() => ({
@@ -20,6 +20,7 @@ const mocks = vi.hoisted(() => ({
 	initialLoading: false,
 	total: 0,
 	reset: vi.fn(),
+	softReset: vi.fn(),
 }));
 
 vi.mock("../lib/api", () => ({
@@ -39,13 +40,28 @@ vi.mock("../hooks/useInfiniteScroll", () => ({
 		total: mocks.total ?? 0,
 		sentinelRef: { current: null },
 		loadMore: vi.fn(),
-		reset: mocks.reset ?? vi.fn(),
+		// Simulate server-side search on reset: re-filter items by the current search query
+		reset: (..._args: unknown[]) => {
+			// Extract the current search query from the mock postPaginated calls
+			const calls = mocks.postPaginated.mock.calls;
+			const lastCall = calls[calls.length - 1];
+			const search = lastCall?.[1]?.search as string || "";
+			// Only override items if there IS a search query — otherwise keep the test's setup
+			if (search) {
+				const filtered = USERS.filter((u) => u.anon_id.toLowerCase().includes(search.toLowerCase()));
+				mocks.items = filtered;
+				mocks.total = filtered.length;
+			}
+			mocks.reset?.();
+		},
 		replaceItems: vi.fn(),
 		setItems: vi.fn(),
+		softReset: mocks.softReset,
 	}),
 }));
 
-vi.mock("../lib/utils", () => ({
+vi.mock("../lib/utils", async (importOriginal) => ({
+	...(await importOriginal()),
 	fmtDate: (d: string) => `DATE(${d})`,
 	timeAgo: () => "2d ago",
 }));
@@ -137,10 +153,13 @@ beforeEach(() => {
 	mocks.initialLoading = false;
 	mocks.reset = vi.fn();
 	mocks.post.mockResolvedValue({});
-	mocks.postPaginated.mockResolvedValue({
-		data: USERS,
-		nextCursor: null,
-		total: USERS.length,
+	// Simulate server-side search: filter by search param if provided
+	mocks.postPaginated.mockImplementation(async (_url: string, body: Record<string, unknown>) => {
+		const search = (body?.search as string) || "";
+		const filtered = search
+			? USERS.filter((u) => u.anon_id.toLowerCase().includes(search.toLowerCase()))
+			: USERS;
+		return { data: filtered, nextCursor: null, total: filtered.length };
 	});
 });
 
@@ -152,7 +171,7 @@ describe("UserManager — list rendering", () => {
 	it("renders the header and total count", async () => {
 		renderPage();
 		expect(
-			await screen.findByText("Anonymous user management"),
+			await screen.findByText(/User Management/i),
 		).toBeInTheDocument();
 		expect(screen.getByText("3 total")).toBeInTheDocument();
 	});
@@ -179,6 +198,9 @@ describe("UserManager — list rendering", () => {
 	});
 
 	it("shows skeletons while the initial load is pending", () => {
+		// Skeletons mean "nothing to show yet": with rows on screen a
+		// revalidation must keep the table mounted, never flash loaders.
+		mocks.items = [];
 		mocks.initialLoading = true;
 		renderPage();
 		expect(document.querySelectorAll(".skeleton").length).toBeGreaterThan(0);
@@ -192,43 +214,44 @@ describe("UserManager — list rendering", () => {
 	});
 });
 
-describe("UserManager — search", () => {
-	it("filters the list by the anonymous ID query", async () => {
-		const user = userEvent.setup();
-		renderPage();
-		await screen.findByText("anon_aaa");
-
-		await user.type(
-			screen.getByPlaceholderText("Search anonymous ID…"),
-			"bbb",
-		);
-		expect(screen.queryByText("anon_aaa")).not.toBeInTheDocument();
-		expect(screen.getByText("anon_bbb")).toBeInTheDocument();
-	});
-
-	it("is case-insensitive when filtering", async () => {
-		const user = userEvent.setup();
-		renderPage();
-		await screen.findByText("anon_aaa");
-
-		await user.type(
-			screen.getByPlaceholderText("Search anonymous ID…"),
-			"AAA",
-		);
-		expect(screen.getByText("anon_aaa")).toBeInTheDocument();
-		expect(screen.queryByText("anon_bbb")).not.toBeInTheDocument();
-	});
-
-	it("clearing the query restores the full list", async () => {
+describe("UserManager — search (server-side)", () => {
+	it("search input accepts text", async () => {
 		const user = userEvent.setup();
 		renderPage();
 		await screen.findByText("anon_aaa");
 
 		const input = screen.getByPlaceholderText("Search anonymous ID…");
 		await user.type(input, "bbb");
-		await user.clear(input);
-		expect(screen.getByText("anon_aaa")).toBeInTheDocument();
-		expect(screen.getByText("anon_ccc")).toBeInTheDocument();
+		expect(input).toHaveValue("bbb");
+	});
+
+	it("server-side filtered results are displayed when provided", async () => {
+		// Simulate server returning only matching user (as server would)
+		mocks.items = [USERS[1]];
+		mocks.total = 1;
+		renderPage();
+		expect(await screen.findByText("anon_bbb")).toBeInTheDocument();
+		expect(screen.queryByText("anon_aaa")).not.toBeInTheDocument();
+	});
+
+	it("shows 'no users found' when server returns empty", async () => {
+		mocks.items = [];
+		mocks.total = 0;
+		renderPage();
+		expect(await screen.findByText("No users found.")).toBeInTheDocument();
+	});
+
+	it("preselects the author handed off from the feed drawer", async () => {
+		sessionStorage.setItem("vb:adminUserTarget", "anon_bbb");
+		try {
+			renderPage();
+			const input = (await screen.findByPlaceholderText(
+				"Search anonymous ID…",
+			)) as HTMLInputElement;
+			expect(input.value).toBe("anon_bbb");
+		} finally {
+			sessionStorage.removeItem("vb:adminUserTarget");
+		}
 	});
 });
 
@@ -281,6 +304,97 @@ describe("UserManager — detail drawer", () => {
 		expect(
 			screen.getByText(/Suspended until DATE\(2099-08-01T10:00:00\.000Z\)/),
 		).toBeInTheDocument();
+	});
+
+	it("hides Lift suspension when there is no suspension, shows it while suspended", async () => {
+		const user = userEvent.setup();
+		// No suspension: no Lift button at all.
+		mocks.post.mockResolvedValue(DETAIL);
+		renderPage();
+		await screen.findByText("anon_aaa");
+		await user.click(screen.getByText("anon_aaa"));
+		await waitFor(() => {
+			expect(screen.getByText("Keep it civil")).toBeInTheDocument();
+		});
+		expect(
+			screen.queryByRole("button", { name: "Lift suspension" }),
+		).not.toBeInTheDocument();
+
+		// Active suspension: the Lift button is available.
+		mocks.post.mockResolvedValue({
+			...DETAIL,
+			meta: { ...DETAIL.meta, suspended_until: "2099-08-01T10:00:00.000Z" },
+		});
+		await user.click(screen.getAllByText("anon_aaa")[0]!);
+		expect(
+			await screen.findByRole("button", { name: "Lift suspension" }),
+		).toBeInTheDocument();
+	});
+
+	it("locks background scroll while the drawer is open (no scroll chaining)", async () => {
+		mocks.post.mockResolvedValue(DETAIL);
+		const user = userEvent.setup();
+		const { unmount } = renderPage();
+		await screen.findByText("anon_aaa");
+
+		await user.click(screen.getByText("anon_aaa"));
+		await waitFor(() => {
+			expect(screen.getByText("Keep it civil")).toBeInTheDocument();
+		});
+		expect(document.body.style.overflow).toBe("hidden");
+		const panel = screen
+			.getByText("Keep it civil")
+			.closest("div.fixed")!
+			.querySelector(".overflow-y-auto")!;
+		expect(panel.classList.contains("overscroll-contain")).toBe(true);
+
+		unmount();
+		expect(document.body.style.overflow).toBe("");
+	});
+
+	it("filters by presence and hides test accounts on demand", async () => {
+		const user = userEvent.setup();
+		mocks.items = [
+			...USERS,
+			{
+				anon_id: "anon_now",
+				last_seen: new Date().toISOString(),
+				post_count: 1,
+				comment_count: 0,
+				reaction_count: 0,
+				strikes: 0,
+				spam_score: 0,
+				banned: false,
+			},
+			{
+				anon_id: "anon_loadtest_zzz_99",
+				last_seen: new Date().toISOString(),
+				post_count: 0,
+				comment_count: 0,
+				reaction_count: 0,
+				strikes: 0,
+				spam_score: 0,
+				banned: false,
+			},
+		];
+		renderPage();
+		await screen.findByText("anon_aaa");
+
+		// Pills render with live counts; fresh rows show "Now".
+		expect(screen.getByRole("button", { name: /Now \(/ })).toBeInTheDocument();
+		expect(screen.getAllByText("Now").length).toBeGreaterThan(0);
+
+		// "Now" pill keeps only recently-seen rows.
+		await user.click(screen.getByRole("button", { name: /Now \(/ }));
+		expect(screen.queryByText("anon_aaa")).not.toBeInTheDocument();
+		expect(screen.getByText("anon_now")).toBeInTheDocument();
+
+		// Test-accounts toggle hides residue but states the count.
+		await user.click(screen.getByRole("button", { name: /All \(/ }));
+		await user.click(screen.getByRole("button", { name: /Hide test accounts \(1\)/ }));
+		expect(screen.queryByText("anon_loadtest_zzz_99")).not.toBeInTheDocument();
+		expect(screen.getByText("anon_now")).toBeInTheDocument();
+		expect(screen.getByRole("button", { name: /Show test accounts \(1\)/ })).toBeInTheDocument();
 	});
 
 	it("renders the activity timeline with mixed events sorted newest-first", async () => {
@@ -366,7 +480,10 @@ describe("UserManager — moderation actions", () => {
 	});
 
 	it("lifts a suspension via suspend_days: 0", async () => {
-		mocks.post.mockResolvedValue(DETAIL);
+		mocks.post.mockResolvedValue({
+			...DETAIL,
+			meta: { ...DETAIL.meta, suspended_until: "2099-08-01T10:00:00.000Z" },
+		});
 		const user = userEvent.setup();
 		renderPage();
 		await screen.findByText("anon_aaa");
@@ -529,5 +646,102 @@ describe("UserManager — moderation actions", () => {
 		});
 		window.removeEventListener("vb:admin-tab", listener);
 		sessionStorage.removeItem("vb:adminChatTarget");
+	});
+});
+
+describe("UserManager — presence honesty", () => {
+	it("excludes banned and suspended users from Now counts", async () => {
+		const user = userEvent.setup();
+		mocks.items = [
+			...USERS,
+			{
+				anon_id: "anon_fresh_banned",
+				last_seen: new Date().toISOString(),
+				post_count: 0, comment_count: 0, reaction_count: 0,
+				strikes: 0, spam_score: 0, banned: true,
+			},
+			{
+				anon_id: "anon_fresh_susp",
+				last_seen: new Date().toISOString(),
+				post_count: 0, comment_count: 0, reaction_count: 0,
+				strikes: 0, spam_score: 0, banned: false,
+				suspended_until: "2099-08-01T10:00:00.000Z",
+			},
+		];
+		renderPage();
+		await screen.findByText("anon_aaa");
+		// Neither fresh-but-blocked row may inflate the Now pill…
+		expect(screen.getByRole("button", { name: /Now \(0\)/ })).toBeInTheDocument();
+		// …but both still appear under All (nothing hidden silently).
+		await user.click(screen.getByRole("button", { name: /All \(/ }));
+		expect(screen.getByText("anon_fresh_banned")).toBeInTheDocument();
+		expect(screen.getByText("anon_fresh_susp")).toBeInTheDocument();
+	});
+
+	it("persists the presence scope per device", async () => {
+		const user = userEvent.setup();
+		renderPage();
+		await screen.findByText("anon_aaa");
+		await user.click(screen.getByRole("button", { name: /Hour \(/ }));
+		const stored = JSON.parse(localStorage.getItem("vb:userscope") || "{}");
+		expect(stored).toMatchObject({ filter: "hour" });
+	});
+});
+
+describe("UserManager refresh", () => {
+	it("offers an explicit Refresh that reloads the list", async () => {
+		// Hermetic scope: an earlier test persists filter=hour to
+		// localStorage, which would hide every fixture row here.
+		localStorage.removeItem("vb:userscope");
+		renderPage();
+		await screen.findByText("anon_aaa");
+		mocks.reset.mockClear();
+		fireEvent.click(screen.getByRole("button", { name: /refresh users/i }));
+		expect(mocks.reset).toHaveBeenCalledTimes(1);
+	});
+
+	it("shows the loaded count while revalidating instead of flashing 0 total", async () => {
+		localStorage.removeItem("vb:userscope");
+		// A revalidation zeroes the total before the fresh count lands;
+		// the header must keep showing the loaded rows, never "0 total".
+		mocks.total = 0;
+		renderPage();
+		await screen.findByText("anon_aaa");
+		expect(screen.getByText("3 total")).toBeInTheDocument();
+	});
+});
+
+describe("UserManager live presence peek", () => {
+	afterEach(() => {
+		vi.useRealTimers();
+		delete (document as unknown as Record<string, unknown>).visibilityState;
+	});
+
+	it("revalidates the list every minute while visible", () => {
+		localStorage.removeItem("vb:userscope");
+		vi.useFakeTimers();
+		renderPage();
+		expect(screen.getByText("anon_aaa")).toBeInTheDocument();
+		mocks.softReset.mockClear();
+		act(() => {
+			vi.advanceTimersByTime(61_000);
+		});
+		expect(mocks.softReset).toHaveBeenCalledTimes(1);
+	});
+
+	it("does not revalidate while the tab is hidden", () => {
+		localStorage.removeItem("vb:userscope");
+		Object.defineProperty(document, "visibilityState", {
+			configurable: true,
+			get: () => "hidden",
+		});
+		vi.useFakeTimers();
+		renderPage();
+		expect(screen.getByText("anon_aaa")).toBeInTheDocument();
+		mocks.softReset.mockClear();
+		act(() => {
+			vi.advanceTimersByTime(61_000);
+		});
+		expect(mocks.softReset).not.toHaveBeenCalled();
 	});
 });

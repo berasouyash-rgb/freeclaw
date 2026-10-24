@@ -17,6 +17,19 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const from = vi.fn();
 let reactionsData: Array<{ kind: string; author_id: string }> = [];
 let deleteResult: Array<{ id: string }> = [];
+// Default-allow session gate (feature tests exercise behavior, not auth;
+// the impersonation test below overrides with header==claim semantics).
+const verifyCallerMock = vi.fn(async () => ({ ok: true, callerId: "" }));
+// Error-injection + side-effect capture for resilience/priority tests.
+let deleteError: Error | null = null;
+let insertError: Error | null = null;
+let countsError: Error | null = null;
+// When true, uncapped counts selects return at most the server's max-rows
+// page (1000), simulating PostgREST truncation. Ranged selects return the
+// requested slice. Lets scale tests prove pagination instead of truncation.
+let enforceCap = false;
+const SERVER_MAX_ROWS = 1000;
+let priorityPatches: Array<Record<string, unknown>> = [];
 
 vi.mock("../../api/_db-client.js", () => ({
 	default: { from },
@@ -33,6 +46,7 @@ vi.mock("../../api/_auth.js", () => ({
 	rateLimitResponse: vi.fn((res) =>
 		res.status(429).json({ error: "Too many requests" }),
 	),
+	verifyCallerIdentity: verifyCallerMock,
 }));
 vi.mock("../../api/_error.js", () => ({
 	sanitizeError: (_res: unknown, err: unknown) => {
@@ -59,19 +73,30 @@ function response() {
 function chainFor(table: string) {
 	const chain: {
 		op: string | null;
+		rangeFrom: number | null;
+		rangeTo: number | null;
 		select(c: string): unknown;
 		eq(): unknown;
+		range(from: number, to: number): unknown;
 		delete(): unknown;
 		insert(): unknown;
-		update(): unknown;
+		update(patch?: unknown): unknown;
+		maybeSingle(): Promise<unknown>;
 		then(cb: (v: unknown) => void): Promise<unknown>;
 	} = {
 		op: null,
+		rangeFrom: null,
+		rangeTo: null,
 		select(_c: string) {
 			if (!this.op) this.op = "counts";
 			return this;
 		},
 		eq() {
+			return this;
+		},
+		range(from: number, to: number) {
+			this.rangeFrom = from;
+			this.rangeTo = to;
 			return this;
 		},
 		delete() {
@@ -82,17 +107,32 @@ function chainFor(table: string) {
 			this.op = "insert";
 			return this;
 		},
-		update() {
+		update(patch?: unknown) {
 			this.op = "update";
+			if (patch && typeof patch === "object" && "priority" in (patch as Record<string, unknown>))
+				priorityPatches.push(patch as Record<string, unknown>);
 			return this;
 		},
+		maybeSingle() {
+			// Fire-and-forget side paths (event bridge settings lookup).
+			return Promise.resolve({ data: null, error: null });
+		},
 		then(onResolve: (v: unknown) => void) {
-			if (this.op === "delete") onResolve({ data: deleteResult, error: null });
-			else if (this.op === "insert") onResolve({ data: null, error: null });
+			if (this.op === "delete") onResolve({ data: deleteResult, error: deleteError });
+			else if (this.op === "insert") onResolve({ data: null, error: insertError });
 			else if (this.op === "update") onResolve({ data: null, error: null });
-			else if (this.op === "counts" && table === "reactions")
-				onResolve({ data: reactionsData, error: null });
-			else onResolve({ data: [], error: null });
+			else if (this.op === "counts" && table === "reactions") {
+				if (countsError) {
+					onResolve({ data: reactionsData, error: countsError });
+				} else if (this.rangeFrom !== null && this.rangeTo !== null) {
+					onResolve({
+						data: reactionsData.slice(this.rangeFrom, this.rangeTo + 1),
+						error: null,
+					});
+				} else if (enforceCap) {
+					onResolve({ data: reactionsData.slice(0, SERVER_MAX_ROWS), error: null });
+				} else onResolve({ data: reactionsData, error: countsError });
+			} else onResolve({ data: [], error: null });
 			return Promise.resolve(undefined);
 		},
 	};
@@ -104,6 +144,15 @@ beforeEach(() => {
 	vi.clearAllMocks();
 	reactionsData = [];
 	deleteResult = [];
+	deleteError = null;
+	insertError = null;
+	countsError = null;
+	enforceCap = false;
+	priorityPatches = [];
+	// Drain any leaked one-shot gate denial so a broken gate fails its own
+	// test instead of poisoning the next test's session check.
+	verifyCallerMock.mockReset();
+	verifyCallerMock.mockResolvedValue({ ok: true, callerId: "" });
 	from.mockImplementation((table: string) => chainFor(table));
 });
 
@@ -124,7 +173,7 @@ describe("POST /api/reactions — optimized toggle contract", () => {
 		const { default: handler } = await import("../../api/_reactions.js");
 		const res = response();
 		await handler(
-			{ method: "POST", query: {}, body: body(), headers: {} },
+			{ method: "POST", query: {}, body: body(), headers: { "x-anon-id": "anon-1" } },
 			res,
 		);
 
@@ -135,15 +184,46 @@ describe("POST /api/reactions — optimized toggle contract", () => {
 			mine: ["support"],
 		});
 
-		// reactions roundtrips = delete + insert + counts (NO pre-SELECT)
-		const ops = from.mock.results.map(
-			(r) => (r.value as { op: string | null }).op,
+		// reactions roundtrips = delete + insert + counts (NO pre-SELECT).
+		// Scoped to the reactions table: fire-and-forget side paths (event
+		// bridge settings lookup, posts bumps) hit other tables and must not
+		// pollute this contract.
+		const ops = from.mock.calls.map(
+			(args, i) =>
+				`${args[0]}:${(from.mock.results[i].value as { op: string | null }).op}`,
 		);
-		expect(ops.filter((o) => o === "delete").length).toBe(1);
-		expect(ops.filter((o) => o === "insert").length).toBe(1);
-		expect(ops.filter((o) => o === "counts").length).toBe(1);
+		const reactionsOps = ops
+			.filter((o) => o.startsWith("reactions:"))
+			.map((o) => o.split(":")[1]);
+		expect(reactionsOps.filter((o) => o === "delete").length).toBe(1);
+		expect(reactionsOps.filter((o) => o === "insert").length).toBe(1);
+		expect(reactionsOps.filter((o) => o === "counts").length).toBe(1);
 		// posts updated_at bump ran in parallel (Promise.all)
-		expect(ops).toContain("update");
+		expect(ops).toContain("posts:update");
+	});
+
+	it("accepts the suggestion downvote alias as a disagree vote", async () => {
+		deleteResult = [];
+		reactionsData = [{ kind: "disagree", author_id: "anon-1" }];
+
+		const { default: handler } = await import("../../api/_reactions.js");
+		const res = response();
+		await handler(
+			{
+				method: "POST",
+				query: {},
+				body: { ...body(), kind: "downvote" },
+				headers: { "x-anon-id": "anon-1" },
+			},
+			res,
+		);
+
+		expect(res.statusCode).toBe(200);
+		expect(res.body).toEqual({
+			toggled: true,
+			counts: { disagree: 1 },
+			mine: ["disagree"],
+		});
 	});
 
 	it("toggle OFF: DELETE removes the existing row → no INSERT", async () => {
@@ -153,19 +233,23 @@ describe("POST /api/reactions — optimized toggle contract", () => {
 		const { default: handler } = await import("../../api/_reactions.js");
 		const res = response();
 		await handler(
-			{ method: "POST", query: {}, body: body(), headers: {} },
+			{ method: "POST", query: {}, body: body(), headers: { "x-anon-id": "anon-1" } },
 			res,
 		);
 
 		expect(res.statusCode).toBe(200);
 		expect(res.body).toEqual({ toggled: false, counts: {}, mine: [] });
-		// delete + counts only — no INSERT, no pre-SELECT
-		const ops = from.mock.results.map(
-			(r) => (r.value as { op: string | null }).op,
+		// delete + counts only — no INSERT, no pre-SELECT (reactions table only)
+		const ops = from.mock.calls.map(
+			(args, i) =>
+				`${args[0]}:${(from.mock.results[i].value as { op: string | null }).op}`,
 		);
-		expect(ops.filter((o) => o === "delete").length).toBe(1);
-		expect(ops).not.toContain("insert");
-		expect(ops.filter((o) => o === "counts").length).toBe(1);
+		const reactionsOps = ops
+			.filter((o) => o.startsWith("reactions:"))
+			.map((o) => o.split(":")[1]);
+		expect(reactionsOps.filter((o) => o === "delete").length).toBe(1);
+		expect(reactionsOps).not.toContain("insert");
+		expect(reactionsOps.filter((o) => o === "counts").length).toBe(1);
 	});
 
 	it("counts aggregate ALL authors; mine filters to the caller only", async () => {
@@ -179,7 +263,7 @@ describe("POST /api/reactions — optimized toggle contract", () => {
 		const { default: handler } = await import("../../api/_reactions.js");
 		const res = response();
 		await handler(
-			{ method: "POST", query: {}, body: body(), headers: {} },
+			{ method: "POST", query: {}, body: body(), headers: { "x-anon-id": "anon-1" } },
 			res,
 		);
 
@@ -199,7 +283,7 @@ describe("POST /api/reactions — optimized toggle contract", () => {
 				method: "POST",
 				query: {},
 				body: { ...body(), kind: "nonsense" },
-				headers: {},
+				headers: { "x-anon-id": "anon-1" },
 			},
 			res,
 		);
@@ -219,7 +303,7 @@ describe("POST /api/reactions — optimized toggle contract", () => {
 		const { default: handler } = await import("../../api/_reactions.js");
 		const res = response();
 		await handler(
-			{ method: "POST", query: {}, body: body(), headers: {} },
+			{ method: "POST", query: {}, body: body(), headers: { "x-anon-id": "anon-1" } },
 			res,
 		);
 
@@ -237,7 +321,7 @@ describe("POST /api/reactions — optimized toggle contract", () => {
 			{
 				method: "POST",
 				query: {},
-				headers: {},
+				headers: { "x-anon-id": "anon-1" },
 				body: {
 					author_id: "anon-1",
 					target_id: "sug-1",
@@ -254,5 +338,225 @@ describe("POST /api/reactions — optimized toggle contract", () => {
 			counts: { upvote: 1 },
 			mine: ["upvote"],
 		});
+	});
+
+	it("rate-limits toggle floods → 429 before any DB roundtrip", async () => {
+		const { rateLimited } = await import("../../api/_auth.js");
+		(rateLimited as ReturnType<typeof vi.fn>).mockResolvedValueOnce(true);
+
+		const { default: handler } = await import("../../api/_reactions.js");
+		const res = response();
+		await handler(
+			{ method: "POST", query: {}, body: body(), headers: { "x-anon-id": "anon-1" } },
+			res,
+		);
+
+		expect(res.statusCode).toBe(429);
+		expect(from).not.toHaveBeenCalled();
+	});
+
+	it("rejects a missing identity before any DB roundtrip", async () => {
+		const { default: handler } = await import("../../api/_reactions.js");
+		const res = response();
+		await handler(
+			{ method: "POST", query: {}, body: body(), headers: {} },
+			res,
+		);
+
+		expect(res.statusCode).toBe(403);
+		expect(from).not.toHaveBeenCalled();
+	});
+
+	it("throws when the toggle DELETE fails instead of reporting success", async () => {
+		deleteResult = [];
+		deleteError = new Error("delete blew up");
+		const { default: handler } = await import("../../api/_reactions.js");
+		const res = response();
+
+		await expect(
+			handler(
+				{ method: "POST", query: {}, body: body(), headers: { "x-anon-id": "anon-1" } },
+				res,
+			),
+		).rejects.toThrow("delete blew up");
+	});
+
+	it("throws when the toggle INSERT fails instead of reporting success", async () => {
+		deleteResult = []; // toggle ON → insert path
+		insertError = new Error("insert blew up");
+		const { default: handler } = await import("../../api/_reactions.js");
+		const res = response();
+
+		await expect(
+			handler(
+				{ method: "POST", query: {}, body: body(), headers: { "x-anon-id": "anon-1" } },
+				res,
+			),
+		).rejects.toThrow("insert blew up");
+	});
+
+	it("concurrent same-identity toggle (23505) succeeds — the reaction is already active", async () => {
+		// Web + app open on one identity fire two toggles in the same instant:
+		// both DELETEs find no row, both INSERT. The unique index
+		// reactions_target_author_kind_uidx turns the loser into a duplicate-key
+		// error, which means the winner already made THIS reaction active —
+		// exactly what toggle-ON wanted — so it must not surface as a 500.
+		deleteResult = [];
+		insertError = Object.assign(
+			new Error(
+				'duplicate key value violates unique constraint "reactions_target_author_kind_uidx"',
+			),
+			{ code: "23505" },
+		);
+		reactionsData = [{ kind: "support", author_id: "anon-1" }];
+		const { default: handler } = await import("../../api/_reactions.js");
+		const res = response();
+		await handler(
+			{ method: "POST", query: {}, body: body(), headers: { "x-anon-id": "anon-1" } },
+			res,
+		);
+
+		expect(res.statusCode).toBe(200);
+		expect(res.body).toEqual({
+			toggled: true,
+			counts: { support: 1 },
+			mine: ["support"],
+		});
+	});
+
+	it("still returns success when the counts query fails after a good toggle", async () => {
+		deleteResult = [];
+		countsError = new Error("counts blew up");
+		reactionsData = [];
+		const { default: handler } = await import("../../api/_reactions.js");
+		const res = response();
+		await handler(
+			{ method: "POST", query: {}, body: body(), headers: { "x-anon-id": "anon-1" } },
+			res,
+		);
+
+		// The toggle itself worked — counts are best-effort, never fatal.
+		expect(res.statusCode).toBe(200);
+		expect(res.body).toEqual({ toggled: true, counts: {}, mine: [] });
+	});
+
+	function supportRows(n: number) {
+		return Array.from({ length: n }, (_, i) => ({ kind: "support", author_id: `voter-${i}` }));
+	}
+
+	it("escalates priority to critical at 20 supports", async () => {
+		deleteResult = [];
+		reactionsData = supportRows(20);
+		const { default: handler } = await import("../../api/_reactions.js");
+		const res = response();
+		await handler(
+			{ method: "POST", query: {}, body: body(), headers: { "x-anon-id": "anon-1" } },
+			res,
+		);
+
+		expect(res.statusCode).toBe(200);
+		expect(priorityPatches).toContainEqual({ priority: "critical" });
+	});
+
+	it("escalates priority to high at 10 supports", async () => {
+		deleteResult = [];
+		reactionsData = supportRows(10);
+		const { default: handler } = await import("../../api/_reactions.js");
+		const res = response();
+		await handler(
+			{ method: "POST", query: {}, body: body(), headers: { "x-anon-id": "anon-1" } },
+			res,
+		);
+
+		expect(res.statusCode).toBe(200);
+		expect(priorityPatches).toContainEqual({ priority: "high" });
+	});
+
+	it("drops priority to low below 3 supports with no concern", async () => {
+		deleteResult = [];
+		reactionsData = supportRows(2);
+		const { default: handler } = await import("../../api/_reactions.js");
+		const res = response();
+		await handler(
+			{ method: "POST", query: {}, body: body(), headers: { "x-anon-id": "anon-1" } },
+			res,
+		);
+
+		expect(res.statusCode).toBe(200);
+		expect(priorityPatches).toContainEqual({ priority: "low" });
+	});
+
+	it("keeps priority at medium for ordinary counts", async () => {
+		deleteResult = [];
+		reactionsData = supportRows(5);
+		const { default: handler } = await import("../../api/_reactions.js");
+		const res = response();
+		await handler(
+			{ method: "POST", query: {}, body: body(), headers: { "x-anon-id": "anon-1" } },
+			res,
+		);
+
+		expect(res.statusCode).toBe(200);
+		expect(priorityPatches).toContainEqual({ priority: "medium" });
+	});
+
+	it("counts past the 1000-row server page: paginates instead of truncating", async () => {
+		// PostgREST silently caps uncapped selects at max-rows (1000). A viral
+		// post must still report exact counts AND the caller's mine list —
+		// truncation drops both (the caller's row sits past the cap here).
+		enforceCap = true;
+		deleteResult = []; // toggle ON a new kind
+		const rows = Array.from({ length: 1200 }, (_, i) => ({
+			kind: "support",
+			author_id: `voter-${i}`,
+		}));
+		rows.push({ kind: "concerned", author_id: "anon-1" });
+		reactionsData = rows;
+
+		const { default: handler } = await import("../../api/_reactions.js");
+		const res = response();
+		await handler(
+			{
+				method: "POST",
+				query: {},
+				body: { ...body(), kind: "concerned" },
+				headers: { "x-anon-id": "anon-1" },
+			},
+			res,
+		);
+
+		expect(res.statusCode).toBe(200);
+		expect(res.body).toEqual({
+			toggled: true,
+			counts: { support: 1200, concerned: 1 },
+			mine: ["concerned"],
+		});
+	});
+
+	it("refuses a toggle when the session gate denies, even with a matching header", async () => {
+		// Stolen-cookie scenario: header and body both claim victim_1, but
+		// the session proof fails. Header-only auth would allow this toggle;
+		// the bound gate must deny it.
+		verifyCallerMock.mockImplementation(async () => ({
+			ok: false,
+			status: 403,
+			error: "Invalid session identity",
+		}));
+		deleteResult = [];
+		const { default: handler } = await import("../../api/_reactions.js");
+		const res = response();
+		await handler(
+			{
+				method: "POST",
+				query: {},
+				body: { ...body(), author_id: "victim_1" },
+				headers: { "x-anon-id": "victim_1" },
+			},
+			res,
+		);
+		expect(res.statusCode).toBe(403);
+		const calls = verifyCallerMock.mock.calls as Array<[unknown, unknown, string]>;
+		expect(calls.length).toBeGreaterThan(0);
+		expect(calls[calls.length - 1]?.[2]).toBe("victim_1");
 	});
 });

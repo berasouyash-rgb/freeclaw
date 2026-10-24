@@ -8,7 +8,7 @@ const VERSIONS = [
 		tag: "latest",
 		title: "Enterprise Intelligence Layer",
 		description:
-			"The most advanced version of Voice Box — AI-first architecture with 110+ agents, tool calling, multi-agent orchestration, RAG, and enterprise security.",
+			"The most advanced version of Voice Flow — AI-first architecture with 110+ agents, tool calling, multi-agent orchestration, RAG, and enterprise security.",
 		changes: [
 			{ type: "feature", text: "110+ specialized AI agents with tool calling" },
 			{
@@ -78,7 +78,7 @@ const VERSIONS = [
 		date: "October 2025",
 		title: "Public Launch",
 		description:
-			"The first public release of Voice Box — anonymous student feedback with real-time updates.",
+			"The first public release of Voice Flow — anonymous student feedback with real-time updates.",
 		changes: [
 			{ type: "feature", text: "Anonymous feedback submission" },
 			{ type: "feature", text: "Real-time post feed with sorting" },
@@ -117,7 +117,7 @@ export default function Changelog() {
 						<h1 className="text-4xl md:text-5xl font-bold text-ink mb-4">
 							Changelog
 						</h1>
-						<p className="text-lg text-ink2">What&apos;s new in Voice Box</p>
+						<p className="text-lg text-ink2">What&apos;s new in Voice Flow</p>
 					</FadeIn>
 				</div>
 			</section>

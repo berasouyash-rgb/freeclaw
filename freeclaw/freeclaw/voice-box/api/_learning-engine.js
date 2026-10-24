@@ -284,7 +284,7 @@ export async function triggerReflection(
 		}
 
 		// Build LLM prompt
-		const systemPrompt = `You are a learning analyst for an AI agent system called Voice Box. Analyze agent performance data and generate actionable insights.
+		const systemPrompt = `You are a learning analyst for an AI agent system called Voice Flow. Analyze agent performance data and generate actionable insights.
 
 Agent ID: ${agentId}
 Division: ${division}
@@ -487,11 +487,8 @@ export async function queryKnowledge(division, taskType = null, limit = 20) {
 			.from("agent_knowledge")
 			.select("*")
 			.eq("division", division)
-			.gt("expires_at", new Date().toISOString())
-			.order("confidence", { ascending: false })
+			.order("success_rate", { ascending: false })
 			.limit(Math.min(limit, 50));
-
-		if (taskType) query = query.eq("task_type", taskType);
 
 		const { data, error } = await query;
 		if (error) {
@@ -566,17 +563,9 @@ export async function recordAdminFeedback(
 						: rating === "thumbs_down"
 							? -1
 							: 0,
-			rating_label:
-				typeof rating === "number"
-					? rating > 0
-						? "positive"
-						: rating < 0
-							? "negative"
-							: "neutral"
-					: rating,
 			comment: comment || "",
 			admin_id: adminId,
-			weight: calculateFeedbackWeight(rating),
+			learning_weight: calculateFeedbackWeight(rating),
 			created_at: new Date().toISOString(),
 		};
 
@@ -591,7 +580,7 @@ export async function recordAdminFeedback(
 
 		// Also update agent_learning records with admin influence
 		if (reportId) {
-			await applyFeedbackToLearning(agentId, row.rating, row.weight);
+			await applyFeedbackToLearning(agentId, row.rating, row.learning_weight);
 		}
 
 		return true;
@@ -744,7 +733,7 @@ export async function getAgentConfig(agentId) {
 			.from("agent_config")
 			.select("*")
 			.eq("agent_id", agentId)
-			.order("updated_at", { ascending: false });
+			.order("created_at", { ascending: false });
 
 		if (error) {
 			console.error("[learning-engine] getAgentConfig error:", error.message);
@@ -808,7 +797,6 @@ export async function requestAgentSpawn(
 			},
 			source: "self_modify",
 			created_at: new Date().toISOString(),
-			updated_at: new Date().toISOString(),
 		};
 
 		const { error } = await supabase.from("agent_config").insert(row);

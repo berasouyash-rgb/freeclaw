@@ -15,8 +15,15 @@ export default function Trend({
 	label?: string;
 }) {
 	const diff = current - previous;
+	// "▲400%" when last week was 0 is mathematically true and practically
+	// meaningless — it made small-number dashboards look hysterical. From a
+	// zero base show the absolute change instead of a fake percentage.
 	const pct =
-		previous > 0 ? Math.round((diff / previous) * 100) : current > 0 ? 100 : 0;
+		previous > 0
+			? Math.round((diff / previous) * 100)
+			: current > 0
+				? null
+				: 0;
 	const up = diff > 0;
 	const flat = diff === 0;
 	const good = flat ? null : invert ? !up : up;
@@ -31,7 +38,9 @@ export default function Trend({
 						: "bg-bad/12 text-bad"
 			}`}
 			title={label || `vs previous period: ${diff > 0 ? "+" : ""}${diff}`}
-			aria-label={`Trend ${flat ? "flat" : up ? "up" : "down"} ${Math.abs(pct)} percent`}
+			aria-label={`Trend ${flat ? "flat" : up ? "up" : "down"}${
+				pct === null ? "" : ` ${Math.abs(pct)} percent`
+			}`}
 		>
 			{flat ? (
 				<Minus size={10} />
@@ -40,7 +49,11 @@ export default function Trend({
 			) : (
 				<ArrowDown size={10} className="vb-trend-bounce" />
 			)}
-			{flat ? "0%" : `${Math.abs(pct)}%`}
+			{flat
+				? "0%"
+				: pct === null
+					? `${diff > 0 ? "+" : ""}${diff}`
+					: `${Math.abs(pct)}%`}
 		</span>
 	);
 }

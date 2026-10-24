@@ -50,7 +50,7 @@ const INTENTS = [
 		patterns: /\b(who are you|what are you|your name|introduce yourself)\b/i,
 		handler: async () => ({
 			reply:
-				`🤖 **I'm the Voice Box Admin Agent** — your autonomous operations engine.\n\n` +
+				`🤖 **I'm the Voice Flow Admin Agent** — your autonomous operations engine.\n\n` +
 				`I have full access to the platform's database, users, posts, comments, polls, and analytics. ` +
 				`I think in goals, not tools — tell me what you need and I'll figure out the best way to do it.\n\n` +
 				`**Try me:** "show analytics", "find bullying posts", "who posted the most", "create a poll", "generate a report"`,
@@ -105,7 +105,7 @@ const INTENTS = [
 				try {
 					chatThreadsRes = await supabase
 						.from("chat_threads")
-						.select("id,created_at");
+						.select("thread_id,updated_at");
 				} catch (_) {
 					chatThreadsRes = {};
 				}
@@ -149,7 +149,7 @@ const INTENTS = [
 				};
 			} catch (e) {
 				return {
-					reply: `⚠️ Analytics query failed: ${e.message}. Check database connection.`,
+					reply: `⚠️ ${friendlyError(e)}`,
 					actions: [],
 				};
 			}
@@ -180,7 +180,7 @@ const INTENTS = [
 					actions: [],
 				};
 			} catch (e) {
-				return { reply: `⚠️ Reports query failed: ${e.message}`, actions: [] };
+				return { reply: `⚠️ ${friendlyError(e)}`, actions: [] };
 			}
 		},
 	},
@@ -210,7 +210,7 @@ const INTENTS = [
 					actions: [],
 				};
 			} catch (e) {
-				return { reply: `⚠️ Category query failed: ${e.message}`, actions: [] };
+				return { reply: `⚠️ ${friendlyError(e)}`, actions: [] };
 			}
 		},
 	},
@@ -237,7 +237,7 @@ const INTENTS = [
 				};
 			} catch (e) {
 				return {
-					reply: `⚠️ Recent posts query failed: ${e.message}`,
+					reply: `⚠️ ${friendlyError(e)}`,
 					actions: [],
 				};
 			}
@@ -264,7 +264,7 @@ const INTENTS = [
 				};
 			} catch (e) {
 				return {
-					reply: `⚠️ Hidden posts query failed: ${e.message}`,
+					reply: `⚠️ ${friendlyError(e)}`,
 					actions: [],
 				};
 			}
@@ -307,7 +307,7 @@ const INTENTS = [
 					actions: [],
 				};
 			} catch (e) {
-				return { reply: `⚠️ Search failed: ${e.message}`, actions: [] };
+				return { reply: `⚠️ ${friendlyError(e)}`, actions: [] };
 			}
 		},
 	},
@@ -767,20 +767,18 @@ const INTENTS = [
 	// ─── Set priority on a post ──────────────────────────────────────
 	{
 		patterns:
-			/\b(set|change|make)\s*(?:the\s*)?(?:priority|urgency)\s*(?:of\s*)?(?:post)?\s*(\w{8,})\s*(?:to)?\s*(high|medium|low|critical|urgent)/i,
+			/\b(set|change|make)\s*(?:the\s*)?(?:priority|urgency)\s*(?:of\s*)?(?:post)?\s*(\w{8,})?(?:\s*(?:to)?\s*(high|medium|low|critical|urgent)?)?/i,
 		handler: async (msg) => {
 			const match = msg.match(
-				/\b(set|change|make)\s*(?:the\s*)?(?:priority|urgency)\s*(?:of\s*)?(?:post)?\s*(\w{8,})\s*(?:to)?\s*(high|medium|low|critical|urgent)/i,
+				/\b(set|change|make)\s*(?:the\s*)?(?:priority|urgency)\s*(?:of\s*)?(?:post)?\s*(\w{8,})?(?:\s*(?:to)?\s*(high|medium|low|critical|urgent)?)?/i,
 			);
 			const postId = match?.[2];
-			const priority = match?.[3]?.toLowerCase();
 			if (!postId)
 				return {
-					reply: 'Usage: "set priority [post_id] to high"',
+					reply:
+						'Usage: "set priority [post_id]" — I will show the current priority.',
 					actions: [],
 				};
-			if (priority === "critical" || priority === "urgent")
-				return { reply: "Priority must be high, medium, or low.", actions: [] };
 			const { data: post } = await supabase
 				.from("posts")
 				.select("id,title,priority")
@@ -788,15 +786,8 @@ const INTENTS = [
 				.maybeSingle();
 			if (!post) return { reply: `Post \`${postId}\` not found.`, actions: [] };
 			return {
-				reply: `⬆️ **Set Priority**\n\nPost: **${post.title}**\nCurrent: ${post.priority}\nNew: ${priority}\n\nClick Execute to update.`,
-				actions: [
-					{
-						tool: "set_priority",
-						args: { post_id: postId, priority },
-						reason: `Set "${post.title}" priority to ${priority}`,
-						destructive: false,
-					},
-				],
+				reply: `⚡ **Priority is automatic**\n\nPost: **${post.title}**\nCurrent priority: **${post.priority}**\n\nThe platform computes priority from how urgent the content reads (words like *emergency*, *broken*, *harassment* raise it). Manual overrides are disabled so no one can mark their own post critical — the queue stays honest.`,
+				actions: [],
 			};
 		},
 	},
@@ -1157,7 +1148,7 @@ const INTENTS = [
 						: "Good evening";
 			return {
 				reply:
-					`${timeGreet}! 👋 I'm your Voice Box admin assistant.\n\n` +
+					`${timeGreet}! 👋 I'm your Voice Flow admin assistant.\n\n` +
 					`**Quick snapshot:** ${posts || 0} posts from ${users || 0} users\n` +
 					`${recentList ? `**Latest:**\n${recentList}\n\n` : ""}` +
 					`What would you like to do? Try asking me to:\n` +
@@ -1556,7 +1547,7 @@ const INTENTS = [
 			// Platform-specific knowledge
 			const knowledge = {
 				"voice box":
-					"Voice Box is an anonymous feedback platform for schools. Students can post problems, suggestions, and ideas. Admins review, respond, and track resolution. All posts are anonymous — users get a generated anonymous ID.",
+					"Voice Flow is an anonymous feedback platform for schools. Students can post problems, suggestions, and ideas. Admins review, respond, and track resolution. All posts are anonymous — users get a generated anonymous ID.",
 				anonymous:
 					"Users are identified by anonymous IDs (like `anon_xyz123`). Their identity is never revealed. Admins can see their post history and activity, but not their real name or email.",
 				posts:
@@ -2014,16 +2005,23 @@ async function fallbackHandler(message, ctx = {}) {
 				msg,
 			)
 		) {
-			const { data } = await supabase
+			const { data, error: pollsErr } = await supabase
 				.from("polls")
-				.select("id,title,total_votes,archived")
+				.select("id,title,archived")
 				.order("created_at", { ascending: false })
 				.limit(10);
+			if (pollsErr) throw pollsErr;
 			if (data?.length) {
+				const { data: voteRows } = await supabase
+					.from("poll_votes")
+					.select("poll_id")
+					.in("poll_id", data.map((p) => p.id));
+				const counts = {};
+				for (const v of voteRows || []) counts[v.poll_id] = (counts[v.poll_id] || 0) + 1;
 				const list = data
 					.map(
 						(p, i) =>
-							`${i + 1}. **${p.title}** — ${p.total_votes || 0} votes ${p.archived ? "(archived)" : ""}`,
+							`${i + 1}. **${p.title}** — ${counts[p.id] || 0} votes ${p.archived ? "(archived)" : ""}`,
 					)
 					.join("\n");
 				return {
@@ -2193,6 +2191,132 @@ async function fallbackHandler(message, ctx = {}) {
 			`• "help" — for all commands`,
 		actions: [],
 	};
+}
+
+// ─── Built-in SELECT interpreter (no DB migration needed) ──────
+// The native `exec_sql` RPC only exists on deployments that created it
+// manually — on every other deployment execute_sql always failed. This
+// interpreter runs the SELECT shapes the coworker actually asks for
+// through the query builder: allowlisted tables, ANDed comparisons,
+// ORDER BY, LIMIT/OFFSET. Anything else throws an honest error.
+const SQL_TABLES = [
+	"posts",
+	"users_meta",
+	"comments",
+	"reactions",
+	"polls",
+	"activity_logs",
+	"settings",
+	"reports",
+	"agent_conversations",
+];
+const SQL_MAX_LIMIT = 100;
+
+/** Least-privilege gate (spec §6): nothing but a single SELECT statement
+ *  may reach any SQL execution path — neither the native RPC (which would
+ *  run arbitrary SQL) nor the interpreter. Throws honestly otherwise. */
+export function assertSafeSelect(rawSql) {
+	const sql = String(rawSql || "").trim();
+	if (!/^\s*select\b/i.test(sql))
+		throw new Error("Only SELECT queries allowed");
+	if (/;/.test(sql)) throw new Error("Multiple statements are not allowed");
+	if (/--|\/\*/.test(sql)) throw new Error("Comments are not allowed in queries");
+	return sql;
+}
+
+function parseSqlValue(raw) {
+	const t = raw.trim();
+	const q = t.match(/^'(.*)'$/s);
+	if (q) return q[1].replace(/''/g, "'");
+	if (/^(true|false)$/i.test(t)) return t.toLowerCase() === "true";
+	if (/^null$/i.test(t)) return null;
+	if (/^-?\d+(\.\d+)?$/.test(t)) return Number(t);
+	throw new Error(`Bad value ${t} — use 'quoted', numbers, true/false or null`);
+}
+
+export async function runSelectQuery(rawSql, client = supabase) {
+	const sql = assertSafeSelect(rawSql);
+	const m = sql.match(/^\s*select\s+(.+?)\s+from\s+([a-z_][a-z0-9_]*)\s*(.*)$/is);
+	if (!m)
+		throw new Error(
+			"Could not parse query. Use: SELECT <cols> FROM <table> [WHERE a = 'b' AND ...] [ORDER BY col DESC] [LIMIT n]",
+		);
+	const [, colsRaw, tableRaw, restRaw] = m;
+	const table = tableRaw.toLowerCase();
+	if (!SQL_TABLES.includes(table))
+		throw new Error(
+			`Unknown table "${tableRaw}". Available: ${SQL_TABLES.join(", ")}. Try list_tables.`,
+		);
+	if (/[()]/.test(colsRaw))
+		throw new Error("Functions and subqueries are not supported");
+	const cols =
+		colsRaw.trim() === "*"
+			? "*"
+			: colsRaw.split(",").map((s) => s.trim()).filter(Boolean);
+	if (cols !== "*") {
+		for (const c of cols)
+			if (!/^[a-z_][a-z0-9_]*$/i.test(c))
+				throw new Error(`Bad column "${c}"`);
+	}
+
+	let rest = (restRaw || "").trim();
+	let wherePart = "";
+	let orderPart = "";
+	let limitPart = "";
+	const orderIdx = rest.search(/\border\s+by\b/i);
+	const limitIdx = rest.search(/\blimit\b/i);
+	let whereEnd = rest.length;
+	if (orderIdx >= 0) whereEnd = Math.min(whereEnd, orderIdx);
+	if (limitIdx >= 0) whereEnd = Math.min(whereEnd, limitIdx);
+	wherePart = rest.slice(0, whereEnd).trim();
+	if (orderIdx >= 0)
+		orderPart = rest.slice(orderIdx, limitIdx >= 0 ? limitIdx : rest.length).trim();
+	if (limitIdx >= 0) limitPart = rest.slice(limitIdx).trim();
+
+	let q = client.from(table).select(cols === "*" ? "*" : cols.join(","));
+
+	if (wherePart) {
+		if (!/^\s*where\b/i.test(wherePart))
+			throw new Error(`Could not parse "${wherePart}". WHERE, ORDER BY and LIMIT only.`);
+		const conds = wherePart.replace(/^\s*where\b/i, "").split(/\band\b/i);
+		for (const cond of conds) {
+			const dequoted = cond.replace(/'([^']|'')*'/g, "");
+			if (/\bor\b/i.test(dequoted))
+				throw new Error(`Bad condition "${cond.trim()}". ANDed comparisons only (no OR).`);
+			const cm = cond.trim().match(/^([a-z_][a-z0-9_]*)\s*(=|!=|<>|>=|<=|>|<|like|ilike)\s*(.+)$/i);
+			if (!cm) throw new Error(`Bad condition "${cond.trim()}". ANDed comparisons only (no OR).`);
+			const [, col, opRaw, valRaw] = cm;
+			const op = opRaw.toLowerCase();
+			const val = parseSqlValue(valRaw);
+			if (op === "=") q = val === null ? q.is(col, null) : q.eq(col, val);
+			else if (op === "!=" || op === "<>") q = q.neq(col, val);
+			else if (op === ">") q = q.gt(col, val);
+			else if (op === ">=") q = q.gte(col, val);
+			else if (op === "<") q = q.lt(col, val);
+			else if (op === "<=") q = q.lte(col, val);
+			else if (op === "like") q = q.like(col, String(val));
+			else if (op === "ilike") q = q.ilike(col, String(val));
+		}
+	}
+	if (orderPart) {
+		const om = orderPart.match(/^\s*order\s+by\s+([a-z_][a-z0-9_]*)\s*(asc|desc)?\s*$/i);
+		if (!om) throw new Error(`Bad ORDER BY "${orderPart}"`);
+		q = q.order(om[1], { ascending: (om[2] || "asc").toLowerCase() === "asc" });
+	}
+	let limit = 50;
+	if (limitPart) {
+		const lm = limitPart.match(/^\s*limit\s+(\d+)(?:\s+offset\s+(\d+))?\s*$/i);
+		if (!lm) throw new Error(`Bad LIMIT "${limitPart}"`);
+		limit = Math.min(parseInt(lm[1], 10) || 50, SQL_MAX_LIMIT);
+		const off = lm[2] ? parseInt(lm[2], 10) : 0;
+		q = off > 0 ? q.range(off, off + limit - 1) : q.limit(limit);
+	} else {
+		q = q.limit(limit);
+	}
+	// Builders are thenable; `await` also unwraps test doubles.
+	const res = await q;
+	if (res && res.error) throw new Error(`SQL error: ${res.error.message || res.error}`);
+	return (res && res.data !== undefined ? res.data : res) || [];
 }
 
 // ─── Execute a single tool call against the database ──────────────
@@ -2758,7 +2882,7 @@ async function executeTool(toolName, args) {
         <section class="slide slide-closing" data-slide="${4 + problemSlides.length}">
           <div class="slide-content">
             <h1>Thank You</h1>
-            <p class="slide-subtitle">Generated by Voice Box Admin Agent · ${dateStr}</p>
+            <p class="slide-subtitle">Generated by Voice Flow Admin Agent · ${dateStr}</p>
             <p style="color:#888;margin-top:16px">${total} issues analyzed · ${resolved} resolved · ${openIssues} remaining</p>
           </div>
         </section>`;
@@ -2856,26 +2980,24 @@ showSlide(1);
 		case "execute_sql": {
 			const query = (args.query || "").trim();
 			if (!query) throw new Error("SQL query required");
-			// Safety: only allow SELECT
-			if (!/^\s*select\b/i.test(query))
-				throw new Error("Only SELECT queries allowed via execute_sql");
-			const { data, error } = await supabase
-				.rpc("exec_sql", { sql: query })
-				.maybeSingle();
-			if (error) {
-				// Fallback: try direct query via settings table approach
-				const { data: fallback, error: fbErr } = await supabase
-					.from("posts")
-					.select("*")
-					.limit(1);
-				if (fbErr) throw new Error(`SQL error: ${error.message}`);
-				// If rpc doesn't exist, use a workaround: query each table
-				return {
-					error: `SQL rpc not available. Use specific tools or tell me what data you need.`,
-					hint: "Try get_posts, get_analytics, or list_tables instead.",
-				};
+			// Least-privilege gate first: only a single SELECT may proceed,
+			// on ANY path (native RPC included).
+			assertSafeSelect(query);
+			// Prefer the native RPC when the deployment provides it; most
+			// deployments never created exec_sql, so fall back to the
+			// built-in interpreter instead of failing the tool.
+			try {
+				const { data, error } = await supabase
+					.rpc("exec_sql", { sql: query })
+					.maybeSingle();
+				if (!error) return data;
+				if (!/exist|found|PGRST|404|schema/i.test(String(error.message || "")))
+					throw new Error(`SQL error: ${error.message}`);
+			} catch (e) {
+				if (String(e?.message || "").startsWith("SQL error")) throw e;
+				// rpc missing/crashed → interpreter below
 			}
-			return data;
+			return await runSelectQuery(query);
 		}
 		case "list_tables": {
 			// Get table info by querying each known table's count
@@ -2955,6 +3077,22 @@ showSlide(1);
 		}
 		// ── Tool Management ─────────────────────────────────────────
 		case "create_tool": {
+			const name = String(args.name || "").trim();
+			if (!/^[a-z][a-z0-9_]{2,40}$/.test(name))
+				throw new Error(
+					"Tool name must be 3-40 chars: lowercase letters, digits, underscores.",
+				);
+			// Built-in tools win the dispatch switch, so a colliding custom
+			// name would silently never fire — reject it loudly instead.
+			// TOOL_DEFS is declared below; safe here (runs after module load).
+			if (
+				typeof TOOL_DEFS !== "undefined" &&
+				TOOL_DEFS.some((t) => t.name === name)
+			)
+				throw new Error(`"${name}" is a built-in tool and cannot be overridden.`);
+			// Least-privilege: custom tools are SELECT-only at REGISTRATION
+			// time, so a stored template can never become a write path later.
+			if (args.sql_template) assertSafeSelect(args.sql_template);
 			const tool = {
 				name: args.name,
 				description: args.description,
@@ -3030,19 +3168,46 @@ showSlide(1);
 			const customTools = customData?.value?.tools || [];
 			const match = customTools.find((t) => t.name === toolName);
 			if (match && match.sql_template) {
-				// Execute the custom tool's SQL template with arg substitution
+				// Execute the custom tool's SQL template with arg substitution.
+				// Values are single-quote escaped (SQL '' convention) so an
+				// argument can never break out of its literal — stacked
+				// statements are still rejected by the gate below.
 				let sql = match.sql_template;
 				for (const [k, v] of Object.entries(args)) {
-					sql = sql.replace(new RegExp(`\\$\\{${k}\\}`, "g"), String(v));
+					const safe = String(v).replace(/'/g, "''");
+					sql = sql.split(`\${${k}}`).join(safe);
 				}
-				const { data: result, error } = await supabase
-					.rpc("exec_sql", { sql })
-					.maybeSingle();
-				if (error)
+				// Gate the SUBSTITUTED text: arg values cannot smuggle stacked
+				// statements or comments past the registration-time check.
+				try {
+					assertSafeSelect(sql);
+				} catch (ie) {
 					throw new Error(
-						`Custom tool "${toolName}" SQL error: ${error.message}`,
+						`Custom tool "${toolName}" SQL error: ${ie.message}`,
 					);
-				return result || { message: `Custom tool "${toolName}" executed` };
+				}
+				// Native RPC first; built-in SELECT interpreter when the
+				// deployment never created exec_sql (same path as execute_sql).
+				try {
+					const { data: result, error } = await supabase
+						.rpc("exec_sql", { sql })
+						.maybeSingle();
+					if (!error)
+						return result || { message: `Custom tool "${toolName}" executed` };
+					if (!/exist|found|PGRST|404|schema/i.test(String(error.message || "")))
+						throw new Error(
+							`Custom tool "${toolName}" SQL error: ${error.message}`,
+						);
+				} catch (e) {
+					if (/Custom tool.*SQL error/.test(String(e?.message || ""))) throw e;
+				}
+				try {
+					return await runSelectQuery(sql);
+				} catch (ie) {
+					throw new Error(
+						`Custom tool "${toolName}" SQL error: ${ie.message}`,
+					);
+				}
 			}
 			throw new Error(`Unknown tool: ${toolName}`);
 		}
@@ -3071,13 +3236,23 @@ export default async function handler(req, res) {
 			if (!message) return res.status(400).json({ error: "Message required" });
 			const sid = clean(session_id, 60) || `s_${Date.now()}`;
 
-			// Load conversation history
-			const { data: history } = await supabase
-				.from("agent_conversations")
-				.select("role,content")
-				.eq("session_id", sid)
-				.order("created_at", { ascending: true })
-				.limit(40);
+			// Load conversation history — fail-soft: without a database the
+			// chat still answers from live intents/LLM, history is empty.
+			let history = [];
+			try {
+				const { data } = await supabase
+					.from("agent_conversations")
+					.select("role,content")
+					.eq("session_id", sid)
+					.order("created_at", { ascending: true })
+					.limit(40);
+				history = data || [];
+			} catch (histErr) {
+				console.warn(
+					"Agent history unavailable, continuing without it:",
+					histErr.message,
+				);
+			}
 
 			// Gather live platform context — wrapped in try/catch so DB errors don't crash the handler
 			let postCount = 0,
@@ -3209,6 +3384,72 @@ Session: ${sid}`;
 				actions = parsed.actions || [];
 				providerUsed = `${llmResult.provider}:${llmResult.model}`;
 				matched = true;
+
+				// ── REAL WORK: run read-only tools NOW, then ground the reply ──
+				// Without this loop the model only *proposes* tools and its reply
+				// is speculation (the "dumped responses" complaint). Read-only
+				// tools run in this turn (capped at 4), their REAL results go
+				// back to the model for one grounding pass, and only the grounded
+				// reply + remaining approval cards are returned.
+				const auto = actions
+					.filter((a) => a && AUTO_EXEC_TOOLS.has(a.tool))
+					.slice(0, 4);
+				if (auto.length) {
+					const keyOf = (a) => `${a.tool}:${JSON.stringify(a.args || {})}`;
+					const autoKeys = new Set(auto.map(keyOf));
+					const toolResults = [];
+					for (const a of auto) {
+						try {
+							const data = await executeTool(a.tool, a.args || {});
+							toolResults.push({ tool: a.tool, ok: true, data });
+							await auditLog(
+								"admin",
+								`agent_auto_${a.tool}`,
+								`Auto-executed ${a.tool}(${JSON.stringify(a.args || {}).slice(0, 120)}) → OK`,
+							);
+						} catch (e) {
+							toolResults.push({
+								tool: a.tool,
+								ok: false,
+								error: friendlyError(e),
+							});
+							await auditLog(
+								"admin",
+								`agent_auto_${a.tool}_FAIL`,
+								`Auto-executed ${a.tool} failed: ${e.message}`,
+							);
+						}
+					}
+					// Executed tools are no longer proposal cards.
+					actions = actions.filter((a) => !autoKeys.has(keyOf(a)));
+					// Grounding pass: real results → final reply.
+					try {
+						const grounded = await callLLMChain(
+							systemWithTools +
+								`\n\nTOOL RESULTS (executed just now on the live platform — treat as ground truth, never re-run these):\n` +
+								JSON.stringify(toolResults).slice(0, 8000),
+							`Real tool results for "${message.slice(0, 300)}":\n` +
+								JSON.stringify(toolResults, null, 2).slice(0, 8000) +
+								`\n\nCompose your final response using ONLY this data. Respond with {"reply": "...", "actions": [...]} — actions only for NEW steps not already run ("actions": [] if none).`,
+							historyMessages,
+						);
+						if (grounded?.text) {
+							const g = parseAgentResponse(grounded.text);
+							if (g.reply) reply = g.reply;
+							const seen = new Set(actions.map(keyOf));
+							actions = [
+								...actions,
+								...g.actions.filter(
+									(a) =>
+										!seen.has(keyOf(a)) &&
+										!autoKeys.has(keyOf(a)),
+								),
+							].slice(0, 8);
+						}
+					} catch (groundErr) {
+						console.error("Grounding pass failed:", groundErr.message);
+					}
+				}
 			}
 
 			// ── INTENT FALLBACK: Only when LLM fails or returns empty ──
@@ -3253,23 +3494,33 @@ Session: ${sid}`;
 					recentActivity,
 				});
 				reply = fb.reply;
-				actions = fb.actions || [];
+				// Never discard approval cards the model already proposed.
+				if (!actions.length) actions = fb.actions || [];
 				providerUsed = "builtin-fallback";
 			}
 
-			// Save user message
-			await supabase.from("agent_conversations").insert({
-				session_id: sid,
-				role: "user",
-				content: message,
-			});
-			// Save assistant response
-			await supabase.from("agent_conversations").insert({
-				session_id: sid,
-				role: "assistant",
-				content: reply,
-				actions: actions.length > 0 ? actions : undefined,
-			});
+			// Persist conversation — best-effort: a missing database must
+			// never turn a good reply into a 500.
+			try {
+				// Save user message
+				await supabase.from("agent_conversations").insert({
+					session_id: sid,
+					role: "user",
+					content: message,
+				});
+				// Save assistant response
+				await supabase.from("agent_conversations").insert({
+					session_id: sid,
+					role: "assistant",
+					content: reply,
+					actions: actions.length > 0 ? actions : undefined,
+				});
+			} catch (persistErr) {
+				console.warn(
+					"Agent conversation persist skipped:",
+					persistErr.message,
+				);
+			}
 
 			await auditLog(
 				"admin",
@@ -3311,7 +3562,13 @@ Session: ${sid}`;
 						`Executed ${act.tool}(${JSON.stringify(act.args).slice(0, 120)}) → OK`,
 					);
 				} catch (e) {
-					results.push({ id: act.id, success: false, error: e.message });
+					// Raw SQL/provider text stays in the audit log (below) —
+					// the UI gets a human-readable failure only.
+					results.push({
+						id: act.id,
+						success: false,
+						error: friendlyError(e),
+					});
 					await auditLog(
 						"admin",
 						`agent_execute_${act.tool}_FAIL`,
@@ -3320,16 +3577,23 @@ Session: ${sid}`;
 				}
 			}
 
-			// Save execution result in conversation
+			// Save execution result in conversation — best-effort.
 			if (session_id) {
 				const summary = results
 					.map((r) => `${r.id}: ${r.success ? "OK" : r.error}`)
 					.join("; ");
-				await supabase.from("agent_conversations").insert({
-					session_id: clean(session_id, 60),
-					role: "system",
-					content: `Actions executed: ${summary}`,
-				});
+				try {
+					await supabase.from("agent_conversations").insert({
+						session_id: clean(session_id, 60),
+						role: "system",
+						content: `Actions executed: ${summary}`,
+					});
+				} catch (persistErr) {
+					console.warn(
+						"Agent execution persist skipped:",
+						persistErr.message,
+					);
+				}
 			}
 
 			return res.status(200).json({ results });
@@ -3351,45 +3615,62 @@ Session: ${sid}`;
 				const summary = actionList
 					.map((a) => `${a.id}: ${a.tool} rejected`)
 					.join("; ");
-				await supabase.from("agent_conversations").insert({
-					session_id: clean(session_id, 60),
-					role: "system",
-					content: `Actions rejected: ${summary}`,
-				});
+				try {
+					await supabase.from("agent_conversations").insert({
+						session_id: clean(session_id, 60),
+						role: "system",
+						content: `Actions rejected: ${summary}`,
+					});
+				} catch (persistErr) {
+					console.warn(
+						"Agent rejection persist skipped:",
+						persistErr.message,
+					);
+				}
 			}
 
 			return res.status(200).json({ results });
 		}
 
-		// history — get conversation history
+		// history — get conversation history (empty when DB unconfigured)
 		if (action === "history") {
 			const sid = clean(b.session_id || req.query.session_id || "", 60);
 			if (!sid) return res.status(400).json({ error: "session_id required" });
-			const { data } = await supabase
-				.from("agent_conversations")
-				.select("*")
-				.eq("session_id", sid)
-				.order("created_at", { ascending: true })
-				.limit(100);
-			return res.status(200).json(data || []);
+			try {
+				const { data } = await supabase
+					.from("agent_conversations")
+					.select("*")
+					.eq("session_id", sid)
+					.order("created_at", { ascending: true })
+					.limit(100);
+				return res.status(200).json(data || []);
+			} catch (histErr) {
+				console.warn("Agent history read skipped:", histErr.message);
+				return res.status(200).json([]);
+			}
 		}
 
-		// sessions — list recent sessions
+		// sessions — list recent sessions (empty when DB unconfigured)
 		if (action === "sessions") {
-			const { data: rows } = await supabase
-				.from("agent_conversations")
-				.select("session_id, created_at")
-				.order("created_at", { ascending: false })
-				.limit(200);
-			const sessions = {};
-			(rows || []).forEach((r) => {
-				if (!sessions[r.session_id])
-					sessions[r.session_id] = {
-						session_id: r.session_id,
-						last_message: r.created_at,
-					};
-			});
-			return res.status(200).json(Object.values(sessions).slice(0, 20));
+			try {
+				const { data: rows } = await supabase
+					.from("agent_conversations")
+					.select("session_id, created_at")
+					.order("created_at", { ascending: false })
+					.limit(200);
+				const sessions = {};
+				(rows || []).forEach((r) => {
+					if (!sessions[r.session_id])
+						sessions[r.session_id] = {
+							session_id: r.session_id,
+							last_message: r.created_at,
+						};
+				});
+				return res.status(200).json(Object.values(sessions).slice(0, 20));
+			} catch (sessErr) {
+				console.warn("Agent sessions read skipped:", sessErr.message);
+				return res.status(200).json([]);
+			}
 		}
 
 		return res.status(400).json({ error: "Unknown action" });
@@ -3398,7 +3679,7 @@ Session: ${sid}`;
 	}
 }
 
-const SYSTEM_PROMPT = `You are the Voice Box Admin Agent — a fully autonomous, universal tool intelligence system. You are NOT a chatbot. You are an operations engine that thinks, decides, and executes.
+const SYSTEM_PROMPT = `You are the Voice Flow Admin Agent — a fully autonomous, universal tool intelligence system. You are NOT a chatbot. You are an operations engine that thinks, decides, and executes.
 
 ## YOUR IDENTITY
 You are the most capable administrator in the room. You have FULL ACCESS to every system, database, API, and tool connected to this platform. You never ask the user to do something you can do yourself. You never say "I can't" — you find a way or you BUILD a way.
@@ -3413,7 +3694,7 @@ You are the most capable administrator in the room. You have FULL ACCESS to ever
 
 4. **Create tools that don't exist.** If no existing tool handles the request, you use \`execute_sql\` to query the database directly, or \`generate_html\` to build custom outputs, or \`create_tool\` to register a new reusable capability. You are self-extending.
 
-5. **Execute, don't just suggest.** For non-destructive actions (queries, reports, analytics, comments), execute immediately and show results. For destructive actions (delete, ban, hide), propose with approval.
+5. **Execute, don't just suggest.** Read-only tools (queries, reports, analytics, documents) run automatically this turn and their REAL results come back to you in a TOOL RESULTS message — ground your final answer in them and never fabricate numbers. Destructive actions (delete, ban, hide, edit) are proposed as approval cards.
 
 6. **Be specific and data-driven.** Never say "things look good" — say "32 posts, 85% resolved, 2 safety posts pending". Use real numbers from real queries.
 
@@ -3762,7 +4043,7 @@ const TOOL_DEFS = [
 	{
 		name: "execute_sql",
 		description:
-			"Execute arbitrary SQL against the database for custom analysis. Use SELECT only. Returns rows.",
+			"Execute a read-only SELECT against the database and get rows back. Shape: SELECT <cols|*> FROM <table> [WHERE a = 'b' AND n > 1] [ORDER BY col DESC] [LIMIT n]. Tables: posts, users_meta, comments, reactions, polls, activity_logs, settings, reports, agent_conversations. ANDed comparisons only (=, !=, >, >=, <, <=, LIKE, ILIKE).",
 		parameters: {
 			type: "object",
 			properties: {
@@ -3814,19 +4095,113 @@ const TOOL_DEFS = [
 	},
 ];
 
-function parseAgentResponse(text) {
-	const jsonMatch =
-		text.match(/```json\s*([\s\S]*?)```/) ||
-		text.match(/\{[\s\S]*"actions"[\s\S]*\}/);
-	if (jsonMatch) {
+// Read-only tools execute inside the chat turn so the model's reply is
+// grounded in real query results. Everything else — writes, destructive ops,
+// and custom SQL templates — stays an approval card (permission engine).
+const AUTO_EXEC_TOOLS = new Set([
+	"get_posts",
+	"get_user_posts",
+	"get_analytics",
+	"get_activity_logs",
+	"search_users",
+	"get_reports",
+	"get_polls",
+	"get_settings",
+	"list_tables",
+	"describe_table",
+	"list_tools",
+	"execute_sql",
+	"generate_html",
+]);
+
+/**
+ * Human-readable error for chat replies and execute results.
+ * Raw SQL/provider text stays in server logs and auditLog — it never
+ * reaches the Coworker UI (the "SQL errors / every type of errors" complaint).
+ */
+export function friendlyError(e) {
+	const msg = e instanceof Error ? e.message : String(e || "unknown error");
+	// Custom-tool failures wrap the guard text — classify the core reason.
+	const core = msg.replace(/^Custom tool "[^"]*" SQL error:\s*/i, "");
+	// Honest guard/validation messages authored in-app pass through WHOLE:
+	// they explain why the tool refused without leaking any internals.
+	if (
+		/^(Only SELECT|Multiple statements|Comments are not allowed|Unknown table|SQL query required|Could not parse query|Bad value|Table .* not found|Tool name\b)/i.test(
+			core,
+		) ||
+		/is a built-in tool/i.test(core)
+	)
+		return msg;
+	// Raw SQL/provider internals never reach the UI.
+	if (
+		/^SQL error:/i.test(msg) ||
+		/PGRST|syntax error|relation|column|schema|does not exist|permission denied/i.test(
+			msg,
+		)
+	)
+		return "The database could not answer that query. Try rephrasing, or ask for a built-in report (analytics, reports, recent posts).";
+	if (/rate.?limit|429|too many/i.test(msg))
+		return "The database could not answer that query. Try rephrasing, or ask for a built-in report (analytics, reports, recent posts).";
+	if (/rate.?limit|429|too many/i.test(msg))
+		return "Too many requests right now — wait a moment and try again.";
+	if (/fetch|network|timeout|timed out|ECONNREFUSED|ENOTFOUND|unavailable|API key/i.test(msg))
+		return "A service is temporarily unavailable. Please try again in a moment.";
+	return "That action could not be completed. Please try again.";
+}
+
+/**
+ * Parse the model's response into { reply, actions }.
+ * Exported for tests. NEVER returns raw JSON as the reply — a dump is worse
+ * than no answer: when structure can't be recovered, reply is "" and the
+ * handler's intent/fallback chain produces a real answer instead.
+ */
+export function parseAgentResponse(text) {
+	if (typeof text !== "string" || !text.trim()) return { reply: "", actions: [] };
+
+	const candidates = [];
+	const fence = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+	if (fence) candidates.push(fence[1]);
+	const firstBrace = text.indexOf("{");
+	const lastBrace = text.lastIndexOf("}");
+	if (firstBrace !== -1 && lastBrace > firstBrace)
+		candidates.push(text.slice(firstBrace, lastBrace + 1));
+	candidates.push(text);
+
+	const cleanActions = (list) =>
+		Array.isArray(list)
+			? list.filter((a) => a && typeof a.tool === "string").slice(0, 8)
+			: [];
+
+	for (const raw of candidates) {
 		try {
-			const json = JSON.parse(jsonMatch[1] || jsonMatch[0]);
-			if (json.actions && Array.isArray(json.actions)) {
-				return { reply: json.reply || text, actions: json.actions };
+			const json = JSON.parse(raw.trim());
+			if (json && typeof json === "object" && !Array.isArray(json)) {
+				if (typeof json.reply === "string" || Array.isArray(json.actions)) {
+					const reply =
+						typeof json.reply === "string" ? json.reply.trim() : "";
+					// Structure found but no reply text — keep any prose that
+					// surrounded the JSON instead of dumping the JSON itself.
+					if (reply) return { reply, actions: cleanActions(json.actions) };
+					const prose = text
+						.replace(/```[a-z]*\s*[\s\S]*?```/gi, "")
+						.replace(/\{[\s\S]*\}/, "")
+						.trim();
+					return { reply: prose, actions: cleanActions(json.actions) };
+				}
 			}
 		} catch {
-			/* fall through */
+			/* try next candidate */
 		}
 	}
-	return { reply: text, actions: [] };
+
+	// No recoverable structure: strip fenced blocks; if what remains still
+	// looks like a JSON dump, return "" so the fallback chain answers.
+	let reply = text.replace(/```[a-z]*\s*[\s\S]*?```/gi, "").trim();
+	if (!reply) return { reply: "", actions: [] };
+	if (
+		(reply.startsWith("{") || reply.startsWith("[")) &&
+		/"[a-z_]+"|'[a-z_]+'/i.test(reply)
+	)
+		return { reply: "", actions: [] };
+	return { reply, actions: [] };
 }

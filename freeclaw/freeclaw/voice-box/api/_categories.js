@@ -78,7 +78,7 @@ export default async function handler(req, res) {
 	try {
 		if (req.method === "GET") {
 			const { categories, source } = await getStored();
-			res.setHeader("Cache-Control", "max-age=60, s-maxage=60");
+			res.setHeader("Cache-Control", "public, max-age=60, s-maxage=60, stale-while-revalidate=30");
 			return res.status(200).json({ categories, source });
 		}
 

@@ -125,7 +125,7 @@ async function sendMessage(req, res) {
 	const context = (recentMsgs || []).reverse();
 
 	// Build real system prompt from agent definition
-	const systemPrompt = `You are ${agentName}, the ${agentRole} in the Voice Box platform.
+	const systemPrompt = `You are ${agentName}, the ${agentRole} in the Voice Flow platform.
 Division: ${divisionInfo.name || agentDivision} ${divisionInfo.icon || ""}
 Description: ${agentDesc}
 Capabilities: ${agentCaps.join(", ") || "general assistance"}

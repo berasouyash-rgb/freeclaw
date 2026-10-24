@@ -1,0 +1,2442 @@
+{
+  "generatedFrom": "C:\\Users\\lenovo\\freeclaw\\freeclaw\\freeclaw\\voice-box",
+  "routes": [
+    {
+      "path": "/admin/*",
+      "component": "ErrorBoundary",
+      "file": "src/App.tsx"
+    },
+    {
+      "path": "*",
+      "component": "NotFound",
+      "file": "src/App.tsx"
+    },
+    {
+      "path": "/about",
+      "component": "About",
+      "file": "src/App.tsx"
+    },
+    {
+      "path": "/contact",
+      "component": "Contact",
+      "file": "src/App.tsx"
+    },
+    {
+      "path": "/terms",
+      "component": "Terms",
+      "file": "src/App.tsx"
+    },
+    {
+      "path": "/status",
+      "component": "StatusPage",
+      "file": "src/App.tsx"
+    },
+    {
+      "path": "/changelog",
+      "component": "Changelog",
+      "file": "src/App.tsx"
+    },
+    {
+      "path": "/accessibility",
+      "component": "Accessibility",
+      "file": "src/App.tsx"
+    },
+    {
+      "path": "/",
+      "component": "Home",
+      "file": "src/App.tsx"
+    },
+    {
+      "path": "/submit",
+      "component": "Submit",
+      "file": "src/App.tsx"
+    },
+    {
+      "path": "/post/:id",
+      "component": "PostDetail",
+      "file": "src/App.tsx"
+    },
+    {
+      "path": "/polls",
+      "component": "Polls",
+      "file": "src/App.tsx"
+    },
+    {
+      "path": "/suggestions",
+      "component": "Suggestions",
+      "file": "src/App.tsx"
+    },
+    {
+      "path": "/leaderboard",
+      "component": "Leaderboard",
+      "file": "src/App.tsx"
+    },
+    {
+      "path": "/communities",
+      "component": "Communities",
+      "file": "src/App.tsx"
+    },
+    {
+      "path": "/communities/:slug",
+      "component": "CommunityDetail",
+      "file": "src/App.tsx"
+    },
+    {
+      "path": "/board",
+      "component": "SolvingBoard",
+      "file": "src/App.tsx"
+    },
+    {
+      "path": "/activity",
+      "component": "MyActivity",
+      "file": "src/App.tsx"
+    },
+    {
+      "path": "/saved",
+      "component": "Saved",
+      "file": "src/App.tsx"
+    },
+    {
+      "path": "/search",
+      "component": "Search",
+      "file": "src/App.tsx"
+    },
+    {
+      "path": "/insights",
+      "component": "Insights",
+      "file": "src/App.tsx"
+    },
+    {
+      "path": "/privacy",
+      "component": "Privacy",
+      "file": "src/App.tsx"
+    },
+    {
+      "path": "/faq",
+      "component": "Faq",
+      "file": "src/App.tsx"
+    },
+    {
+      "path": "/chat",
+      "component": "UserChat",
+      "file": "src/App.tsx"
+    },
+    {
+      "path": "/settings",
+      "component": "Settings",
+      "file": "src/App.tsx"
+    },
+    {
+      "path": "/notifications",
+      "component": "Notifications",
+      "file": "src/App.tsx"
+    }
+  ],
+  "apiCount": 165,
+  "apis": [
+    {
+      "endpoint": "/api/api/agent-cron.js",
+      "file": "api/agent-cron.js",
+      "methods": [
+        "OPTIONS"
+      ],
+      "actions": [
+        "patrol"
+      ],
+      "lines": 478
+    },
+    {
+      "endpoint": "/api/api/agents/_runner.js",
+      "file": "api/agents/_runner.js",
+      "methods": [],
+      "actions": [],
+      "lines": 488
+    },
+    {
+      "endpoint": "/api/api/index.js",
+      "file": "api/index.js",
+      "methods": [
+        "GET",
+        "OPTIONS",
+        "HEAD"
+      ],
+      "actions": [],
+      "lines": 464
+    },
+    {
+      "endpoint": "/api/api/learning.js",
+      "file": "api/learning.js",
+      "methods": [
+        "OPTIONS",
+        "GET"
+      ],
+      "actions": [
+        "stats",
+        "records",
+        "patterns",
+        "insights",
+        "knowledge",
+        "feedback",
+        "config",
+        "reflect",
+        "record_client_interaction",
+        "decay"
+      ],
+      "lines": 257
+    },
+    {
+      "endpoint": "/api/api/v3/_audit.js",
+      "file": "api/v3/_audit.js",
+      "methods": [
+        "OPTIONS",
+        "GET",
+        "POST"
+      ],
+      "actions": [
+        "list",
+        "stats",
+        "cleanup"
+      ],
+      "lines": 83
+    },
+    {
+      "endpoint": "/api/api/v3/_memory.js",
+      "file": "api/v3/_memory.js",
+      "methods": [
+        "OPTIONS",
+        "GET"
+      ],
+      "actions": [
+        "store",
+        "retrieve",
+        "search",
+        "context",
+        "consolidate",
+        "clear",
+        "update",
+        "delete"
+      ],
+      "lines": 183
+    },
+    {
+      "endpoint": "/api/api/v3/_monitoring.js",
+      "file": "api/v3/_monitoring.js",
+      "methods": [
+        "OPTIONS"
+      ],
+      "actions": [],
+      "lines": 384
+    },
+    {
+      "endpoint": "/api/api/v3/_orchestrate.js",
+      "file": "api/v3/_orchestrate.js",
+      "methods": [
+        "OPTIONS",
+        "POST",
+        "GET"
+      ],
+      "actions": [
+        "execute",
+        "orchestrate",
+        "route"
+      ],
+      "lines": 115
+    },
+    {
+      "endpoint": "/api/api/v3/_rag.js",
+      "file": "api/v3/_rag.js",
+      "methods": [
+        "OPTIONS",
+        "GET"
+      ],
+      "actions": [
+        "search",
+        "retrieve"
+      ],
+      "lines": 82
+    },
+    {
+      "endpoint": "/api/api/v3/_security.js",
+      "file": "api/v3/_security.js",
+      "methods": [
+        "OPTIONS"
+      ],
+      "actions": [],
+      "lines": 124
+    },
+    {
+      "endpoint": "/api/api/v3/_stream.js",
+      "file": "api/v3/_stream.js",
+      "methods": [
+        "OPTIONS"
+      ],
+      "actions": [],
+      "lines": 390
+    },
+    {
+      "endpoint": "/api/api/v3/_tools.js",
+      "file": "api/v3/_tools.js",
+      "methods": [
+        "OPTIONS",
+        "GET"
+      ],
+      "actions": [
+        "list",
+        "get",
+        "validate",
+        "execute",
+        "batch"
+      ],
+      "lines": 152
+    },
+    {
+      "endpoint": "/api/api/v3/_verify.js",
+      "file": "api/v3/_verify.js",
+      "methods": [
+        "OPTIONS",
+        "POST",
+        "GET"
+      ],
+      "actions": [],
+      "lines": 75
+    },
+    {
+      "endpoint": "/api/api/_abuse.js",
+      "file": "api/_abuse.js",
+      "methods": [
+        "OPTIONS"
+      ],
+      "actions": [],
+      "lines": 142
+    },
+    {
+      "endpoint": "/api/api/_action-center.js",
+      "file": "api/_action-center.js",
+      "methods": [
+        "OPTIONS",
+        "GET",
+        "POST"
+      ],
+      "actions": [
+        "summary",
+        "create",
+        "acknowledge",
+        "resolve",
+        "dismiss"
+      ],
+      "lines": 279
+    },
+    {
+      "endpoint": "/api/api/_admin-export.js",
+      "file": "api/_admin-export.js",
+      "methods": [
+        "OPTIONS"
+      ],
+      "actions": [],
+      "lines": 296
+    },
+    {
+      "endpoint": "/api/api/_admin.js",
+      "file": "api/_admin.js",
+      "methods": [
+        "OPTIONS",
+        "GET"
+      ],
+      "actions": [
+        "auth_mode",
+        "login",
+        "revoke_all_sessions",
+        "verify",
+        "logout",
+        "get_leaderboard_config",
+        "set_leaderboard_config",
+        "get_agent_actions",
+        "set_agent_actions",
+        "get_spam_config",
+        "set_spam_config",
+        "change_password"
+      ],
+      "lines": 582
+    },
+    {
+      "endpoint": "/api/api/_agent-actions.js",
+      "file": "api/_agent-actions.js",
+      "methods": [],
+      "actions": [],
+      "lines": 327
+    },
+    {
+      "endpoint": "/api/api/_agent-behaviours.data.js",
+      "file": "api/_agent-behaviours.data.js",
+      "methods": [],
+      "actions": [],
+      "lines": 806
+    },
+    {
+      "endpoint": "/api/api/_agent-behaviours.js",
+      "file": "api/_agent-behaviours.js",
+      "methods": [],
+      "actions": [],
+      "lines": 277
+    },
+    {
+      "endpoint": "/api/api/_agent-chat.js",
+      "file": "api/_agent-chat.js",
+      "methods": [
+        "OPTIONS",
+        "GET",
+        "POST"
+      ],
+      "actions": [
+        "hide",
+        "show",
+        "lock",
+        "disable",
+        "pin",
+        "feature",
+        "execute",
+        "reject",
+        "history",
+        "sessions"
+      ],
+      "lines": 4208
+    },
+    {
+      "endpoint": "/api/api/_agent-definitions.js",
+      "file": "api/_agent-definitions.js",
+      "methods": [],
+      "actions": [],
+      "lines": 1323
+    },
+    {
+      "endpoint": "/api/api/_agent-executions.js",
+      "file": "api/_agent-executions.js",
+      "methods": [
+        "OPTIONS",
+        "GET"
+      ],
+      "actions": [
+        "list",
+        "activity",
+        "stats",
+        "scorecard",
+        "roster",
+        "get"
+      ],
+      "lines": 87
+    },
+    {
+      "endpoint": "/api/api/_agent-team.js",
+      "file": "api/_agent-team.js",
+      "methods": [
+        "OPTIONS",
+        "GET",
+        "POST"
+      ],
+      "actions": [
+        "list",
+        "get",
+        "roles",
+        "create",
+        "delete",
+        "spawn",
+        "classify",
+        "check_permission",
+        "divisions",
+        "dashboard",
+        "findings",
+        "patrol"
+      ],
+      "lines": 6068
+    },
+    {
+      "endpoint": "/api/api/_agent-tool-api.js",
+      "file": "api/_agent-tool-api.js",
+      "methods": [
+        "OPTIONS"
+      ],
+      "actions": [],
+      "lines": 47
+    },
+    {
+      "endpoint": "/api/api/_agent-tool-registry.js",
+      "file": "api/_agent-tool-registry.js",
+      "methods": [],
+      "actions": [],
+      "lines": 1755
+    },
+    {
+      "endpoint": "/api/api/_agent-verification.js",
+      "file": "api/_agent-verification.js",
+      "methods": [],
+      "actions": [],
+      "lines": 628
+    },
+    {
+      "endpoint": "/api/api/_agent.js",
+      "file": "api/_agent.js",
+      "methods": [
+        "OPTIONS",
+        "GET",
+        "POST",
+        "PUT"
+      ],
+      "actions": [
+        "generate",
+        "dismiss",
+        "approve"
+      ],
+      "lines": 653
+    },
+    {
+      "endpoint": "/api/api/_agents-cron.js",
+      "file": "api/_agents-cron.js",
+      "methods": [
+        "OPTIONS"
+      ],
+      "actions": [
+        "rotate"
+      ],
+      "lines": 3085
+    },
+    {
+      "endpoint": "/api/api/_ai-chat.js",
+      "file": "api/_ai-chat.js",
+      "methods": [
+        "OPTIONS"
+      ],
+      "actions": [
+        "cancel",
+        "history",
+        "sessions"
+      ],
+      "lines": 1032
+    },
+    {
+      "endpoint": "/api/api/_ai-resolution.js",
+      "file": "api/_ai-resolution.js",
+      "methods": [
+        "OPTIONS",
+        "GET",
+        "POST"
+      ],
+      "actions": [],
+      "lines": 462
+    },
+    {
+      "endpoint": "/api/api/_ai-summary.js",
+      "file": "api/_ai-summary.js",
+      "methods": [
+        "OPTIONS"
+      ],
+      "actions": [],
+      "lines": 134
+    },
+    {
+      "endpoint": "/api/api/_ai.js",
+      "file": "api/_ai.js",
+      "methods": [
+        "OPTIONS"
+      ],
+      "actions": [],
+      "lines": 487
+    },
+    {
+      "endpoint": "/api/api/_announcement.js",
+      "file": "api/_announcement.js",
+      "methods": [
+        "OPTIONS",
+        "GET",
+        "POST"
+      ],
+      "actions": [],
+      "lines": 62
+    },
+    {
+      "endpoint": "/api/api/_anonymity.js",
+      "file": "api/_anonymity.js",
+      "methods": [],
+      "actions": [],
+      "lines": 136
+    },
+    {
+      "endpoint": "/api/api/_appeals.js",
+      "file": "api/_appeals.js",
+      "methods": [
+        "OPTIONS",
+        "POST",
+        "GET",
+        "PUT"
+      ],
+      "actions": [],
+      "lines": 288
+    },
+    {
+      "endpoint": "/api/api/_artifact-filter.js",
+      "file": "api/_artifact-filter.js",
+      "methods": [],
+      "actions": [],
+      "lines": 64
+    },
+    {
+      "endpoint": "/api/api/_assist.js",
+      "file": "api/_assist.js",
+      "methods": [
+        "OPTIONS"
+      ],
+      "actions": [],
+      "lines": 616
+    },
+    {
+      "endpoint": "/api/api/_audit-trail.js",
+      "file": "api/_audit-trail.js",
+      "methods": [
+        "OPTIONS"
+      ],
+      "actions": [
+        "stats"
+      ],
+      "lines": 88
+    },
+    {
+      "endpoint": "/api/api/_audit.js",
+      "file": "api/_audit.js",
+      "methods": [],
+      "actions": [],
+      "lines": 234
+    },
+    {
+      "endpoint": "/api/api/_auth.js",
+      "file": "api/_auth.js",
+      "methods": [],
+      "actions": [],
+      "lines": 514
+    },
+    {
+      "endpoint": "/api/api/_automation-registry.js",
+      "file": "api/_automation-registry.js",
+      "methods": [],
+      "actions": [],
+      "lines": 474
+    },
+    {
+      "endpoint": "/api/api/_badges.js",
+      "file": "api/_badges.js",
+      "methods": [
+        "OPTIONS"
+      ],
+      "actions": [],
+      "lines": 137
+    },
+    {
+      "endpoint": "/api/api/_briefing.js",
+      "file": "api/_briefing.js",
+      "methods": [
+        "OPTIONS"
+      ],
+      "actions": [],
+      "lines": 178
+    },
+    {
+      "endpoint": "/api/api/_bulk-operations.js",
+      "file": "api/_bulk-operations.js",
+      "methods": [
+        "OPTIONS"
+      ],
+      "actions": [],
+      "lines": 256
+    },
+    {
+      "endpoint": "/api/api/_cache.js",
+      "file": "api/_cache.js",
+      "methods": [],
+      "actions": [],
+      "lines": 292
+    },
+    {
+      "endpoint": "/api/api/_categories.js",
+      "file": "api/_categories.js",
+      "methods": [
+        "OPTIONS",
+        "GET",
+        "PUT"
+      ],
+      "actions": [],
+      "lines": 108
+    },
+    {
+      "endpoint": "/api/api/_chat.js",
+      "file": "api/_chat.js",
+      "methods": [
+        "OPTIONS",
+        "GET",
+        "POST",
+        "PUT",
+        "DELETE"
+      ],
+      "actions": [
+        "mark_read",
+        "set_status"
+      ],
+      "lines": 252
+    },
+    {
+      "endpoint": "/api/api/_cleanup.js",
+      "file": "api/_cleanup.js",
+      "methods": [
+        "OPTIONS"
+      ],
+      "actions": [],
+      "lines": 469
+    },
+    {
+      "endpoint": "/api/api/_command-center.js",
+      "file": "api/_command-center.js",
+      "methods": [
+        "OPTIONS",
+        "GET"
+      ],
+      "actions": [],
+      "lines": 603
+    },
+    {
+      "endpoint": "/api/api/_comment-watch.js",
+      "file": "api/_comment-watch.js",
+      "methods": [],
+      "actions": [],
+      "lines": 283
+    },
+    {
+      "endpoint": "/api/api/_comments.js",
+      "file": "api/_comments.js",
+      "methods": [
+        "OPTIONS",
+        "GET",
+        "POST",
+        "PUT",
+        "DELETE"
+      ],
+      "actions": [],
+      "lines": 327
+    },
+    {
+      "endpoint": "/api/api/_communities.js",
+      "file": "api/_communities.js",
+      "methods": [
+        "OPTIONS",
+        "GET"
+      ],
+      "actions": [
+        "list",
+        "get",
+        "create",
+        "join",
+        "leave",
+        "post",
+        "comment",
+        "react",
+        "vote",
+        "solve_poll",
+        "delete_post",
+        "report"
+      ],
+      "lines": 500
+    },
+    {
+      "endpoint": "/api/api/_community-health.js",
+      "file": "api/_community-health.js",
+      "methods": [
+        "OPTIONS"
+      ],
+      "actions": [],
+      "lines": 128
+    },
+    {
+      "endpoint": "/api/api/_continuous-learning.js",
+      "file": "api/_continuous-learning.js",
+      "methods": [],
+      "actions": [],
+      "lines": 492
+    },
+    {
+      "endpoint": "/api/api/_conversation-assist.js",
+      "file": "api/_conversation-assist.js",
+      "methods": [
+        "OPTIONS",
+        "GET",
+        "POST"
+      ],
+      "actions": [],
+      "lines": 270
+    },
+    {
+      "endpoint": "/api/api/_db-client.js",
+      "file": "api/_db-client.js",
+      "methods": [],
+      "actions": [],
+      "lines": 122
+    },
+    {
+      "endpoint": "/api/api/_db-stats.js",
+      "file": "api/_db-stats.js",
+      "methods": [
+        "OPTIONS",
+        "POST"
+      ],
+      "actions": [],
+      "lines": 162
+    },
+    {
+      "endpoint": "/api/api/_db-wake.js",
+      "file": "api/_db-wake.js",
+      "methods": [],
+      "actions": [],
+      "lines": 28
+    },
+    {
+      "endpoint": "/api/api/_dispatch.js",
+      "file": "api/_dispatch.js",
+      "methods": [],
+      "actions": [],
+      "lines": 124
+    },
+    {
+      "endpoint": "/api/api/_domain-map.js",
+      "file": "api/_domain-map.js",
+      "methods": [],
+      "actions": [],
+      "lines": 154
+    },
+    {
+      "endpoint": "/api/api/_drift.js",
+      "file": "api/_drift.js",
+      "methods": [
+        "OPTIONS"
+      ],
+      "actions": [],
+      "lines": 124
+    },
+    {
+      "endpoint": "/api/api/_duplicates.js",
+      "file": "api/_duplicates.js",
+      "methods": [
+        "OPTIONS",
+        "GET",
+        "POST"
+      ],
+      "actions": [
+        "merge"
+      ],
+      "lines": 286
+    },
+    {
+      "endpoint": "/api/api/_email-templates.js",
+      "file": "api/_email-templates.js",
+      "methods": [
+        "POST",
+        "PUT",
+        "GET"
+      ],
+      "actions": [
+        "preview"
+      ],
+      "lines": 363
+    },
+    {
+      "endpoint": "/api/api/_email.js",
+      "file": "api/_email.js",
+      "methods": [],
+      "actions": [],
+      "lines": 134
+    },
+    {
+      "endpoint": "/api/api/_enterprise-admin-prompt.js",
+      "file": "api/_enterprise-admin-prompt.js",
+      "methods": [],
+      "actions": [],
+      "lines": 142
+    },
+    {
+      "endpoint": "/api/api/_error.js",
+      "file": "api/_error.js",
+      "methods": [],
+      "actions": [],
+      "lines": 114
+    },
+    {
+      "endpoint": "/api/api/_errors.js",
+      "file": "api/_errors.js",
+      "methods": [
+        "POST",
+        "GET"
+      ],
+      "actions": [],
+      "lines": 110
+    },
+    {
+      "endpoint": "/api/api/_evaluation-engine.js",
+      "file": "api/_evaluation-engine.js",
+      "methods": [],
+      "actions": [],
+      "lines": 477
+    },
+    {
+      "endpoint": "/api/api/_event-agents.js",
+      "file": "api/_event-agents.js",
+      "methods": [
+        "OPTIONS",
+        "GET"
+      ],
+      "actions": [
+        "events",
+        "stats",
+        "types",
+        "trigger",
+        "replay"
+      ],
+      "lines": 185
+    },
+    {
+      "endpoint": "/api/api/_events.js",
+      "file": "api/_events.js",
+      "methods": [],
+      "actions": [],
+      "lines": 369
+    },
+    {
+      "endpoint": "/api/api/_evidence-scan.js",
+      "file": "api/_evidence-scan.js",
+      "methods": [
+        "OPTIONS"
+      ],
+      "actions": [],
+      "lines": 329
+    },
+    {
+      "endpoint": "/api/api/_evidence.js",
+      "file": "api/_evidence.js",
+      "methods": [
+        "OPTIONS",
+        "GET",
+        "POST",
+        "PUT",
+        "DELETE"
+      ],
+      "actions": [],
+      "lines": 184
+    },
+    {
+      "endpoint": "/api/api/_export.js",
+      "file": "api/_export.js",
+      "methods": [
+        "OPTIONS"
+      ],
+      "actions": [],
+      "lines": 133
+    },
+    {
+      "endpoint": "/api/api/_feature-health.js",
+      "file": "api/_feature-health.js",
+      "methods": [
+        "OPTIONS",
+        "POST"
+      ],
+      "actions": [],
+      "lines": 239
+    },
+    {
+      "endpoint": "/api/api/_follows.js",
+      "file": "api/_follows.js",
+      "methods": [
+        "OPTIONS",
+        "GET",
+        "DELETE",
+        "POST"
+      ],
+      "actions": [],
+      "lines": 194
+    },
+    {
+      "endpoint": "/api/api/_followup.js",
+      "file": "api/_followup.js",
+      "methods": [],
+      "actions": [],
+      "lines": 125
+    },
+    {
+      "endpoint": "/api/api/_golden-workflows.js",
+      "file": "api/_golden-workflows.js",
+      "methods": [
+        "OPTIONS",
+        "GET"
+      ],
+      "actions": [
+        "run",
+        "history",
+        "latest"
+      ],
+      "lines": 488
+    },
+    {
+      "endpoint": "/api/api/_health.js",
+      "file": "api/_health.js",
+      "methods": [
+        "OPTIONS"
+      ],
+      "actions": [],
+      "lines": 213
+    },
+    {
+      "endpoint": "/api/api/_impact-engine.js",
+      "file": "api/_impact-engine.js",
+      "methods": [],
+      "actions": [],
+      "lines": 265
+    },
+    {
+      "endpoint": "/api/api/_improve-scan.js",
+      "file": "api/_improve-scan.js",
+      "methods": [],
+      "actions": [],
+      "lines": 153
+    },
+    {
+      "endpoint": "/api/api/_improvements.js",
+      "file": "api/_improvements.js",
+      "methods": [
+        "OPTIONS",
+        "GET",
+        "POST"
+      ],
+      "actions": [
+        "approve",
+        "dismiss",
+        "clear_decided"
+      ],
+      "lines": 134
+    },
+    {
+      "endpoint": "/api/api/_inbox.js",
+      "file": "api/_inbox.js",
+      "methods": [
+        "OPTIONS",
+        "GET",
+        "POST",
+        "PUT"
+      ],
+      "actions": [
+        "close",
+        "release",
+        "takeover",
+        "route_emotional",
+        "ai_mode",
+        "cleanup_threads",
+        "dedup_messages",
+        "dedup_all",
+        "transfer_emotional",
+        "set_ai_mode",
+        "triage",
+        "draft_reply"
+      ],
+      "lines": 1742
+    },
+    {
+      "endpoint": "/api/api/_incident-cron.js",
+      "file": "api/_incident-cron.js",
+      "methods": [
+        "OPTIONS",
+        "GET"
+      ],
+      "actions": [
+        "run",
+        "metrics",
+        "health",
+        "events",
+        "queue"
+      ],
+      "lines": 488
+    },
+    {
+      "endpoint": "/api/api/_incident-triage.js",
+      "file": "api/_incident-triage.js",
+      "methods": [],
+      "actions": [],
+      "lines": 234
+    },
+    {
+      "endpoint": "/api/api/_incidents.js",
+      "file": "api/_incidents.js",
+      "methods": [
+        "OPTIONS",
+        "GET",
+        "POST"
+      ],
+      "actions": [
+        "detect",
+        "summary",
+        "create",
+        "assign",
+        "update",
+        "correlate"
+      ],
+      "lines": 467
+    },
+    {
+      "endpoint": "/api/api/_insights.js",
+      "file": "api/_insights.js",
+      "methods": [
+        "OPTIONS"
+      ],
+      "actions": [],
+      "lines": 183
+    },
+    {
+      "endpoint": "/api/api/_kb-maintain.js",
+      "file": "api/_kb-maintain.js",
+      "methods": [
+        "OPTIONS"
+      ],
+      "actions": [],
+      "lines": 180
+    },
+    {
+      "endpoint": "/api/api/_keep-alive.js",
+      "file": "api/_keep-alive.js",
+      "methods": [
+        "OPTIONS"
+      ],
+      "actions": [],
+      "lines": 19
+    },
+    {
+      "endpoint": "/api/api/_leaderboard.js",
+      "file": "api/_leaderboard.js",
+      "methods": [
+        "OPTIONS"
+      ],
+      "actions": [],
+      "lines": 379
+    },
+    {
+      "endpoint": "/api/api/_learning-engine.js",
+      "file": "api/_learning-engine.js",
+      "methods": [],
+      "actions": [],
+      "lines": 951
+    },
+    {
+      "endpoint": "/api/api/_live-posts.js",
+      "file": "api/_live-posts.js",
+      "methods": [],
+      "actions": [],
+      "lines": 78
+    },
+    {
+      "endpoint": "/api/api/_me.js",
+      "file": "api/_me.js",
+      "methods": [
+        "OPTIONS"
+      ],
+      "actions": [],
+      "lines": 74
+    },
+    {
+      "endpoint": "/api/api/_memory-api.js",
+      "file": "api/_memory-api.js",
+      "methods": [
+        "OPTIONS"
+      ],
+      "actions": [
+        "analytics",
+        "search"
+      ],
+      "lines": 66
+    },
+    {
+      "endpoint": "/api/api/_memory.js",
+      "file": "api/_memory.js",
+      "methods": [],
+      "actions": [],
+      "lines": 371
+    },
+    {
+      "endpoint": "/api/api/_meta-agent.js",
+      "file": "api/_meta-agent.js",
+      "methods": [
+        "OPTIONS",
+        "GET",
+        "POST"
+      ],
+      "actions": [
+        "capabilities",
+        "coordinate"
+      ],
+      "lines": 715
+    },
+    {
+      "endpoint": "/api/api/_moderation.js",
+      "file": "api/_moderation.js",
+      "methods": [],
+      "actions": [],
+      "lines": 975
+    },
+    {
+      "endpoint": "/api/api/_notification-delivery.js",
+      "file": "api/_notification-delivery.js",
+      "methods": [],
+      "actions": [],
+      "lines": 315
+    },
+    {
+      "endpoint": "/api/api/_notifications.js",
+      "file": "api/_notifications.js",
+      "methods": [
+        "OPTIONS",
+        "POST",
+        "DELETE",
+        "GET"
+      ],
+      "actions": [],
+      "lines": 181
+    },
+    {
+      "endpoint": "/api/api/_notify-prefs.js",
+      "file": "api/_notify-prefs.js",
+      "methods": [
+        "OPTIONS",
+        "GET",
+        "POST"
+      ],
+      "actions": [],
+      "lines": 138
+    },
+    {
+      "endpoint": "/api/api/_observability.js",
+      "file": "api/_observability.js",
+      "methods": [],
+      "actions": [],
+      "lines": 315
+    },
+    {
+      "endpoint": "/api/api/_ops-events.js",
+      "file": "api/_ops-events.js",
+      "methods": [],
+      "actions": [],
+      "lines": 286
+    },
+    {
+      "endpoint": "/api/api/_orchestrator.js",
+      "file": "api/_orchestrator.js",
+      "methods": [],
+      "actions": [],
+      "lines": 745
+    },
+    {
+      "endpoint": "/api/api/_performance.js",
+      "file": "api/_performance.js",
+      "methods": [
+        "OPTIONS"
+      ],
+      "actions": [],
+      "lines": 149
+    },
+    {
+      "endpoint": "/api/api/_persona.js",
+      "file": "api/_persona.js",
+      "methods": [
+        "OPTIONS",
+        "GET"
+      ],
+      "actions": [
+        "save",
+        "reset",
+        "preview"
+      ],
+      "lines": 155
+    },
+    {
+      "endpoint": "/api/api/_poll-create.js",
+      "file": "api/_poll-create.js",
+      "methods": [
+        "OPTIONS"
+      ],
+      "actions": [],
+      "lines": 180
+    },
+    {
+      "endpoint": "/api/api/_poll-integrity.js",
+      "file": "api/_poll-integrity.js",
+      "methods": [],
+      "actions": [],
+      "lines": 220
+    },
+    {
+      "endpoint": "/api/api/_poll-sweeper.js",
+      "file": "api/_poll-sweeper.js",
+      "methods": [],
+      "actions": [],
+      "lines": 92
+    },
+    {
+      "endpoint": "/api/api/_polls.js",
+      "file": "api/_polls.js",
+      "methods": [
+        "OPTIONS",
+        "GET",
+        "POST",
+        "PUT",
+        "DELETE"
+      ],
+      "actions": [
+        "closed",
+        "vote"
+      ],
+      "lines": 498
+    },
+    {
+      "endpoint": "/api/api/_posts.js",
+      "file": "api/_posts.js",
+      "methods": [
+        "OPTIONS",
+        "GET",
+        "POST",
+        "PUT",
+        "DELETE"
+      ],
+      "actions": [],
+      "lines": 1248
+    },
+    {
+      "endpoint": "/api/api/_pre-publish-review.js",
+      "file": "api/_pre-publish-review.js",
+      "methods": [
+        "OPTIONS",
+        "GET",
+        "POST"
+      ],
+      "actions": [
+        "approve",
+        "reject",
+        "keep_private",
+        "ban"
+      ],
+      "lines": 285
+    },
+    {
+      "endpoint": "/api/api/_pre-publish.js",
+      "file": "api/_pre-publish.js",
+      "methods": [
+        "OPTIONS"
+      ],
+      "actions": [],
+      "lines": 953
+    },
+    {
+      "endpoint": "/api/api/_proactive.js",
+      "file": "api/_proactive.js",
+      "methods": [
+        "OPTIONS",
+        "GET"
+      ],
+      "actions": [
+        "detect",
+        "list",
+        "dismiss"
+      ],
+      "lines": 459
+    },
+    {
+      "endpoint": "/api/api/_production-error.js",
+      "file": "api/_production-error.js",
+      "methods": [
+        "OPTIONS"
+      ],
+      "actions": [],
+      "lines": 114
+    },
+    {
+      "endpoint": "/api/api/_providers.js",
+      "file": "api/_providers.js",
+      "methods": [
+        "OPTIONS",
+        "GET"
+      ],
+      "actions": [
+        "categories",
+        "list",
+        "set_default",
+        "update_provider",
+        "test_provider",
+        "test_all",
+        "reorder_providers"
+      ],
+      "lines": 1715
+    },
+    {
+      "endpoint": "/api/api/_rag-api.js",
+      "file": "api/_rag-api.js",
+      "methods": [
+        "OPTIONS"
+      ],
+      "actions": [],
+      "lines": 38
+    },
+    {
+      "endpoint": "/api/api/_rag.js",
+      "file": "api/_rag.js",
+      "methods": [],
+      "actions": [],
+      "lines": 284
+    },
+    {
+      "endpoint": "/api/api/_reactions.js",
+      "file": "api/_reactions.js",
+      "methods": [
+        "OPTIONS",
+        "GET",
+        "POST"
+      ],
+      "actions": [],
+      "lines": 162
+    },
+    {
+      "endpoint": "/api/api/_redteam-cases.js",
+      "file": "api/_redteam-cases.js",
+      "methods": [],
+      "actions": [],
+      "lines": 104
+    },
+    {
+      "endpoint": "/api/api/_related.js",
+      "file": "api/_related.js",
+      "methods": [
+        "OPTIONS"
+      ],
+      "actions": [],
+      "lines": 121
+    },
+    {
+      "endpoint": "/api/api/_reliability.js",
+      "file": "api/_reliability.js",
+      "methods": [],
+      "actions": [],
+      "lines": 368
+    },
+    {
+      "endpoint": "/api/api/_reopen.js",
+      "file": "api/_reopen.js",
+      "methods": [],
+      "actions": [],
+      "lines": 239
+    },
+    {
+      "endpoint": "/api/api/_reports.js",
+      "file": "api/_reports.js",
+      "methods": [
+        "OPTIONS",
+        "GET",
+        "POST",
+        "PUT"
+      ],
+      "actions": [],
+      "lines": 562
+    },
+    {
+      "endpoint": "/api/api/_routing.js",
+      "file": "api/_routing.js",
+      "methods": [
+        "OPTIONS",
+        "GET",
+        "POST"
+      ],
+      "actions": [
+        "stats",
+        "auto"
+      ],
+      "lines": 300
+    },
+    {
+      "endpoint": "/api/api/_safety-pipeline.js",
+      "file": "api/_safety-pipeline.js",
+      "methods": [],
+      "actions": [],
+      "lines": 186
+    },
+    {
+      "endpoint": "/api/api/_saved.js",
+      "file": "api/_saved.js",
+      "methods": [
+        "OPTIONS",
+        "GET",
+        "DELETE",
+        "POST"
+      ],
+      "actions": [],
+      "lines": 119
+    },
+    {
+      "endpoint": "/api/api/_search-quality.js",
+      "file": "api/_search-quality.js",
+      "methods": [
+        "OPTIONS",
+        "POST"
+      ],
+      "actions": [
+        "metrics",
+        "report"
+      ],
+      "lines": 468
+    },
+    {
+      "endpoint": "/api/api/_search.js",
+      "file": "api/_search.js",
+      "methods": [
+        "OPTIONS"
+      ],
+      "actions": [],
+      "lines": 298
+    },
+    {
+      "endpoint": "/api/api/_security-events.js",
+      "file": "api/_security-events.js",
+      "methods": [],
+      "actions": [],
+      "lines": 137
+    },
+    {
+      "endpoint": "/api/api/_security.js",
+      "file": "api/_security.js",
+      "methods": [
+        "GET",
+        "HEAD"
+      ],
+      "actions": [],
+      "lines": 589
+    },
+    {
+      "endpoint": "/api/api/_sla.js",
+      "file": "api/_sla.js",
+      "methods": [],
+      "actions": [],
+      "lines": 143
+    },
+    {
+      "endpoint": "/api/api/_spam.js",
+      "file": "api/_spam.js",
+      "methods": [
+        "GET",
+        "POST"
+      ],
+      "actions": [],
+      "lines": 84
+    },
+    {
+      "endpoint": "/api/api/_storage.js",
+      "file": "api/_storage.js",
+      "methods": [],
+      "actions": [],
+      "lines": 238
+    },
+    {
+      "endpoint": "/api/api/_streaming.js",
+      "file": "api/_streaming.js",
+      "methods": [],
+      "actions": [],
+      "lines": 268
+    },
+    {
+      "endpoint": "/api/api/_suggestion-kinds.js",
+      "file": "api/_suggestion-kinds.js",
+      "methods": [],
+      "actions": [],
+      "lines": 35
+    },
+    {
+      "endpoint": "/api/api/_tech-debt.js",
+      "file": "api/_tech-debt.js",
+      "methods": [
+        "OPTIONS",
+        "GET",
+        "POST"
+      ],
+      "actions": [
+        "summary",
+        "scan"
+      ],
+      "lines": 397
+    },
+    {
+      "endpoint": "/api/api/_timeline.js",
+      "file": "api/_timeline.js",
+      "methods": [
+        "OPTIONS",
+        "GET",
+        "POST"
+      ],
+      "actions": [],
+      "lines": 96
+    },
+    {
+      "endpoint": "/api/api/_tool-forge.js",
+      "file": "api/_tool-forge.js",
+      "methods": [
+        "OPTIONS",
+        "GET"
+      ],
+      "actions": [
+        "list",
+        "schemas",
+        "save",
+        "delete",
+        "execute",
+        "bulk_save"
+      ],
+      "lines": 250
+    },
+    {
+      "endpoint": "/api/api/_training-lab.js",
+      "file": "api/_training-lab.js",
+      "methods": [],
+      "actions": [],
+      "lines": 411
+    },
+    {
+      "endpoint": "/api/api/_transcribe.js",
+      "file": "api/_transcribe.js",
+      "methods": [
+        "OPTIONS"
+      ],
+      "actions": [],
+      "lines": 217
+    },
+    {
+      "endpoint": "/api/api/_translate.js",
+      "file": "api/_translate.js",
+      "methods": [
+        "OPTIONS"
+      ],
+      "actions": [],
+      "lines": 165
+    },
+    {
+      "endpoint": "/api/api/_trend-watch.js",
+      "file": "api/_trend-watch.js",
+      "methods": [],
+      "actions": [],
+      "lines": 109
+    },
+    {
+      "endpoint": "/api/api/_trends.js",
+      "file": "api/_trends.js",
+      "methods": [
+        "OPTIONS"
+      ],
+      "actions": [],
+      "lines": 228
+    },
+    {
+      "endpoint": "/api/api/_upload.js",
+      "file": "api/_upload.js",
+      "methods": [
+        "OPTIONS"
+      ],
+      "actions": [],
+      "lines": 99
+    },
+    {
+      "endpoint": "/api/api/_users.js",
+      "file": "api/_users.js",
+      "methods": [
+        "OPTIONS"
+      ],
+      "actions": [],
+      "lines": 122
+    },
+    {
+      "endpoint": "/api/api/_ux-intel.js",
+      "file": "api/_ux-intel.js",
+      "methods": [
+        "OPTIONS"
+      ],
+      "actions": [],
+      "lines": 137
+    },
+    {
+      "endpoint": "/api/api/_value-audit.js",
+      "file": "api/_value-audit.js",
+      "methods": [],
+      "actions": [],
+      "lines": 345
+    },
+    {
+      "endpoint": "/api/api/_vitals.js",
+      "file": "api/_vitals.js",
+      "methods": [
+        "POST",
+        "GET"
+      ],
+      "actions": [],
+      "lines": 151
+    },
+    {
+      "endpoint": "/api/api/_wordlists.js",
+      "file": "api/_wordlists.js",
+      "methods": [],
+      "actions": [],
+      "lines": 115
+    },
+    {
+      "endpoint": "/api/api/_work-queue.js",
+      "file": "api/_work-queue.js",
+      "methods": [],
+      "actions": [],
+      "lines": 693
+    },
+    {
+      "endpoint": "/api/api/_worker-contracts.js",
+      "file": "api/_worker-contracts.js",
+      "methods": [],
+      "actions": [],
+      "lines": 1111
+    },
+    {
+      "endpoint": "/api/api/_worker-disable-tests.js",
+      "file": "api/_worker-disable-tests.js",
+      "methods": [],
+      "actions": [],
+      "lines": 138
+    },
+    {
+      "endpoint": "/api/api/_worker-memory.js",
+      "file": "api/_worker-memory.js",
+      "methods": [],
+      "actions": [],
+      "lines": 319
+    },
+    {
+      "endpoint": "/api/api/_worker-supervisor.js",
+      "file": "api/_worker-supervisor.js",
+      "methods": [],
+      "actions": [],
+      "lines": 414
+    },
+    {
+      "endpoint": "/api/api/_workforce-api.js",
+      "file": "api/_workforce-api.js",
+      "methods": [
+        "OPTIONS"
+      ],
+      "actions": [],
+      "lines": 129
+    },
+    {
+      "endpoint": "/api/api/_workforce-bridge.js",
+      "file": "api/_workforce-bridge.js",
+      "methods": [],
+      "actions": [],
+      "lines": 352
+    },
+    {
+      "endpoint": "/api/api/_workforce-center.js",
+      "file": "api/_workforce-center.js",
+      "methods": [
+        "OPTIONS",
+        "GET",
+        "POST"
+      ],
+      "actions": [
+        "run_scan",
+        "run_worker"
+      ],
+      "lines": 84
+    },
+    {
+      "endpoint": "/api/api/_workforce-core.js",
+      "file": "api/_workforce-core.js",
+      "methods": [],
+      "actions": [],
+      "lines": 427
+    },
+    {
+      "endpoint": "/api/api/_workforce-integration.js",
+      "file": "api/_workforce-integration.js",
+      "methods": [],
+      "actions": [],
+      "lines": 483
+    },
+    {
+      "endpoint": "/api/api/_workforce-proof-api.js",
+      "file": "api/_workforce-proof-api.js",
+      "methods": [
+        "OPTIONS"
+      ],
+      "actions": [],
+      "lines": 100
+    },
+    {
+      "endpoint": "/api/api/_workforce-proof.js",
+      "file": "api/_workforce-proof.js",
+      "methods": [],
+      "actions": [],
+      "lines": 413
+    },
+    {
+      "endpoint": "/api/api/_workforce-tool-gateway.js",
+      "file": "api/_workforce-tool-gateway.js",
+      "methods": [],
+      "actions": [],
+      "lines": 272
+    },
+    {
+      "endpoint": "/api/api/_workforce-verification.js",
+      "file": "api/_workforce-verification.js",
+      "methods": [],
+      "actions": [],
+      "lines": 298
+    },
+    {
+      "endpoint": "/api/api/_workforce-workers.js",
+      "file": "api/_workforce-workers.js",
+      "methods": [],
+      "actions": [
+        "category_correction_candidate",
+        "duplicate_case",
+        "related_case"
+      ],
+      "lines": 4390
+    },
+    {
+      "endpoint": "/api/api/_workforce.js",
+      "file": "api/_workforce.js",
+      "methods": [
+        "OPTIONS",
+        "GET"
+      ],
+      "actions": [],
+      "lines": 4021
+    }
+  ],
+  "interactionTotals": {
+    "buttons": 306,
+    "links": 46,
+    "inputs": 81,
+    "dialogs": 16,
+    "pages": 50
+  },
+  "interactions": [
+    {
+      "file": "src/pages/About.tsx",
+      "buttons": 0,
+      "links": 1,
+      "inputs": 0,
+      "onClicks": 0,
+      "submits": 0,
+      "dialogs": 0,
+      "setIntervals": 0,
+      "realtime": 0,
+      "total": 1
+    },
+    {
+      "file": "src/pages/Accessibility.tsx",
+      "buttons": 0,
+      "links": 1,
+      "inputs": 0,
+      "onClicks": 0,
+      "submits": 0,
+      "dialogs": 0,
+      "setIntervals": 0,
+      "realtime": 0,
+      "total": 1
+    },
+    {
+      "file": "src/pages/admin/ActivityStream.tsx",
+      "buttons": 2,
+      "links": 0,
+      "inputs": 1,
+      "onClicks": 2,
+      "submits": 0,
+      "dialogs": 0,
+      "setIntervals": 0,
+      "realtime": 1,
+      "total": 3
+    },
+    {
+      "file": "src/pages/admin/AdminSettings.tsx",
+      "buttons": 4,
+      "links": 0,
+      "inputs": 3,
+      "onClicks": 4,
+      "submits": 0,
+      "dialogs": 0,
+      "setIntervals": 0,
+      "realtime": 0,
+      "total": 7
+    },
+    {
+      "file": "src/pages/admin/agent-chat/ActionCard.tsx",
+      "buttons": 4,
+      "links": 0,
+      "inputs": 0,
+      "onClicks": 4,
+      "submits": 0,
+      "dialogs": 0,
+      "setIntervals": 0,
+      "realtime": 0,
+      "total": 4
+    },
+    {
+      "file": "src/pages/admin/agent-chat/ActionPreviews.tsx",
+      "buttons": 0,
+      "links": 1,
+      "inputs": 0,
+      "onClicks": 0,
+      "submits": 0,
+      "dialogs": 0,
+      "setIntervals": 0,
+      "realtime": 0,
+      "total": 1
+    },
+    {
+      "file": "src/pages/admin/agent-office/ApprovalAlert.tsx",
+      "buttons": 3,
+      "links": 0,
+      "inputs": 0,
+      "onClicks": 3,
+      "submits": 0,
+      "dialogs": 0,
+      "setIntervals": 1,
+      "realtime": 0,
+      "total": 3
+    },
+    {
+      "file": "src/pages/admin/AgentChat.tsx",
+      "buttons": 4,
+      "links": 0,
+      "inputs": 1,
+      "onClicks": 4,
+      "submits": 0,
+      "dialogs": 0,
+      "setIntervals": 0,
+      "realtime": 0,
+      "total": 5
+    },
+    {
+      "file": "src/pages/admin/AIFailures.tsx",
+      "buttons": 1,
+      "links": 0,
+      "inputs": 0,
+      "onClicks": 1,
+      "submits": 0,
+      "dialogs": 0,
+      "setIntervals": 0,
+      "realtime": 1,
+      "total": 1
+    },
+    {
+      "file": "src/pages/admin/AIQuality.tsx",
+      "buttons": 2,
+      "links": 0,
+      "inputs": 0,
+      "onClicks": 2,
+      "submits": 0,
+      "dialogs": 0,
+      "setIntervals": 0,
+      "realtime": 1,
+      "total": 2
+    },
+    {
+      "file": "src/pages/admin/Categories.tsx",
+      "buttons": 3,
+      "links": 0,
+      "inputs": 1,
+      "onClicks": 3,
+      "submits": 0,
+      "dialogs": 0,
+      "setIntervals": 0,
+      "realtime": 0,
+      "total": 4
+    },
+    {
+      "file": "src/pages/admin/EmailTemplates.tsx",
+      "buttons": 6,
+      "links": 0,
+      "inputs": 3,
+      "onClicks": 6,
+      "submits": 0,
+      "dialogs": 0,
+      "setIntervals": 0,
+      "realtime": 0,
+      "total": 9
+    },
+    {
+      "file": "src/pages/admin/ErrorTracking.tsx",
+      "buttons": 4,
+      "links": 1,
+      "inputs": 0,
+      "onClicks": 4,
+      "submits": 0,
+      "dialogs": 0,
+      "setIntervals": 1,
+      "realtime": 1,
+      "total": 5
+    },
+    {
+      "file": "src/pages/admin/Logs.tsx",
+      "buttons": 2,
+      "links": 0,
+      "inputs": 2,
+      "onClicks": 2,
+      "submits": 0,
+      "dialogs": 0,
+      "setIntervals": 1,
+      "realtime": 0,
+      "total": 4
+    },
+    {
+      "file": "src/pages/admin/ModelPerformance.tsx",
+      "buttons": 1,
+      "links": 0,
+      "inputs": 0,
+      "onClicks": 1,
+      "submits": 0,
+      "dialogs": 0,
+      "setIntervals": 0,
+      "realtime": 1,
+      "total": 1
+    },
+    {
+      "file": "src/pages/admin/OpsCenter.tsx",
+      "buttons": 14,
+      "links": 0,
+      "inputs": 1,
+      "onClicks": 14,
+      "submits": 0,
+      "dialogs": 0,
+      "setIntervals": 0,
+      "realtime": 1,
+      "total": 15
+    },
+    {
+      "file": "src/pages/admin/Overview.tsx",
+      "buttons": 19,
+      "links": 0,
+      "inputs": 0,
+      "onClicks": 24,
+      "submits": 1,
+      "dialogs": 1,
+      "setIntervals": 2,
+      "realtime": 2,
+      "total": 19
+    },
+    {
+      "file": "src/pages/admin/PerformanceCenter.tsx",
+      "buttons": 2,
+      "links": 0,
+      "inputs": 0,
+      "onClicks": 2,
+      "submits": 0,
+      "dialogs": 0,
+      "setIntervals": 1,
+      "realtime": 1,
+      "total": 2
+    },
+    {
+      "file": "src/pages/admin/PollManager.tsx",
+      "buttons": 5,
+      "links": 0,
+      "inputs": 2,
+      "onClicks": 5,
+      "submits": 0,
+      "dialogs": 1,
+      "setIntervals": 0,
+      "realtime": 1,
+      "total": 7
+    },
+    {
+      "file": "src/pages/admin/PostsTable.tsx",
+      "buttons": 23,
+      "links": 0,
+      "inputs": 15,
+      "onClicks": 28,
+      "submits": 2,
+      "dialogs": 5,
+      "setIntervals": 0,
+      "realtime": 1,
+      "total": 38
+    },
+    {
+      "file": "src/pages/admin/ProviderSettings.tsx",
+      "buttons": 9,
+      "links": 0,
+      "inputs": 4,
+      "onClicks": 9,
+      "submits": 0,
+      "dialogs": 0,
+      "setIntervals": 0,
+      "realtime": 0,
+      "total": 13
+    },
+    {
+      "file": "src/pages/admin/QuickActions.tsx",
+      "buttons": 5,
+      "links": 0,
+      "inputs": 1,
+      "onClicks": 5,
+      "submits": 0,
+      "dialogs": 0,
+      "setIntervals": 0,
+      "realtime": 0,
+      "total": 6
+    },
+    {
+      "file": "src/pages/admin/Reports.tsx",
+      "buttons": 27,
+      "links": 0,
+      "inputs": 4,
+      "onClicks": 30,
+      "submits": 0,
+      "dialogs": 0,
+      "setIntervals": 1,
+      "realtime": 1,
+      "total": 31
+    },
+    {
+      "file": "src/pages/admin/SafetyIntel.tsx",
+      "buttons": 2,
+      "links": 0,
+      "inputs": 0,
+      "onClicks": 2,
+      "submits": 0,
+      "dialogs": 0,
+      "setIntervals": 0,
+      "realtime": 1,
+      "total": 2
+    },
+    {
+      "file": "src/pages/admin/SecurityCenter.tsx",
+      "buttons": 2,
+      "links": 0,
+      "inputs": 1,
+      "onClicks": 2,
+      "submits": 0,
+      "dialogs": 0,
+      "setIntervals": 0,
+      "realtime": 1,
+      "total": 3
+    },
+    {
+      "file": "src/pages/admin/SystemHealth.tsx",
+      "buttons": 2,
+      "links": 0,
+      "inputs": 0,
+      "onClicks": 2,
+      "submits": 0,
+      "dialogs": 0,
+      "setIntervals": 1,
+      "realtime": 1,
+      "total": 2
+    },
+    {
+      "file": "src/pages/admin/UnifiedInbox.tsx",
+      "buttons": 18,
+      "links": 0,
+      "inputs": 3,
+      "onClicks": 20,
+      "submits": 1,
+      "dialogs": 1,
+      "setIntervals": 1,
+      "realtime": 1,
+      "total": 21
+    },
+    {
+      "file": "src/pages/admin/UserManager.tsx",
+      "buttons": 8,
+      "links": 0,
+      "inputs": 2,
+      "onClicks": 10,
+      "submits": 2,
+      "dialogs": 3,
+      "setIntervals": 0,
+      "realtime": 0,
+      "total": 10
+    },
+    {
+      "file": "src/pages/Admin.tsx",
+      "buttons": 11,
+      "links": 4,
+      "inputs": 2,
+      "onClicks": 12,
+      "submits": 0,
+      "dialogs": 1,
+      "setIntervals": 1,
+      "realtime": 0,
+      "total": 17
+    },
+    {
+      "file": "src/pages/Communities.tsx",
+      "buttons": 9,
+      "links": 2,
+      "inputs": 3,
+      "onClicks": 9,
+      "submits": 0,
+      "dialogs": 0,
+      "setIntervals": 1,
+      "realtime": 0,
+      "total": 14
+    },
+    {
+      "file": "src/pages/CommunityDetail.tsx",
+      "buttons": 18,
+      "links": 3,
+      "inputs": 4,
+      "onClicks": 18,
+      "submits": 0,
+      "dialogs": 0,
+      "setIntervals": 1,
+      "realtime": 0,
+      "total": 25
+    },
+    {
+      "file": "src/pages/Contact.tsx",
+      "buttons": 1,
+      "links": 1,
+      "inputs": 4,
+      "onClicks": 0,
+      "submits": 1,
+      "dialogs": 0,
+      "setIntervals": 0,
+      "realtime": 0,
+      "total": 6
+    },
+    {
+      "file": "src/pages/Faq.tsx",
+      "buttons": 2,
+      "links": 0,
+      "inputs": 1,
+      "onClicks": 2,
+      "submits": 0,
+      "dialogs": 0,
+      "setIntervals": 0,
+      "realtime": 0,
+      "total": 3
+    },
+    {
+      "file": "src/pages/Home.tsx",
+      "buttons": 6,
+      "links": 3,
+      "inputs": 2,
+      "onClicks": 7,
+      "submits": 0,
+      "dialogs": 0,
+      "setIntervals": 0,
+      "realtime": 1,
+      "total": 11
+    },
+    {
+      "file": "src/pages/Insights.tsx",
+      "buttons": 1,
+      "links": 0,
+      "inputs": 0,
+      "onClicks": 1,
+      "submits": 0,
+      "dialogs": 0,
+      "setIntervals": 0,
+      "realtime": 0,
+      "total": 1
+    },
+    {
+      "file": "src/pages/Leaderboard.tsx",
+      "buttons": 3,
+      "links": 2,
+      "inputs": 0,
+      "onClicks": 3,
+      "submits": 0,
+      "dialogs": 0,
+      "setIntervals": 0,
+      "realtime": 0,
+      "total": 5
+    },
+    {
+      "file": "src/pages/MyActivity.tsx",
+      "buttons": 6,
+      "links": 10,
+      "inputs": 0,
+      "onClicks": 6,
+      "submits": 0,
+      "dialogs": 2,
+      "setIntervals": 0,
+      "realtime": 0,
+      "total": 16
+    },
+    {
+      "file": "src/pages/NotFound.tsx",
+      "buttons": 1,
+      "links": 2,
+      "inputs": 0,
+      "onClicks": 1,
+      "submits": 0,
+      "dialogs": 0,
+      "setIntervals": 0,
+      "realtime": 0,
+      "total": 3
+    },
+    {
+      "file": "src/pages/Notifications.tsx",
+      "buttons": 4,
+      "links": 2,
+      "inputs": 1,
+      "onClicks": 4,
+      "submits": 0,
+      "dialogs": 0,
+      "setIntervals": 0,
+      "realtime": 0,
+      "total": 7
+    },
+    {
+      "file": "src/pages/Polls.tsx",
+      "buttons": 1,
+      "links": 3,
+      "inputs": 0,
+      "onClicks": 1,
+      "submits": 0,
+      "dialogs": 0,
+      "setIntervals": 0,
+      "realtime": 1,
+      "total": 4
+    },
+    {
+      "file": "src/pages/PostDetail.tsx",
+      "buttons": 18,
+      "links": 0,
+      "inputs": 0,
+      "onClicks": 18,
+      "submits": 1,
+      "dialogs": 1,
+      "setIntervals": 0,
+      "realtime": 2,
+      "total": 18
+    },
+    {
+      "file": "src/pages/Saved.tsx",
+      "buttons": 3,
+      "links": 1,
+      "inputs": 0,
+      "onClicks": 3,
+      "submits": 0,
+      "dialogs": 0,
+      "setIntervals": 0,
+      "realtime": 0,
+      "total": 4
+    },
+    {
+      "file": "src/pages/Search.tsx",
+      "buttons": 3,
+      "links": 1,
+      "inputs": 4,
+      "onClicks": 3,
+      "submits": 0,
+      "dialogs": 0,
+      "setIntervals": 0,
+      "realtime": 0,
+      "total": 8
+    },
+    {
+      "file": "src/pages/Settings.tsx",
+      "buttons": 11,
+      "links": 0,
+      "inputs": 5,
+      "onClicks": 13,
+      "submits": 0,
+      "dialogs": 1,
+      "setIntervals": 0,
+      "realtime": 0,
+      "total": 16
+    },
+    {
+      "file": "src/pages/SolvingBoard.tsx",
+      "buttons": 1,
+      "links": 1,
+      "inputs": 0,
+      "onClicks": 1,
+      "submits": 0,
+      "dialogs": 0,
+      "setIntervals": 0,
+      "realtime": 1,
+      "total": 2
+    },
+    {
+      "file": "src/pages/StatusPage.tsx",
+      "buttons": 2,
+      "links": 1,
+      "inputs": 0,
+      "onClicks": 2,
+      "submits": 0,
+      "dialogs": 0,
+      "setIntervals": 0,
+      "realtime": 0,
+      "total": 3
+    },
+    {
+      "file": "src/pages/Submit.tsx",
+      "buttons": 25,
+      "links": 1,
+      "inputs": 9,
+      "onClicks": 25,
+      "submits": 0,
+      "dialogs": 0,
+      "setIntervals": 3,
+      "realtime": 0,
+      "total": 35
+    },
+    {
+      "file": "src/pages/Suggestions.tsx",
+      "buttons": 3,
+      "links": 4,
+      "inputs": 0,
+      "onClicks": 3,
+      "submits": 0,
+      "dialogs": 0,
+      "setIntervals": 0,
+      "realtime": 1,
+      "total": 7
+    },
+    {
+      "file": "src/pages/Terms.tsx",
+      "buttons": 0,
+      "links": 1,
+      "inputs": 0,
+      "onClicks": 0,
+      "submits": 0,
+      "dialogs": 0,
+      "setIntervals": 0,
+      "realtime": 0,
+      "total": 1
+    },
+    {
+      "file": "src/pages/UserChat.tsx",
+      "buttons": 5,
+      "links": 0,
+      "inputs": 2,
+      "onClicks": 5,
+      "submits": 0,
+      "dialogs": 0,
+      "setIntervals": 1,
+      "realtime": 1,
+      "total": 7
+    }
+  ],
+  "testCounts": {
+    "apiTestFiles": 132,
+    "srcTestFiles": 86,
+    "apiIts": 1256,
+    "srcIts": 1319
+  },
+  "smells": [
+    {
+      "kind": "todo-handler",
+      "file": "src/pages/admin/AgentChat.tsx",
+      "line": 576,
+      "text": "placeholder=\"Ask the Coworker something, or pick a quick action…\""
+    }
+  ]
+}

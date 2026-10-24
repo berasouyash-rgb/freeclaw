@@ -42,19 +42,19 @@ const AnimatedToast: FC = () => {
 			))}
 			<style>{`
         @keyframes toast-slide-in {
-          from { opacity: 0; transform: translateX(30px) scale(0.95); }
-          to { opacity: 1; transform: translateX(0) scale(1); }
+          from { opacity: 0; transform: scale(0.96); }
+          to { opacity: 1; transform: scale(1); }
         }
         @keyframes toast-slide-out {
-          from { opacity: 1; transform: translateX(0) scale(1); }
-          to { opacity: 0; transform: translateX(30px) scale(0.95); }
+          from { opacity: 1; transform: scale(1); }
+          to { opacity: 0; transform: scale(0.96); }
         }
         @keyframes toast-shrink {
           from { width: 100%; }
           to { width: 0%; }
         }
-        .toast-enter { animation: toast-slide-in 0.3s cubic-bezier(.22,.9,.3,1) both; }
-        .toast-exit { animation: toast-slide-out 0.2s ease both; }
+        .toast-enter { animation: toast-slide-in 0.18s ease-out both; }
+        .toast-exit { animation: toast-slide-out 0.14s ease-in both; }
       `}</style>
 		</div>
 	);

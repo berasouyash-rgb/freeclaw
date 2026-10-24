@@ -5,12 +5,29 @@ import supabase from "./_db-client.js";
 import { callLLMChain, callProviderStream } from "./_providers.js";
 
 // ─── SSE Helpers ─────────────────────────────────────────────────
-export function createSSEWriter(res) {
+const SSE_ALLOWED_ORIGINS = [
+	"https://voice-box-psi.vercel.app",
+	"https://voice-box-ballyvisiontutorial-hues-projects.vercel.app",
+	"http://localhost:5173",
+	"http://localhost:4173",
+	"http://localhost:3000",
+];
+
+function sseAllowOrigin(req) {
+	const origin = req?.headers?.origin || "";
+	return SSE_ALLOWED_ORIGINS.includes(origin) ? origin : SSE_ALLOWED_ORIGINS[0];
+}
+
+export function createSSEWriter(res, req) {
 	res.setHeader("Content-Type", "text/event-stream");
 	res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
 	res.setHeader("Connection", "keep-alive");
 	res.setHeader("X-Accel-Buffering", "no");
-	res.setHeader("Access-Control-Allow-Origin", "*");
+	// Authenticated SSE must never use a wildcard origin. Reflect the
+	// allowlisted origin so credentialed dashboard clients work and
+	// arbitrary origins do not get a stream.
+	res.setHeader("Access-Control-Allow-Origin", sseAllowOrigin(req));
+	res.setHeader("Vary", "Origin");
 	res.status(200);
 
 	const write = (event, data) => {

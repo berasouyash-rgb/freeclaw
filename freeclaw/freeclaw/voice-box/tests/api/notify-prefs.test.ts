@@ -17,6 +17,7 @@ const eq = vi.fn();
 const select = vi.fn();
 const from = vi.fn();
 const checkUser = vi.fn();
+const verifyCallerIdentity = vi.hoisted(() => vi.fn());
 
 vi.mock("../../api/_db-client.js", () => ({
 	default: { from },
@@ -28,6 +29,8 @@ vi.mock("../../api/_auth.js", () => ({
 	rateLimitResponse: vi.fn((res) =>
 		res.status(429).json({ error: "Too many requests" }),
 	),
+	verifyCallerIdentity,
+	clientIp: vi.fn(() => "test-ip"),
 }));
 
 function response() {
@@ -53,6 +56,7 @@ beforeEach(() => {
 	maybeSingle.mockResolvedValue({ data: null, error: null });
 	upsert.mockResolvedValue({ data: null, error: null });
 	from.mockImplementation(() => ({ select, upsert }));
+	verifyCallerIdentity.mockResolvedValue({ ok: true, callerId: "anon_abc123" });
 	checkUser.mockResolvedValue({ ok: true });
 });
 
@@ -70,6 +74,7 @@ describe("GET /api/notify-prefs", () => {
 			email: "",
 			sms_enabled: true,
 			email_enabled: true,
+			browser_enabled: true,
 		});
 	});
 
@@ -98,6 +103,65 @@ describe("GET /api/notify-prefs", () => {
 		});
 	});
 
+	it("requires the owner identity before reading stored contact values", async () => {
+		const { default: handler } = await import("../../api/_notify-prefs.js");
+		const res = response();
+		await handler(
+			{
+				method: "GET",
+				query: { user_id: "anon_abc123" },
+				body: {},
+				headers: { "x-anon-id": "anon_abc123" },
+			},
+			res,
+		);
+		expect(verifyCallerIdentity).toHaveBeenCalledWith(
+			expect.objectContaining({ headers: { "x-anon-id": "anon_abc123" } }),
+			expect.anything(),
+			"anon_abc123",
+		);
+		expect(from).toHaveBeenCalledWith("settings");
+	});
+
+	it("denies a cross-user read before touching the settings table", async () => {
+		verifyCallerIdentity.mockResolvedValue({
+			ok: false,
+			status: 403,
+			error: "Cannot operate on another user's data",
+		});
+		const { default: handler } = await import("../../api/_notify-prefs.js");
+		const res = response();
+		await handler(
+			{
+				method: "GET",
+				query: { user_id: "anon_victim" },
+				body: {},
+				headers: { "x-anon-id": "anon_attacker" },
+			},
+			res,
+		);
+		expect(res.statusCode).toBe(403);
+		expect(res.body).toEqual({ error: "Cannot operate on another user's data" });
+		expect(from).not.toHaveBeenCalled();
+	});
+
+	it("denies a read with no caller identity before touching the settings table", async () => {
+		verifyCallerIdentity.mockResolvedValue({
+			ok: false,
+			status: 403,
+			error: "Missing session identity (x-anon-id header)",
+		});
+		const { default: handler } = await import("../../api/_notify-prefs.js");
+		const res = response();
+		await handler(
+			{ method: "GET", query: { user_id: "anon_abc123" }, body: {}, headers: {} },
+			res,
+		);
+		expect(res.statusCode).toBe(403);
+		expect(res.body).toEqual({ error: "Missing session identity (x-anon-id header)" });
+		expect(from).not.toHaveBeenCalled();
+	});
+
 	it("rejects an invalid user_id", async () => {
 		const { default: handler } = await import("../../api/_notify-prefs.js");
 		const res = response();
@@ -124,7 +188,7 @@ describe("POST /api/notify-prefs", () => {
 					sms_enabled: true,
 					email_enabled: false,
 				},
-				headers: {},
+				headers: { "x-anon-id": "anon_abc123" },
 			},
 			res,
 		);
@@ -137,6 +201,22 @@ describe("POST /api/notify-prefs", () => {
 		);
 	});
 
+	it("persists the browser-notification channel toggle", async () => {
+		const { default: handler } = await import("../../api/_notify-prefs.js");
+		const res = response();
+		await handler(
+			{
+				method: "POST",
+				query: {},
+				body: { user_id: "anon_abc123", browser_enabled: false },
+				headers: { "x-anon-id": "anon_abc123" },
+			},
+			res,
+		);
+		expect(res.statusCode).toBe(200);
+		expect(res.body.browser_enabled).toBe(false);
+	});
+
 	it("rejects a malformed phone with a helpful 400", async () => {
 		const { default: handler } = await import("../../api/_notify-prefs.js");
 		const res = response();
@@ -145,7 +225,7 @@ describe("POST /api/notify-prefs", () => {
 				method: "POST",
 				query: {},
 				body: { user_id: "anon_abc123", phone: "abc" },
-				headers: {},
+				headers: { "x-anon-id": "anon_abc123" },
 			},
 			res,
 		);
@@ -162,7 +242,7 @@ describe("POST /api/notify-prefs", () => {
 				method: "POST",
 				query: {},
 				body: { user_id: "anon_abc123", email: "nope" },
-				headers: {},
+				headers: { "x-anon-id": "anon_abc123" },
 			},
 			res,
 		);
@@ -178,7 +258,7 @@ describe("POST /api/notify-prefs", () => {
 				method: "POST",
 				query: {},
 				body: { user_id: "anon_abc123", phone: "", email: "" },
-				headers: {},
+				headers: { "x-anon-id": "anon_abc123" },
 			},
 			res,
 		);
@@ -196,7 +276,7 @@ describe("POST /api/notify-prefs", () => {
 				method: "POST",
 				query: {},
 				body: { user_id: "anon_abc123", phone: "+15551234567" },
-				headers: {},
+				headers: { "x-anon-id": "anon_abc123" },
 			},
 			res,
 		);

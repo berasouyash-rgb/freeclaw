@@ -16,6 +16,13 @@ vi.mock("@sentry/react", () => ({
 
 const initOptions = () => vi.mocked(Sentry.init).mock.calls[0]![0];
 
+async function freshSentry() {
+	vi.resetModules();
+	const mod = await import("../lib/sentry");
+	mod.__resetSentryForTests();
+	return mod;
+}
+
 describe("initSentry", () => {
 	let logSpy: ReturnType<typeof vi.spyOn>;
 
@@ -32,10 +39,9 @@ describe("initSentry", () => {
 	it("initializes with the env DSN and dev-mode flags", async () => {
 		vi.stubEnv("VITE_SENTRY_DSN", "https://fake-dsn@sentry.example/1");
 		vi.stubEnv("MODE", "development");
-		vi.resetModules();
-		const mod = await import("../lib/sentry");
+		const mod = await freshSentry();
 
-		expect(mod.initSentry()).toBe(true);
+		expect(await mod.initSentry()).toBe(true);
 		expect(Sentry.init).toHaveBeenCalledTimes(1);
 		expect(logSpy).toHaveBeenCalledWith("[Sentry] Initialized ✓");
 
@@ -50,10 +56,9 @@ describe("initSentry", () => {
 		vi.stubEnv("VITE_SENTRY_DSN", ""); // falsy → hardcoded fallback
 		vi.stubEnv("MODE", "production");
 		vi.stubEnv("DEV", false); // DEV is a plain env prop in Vitest, not derived from MODE
-		vi.resetModules();
-		const mod = await import("../lib/sentry");
+		const mod = await freshSentry();
 
-		expect(mod.initSentry()).toBe(true);
+		expect(await mod.initSentry()).toBe(true);
 
 		const opts = initOptions();
 		expect(opts.dsn).toContain("ingest.us.sentry.io");
@@ -66,18 +71,16 @@ describe("initSentry", () => {
 	it("falls back to a production environment when MODE is unset", async () => {
 		vi.stubEnv("VITE_SENTRY_DSN", "https://fake-dsn@sentry.example/1");
 		vi.stubEnv("MODE", ""); // falsy → 'production' fallback
-		vi.resetModules();
-		const mod = await import("../lib/sentry");
+		const mod = await freshSentry();
 
-		expect(mod.initSentry()).toBe(true);
+		expect(await mod.initSentry()).toBe(true);
 		expect(initOptions().environment).toBe("production");
 	});
 
 	it("beforeSend attaches url and viewport tags", async () => {
 		vi.stubEnv("VITE_SENTRY_DSN", "https://fake-dsn@sentry.example/1");
-		vi.resetModules();
-		const mod = await import("../lib/sentry");
-		mod.initSentry();
+		const mod = await freshSentry();
+		await mod.initSentry();
 
 		const opts = initOptions();
 		const event = { tags: { existing: "kept" } } as any;
@@ -94,14 +97,26 @@ describe("initSentry", () => {
 		expect(bare.tags).toHaveProperty("viewport");
 	});
 
-	it("re-exports the Sentry API surface", async () => {
-		vi.stubEnv("VITE_SENTRY_DSN", "https://fake-dsn@sentry.example/1");
-		vi.resetModules();
-		const mod = await import("../lib/sentry");
+	it("exposes the Sentry API surface through a dynamic import", async () => {
+		// Test-only import (never bundled to prod): proves the SDK namespace
+		// still resolves with the mock in place.
+		const api = await import("@sentry/react");
 
-		expect(mod.Sentry).toBeDefined();
-		expect(mod.SentryErrorBoundary).toBeDefined();
-		expect(mod.SentryProfiler).toBeDefined();
-		expect(mod.default).toBe(mod.Sentry);
+		expect(api).toBeDefined();
+		expect(api.ErrorBoundary).toBeDefined();
+		expect(api.Profiler).toBeDefined();
+	});
+
+	it("caches the SDK load — one dynamic import for repeated inits", async () => {
+		vi.stubEnv("VITE_SENTRY_DSN", "https://fake-dsn@sentry.example/1");
+		const mod = await freshSentry();
+
+		await mod.initSentry();
+		await mod.initSentry();
+		// init() runs per call, but the SDK init fn itself loads once —
+		// loadInit caches the destructured import.
+		const first = await mod.loadInit();
+		const second = await mod.loadInit();
+		expect(first).toBe(second);
 	});
 });

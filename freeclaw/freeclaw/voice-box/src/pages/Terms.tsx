@@ -1,18 +1,19 @@
-﻿import { Link } from "react-router";
+﻿import { ArrowLeft } from "lucide-react";
+import { Link, useNavigate } from "react-router";
 import FadeIn from "../components/FadeIn";
 
 const SECTIONS = [
 	{
 		title: "1. Acceptance of Terms",
-		content: `By accessing or using Voice Box ("the Service"), you agree to be bound by these Terms of Service. If you do not agree, do not use the Service. These terms apply to all users, including students, administrators, and visitors.`,
+		content: `By accessing or using Voice Flow ("the Service"), you agree to be bound by these Terms of Service. If you do not agree, do not use the Service. These terms apply to all users, including students, administrators, and visitors.`,
 	},
 	{
 		title: "2. Description of Service",
-		content: `Voice Box is an anonymous feedback platform that enables students to submit concerns, suggestions, and polls to school administrators. The Service includes AI-powered analysis, emotional support features, and administrative tools. The Service is provided "as is" and may be modified or discontinued at any time.`,
+		content: `Voice Flow is an anonymous feedback platform that enables students to submit concerns, suggestions, and polls to school administrators. The Service includes AI-powered analysis, emotional support features, and administrative tools. The Service is provided "as is" and may be modified or discontinued at any time.`,
 	},
 	{
 		title: "3. Anonymity and Privacy",
-		content: `Voice Box is designed to preserve user anonymity. We do not collect IP addresses, device fingerprints, cookies, or other tracking data from student users. Administrators cannot trace submissions to individual students. For complete details, see our Privacy Policy.`,
+		content: `Voice Flow is designed to preserve user anonymity. We do not collect IP addresses, device fingerprints, cookies, or other tracking data from student users. Administrators cannot trace submissions to individual students. For complete details, see our Privacy Policy.`,
 	},
 	{
 		title: "4. User Conduct",
@@ -24,11 +25,11 @@ const SECTIONS = [
 	},
 	{
 		title: "6. Intellectual Property",
-		content: `The Service, including its original content, features, and functionality, is owned by Voice Box and protected by copyright, trademark, and other intellectual property laws. Users retain ownership of content they submit through the Service.`,
+		content: `The Service, including its original content, features, and functionality, is owned by Voice Flow and protected by copyright, trademark, and other intellectual property laws. Users retain ownership of content they submit through the Service.`,
 	},
 	{
 		title: "7. Limitation of Liability",
-		content: `To the maximum extent permitted by law, Voice Box shall not be liable for any indirect, incidental, special, consequential, or punitive damages, or any loss of profits or revenues, whether incurred directly or indirectly, or any loss of data, use, goodwill, or other intangible losses.`,
+		content: `To the maximum extent permitted by law, Voice Flow shall not be liable for any indirect, incidental, special, consequential, or punitive damages, or any loss of profits or revenues, whether incurred directly or indirectly, or any loss of data, use, goodwill, or other intangible losses.`,
 	},
 	{
 		title: "8. Disclaimer of Warranties",
@@ -36,7 +37,7 @@ const SECTIONS = [
 	},
 	{
 		title: "9. Indemnification",
-		content: `You agree to indemnify, defend, and hold harmless Voice Box, its officers, directors, employees, and agents from any claims, damages, losses, liabilities, and expenses (including reasonable attorneys' fees) arising from your use of the Service or violation of these terms.`,
+		content: `You agree to indemnify, defend, and hold harmless Voice Flow, its officers, directors, employees, and agents from any claims, damages, losses, liabilities, and expenses (including reasonable attorneys' fees) arising from your use of the Service or violation of these terms.`,
 	},
 	{
 		title: "10. Termination",
@@ -57,12 +58,30 @@ const SECTIONS = [
 ];
 
 export default function Terms() {
+	const nav = useNavigate();
+	// Deep links land here with no history to go back to — fall home
+	// instead of a dead button.
+	const goBack = () => {
+		if (window.history.length > 1) nav(-1);
+		else nav("/");
+	};
 	return (
 		<div className="min-h-screen bg-bg">
 			<section className="relative overflow-hidden">
 				<div className="absolute inset-0 bg-gradient-to-b from-accent/5 via-transparent to-transparent" />
 				<div className="relative max-w-3xl mx-auto px-6 pt-24 pb-12 md:pt-32 md:pb-16 text-center">
 					<FadeIn>
+						<button
+							type="button"
+							className="btn btn-ghost !px-3 mb-6"
+							onClick={goBack}
+							aria-label="Go back"
+						>
+							<ArrowLeft size={15} /> Back
+						</button>
+						<p className="inline-flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-[0.18em] text-accent bg-accent/10 rounded-full px-3 py-1.5 mb-4">
+							The fine print, in plain words
+						</p>
 						<h1 className="text-4xl md:text-5xl font-bold text-ink mb-4">
 							Terms of Service
 						</h1>
@@ -72,18 +91,28 @@ export default function Terms() {
 			</section>
 
 			<section className="max-w-3xl mx-auto px-6 py-12">
-				<FadeIn>
-					<div className="prose prose-ink max-w-none">
-						{SECTIONS.map((s, i) => (
-							<div key={i} className="mb-8">
-								<h2 className="text-xl font-semibold text-ink mb-3">
-									{s.title}
-								</h2>
-								<p className="text-ink2 leading-relaxed">{s.content}</p>
-							</div>
-						))}
-					</div>
-				</FadeIn>
+				<div className="space-y-4">
+					{SECTIONS.map((s, i) => (
+						<FadeIn key={s.title} delay={Math.min(i * 0.05, 0.3)}>
+							<article className="card p-5 sm:p-6 flex gap-4">
+								<span
+									className="shrink-0 w-9 h-9 rounded-xl bg-accent/10 text-accent font-display font-bold text-sm grid place-items-center"
+									aria-hidden
+								>
+									{i + 1}
+								</span>
+								<div className="min-w-0">
+									<h2 className="text-lg font-semibold text-ink mb-1.5">
+										{s.title.replace(/^\d+\.\s*/, "")}
+									</h2>
+									<p className="text-ink2 leading-relaxed text-[15px]">
+										{s.content}
+									</p>
+								</div>
+							</article>
+						</FadeIn>
+					))}
+				</div>
 
 				<div className="mt-12 text-center text-sm text-ink3">
 					<p>

@@ -275,7 +275,7 @@ describe("POST /api/pre-publish/review — actions", () => {
 		await handler(
 			{
 				method: "POST",
-				body: { key: QUEUE_ITEM.key, action: "ban" },
+				body: { key: QUEUE_ITEM.key, action: "ban", confirm: true },
 				headers: { "x-admin-token": "t" },
 			},
 			res,
@@ -307,7 +307,7 @@ describe("POST /api/pre-publish/review — actions", () => {
 		await handler(
 			{
 				method: "POST",
-				body: { key: QUEUE_ITEM.key, action: "ban" },
+				body: { key: QUEUE_ITEM.key, action: "ban", confirm: true },
 				headers: { "x-admin-token": "t" },
 			},
 			res,
@@ -332,7 +332,7 @@ describe("POST /api/pre-publish/review — actions", () => {
 		await handler(
 			{
 				method: "POST",
-				body: { key: "k", action: "ban" },
+				body: { key: "k", action: "ban", confirm: true },
 				headers: { "x-admin-token": "t" },
 			},
 			res,
@@ -341,10 +341,86 @@ describe("POST /api/pre-publish/review — actions", () => {
 		expect(usersMetaUpsertFn).not.toHaveBeenCalled();
 	});
 
-	it("keep_private with a failing update → 500 and item kept", async () => {
+	it("ban without confirm → 400 CONFIRM_REQUIRED (FIX #18)", async () => {
 		mockTables({
 			settingsGet: { data: QUEUE_ITEM, error: null },
-			settingsUpdate: { error: new Error("update failed") },
+		});
+		const { default: handler } = await import(
+			"../../api/_pre-publish-review.js"
+		);
+		const res = response();
+		await handler(
+			{
+				method: "POST",
+				body: { key: QUEUE_ITEM.key, action: "ban" },
+				headers: { "x-admin-token": "t" },
+			},
+			res,
+		);
+		expect(res.statusCode).toBe(400);
+		expect(res.body.code).toBe("CONFIRM_REQUIRED");
+	});
+
+	it("keep_private notifies the author and preserves the item out of the active queue", async () => {
+		mockTables({
+			settingsGet: { data: QUEUE_ITEM, error: null },
+		});
+		const { default: handler } = await import(
+			"../../api/_pre-publish-review.js"
+		);
+		const auth = await import("../../api/_auth.js");
+		const res = response();
+		await handler(
+			{
+				method: "POST",
+				body: { key: QUEUE_ITEM.key, action: "keep_private" },
+				headers: { "x-admin-token": "t" },
+			},
+			res,
+		);
+		expect(res.statusCode).toBe(200);
+		expect(res.body).toMatchObject({
+			ok: true,
+			action: "keep_private",
+			post_id: expect.any(String),
+		});
+		expect(auth.notifyUser).toHaveBeenCalledWith(
+			"anon-9",
+			"info",
+			"Content kept private",
+			expect.stringContaining("private post"),
+		);
+		expect(settingsDeleteFn).not.toHaveBeenCalled();
+	});
+
+	it("keep_private preserves the content as a private post", async () => {
+		mockTables({
+			settingsGet: { data: QUEUE_ITEM, error: null },
+		});
+		const { default: handler } = await import(
+			"../../api/_pre-publish-review.js"
+		);
+		const res = response();
+		await handler(
+			{
+				method: "POST",
+				body: { key: QUEUE_ITEM.key, action: "keep_private" },
+				headers: { "x-admin-token": "t" },
+			},
+			res,
+		);
+		expect(res.statusCode).toBe(200);
+		expect(res.body).toMatchObject({
+			ok: true,
+			action: "keep_private",
+			post_id: expect.any(String),
+		});
+		expect(settingsDeleteFn).not.toHaveBeenCalled();
+	});
+	it("keep_private with a failing post insert → 500 and item kept", async () => {
+		mockTables({
+			settingsGet: { data: QUEUE_ITEM, error: null },
+			postsInsert: { error: new Error("insert failed") },
 		});
 		const { default: handler } = await import(
 			"../../api/_pre-publish-review.js"

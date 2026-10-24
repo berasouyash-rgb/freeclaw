@@ -1,0 +1,1811 @@
+# Worker audit — 20 criteria (spec §60)
+
+Generated: 2026-10-03T14:29:26.490Z · by `scripts/audit-workers.mjs` (static, evidence-cited).
+Universe: 39 core-registered + 42 deterministic registry workers.
+
+## Platform-level findings (apply to every worker)
+- [PASS] Budget gate before observe — api/_workforce-core.js:runWorker→budgetAllows
+- [PASS] Ledger row per run (table or KV, max 500) — api/_workforce-core.js:ledgerAppend
+- [PASS] Evidence passed to execute(dec, ev) — api/_workforce-core.js:runWorker
+- [PASS] Bare {ok:true} verify rejected — api/_workforce-core.js + workforce-reality tests
+- [PASS] Shadow/canary modes — registerWorker shadow_mode + runWorker branch
+- [PASS] Affected-records cap — runWorker budget check
+- [PASS] Supervisor pre-execution gate wired into runWorker — wired
+- [PASS] Supervisor failure/success recording in runWorker — wired
+- [PASS] Independent verification engine — api/_workforce-verification.js:verifyOutcome
+
+## Core-registered workers
+
+### cache-optimizer — ACCEPTABLE-WITH-NOTES (16/20 pass, 3 partial, 0 fail)
+- [PASS] 1 Trigger exists — cron,admin_manual
+- [PASS] 2 Real input exists — observe() reads live state
+- [PASS] 3 Real tools exist — inspect_cache,get_cache_stats,remove_expired_keys
+- [PASS] 4 Permission exists — class A / risk default low
+- [PASS] 5 Real action exists — execute(dec, ev)
+- [PASS] 6 Real state can change
+- [PASS] 7 Verification exists — self-verify AND mapped independent verifier (runWorker requires both)
+- [PASS] 8 Metrics exist — measure() before/after
+- [PASS] 9 Evidence exists — core ledger row per run (table or workforce_actions_kv, 500 rows)
+- [PARTIAL] 10 UI exists where useful — surfaced via aggregate dashboards (Ops Center/Quality), not per-worker
+- [PASS] 11 Failure handling exists — execution_failed outcome + ledger error; class-B onEscalate
+- [PASS] 12 Retry exists — per-worker consecutive-failure backoff (10min, then 30min); cron runs defer with auto-retry, manual runs bypass
+- [NA] 13 Rollback where appropriate — cleanup-class; supervisor rollback stack available
+- [PASS] 14 Disable test exists — api/_worker-disable-tests.js: documented 24h-off consequence
+- [PARTIAL] 15 Evaluation exists — continuous-evaluation scorecards derive from ledger; per-worker registered_eval_cases vary
+- [PASS] 16 Regression tests exist — tests/api/workforce-core-coverage.test.ts:76
+- [PASS] 17 Monitoring exists — supervisor scan + ops-summary + AI Failures surface
+- [PARTIAL] 18 Cost controls exist — runs/hour + affected-records caps; no token-cost accounting
+- [PASS] 19 Security boundaries exist — class-gated execution; C never executes; tool-gateway authZ (proof-tested)
+- [PASS] 20 Connected to production workflow — cron tick + manual automation-run + ops-summary
+
+### session-cleaner — ACCEPTABLE-WITH-NOTES (16/20 pass, 4 partial, 0 fail)
+- [PASS] 1 Trigger exists — cron,admin_manual
+- [PASS] 2 Real input exists — observe() reads live state
+- [PASS] 3 Real tools exist — inspect_sessions,remove_expired_keys
+- [PASS] 4 Permission exists — class A / risk default low
+- [PASS] 5 Real action exists — execute(dec, ev)
+- [PASS] 6 Real state can change
+- [PASS] 7 Verification exists — self-verify AND mapped independent verifier (runWorker requires both)
+- [PASS] 8 Metrics exist — measure() before/after
+- [PASS] 9 Evidence exists — core ledger row per run (table or workforce_actions_kv, 500 rows)
+- [PARTIAL] 10 UI exists where useful — surfaced via aggregate dashboards (Ops Center/Quality), not per-worker
+- [PASS] 11 Failure handling exists — execution_failed outcome + ledger error; class-B onEscalate
+- [PASS] 12 Retry exists — per-worker consecutive-failure backoff (10min, then 30min); cron runs defer with auto-retry, manual runs bypass
+- [PARTIAL] 13 Rollback where appropriate — cleanup-class; supervisor rollback stack available
+- [PASS] 14 Disable test exists — api/_worker-disable-tests.js: documented 24h-off consequence
+- [PARTIAL] 15 Evaluation exists — continuous-evaluation scorecards derive from ledger; per-worker registered_eval_cases vary
+- [PASS] 16 Regression tests exist — tests/api/worker-measure.test.ts:4; tests/api/worker-measure.test.ts:79; tests/api/worker-measure.test.ts:84; tests/api/workforce-core-coverage.test.ts:77
+- [PASS] 17 Monitoring exists — supervisor scan + ops-summary + AI Failures surface
+- [PARTIAL] 18 Cost controls exist — runs/hour + affected-records caps; no token-cost accounting
+- [PASS] 19 Security boundaries exist — class-gated execution; C never executes; tool-gateway authZ (proof-tested)
+- [PASS] 20 Connected to production workflow — cron tick + manual automation-run + ops-summary
+
+### poll-archiver — ACCEPTABLE-WITH-NOTES (16/20 pass, 4 partial, 0 fail)
+- [PASS] 1 Trigger exists — cron,admin_manual
+- [PASS] 2 Real input exists — observe() reads live state
+- [PASS] 3 Real tools exist — read_query,quarantine_content
+- [PASS] 4 Permission exists — class A / risk default low
+- [PASS] 5 Real action exists — execute(dec, ev)
+- [PASS] 6 Real state can change
+- [PASS] 7 Verification exists — self-verify AND mapped independent verifier (runWorker requires both)
+- [PASS] 8 Metrics exist — measure() before/after
+- [PASS] 9 Evidence exists — core ledger row per run (table or workforce_actions_kv, 500 rows)
+- [PARTIAL] 10 UI exists where useful — surfaced via aggregate dashboards (Ops Center/Quality), not per-worker
+- [PASS] 11 Failure handling exists — execution_failed outcome + ledger error; class-B onEscalate
+- [PASS] 12 Retry exists — per-worker consecutive-failure backoff (10min, then 30min); cron runs defer with auto-retry, manual runs bypass
+- [PARTIAL] 13 Rollback where appropriate — cleanup-class; supervisor rollback stack available
+- [PASS] 14 Disable test exists — api/_worker-disable-tests.js: documented 24h-off consequence
+- [PARTIAL] 15 Evaluation exists — continuous-evaluation scorecards derive from ledger; per-worker registered_eval_cases vary
+- [PASS] 16 Regression tests exist — tests/api/worker-measure.test.ts:4; tests/api/worker-measure.test.ts:96; tests/api/worker-measure.test.ts:116; tests/api/workforce-core-coverage.test.ts:78
+- [PASS] 17 Monitoring exists — supervisor scan + ops-summary + AI Failures surface
+- [PARTIAL] 18 Cost controls exist — runs/hour + affected-records caps; no token-cost accounting
+- [PASS] 19 Security boundaries exist — class-gated execution; C never executes; tool-gateway authZ (proof-tested)
+- [PASS] 20 Connected to production workflow — cron tick + manual automation-run + ops-summary
+
+### suspension-lifecycle — ACCEPTABLE-WITH-NOTES (17/20 pass, 2 partial, 0 fail)
+- [PASS] 1 Trigger exists — cron,admin_manual
+- [PASS] 2 Real input exists — observe() reads live state
+- [PASS] 3 Real tools exist — read_query,update_users_meta
+- [PASS] 4 Permission exists — class A / risk low
+- [PASS] 5 Real action exists — execute(dec, ev)
+- [PASS] 6 Real state can change
+- [PASS] 7 Verification exists — self-verify AND mapped independent verifier (runWorker requires both)
+- [PASS] 8 Metrics exist — measure() before/after
+- [PASS] 9 Evidence exists — core ledger row per run (table or workforce_actions_kv, 500 rows)
+- [PASS] 10 UI exists where useful — src/__tests__/realwork-workers.test.ts:188; src/__tests__/realwork-workers.test.ts:196; src/__tests__/realwork-workers.test.ts:209; src/__tests__/realwork-workers.test.ts:269
+- [PASS] 11 Failure handling exists — execution_failed outcome + ledger error; class-B onEscalate
+- [PASS] 12 Retry exists — per-worker consecutive-failure backoff (10min, then 30min); cron runs defer with auto-retry, manual runs bypass
+- [NA] 13 Rollback where appropriate — cleanup-class; supervisor rollback stack available
+- [PASS] 14 Disable test exists — api/_worker-disable-tests.js: documented 24h-off consequence
+- [PARTIAL] 15 Evaluation exists — continuous-evaluation scorecards derive from ledger; per-worker registered_eval_cases vary
+- [PASS] 16 Regression tests exist — tests/api/workforce-core-coverage.test.ts:79
+- [PASS] 17 Monitoring exists — supervisor scan + ops-summary + AI Failures surface
+- [PARTIAL] 18 Cost controls exist — runs/hour + affected-records caps; no token-cost accounting
+- [PASS] 19 Security boundaries exist — class-gated execution; C never executes; tool-gateway authZ (proof-tested)
+- [PASS] 20 Connected to production workflow — cron tick + manual automation-run + ops-summary
+
+### counter-reconciliation — ACCEPTABLE-WITH-NOTES (17/20 pass, 3 partial, 0 fail)
+- [PASS] 1 Trigger exists — cron,admin_manual
+- [PASS] 2 Real input exists — observe() reads live state
+- [PASS] 3 Real tools exist — read_query,update_posts
+- [PASS] 4 Permission exists — class A / risk low
+- [PASS] 5 Real action exists — execute(dec, ev)
+- [PASS] 6 Real state can change
+- [PASS] 7 Verification exists — self-verify AND mapped independent verifier (runWorker requires both)
+- [PASS] 8 Metrics exist — measure() before/after
+- [PASS] 9 Evidence exists — core ledger row per run (table or workforce_actions_kv, 500 rows)
+- [PASS] 10 UI exists where useful — src/__tests__/realwork-workers.test.ts:214; src/__tests__/realwork-workers.test.ts:225; src/__tests__/realwork-workers.test.ts:270
+- [PASS] 11 Failure handling exists — execution_failed outcome + ledger error; class-B onEscalate
+- [PASS] 12 Retry exists — per-worker consecutive-failure backoff (10min, then 30min); cron runs defer with auto-retry, manual runs bypass
+- [PARTIAL] 13 Rollback where appropriate — cleanup-class; supervisor rollback stack available
+- [PASS] 14 Disable test exists — api/_worker-disable-tests.js: documented 24h-off consequence
+- [PARTIAL] 15 Evaluation exists — continuous-evaluation scorecards derive from ledger; per-worker registered_eval_cases vary
+- [PASS] 16 Regression tests exist — tests/api/workforce-core-coverage.test.ts:80
+- [PASS] 17 Monitoring exists — supervisor scan + ops-summary + AI Failures surface
+- [PARTIAL] 18 Cost controls exist — runs/hour + affected-records caps; no token-cost accounting
+- [PASS] 19 Security boundaries exist — class-gated execution; C never executes; tool-gateway authZ (proof-tested)
+- [PASS] 20 Connected to production workflow — cron tick + manual automation-run + ops-summary
+
+### authz-probe — ACCEPTABLE-WITH-NOTES (14/20 pass, 3 partial, 0 fail)
+- [PASS] 1 Trigger exists — cron,admin_manual
+- [PASS] 2 Real input exists — observe() reads live state
+- [PASS] 3 Real tools exist — http_request,send_admin_alert
+- [PASS] 4 Permission exists — class C / risk low
+- [NA] 5 Real action exists — evidence-only by design
+- [NA] 6 Real state can change
+- [PASS] 7 Verification exists — self-verify AND mapped independent verifier (runWorker requires both)
+- [PARTIAL] 8 Metrics exist — duration/outcome in ledger row; no metric()
+- [PASS] 9 Evidence exists — core ledger row per run (table or workforce_actions_kv, 500 rows)
+- [PASS] 10 UI exists where useful — src/__tests__/realwork-workers.test.ts:254; src/__tests__/realwork-workers.test.ts:258; src/__tests__/realwork-workers.test.ts:272
+- [PASS] 11 Failure handling exists — execution_failed outcome + ledger error; class-B onEscalate
+- [PASS] 12 Retry exists — per-worker consecutive-failure backoff (10min, then 30min); cron runs defer with auto-retry, manual runs bypass
+- [NA] 13 Rollback where appropriate — cleanup-class; supervisor rollback stack available
+- [PASS] 14 Disable test exists — api/_worker-disable-tests.js: documented 24h-off consequence
+- [PARTIAL] 15 Evaluation exists — continuous-evaluation scorecards derive from ledger; per-worker registered_eval_cases vary
+- [PASS] 16 Regression tests exist — tests/api/workforce-core-coverage.test.ts:81
+- [PASS] 17 Monitoring exists — supervisor scan + ops-summary + AI Failures surface
+- [PARTIAL] 18 Cost controls exist — runs/hour + affected-records caps; no token-cost accounting
+- [PASS] 19 Security boundaries exist — class-gated execution; C never executes; tool-gateway authZ (proof-tested)
+- [PASS] 20 Connected to production workflow — cron tick + manual automation-run + ops-summary
+
+### spam-score-decay — ACCEPTABLE-WITH-NOTES (17/20 pass, 3 partial, 0 fail)
+- [PASS] 1 Trigger exists — cron,admin_manual
+- [PASS] 2 Real input exists — observe() reads live state
+- [PASS] 3 Real tools exist — read_query,update_users_meta
+- [PASS] 4 Permission exists — class A / risk low
+- [PASS] 5 Real action exists — execute(dec, ev)
+- [PASS] 6 Real state can change
+- [PASS] 7 Verification exists — self-verify AND mapped independent verifier (runWorker requires both)
+- [PASS] 8 Metrics exist — measure() before/after
+- [PASS] 9 Evidence exists — core ledger row per run (table or workforce_actions_kv, 500 rows)
+- [PASS] 10 UI exists where useful — src/__tests__/realwork-workers.test.ts:234; src/__tests__/realwork-workers.test.ts:240; src/__tests__/realwork-workers.test.ts:249; src/__tests__/realwork-workers.test.ts:271
+- [PASS] 11 Failure handling exists — execution_failed outcome + ledger error; class-B onEscalate
+- [PASS] 12 Retry exists — per-worker consecutive-failure backoff (10min, then 30min); cron runs defer with auto-retry, manual runs bypass
+- [PARTIAL] 13 Rollback where appropriate — cleanup-class; supervisor rollback stack available
+- [PASS] 14 Disable test exists — api/_worker-disable-tests.js: documented 24h-off consequence
+- [PARTIAL] 15 Evaluation exists — continuous-evaluation scorecards derive from ledger; per-worker registered_eval_cases vary
+- [PASS] 16 Regression tests exist — tests/api/workforce-core-coverage.test.ts:82
+- [PASS] 17 Monitoring exists — supervisor scan + ops-summary + AI Failures surface
+- [PARTIAL] 18 Cost controls exist — runs/hour + affected-records caps; no token-cost accounting
+- [PASS] 19 Security boundaries exist — class-gated execution; C never executes; tool-gateway authZ (proof-tested)
+- [PASS] 20 Connected to production workflow — cron tick + manual automation-run + ops-summary
+
+### report-sla — ACCEPTABLE-WITH-NOTES (12/20 pass, 3 partial, 0 fail)
+- [PASS] 1 Trigger exists — cron,admin_manual
+- [PASS] 2 Real input exists — observe() reads live state
+- [PASS] 3 Real tools exist — inspect_reports,send_admin_alert
+- [PASS] 4 Permission exists — class C / risk medium
+- [NA] 5 Real action exists — evidence-only by design
+- [NA] 6 Real state can change
+- [NA] 7 Verification exists — evidence-only: nothing executes, nothing to verify
+- [NA] 8 Metrics exist — evidence-only: no execute phase, measure() unreachable by design; ledger duration/outcome is the measurement
+- [PASS] 9 Evidence exists — core ledger row per run (table or workforce_actions_kv, 500 rows)
+- [PARTIAL] 10 UI exists where useful — surfaced via aggregate dashboards (Ops Center/Quality), not per-worker
+- [PASS] 11 Failure handling exists — execution_failed outcome + ledger error; class-B onEscalate
+- [PASS] 12 Retry exists — per-worker consecutive-failure backoff (10min, then 30min); cron runs defer with auto-retry, manual runs bypass
+- [NA] 13 Rollback where appropriate — cleanup-class; supervisor rollback stack available
+- [PASS] 14 Disable test exists — api/_worker-disable-tests.js: documented 24h-off consequence
+- [PARTIAL] 15 Evaluation exists — continuous-evaluation scorecards derive from ledger; per-worker registered_eval_cases vary
+- [PASS] 16 Regression tests exist — tests/api/workforce-core-coverage.test.ts:83
+- [PASS] 17 Monitoring exists — supervisor scan + ops-summary + AI Failures surface
+- [PARTIAL] 18 Cost controls exist — runs/hour + affected-records caps; no token-cost accounting
+- [PASS] 19 Security boundaries exist — class-gated execution; C never executes; tool-gateway authZ (proof-tested)
+- [PASS] 20 Connected to production workflow — cron tick + manual automation-run + ops-summary
+
+### appeal-sla — ACCEPTABLE-WITH-NOTES (12/20 pass, 3 partial, 0 fail)
+- [PASS] 1 Trigger exists — cron,admin_manual
+- [PASS] 2 Real input exists — observe() reads live state
+- [PASS] 3 Real tools exist — inspect_appeals,send_admin_alert
+- [PASS] 4 Permission exists — class C / risk medium
+- [NA] 5 Real action exists — evidence-only by design
+- [NA] 6 Real state can change
+- [NA] 7 Verification exists — evidence-only: nothing executes, nothing to verify
+- [NA] 8 Metrics exist — evidence-only: no execute phase, measure() unreachable by design; ledger duration/outcome is the measurement
+- [PASS] 9 Evidence exists — core ledger row per run (table or workforce_actions_kv, 500 rows)
+- [PARTIAL] 10 UI exists where useful — surfaced via aggregate dashboards (Ops Center/Quality), not per-worker
+- [PASS] 11 Failure handling exists — execution_failed outcome + ledger error; class-B onEscalate
+- [PASS] 12 Retry exists — per-worker consecutive-failure backoff (10min, then 30min); cron runs defer with auto-retry, manual runs bypass
+- [NA] 13 Rollback where appropriate — cleanup-class; supervisor rollback stack available
+- [PASS] 14 Disable test exists — api/_worker-disable-tests.js: documented 24h-off consequence
+- [PARTIAL] 15 Evaluation exists — continuous-evaluation scorecards derive from ledger; per-worker registered_eval_cases vary
+- [PASS] 16 Regression tests exist — tests/api/workforce-appeal-sla.test.ts:66; tests/api/workforce-appeal-sla.test.ts:75; tests/api/workforce-appeal-sla.test.ts:78; tests/api/workforce-appeal-sla.test.ts:90
+- [PASS] 17 Monitoring exists — supervisor scan + ops-summary + AI Failures surface
+- [PARTIAL] 18 Cost controls exist — runs/hour + affected-records caps; no token-cost accounting
+- [PASS] 19 Security boundaries exist — class-gated execution; C never executes; tool-gateway authZ (proof-tested)
+- [PASS] 20 Connected to production workflow — cron tick + manual automation-run + ops-summary
+
+### api-reliability — ACCEPTABLE-WITH-NOTES (12/20 pass, 3 partial, 0 fail)
+- [PASS] 1 Trigger exists — cron,admin_manual
+- [PASS] 2 Real input exists — observe() reads live state
+- [PASS] 3 Real tools exist — inspect_logs,send_admin_alert
+- [PASS] 4 Permission exists — class C / risk default low
+- [NA] 5 Real action exists — evidence-only by design
+- [NA] 6 Real state can change
+- [NA] 7 Verification exists — evidence-only: nothing executes, nothing to verify
+- [NA] 8 Metrics exist — evidence-only: no execute phase, measure() unreachable by design; ledger duration/outcome is the measurement
+- [PASS] 9 Evidence exists — core ledger row per run (table or workforce_actions_kv, 500 rows)
+- [PARTIAL] 10 UI exists where useful — surfaced via aggregate dashboards (Ops Center/Quality), not per-worker
+- [PASS] 11 Failure handling exists — execution_failed outcome + ledger error; class-B onEscalate
+- [PASS] 12 Retry exists — per-worker consecutive-failure backoff (10min, then 30min); cron runs defer with auto-retry, manual runs bypass
+- [NA] 13 Rollback where appropriate — cleanup-class; supervisor rollback stack available
+- [PASS] 14 Disable test exists — api/_worker-disable-tests.js: documented 24h-off consequence
+- [PARTIAL] 15 Evaluation exists — continuous-evaluation scorecards derive from ledger; per-worker registered_eval_cases vary
+- [PASS] 16 Regression tests exist — tests/api/workforce-core-coverage.test.ts:84
+- [PASS] 17 Monitoring exists — supervisor scan + ops-summary + AI Failures surface
+- [PARTIAL] 18 Cost controls exist — runs/hour + affected-records caps; no token-cost accounting
+- [PASS] 19 Security boundaries exist — class-gated execution; C never executes; tool-gateway authZ (proof-tested)
+- [PASS] 20 Connected to production workflow — cron tick + manual automation-run + ops-summary
+
+### spam-sentinel — ACCEPTABLE-WITH-NOTES (13/20 pass, 2 partial, 0 fail)
+- [PASS] 1 Trigger exists — cron,admin_manual
+- [PASS] 2 Real input exists — observe() reads live state
+- [PASS] 3 Real tools exist — inspect_post,classify_content,send_admin_alert
+- [PASS] 4 Permission exists — class C / risk default low
+- [NA] 5 Real action exists — evidence-only by design
+- [NA] 6 Real state can change
+- [NA] 7 Verification exists — evidence-only: nothing executes, nothing to verify
+- [NA] 8 Metrics exist — evidence-only: no execute phase, measure() unreachable by design; ledger duration/outcome is the measurement
+- [PASS] 9 Evidence exists — core ledger row per run (table or workforce_actions_kv, 500 rows)
+- [PASS] 10 UI exists where useful — src/__tests__/OpsCenter.test.tsx:95
+- [PASS] 11 Failure handling exists — execution_failed outcome + ledger error; class-B onEscalate
+- [PASS] 12 Retry exists — per-worker consecutive-failure backoff (10min, then 30min); cron runs defer with auto-retry, manual runs bypass
+- [NA] 13 Rollback where appropriate — cleanup-class; supervisor rollback stack available
+- [PASS] 14 Disable test exists — api/_worker-disable-tests.js: documented 24h-off consequence
+- [PARTIAL] 15 Evaluation exists — continuous-evaluation scorecards derive from ledger; per-worker registered_eval_cases vary
+- [PASS] 16 Regression tests exist — tests/api/worker-measure.test.ts:165; tests/api/worker-measure.test.ts:166; tests/api/workforce-core-coverage.test.ts:85
+- [PASS] 17 Monitoring exists — supervisor scan + ops-summary + AI Failures surface
+- [PARTIAL] 18 Cost controls exist — runs/hour + affected-records caps; no token-cost accounting
+- [PASS] 19 Security boundaries exist — class-gated execution; C never executes; tool-gateway authZ (proof-tested)
+- [PASS] 20 Connected to production workflow — cron tick + manual automation-run + ops-summary
+
+### duplicate-reports — ACCEPTABLE-WITH-NOTES (12/20 pass, 3 partial, 0 fail)
+- [PASS] 1 Trigger exists — cron,admin_manual
+- [PASS] 2 Real input exists — observe() reads live state
+- [PASS] 3 Real tools exist — detect_duplicates,send_admin_alert
+- [PASS] 4 Permission exists — class C / risk default low
+- [NA] 5 Real action exists — evidence-only by design
+- [NA] 6 Real state can change
+- [NA] 7 Verification exists — evidence-only: nothing executes, nothing to verify
+- [NA] 8 Metrics exist — evidence-only: no execute phase, measure() unreachable by design; ledger duration/outcome is the measurement
+- [PASS] 9 Evidence exists — core ledger row per run (table or workforce_actions_kv, 500 rows)
+- [PARTIAL] 10 UI exists where useful — surfaced via aggregate dashboards (Ops Center/Quality), not per-worker
+- [PASS] 11 Failure handling exists — execution_failed outcome + ledger error; class-B onEscalate
+- [PASS] 12 Retry exists — per-worker consecutive-failure backoff (10min, then 30min); cron runs defer with auto-retry, manual runs bypass
+- [NA] 13 Rollback where appropriate — cleanup-class; supervisor rollback stack available
+- [PASS] 14 Disable test exists — api/_worker-disable-tests.js: documented 24h-off consequence
+- [PARTIAL] 15 Evaluation exists — continuous-evaluation scorecards derive from ledger; per-worker registered_eval_cases vary
+- [PASS] 16 Regression tests exist — tests/api/workforce-core-coverage.test.ts:86
+- [PASS] 17 Monitoring exists — supervisor scan + ops-summary + AI Failures surface
+- [PARTIAL] 18 Cost controls exist — runs/hour + affected-records caps; no token-cost accounting
+- [PASS] 19 Security boundaries exist — class-gated execution; C never executes; tool-gateway authZ (proof-tested)
+- [PASS] 20 Connected to production workflow — cron tick + manual automation-run + ops-summary
+
+### notification-health — ACCEPTABLE-WITH-NOTES (12/20 pass, 3 partial, 0 fail)
+- [PASS] 1 Trigger exists — cron,admin_manual
+- [PASS] 2 Real input exists — observe() reads live state
+- [PASS] 3 Real tools exist — inspect_delivery_status,retry_notification,send_admin_alert
+- [PASS] 4 Permission exists — class C / risk default low
+- [NA] 5 Real action exists — evidence-only by design
+- [NA] 6 Real state can change
+- [NA] 7 Verification exists — evidence-only: nothing executes, nothing to verify
+- [NA] 8 Metrics exist — evidence-only: no execute phase, measure() unreachable by design; ledger duration/outcome is the measurement
+- [PASS] 9 Evidence exists — core ledger row per run (table or workforce_actions_kv, 500 rows)
+- [PARTIAL] 10 UI exists where useful — surfaced via aggregate dashboards (Ops Center/Quality), not per-worker
+- [PASS] 11 Failure handling exists — execution_failed outcome + ledger error; class-B onEscalate
+- [PASS] 12 Retry exists — per-worker consecutive-failure backoff (10min, then 30min); cron runs defer with auto-retry, manual runs bypass
+- [NA] 13 Rollback where appropriate — cleanup-class; supervisor rollback stack available
+- [PASS] 14 Disable test exists — api/_worker-disable-tests.js: documented 24h-off consequence
+- [PARTIAL] 15 Evaluation exists — continuous-evaluation scorecards derive from ledger; per-worker registered_eval_cases vary
+- [PASS] 16 Regression tests exist — tests/api/workforce-core-coverage.test.ts:87
+- [PASS] 17 Monitoring exists — supervisor scan + ops-summary + AI Failures surface
+- [PARTIAL] 18 Cost controls exist — runs/hour + affected-records caps; no token-cost accounting
+- [PASS] 19 Security boundaries exist — class-gated execution; C never executes; tool-gateway authZ (proof-tested)
+- [PASS] 20 Connected to production workflow — cron tick + manual automation-run + ops-summary
+
+### orphan-auditor — ACCEPTABLE-WITH-NOTES (12/20 pass, 3 partial, 0 fail)
+- [PASS] 1 Trigger exists — cron,admin_manual
+- [PASS] 2 Real input exists — observe() reads live state
+- [PASS] 3 Real tools exist — verify_integrity,detect_duplicates
+- [PASS] 4 Permission exists — class C / risk default low
+- [NA] 5 Real action exists — evidence-only by design
+- [NA] 6 Real state can change
+- [NA] 7 Verification exists — evidence-only: nothing executes, nothing to verify
+- [NA] 8 Metrics exist — evidence-only: no execute phase, measure() unreachable by design; ledger duration/outcome is the measurement
+- [PASS] 9 Evidence exists — core ledger row per run (table or workforce_actions_kv, 500 rows)
+- [PARTIAL] 10 UI exists where useful — surfaced via aggregate dashboards (Ops Center/Quality), not per-worker
+- [PASS] 11 Failure handling exists — execution_failed outcome + ledger error; class-B onEscalate
+- [PASS] 12 Retry exists — per-worker consecutive-failure backoff (10min, then 30min); cron runs defer with auto-retry, manual runs bypass
+- [NA] 13 Rollback where appropriate — cleanup-class; supervisor rollback stack available
+- [PASS] 14 Disable test exists — api/_worker-disable-tests.js: documented 24h-off consequence
+- [PARTIAL] 15 Evaluation exists — continuous-evaluation scorecards derive from ledger; per-worker registered_eval_cases vary
+- [PASS] 16 Regression tests exist — tests/api/workforce-core-coverage.test.ts:88
+- [PASS] 17 Monitoring exists — supervisor scan + ops-summary + AI Failures surface
+- [PARTIAL] 18 Cost controls exist — runs/hour + affected-records caps; no token-cost accounting
+- [PASS] 19 Security boundaries exist — class-gated execution; C never executes; tool-gateway authZ (proof-tested)
+- [PASS] 20 Connected to production workflow — cron tick + manual automation-run + ops-summary
+
+### supervisor — ACCEPTABLE-WITH-NOTES (13/20 pass, 2 partial, 0 fail)
+- [PASS] 1 Trigger exists — cron,admin_manual
+- [PASS] 2 Real input exists — observe() reads live state
+- [PASS] 3 Real tools exist — inspect_worker_pool,send_admin_alert
+- [PASS] 4 Permission exists — class C / risk medium
+- [NA] 5 Real action exists — evidence-only by design
+- [NA] 6 Real state can change
+- [NA] 7 Verification exists — evidence-only: nothing executes, nothing to verify
+- [NA] 8 Metrics exist — evidence-only: no execute phase, measure() unreachable by design; ledger duration/outcome is the measurement
+- [PASS] 9 Evidence exists — core ledger row per run (table or workforce_actions_kv, 500 rows)
+- [PASS] 10 UI exists where useful — src/__tests__/OpsCenter.test.tsx:659
+- [PASS] 11 Failure handling exists — execution_failed outcome + ledger error; class-B onEscalate
+- [PASS] 12 Retry exists — per-worker consecutive-failure backoff (10min, then 30min); cron runs defer with auto-retry, manual runs bypass
+- [NA] 13 Rollback where appropriate — cleanup-class; supervisor rollback stack available
+- [PASS] 14 Disable test exists — api/_worker-disable-tests.js: documented 24h-off consequence
+- [PARTIAL] 15 Evaluation exists — continuous-evaluation scorecards derive from ledger; per-worker registered_eval_cases vary
+- [PASS] 16 Regression tests exist — tests/api/agent-team.test.ts:189; tests/api/agent-team.test.ts:1187; tests/api/agent-team.test.ts:1490; tests/api/prompt-injection-evals.test.ts:453
+- [PASS] 17 Monitoring exists — supervisor scan + ops-summary + AI Failures surface
+- [PARTIAL] 18 Cost controls exist — runs/hour + affected-records caps; no token-cost accounting
+- [PASS] 19 Security boundaries exist — class-gated execution; C never executes; tool-gateway authZ (proof-tested)
+- [PASS] 20 Connected to production workflow — cron tick + manual automation-run + ops-summary
+
+### db-health — ACCEPTABLE-WITH-NOTES (13/20 pass, 2 partial, 0 fail)
+- [PASS] 1 Trigger exists — cron,admin_manual
+- [PASS] 2 Real input exists — observe() reads live state
+- [PASS] 3 Real tools exist — read_query,inspect_indexes
+- [PASS] 4 Permission exists — class C / risk default low
+- [NA] 5 Real action exists — evidence-only by design
+- [NA] 6 Real state can change
+- [NA] 7 Verification exists — evidence-only: nothing executes, nothing to verify
+- [NA] 8 Metrics exist — evidence-only: no execute phase, measure() unreachable by design; ledger duration/outcome is the measurement
+- [PASS] 9 Evidence exists — core ledger row per run (table or workforce_actions_kv, 500 rows)
+- [PASS] 10 UI exists where useful — src/lib/dashboard/widgets.tsx:1098
+- [PASS] 11 Failure handling exists — execution_failed outcome + ledger error; class-B onEscalate
+- [PASS] 12 Retry exists — per-worker consecutive-failure backoff (10min, then 30min); cron runs defer with auto-retry, manual runs bypass
+- [NA] 13 Rollback where appropriate — cleanup-class; supervisor rollback stack available
+- [PASS] 14 Disable test exists — api/_worker-disable-tests.js: documented 24h-off consequence
+- [PARTIAL] 15 Evaluation exists — continuous-evaluation scorecards derive from ledger; per-worker registered_eval_cases vary
+- [PASS] 16 Regression tests exist — tests/api/workforce-batch5.test.ts:198; tests/api/workforce-core-coverage.test.ts:90
+- [PASS] 17 Monitoring exists — supervisor scan + ops-summary + AI Failures surface
+- [PARTIAL] 18 Cost controls exist — runs/hour + affected-records caps; no token-cost accounting
+- [PASS] 19 Security boundaries exist — class-gated execution; C never executes; tool-gateway authZ (proof-tested)
+- [PASS] 20 Connected to production workflow — cron tick + manual automation-run + ops-summary
+
+### content-quality — ACCEPTABLE-WITH-NOTES (16/20 pass, 3 partial, 0 fail)
+- [PASS] 1 Trigger exists — cron,admin_manual
+- [PASS] 2 Real input exists — observe() reads live state
+- [PASS] 3 Real tools exist — inspect_post,quarantine_content
+- [PASS] 4 Permission exists — class A / risk default low
+- [PASS] 5 Real action exists — execute(dec, ev)
+- [PASS] 6 Real state can change
+- [PASS] 7 Verification exists — self-verify AND mapped independent verifier (runWorker requires both)
+- [PASS] 8 Metrics exist — measure() before/after
+- [PASS] 9 Evidence exists — core ledger row per run (table or workforce_actions_kv, 500 rows)
+- [PARTIAL] 10 UI exists where useful — surfaced via aggregate dashboards (Ops Center/Quality), not per-worker
+- [PASS] 11 Failure handling exists — execution_failed outcome + ledger error; class-B onEscalate
+- [PASS] 12 Retry exists — per-worker consecutive-failure backoff (10min, then 30min); cron runs defer with auto-retry, manual runs bypass
+- [NA] 13 Rollback where appropriate — cleanup-class; supervisor rollback stack available
+- [PASS] 14 Disable test exists — api/_worker-disable-tests.js: documented 24h-off consequence
+- [PARTIAL] 15 Evaluation exists — continuous-evaluation scorecards derive from ledger; per-worker registered_eval_cases vary
+- [PASS] 16 Regression tests exist — tests/api/worker-measure.test.ts:4; tests/api/worker-measure.test.ts:125; tests/api/worker-measure.test.ts:154; tests/api/workforce-core-coverage.test.ts:91
+- [PASS] 17 Monitoring exists — supervisor scan + ops-summary + AI Failures surface
+- [PARTIAL] 18 Cost controls exist — runs/hour + affected-records caps; no token-cost accounting
+- [PASS] 19 Security boundaries exist — class-gated execution; C never executes; tool-gateway authZ (proof-tested)
+- [PASS] 20 Connected to production workflow — cron tick + manual automation-run + ops-summary
+
+### user-anomaly — ACCEPTABLE-WITH-NOTES (12/20 pass, 3 partial, 0 fail)
+- [PASS] 1 Trigger exists — cron,admin_manual
+- [PASS] 2 Real input exists — observe() reads live state
+- [PASS] 3 Real tools exist — inspect_post,inspect_reports,send_admin_alert
+- [PASS] 4 Permission exists — class C / risk low
+- [NA] 5 Real action exists — evidence-only by design
+- [NA] 6 Real state can change
+- [NA] 7 Verification exists — evidence-only: nothing executes, nothing to verify
+- [NA] 8 Metrics exist — evidence-only: no execute phase, measure() unreachable by design; ledger duration/outcome is the measurement
+- [PASS] 9 Evidence exists — core ledger row per run (table or workforce_actions_kv, 500 rows)
+- [PARTIAL] 10 UI exists where useful — surfaced via aggregate dashboards (Ops Center/Quality), not per-worker
+- [PASS] 11 Failure handling exists — execution_failed outcome + ledger error; class-B onEscalate
+- [PASS] 12 Retry exists — per-worker consecutive-failure backoff (10min, then 30min); cron runs defer with auto-retry, manual runs bypass
+- [NA] 13 Rollback where appropriate — cleanup-class; supervisor rollback stack available
+- [PASS] 14 Disable test exists — api/_worker-disable-tests.js: documented 24h-off consequence
+- [PARTIAL] 15 Evaluation exists — continuous-evaluation scorecards derive from ledger; per-worker registered_eval_cases vary
+- [PASS] 16 Regression tests exist — tests/api/workforce-core-coverage.test.ts:92
+- [PASS] 17 Monitoring exists — supervisor scan + ops-summary + AI Failures surface
+- [PARTIAL] 18 Cost controls exist — runs/hour + affected-records caps; no token-cost accounting
+- [PASS] 19 Security boundaries exist — class-gated execution; C never executes; tool-gateway authZ (proof-tested)
+- [PASS] 20 Connected to production workflow — cron tick + manual automation-run + ops-summary
+
+### search-quality — ACCEPTABLE-WITH-NOTES (13/20 pass, 2 partial, 0 fail)
+- [PASS] 1 Trigger exists — cron,admin_manual
+- [PASS] 2 Real input exists — observe() reads live state
+- [PASS] 3 Real tools exist — read_query,test_search_query,send_admin_alert
+- [PASS] 4 Permission exists — class C / risk default low
+- [NA] 5 Real action exists — evidence-only by design
+- [NA] 6 Real state can change
+- [NA] 7 Verification exists — evidence-only: nothing executes, nothing to verify
+- [NA] 8 Metrics exist — evidence-only: no execute phase, measure() unreachable by design; ledger duration/outcome is the measurement
+- [PASS] 9 Evidence exists — core ledger row per run (table or workforce_actions_kv, 500 rows)
+- [PASS] 10 UI exists where useful — src/__tests__/workforce-reality.test.ts:136
+- [PASS] 11 Failure handling exists — execution_failed outcome + ledger error; class-B onEscalate
+- [PASS] 12 Retry exists — per-worker consecutive-failure backoff (10min, then 30min); cron runs defer with auto-retry, manual runs bypass
+- [NA] 13 Rollback where appropriate — cleanup-class; supervisor rollback stack available
+- [PASS] 14 Disable test exists — api/_worker-disable-tests.js: documented 24h-off consequence
+- [PARTIAL] 15 Evaluation exists — continuous-evaluation scorecards derive from ledger; per-worker registered_eval_cases vary
+- [PASS] 16 Regression tests exist — tests/api/search-gap-recovery.test.ts:40; tests/api/workforce-batch3.test.ts:17; tests/api/workforce-batch3.test.ts:18; tests/api/workforce-batch3.test.ts:96
+- [PASS] 17 Monitoring exists — supervisor scan + ops-summary + AI Failures surface
+- [PARTIAL] 18 Cost controls exist — runs/hour + affected-records caps; no token-cost accounting
+- [PASS] 19 Security boundaries exist — class-gated execution; C never executes; tool-gateway authZ (proof-tested)
+- [PASS] 20 Connected to production workflow — cron tick + manual automation-run + ops-summary
+
+### content-enricher — ACCEPTABLE-WITH-NOTES (17/20 pass, 2 partial, 0 fail)
+- [PASS] 1 Trigger exists — cron,admin_manual
+- [PASS] 2 Real input exists — observe() reads live state
+- [PASS] 3 Real tools exist — read_query,write_query,generate_summary
+- [PASS] 4 Permission exists — class A / risk default low
+- [PASS] 5 Real action exists — execute(dec, ev)
+- [PASS] 6 Real state can change
+- [PASS] 7 Verification exists — self-verify AND mapped independent verifier (runWorker requires both)
+- [PASS] 8 Metrics exist — measure() before/after
+- [PASS] 9 Evidence exists — core ledger row per run (table or workforce_actions_kv, 500 rows)
+- [PASS] 10 UI exists where useful — src/__tests__/workforce-reality.test.ts:134
+- [PASS] 11 Failure handling exists — execution_failed outcome + ledger error; class-B onEscalate
+- [PASS] 12 Retry exists — per-worker consecutive-failure backoff (10min, then 30min); cron runs defer with auto-retry, manual runs bypass
+- [NA] 13 Rollback where appropriate — cleanup-class; supervisor rollback stack available
+- [PASS] 14 Disable test exists — api/_worker-disable-tests.js: documented 24h-off consequence
+- [PARTIAL] 15 Evaluation exists — continuous-evaluation scorecards derive from ledger; per-worker registered_eval_cases vary
+- [PASS] 16 Regression tests exist — tests/api/workforce-core-coverage.test.ts:94
+- [PASS] 17 Monitoring exists — supervisor scan + ops-summary + AI Failures surface
+- [PARTIAL] 18 Cost controls exist — runs/hour + affected-records caps; no token-cost accounting
+- [PASS] 19 Security boundaries exist — class-gated execution; C never executes; tool-gateway authZ (proof-tested)
+- [PASS] 20 Connected to production workflow — cron tick + manual automation-run + ops-summary
+
+### stale-sweeper — ACCEPTABLE-WITH-NOTES (16/20 pass, 4 partial, 0 fail)
+- [PASS] 1 Trigger exists — cron,admin_manual
+- [PASS] 2 Real input exists — observe() reads live state
+- [PASS] 3 Real tools exist — read_query,write_query,quarantine_content
+- [PASS] 4 Permission exists — class A / risk default low
+- [PASS] 5 Real action exists — execute(dec, ev)
+- [PASS] 6 Real state can change
+- [PASS] 7 Verification exists — self-verify AND mapped independent verifier (runWorker requires both)
+- [PASS] 8 Metrics exist — measure() before/after
+- [PASS] 9 Evidence exists — core ledger row per run (table or workforce_actions_kv, 500 rows)
+- [PARTIAL] 10 UI exists where useful — surfaced via aggregate dashboards (Ops Center/Quality), not per-worker
+- [PASS] 11 Failure handling exists — execution_failed outcome + ledger error; class-B onEscalate
+- [PASS] 12 Retry exists — per-worker consecutive-failure backoff (10min, then 30min); cron runs defer with auto-retry, manual runs bypass
+- [PARTIAL] 13 Rollback where appropriate — cleanup-class; supervisor rollback stack available
+- [PASS] 14 Disable test exists — api/_worker-disable-tests.js: documented 24h-off consequence
+- [PARTIAL] 15 Evaluation exists — continuous-evaluation scorecards derive from ledger; per-worker registered_eval_cases vary
+- [PASS] 16 Regression tests exist — tests/api/workforce-core-coverage.test.ts:95
+- [PASS] 17 Monitoring exists — supervisor scan + ops-summary + AI Failures surface
+- [PARTIAL] 18 Cost controls exist — runs/hour + affected-records caps; no token-cost accounting
+- [PASS] 19 Security boundaries exist — class-gated execution; C never executes; tool-gateway authZ (proof-tested)
+- [PASS] 20 Connected to production workflow — cron tick + manual automation-run + ops-summary
+
+### priority-scaler — ACCEPTABLE-WITH-NOTES (17/20 pass, 2 partial, 0 fail)
+- [PASS] 1 Trigger exists — cron,admin_manual
+- [PASS] 2 Real input exists — observe() reads live state
+- [PASS] 3 Real tools exist — read_query,write_query
+- [PASS] 4 Permission exists — class A / risk default low
+- [PASS] 5 Real action exists — execute(dec, ev)
+- [PASS] 6 Real state can change
+- [PASS] 7 Verification exists — self-verify AND mapped independent verifier (runWorker requires both)
+- [PASS] 8 Metrics exist — measure() before/after
+- [PASS] 9 Evidence exists — core ledger row per run (table or workforce_actions_kv, 500 rows)
+- [PASS] 10 UI exists where useful — src/__tests__/workforce-reality.test.ts:135
+- [PASS] 11 Failure handling exists — execution_failed outcome + ledger error; class-B onEscalate
+- [PASS] 12 Retry exists — per-worker consecutive-failure backoff (10min, then 30min); cron runs defer with auto-retry, manual runs bypass
+- [NA] 13 Rollback where appropriate — cleanup-class; supervisor rollback stack available
+- [PASS] 14 Disable test exists — api/_worker-disable-tests.js: documented 24h-off consequence
+- [PARTIAL] 15 Evaluation exists — continuous-evaluation scorecards derive from ledger; per-worker registered_eval_cases vary
+- [PASS] 16 Regression tests exist — tests/api/workforce-core-coverage.test.ts:96
+- [PASS] 17 Monitoring exists — supervisor scan + ops-summary + AI Failures surface
+- [PARTIAL] 18 Cost controls exist — runs/hour + affected-records caps; no token-cost accounting
+- [PASS] 19 Security boundaries exist — class-gated execution; C never executes; tool-gateway authZ (proof-tested)
+- [PASS] 20 Connected to production workflow — cron tick + manual automation-run + ops-summary
+
+### data-consistency — ACCEPTABLE-WITH-NOTES (17/20 pass, 2 partial, 0 fail)
+- [PASS] 1 Trigger exists — cron,admin_manual
+- [PASS] 2 Real input exists — observe() reads live state
+- [PASS] 3 Real tools exist — read_query,delete_orphan_records
+- [PASS] 4 Permission exists — class A / risk default low
+- [PASS] 5 Real action exists — execute(dec, ev)
+- [PASS] 6 Real state can change
+- [PASS] 7 Verification exists — self-verify AND mapped independent verifier (runWorker requires both)
+- [PASS] 8 Metrics exist — measure() before/after
+- [PASS] 9 Evidence exists — core ledger row per run (table or workforce_actions_kv, 500 rows)
+- [PASS] 10 UI exists where useful — src/__tests__/workforce-reality.test.ts:137
+- [PASS] 11 Failure handling exists — execution_failed outcome + ledger error; class-B onEscalate
+- [PASS] 12 Retry exists — per-worker consecutive-failure backoff (10min, then 30min); cron runs defer with auto-retry, manual runs bypass
+- [NA] 13 Rollback where appropriate — cleanup-class; supervisor rollback stack available
+- [PASS] 14 Disable test exists — api/_worker-disable-tests.js: documented 24h-off consequence
+- [PARTIAL] 15 Evaluation exists — continuous-evaluation scorecards derive from ledger; per-worker registered_eval_cases vary
+- [PASS] 16 Regression tests exist — tests/api/workforce-core-coverage.test.ts:97
+- [PASS] 17 Monitoring exists — supervisor scan + ops-summary + AI Failures surface
+- [PARTIAL] 18 Cost controls exist — runs/hour + affected-records caps; no token-cost accounting
+- [PASS] 19 Security boundaries exist — class-gated execution; C never executes; tool-gateway authZ (proof-tested)
+- [PASS] 20 Connected to production workflow — cron tick + manual automation-run + ops-summary
+
+### anonymity-guard — ACCEPTABLE-WITH-NOTES (16/20 pass, 3 partial, 0 fail)
+- [PASS] 1 Trigger exists — cron,admin_manual
+- [PASS] 2 Real input exists — observe() reads live state
+- [PASS] 3 Real tools exist — public_read_probe,scan_public_content,mask_identifiers,raise_alert
+- [PASS] 4 Permission exists — class A / risk default low
+- [PASS] 5 Real action exists — execute(dec, ev)
+- [PASS] 6 Real state can change
+- [PASS] 7 Verification exists — self-verify AND mapped independent verifier (runWorker requires both)
+- [PASS] 8 Metrics exist — measure() before/after
+- [PASS] 9 Evidence exists — core ledger row per run (table or workforce_actions_kv, 500 rows)
+- [PARTIAL] 10 UI exists where useful — surfaced via aggregate dashboards (Ops Center/Quality), not per-worker
+- [PASS] 11 Failure handling exists — execution_failed outcome + ledger error; class-B onEscalate
+- [PASS] 12 Retry exists — per-worker consecutive-failure backoff (10min, then 30min); cron runs defer with auto-retry, manual runs bypass
+- [NA] 13 Rollback where appropriate — cleanup-class; supervisor rollback stack available
+- [PASS] 14 Disable test exists — api/_worker-disable-tests.js: documented 24h-off consequence
+- [PARTIAL] 15 Evaluation exists — continuous-evaluation scorecards derive from ledger; per-worker registered_eval_cases vary
+- [PASS] 16 Regression tests exist — tests/api/setup-env.ts:9; tests/api/workforce-core-coverage.test.ts:98
+- [PASS] 17 Monitoring exists — supervisor scan + ops-summary + AI Failures surface
+- [PARTIAL] 18 Cost controls exist — runs/hour + affected-records caps; no token-cost accounting
+- [PASS] 19 Security boundaries exist — class-gated execution; C never executes; tool-gateway authZ (proof-tested)
+- [PASS] 20 Connected to production workflow — cron tick + manual automation-run + ops-summary
+
+### voice-intake — ACCEPTABLE-WITH-NOTES (12/20 pass, 3 partial, 0 fail)
+- [PASS] 1 Trigger exists — cron,admin_manual
+- [PASS] 2 Real input exists — observe() reads live state
+- [PASS] 3 Real tools exist — http_probe,escalate_queue
+- [PASS] 4 Permission exists — class C / risk low
+- [NA] 5 Real action exists — evidence-only by design
+- [NA] 6 Real state can change
+- [NA] 7 Verification exists — evidence-only: nothing executes, nothing to verify
+- [NA] 8 Metrics exist — evidence-only: no execute phase, measure() unreachable by design; ledger duration/outcome is the measurement
+- [PASS] 9 Evidence exists — core ledger row per run (table or workforce_actions_kv, 500 rows)
+- [PARTIAL] 10 UI exists where useful — surfaced via aggregate dashboards (Ops Center/Quality), not per-worker
+- [PASS] 11 Failure handling exists — execution_failed outcome + ledger error; class-B onEscalate
+- [PASS] 12 Retry exists — per-worker consecutive-failure backoff (10min, then 30min); cron runs defer with auto-retry, manual runs bypass
+- [NA] 13 Rollback where appropriate — cleanup-class; supervisor rollback stack available
+- [PASS] 14 Disable test exists — api/_worker-disable-tests.js: documented 24h-off consequence
+- [PARTIAL] 15 Evaluation exists — continuous-evaluation scorecards derive from ledger; per-worker registered_eval_cases vary
+- [PASS] 16 Regression tests exist — tests/api/workforce-batch1.test.ts:5; tests/api/workforce-batch1.test.ts:170; tests/api/workforce-core-coverage.test.ts:99; tests/api/workforce-batch1.test.ts:43
+- [PASS] 17 Monitoring exists — supervisor scan + ops-summary + AI Failures surface
+- [PARTIAL] 18 Cost controls exist — runs/hour + affected-records caps; no token-cost accounting
+- [PASS] 19 Security boundaries exist — class-gated execution; C never executes; tool-gateway authZ (proof-tested)
+- [PASS] 20 Connected to production workflow — cron tick + manual automation-run + ops-summary
+
+### submission-understanding — ACCEPTABLE-WITH-NOTES (16/20 pass, 3 partial, 0 fail)
+- [PASS] 1 Trigger exists — cron,admin_manual
+- [PASS] 2 Real input exists — observe() reads live state
+- [PASS] 3 Real tools exist — read_query,http_tool,update_posts
+- [PASS] 4 Permission exists — class A / risk low
+- [PASS] 5 Real action exists — execute(dec, ev)
+- [PASS] 6 Real state can change
+- [PASS] 7 Verification exists — self-verify AND mapped independent verifier (runWorker requires both)
+- [PASS] 8 Metrics exist — measure() before/after
+- [PASS] 9 Evidence exists — core ledger row per run (table or workforce_actions_kv, 500 rows)
+- [PARTIAL] 10 UI exists where useful — surfaced via aggregate dashboards (Ops Center/Quality), not per-worker
+- [PASS] 11 Failure handling exists — execution_failed outcome + ledger error; class-B onEscalate
+- [PASS] 12 Retry exists — per-worker consecutive-failure backoff (10min, then 30min); cron runs defer with auto-retry, manual runs bypass
+- [NA] 13 Rollback where appropriate — cleanup-class; supervisor rollback stack available
+- [PASS] 14 Disable test exists — api/_worker-disable-tests.js: documented 24h-off consequence
+- [PARTIAL] 15 Evaluation exists — continuous-evaluation scorecards derive from ledger; per-worker registered_eval_cases vary
+- [PASS] 16 Regression tests exist — tests/api/workforce-batch1.test.ts:6; tests/api/workforce-batch1.test.ts:200; tests/api/workforce-batch1.test.ts:41; tests/api/workforce-batch1.test.ts:224
+- [PASS] 17 Monitoring exists — supervisor scan + ops-summary + AI Failures surface
+- [PARTIAL] 18 Cost controls exist — runs/hour + affected-records caps; no token-cost accounting
+- [PASS] 19 Security boundaries exist — class-gated execution; C never executes; tool-gateway authZ (proof-tested)
+- [PASS] 20 Connected to production workflow — cron tick + manual automation-run + ops-summary
+
+### missing-info — ACCEPTABLE-WITH-NOTES (12/20 pass, 3 partial, 0 fail)
+- [PASS] 1 Trigger exists — cron,admin_manual
+- [PASS] 2 Real input exists — observe() reads live state
+- [PASS] 3 Real tools exist — read_query,escalate_queue
+- [PASS] 4 Permission exists — class C / risk low
+- [NA] 5 Real action exists — evidence-only by design
+- [NA] 6 Real state can change
+- [NA] 7 Verification exists — evidence-only: nothing executes, nothing to verify
+- [NA] 8 Metrics exist — evidence-only: no execute phase, measure() unreachable by design; ledger duration/outcome is the measurement
+- [PASS] 9 Evidence exists — core ledger row per run (table or workforce_actions_kv, 500 rows)
+- [PARTIAL] 10 UI exists where useful — surfaced via aggregate dashboards (Ops Center/Quality), not per-worker
+- [PASS] 11 Failure handling exists — execution_failed outcome + ledger error; class-B onEscalate
+- [PASS] 12 Retry exists — per-worker consecutive-failure backoff (10min, then 30min); cron runs defer with auto-retry, manual runs bypass
+- [NA] 13 Rollback where appropriate — cleanup-class; supervisor rollback stack available
+- [PASS] 14 Disable test exists — api/_worker-disable-tests.js: documented 24h-off consequence
+- [PARTIAL] 15 Evaluation exists — continuous-evaluation scorecards derive from ledger; per-worker registered_eval_cases vary
+- [PASS] 16 Regression tests exist — tests/api/workforce-batch1.test.ts:7; tests/api/workforce-batch1.test.ts:235; tests/api/workforce-core-coverage.test.ts:100; tests/api/workforce-batch1.test.ts:40
+- [PASS] 17 Monitoring exists — supervisor scan + ops-summary + AI Failures surface
+- [PARTIAL] 18 Cost controls exist — runs/hour + affected-records caps; no token-cost accounting
+- [PASS] 19 Security boundaries exist — class-gated execution; C never executes; tool-gateway authZ (proof-tested)
+- [PASS] 20 Connected to production workflow — cron tick + manual automation-run + ops-summary
+
+### category-assignment — ACCEPTABLE-WITH-NOTES (16/20 pass, 3 partial, 0 fail)
+- [PASS] 1 Trigger exists — cron,admin_manual
+- [PASS] 2 Real input exists — observe() reads live state
+- [PASS] 3 Real tools exist — read_query,http_tool,update_posts
+- [PASS] 4 Permission exists — class A / risk low
+- [PASS] 5 Real action exists — execute(dec, ev)
+- [PASS] 6 Real state can change
+- [PASS] 7 Verification exists — self-verify AND mapped independent verifier (runWorker requires both)
+- [PASS] 8 Metrics exist — measure() before/after
+- [PASS] 9 Evidence exists — core ledger row per run (table or workforce_actions_kv, 500 rows)
+- [PARTIAL] 10 UI exists where useful — surfaced via aggregate dashboards (Ops Center/Quality), not per-worker
+- [PASS] 11 Failure handling exists — execution_failed outcome + ledger error; class-B onEscalate
+- [PASS] 12 Retry exists — per-worker consecutive-failure backoff (10min, then 30min); cron runs defer with auto-retry, manual runs bypass
+- [NA] 13 Rollback where appropriate — cleanup-class; supervisor rollback stack available
+- [PASS] 14 Disable test exists — api/_worker-disable-tests.js: documented 24h-off consequence
+- [PARTIAL] 15 Evaluation exists — continuous-evaluation scorecards derive from ledger; per-worker registered_eval_cases vary
+- [PASS] 16 Regression tests exist — tests/api/workforce-batch1.test.ts:8; tests/api/workforce-batch1.test.ts:268; tests/api/workforce-batch1.test.ts:38; tests/api/workforce-batch1.test.ts:291
+- [PASS] 17 Monitoring exists — supervisor scan + ops-summary + AI Failures surface
+- [PARTIAL] 18 Cost controls exist — runs/hour + affected-records caps; no token-cost accounting
+- [PASS] 19 Security boundaries exist — class-gated execution; C never executes; tool-gateway authZ (proof-tested)
+- [PASS] 20 Connected to production workflow — cron tick + manual automation-run + ops-summary
+
+### category-correction — ACCEPTABLE-WITH-NOTES (16/20 pass, 3 partial, 0 fail)
+- [PASS] 1 Trigger exists — cron,admin_manual
+- [PASS] 2 Real input exists — observe() reads live state
+- [PASS] 3 Real tools exist — read_query,write_audit_log
+- [PASS] 4 Permission exists — class B / risk medium
+- [PASS] 5 Real action exists — execute(dec, ev)
+- [PASS] 6 Real state can change
+- [PASS] 7 Verification exists — self-verify AND mapped independent verifier (runWorker requires both)
+- [PASS] 8 Metrics exist — measure() before/after
+- [PASS] 9 Evidence exists — core ledger row per run (table or workforce_actions_kv, 500 rows)
+- [PARTIAL] 10 UI exists where useful — surfaced via aggregate dashboards (Ops Center/Quality), not per-worker
+- [PASS] 11 Failure handling exists — execution_failed outcome + ledger error; class-B onEscalate
+- [PASS] 12 Retry exists — per-worker consecutive-failure backoff (10min, then 30min); cron runs defer with auto-retry, manual runs bypass
+- [NA] 13 Rollback where appropriate — cleanup-class; supervisor rollback stack available
+- [PASS] 14 Disable test exists — api/_worker-disable-tests.js: documented 24h-off consequence
+- [PARTIAL] 15 Evaluation exists — continuous-evaluation scorecards derive from ledger; per-worker registered_eval_cases vary
+- [PASS] 16 Regression tests exist — tests/api/workforce-batch1.test.ts:9; tests/api/workforce-batch1.test.ts:303; tests/api/workforce-batch1.test.ts:39; tests/api/workforce-batch1.test.ts:327
+- [PASS] 17 Monitoring exists — supervisor scan + ops-summary + AI Failures surface
+- [PARTIAL] 18 Cost controls exist — runs/hour + affected-records caps; no token-cost accounting
+- [PASS] 19 Security boundaries exist — class-gated execution; C never executes; tool-gateway authZ (proof-tested)
+- [PASS] 20 Connected to production workflow — cron tick + manual automation-run + ops-summary
+
+### suggestion-detection — ACCEPTABLE-WITH-NOTES (16/20 pass, 3 partial, 0 fail)
+- [PASS] 1 Trigger exists — cron,admin_manual
+- [PASS] 2 Real input exists — observe() reads live state
+- [PASS] 3 Real tools exist — read_query,detect_suggestions
+- [PASS] 4 Permission exists — class A / risk low
+- [PASS] 5 Real action exists — execute(dec, ev)
+- [PASS] 6 Real state can change
+- [PASS] 7 Verification exists — self-verify AND mapped independent verifier (runWorker requires both)
+- [PASS] 8 Metrics exist — measure() before/after
+- [PASS] 9 Evidence exists — core ledger row per run (table or workforce_actions_kv, 500 rows)
+- [PARTIAL] 10 UI exists where useful — surfaced via aggregate dashboards (Ops Center/Quality), not per-worker
+- [PASS] 11 Failure handling exists — execution_failed outcome + ledger error; class-B onEscalate
+- [PASS] 12 Retry exists — per-worker consecutive-failure backoff (10min, then 30min); cron runs defer with auto-retry, manual runs bypass
+- [NA] 13 Rollback where appropriate — cleanup-class; supervisor rollback stack available
+- [PASS] 14 Disable test exists — api/_worker-disable-tests.js: documented 24h-off consequence
+- [PARTIAL] 15 Evaluation exists — continuous-evaluation scorecards derive from ledger; per-worker registered_eval_cases vary
+- [PASS] 16 Regression tests exist — tests/api/workforce-batch1.test.ts:10; tests/api/workforce-batch1.test.ts:341; tests/api/workforce-batch1.test.ts:42; tests/api/workforce-batch1.test.ts:363
+- [PASS] 17 Monitoring exists — supervisor scan + ops-summary + AI Failures surface
+- [PARTIAL] 18 Cost controls exist — runs/hour + affected-records caps; no token-cost accounting
+- [PASS] 19 Security boundaries exist — class-gated execution; C never executes; tool-gateway authZ (proof-tested)
+- [PASS] 20 Connected to production workflow — cron tick + manual automation-run + ops-summary
+
+### duplicate-case — ACCEPTABLE-WITH-NOTES (16/20 pass, 3 partial, 0 fail)
+- [PASS] 1 Trigger exists — cron,admin_manual
+- [PASS] 2 Real input exists — observe() reads live state
+- [PASS] 3 Real tools exist — read_query,detect_duplicates,write_audit_log
+- [PASS] 4 Permission exists — class A / risk low
+- [PASS] 5 Real action exists — execute(dec, ev)
+- [PASS] 6 Real state can change
+- [PASS] 7 Verification exists — self-verify AND mapped independent verifier (runWorker requires both)
+- [PASS] 8 Metrics exist — measure() before/after
+- [PASS] 9 Evidence exists — core ledger row per run (table or workforce_actions_kv, 500 rows)
+- [PARTIAL] 10 UI exists where useful — surfaced via aggregate dashboards (Ops Center/Quality), not per-worker
+- [PASS] 11 Failure handling exists — execution_failed outcome + ledger error; class-B onEscalate
+- [PASS] 12 Retry exists — per-worker consecutive-failure backoff (10min, then 30min); cron runs defer with auto-retry, manual runs bypass
+- [NA] 13 Rollback where appropriate — cleanup-class; supervisor rollback stack available
+- [PASS] 14 Disable test exists — api/_worker-disable-tests.js: documented 24h-off consequence
+- [PARTIAL] 15 Evaluation exists — continuous-evaluation scorecards derive from ledger; per-worker registered_eval_cases vary
+- [PASS] 16 Regression tests exist — tests/api/workforce-batch2.test.ts:6; tests/api/workforce-batch2.test.ts:341; tests/api/workforce-batch2.test.ts:378; tests/api/workforce-batch3.test.ts:551
+- [PASS] 17 Monitoring exists — supervisor scan + ops-summary + AI Failures surface
+- [PARTIAL] 18 Cost controls exist — runs/hour + affected-records caps; no token-cost accounting
+- [PASS] 19 Security boundaries exist — class-gated execution; C never executes; tool-gateway authZ (proof-tested)
+- [PASS] 20 Connected to production workflow — cron tick + manual automation-run + ops-summary
+
+### related-case — ACCEPTABLE-WITH-NOTES (16/20 pass, 3 partial, 0 fail)
+- [PASS] 1 Trigger exists — cron,admin_manual
+- [PASS] 2 Real input exists — observe() reads live state
+- [PASS] 3 Real tools exist — read_query,detect_related,write_audit_log
+- [PASS] 4 Permission exists — class A / risk low
+- [PASS] 5 Real action exists — execute(dec, ev)
+- [PASS] 6 Real state can change
+- [PASS] 7 Verification exists — self-verify AND mapped independent verifier (runWorker requires both)
+- [PASS] 8 Metrics exist — measure() before/after
+- [PASS] 9 Evidence exists — core ledger row per run (table or workforce_actions_kv, 500 rows)
+- [PARTIAL] 10 UI exists where useful — surfaced via aggregate dashboards (Ops Center/Quality), not per-worker
+- [PASS] 11 Failure handling exists — execution_failed outcome + ledger error; class-B onEscalate
+- [PASS] 12 Retry exists — per-worker consecutive-failure backoff (10min, then 30min); cron runs defer with auto-retry, manual runs bypass
+- [NA] 13 Rollback where appropriate — cleanup-class; supervisor rollback stack available
+- [PASS] 14 Disable test exists — api/_worker-disable-tests.js: documented 24h-off consequence
+- [PARTIAL] 15 Evaluation exists — continuous-evaluation scorecards derive from ledger; per-worker registered_eval_cases vary
+- [PASS] 16 Regression tests exist — tests/api/workforce-batch2.test.ts:7; tests/api/workforce-batch2.test.ts:414; tests/api/workforce-batch2.test.ts:451; tests/api/workforce-batch2.test.ts:457
+- [PASS] 17 Monitoring exists — supervisor scan + ops-summary + AI Failures surface
+- [PARTIAL] 18 Cost controls exist — runs/hour + affected-records caps; no token-cost accounting
+- [PASS] 19 Security boundaries exist — class-gated execution; C never executes; tool-gateway authZ (proof-tested)
+- [PASS] 20 Connected to production workflow — cron tick + manual automation-run + ops-summary
+
+### priority — ACCEPTABLE-WITH-NOTES (17/20 pass, 2 partial, 0 fail)
+- [PASS] 1 Trigger exists — cron,admin_manual
+- [PASS] 2 Real input exists — observe() reads live state
+- [PASS] 3 Real tools exist — read_query,write_post_priority,write_audit_log
+- [PASS] 4 Permission exists — class A / risk low
+- [PASS] 5 Real action exists — execute(dec, ev)
+- [PASS] 6 Real state can change
+- [PASS] 7 Verification exists — self-verify AND mapped independent verifier (runWorker requires both)
+- [PASS] 8 Metrics exist — measure() before/after
+- [PASS] 9 Evidence exists — core ledger row per run (table or workforce_actions_kv, 500 rows)
+- [PASS] 10 UI exists where useful — src/components/admin/WorkItem.tsx:63; src/components/admin/WorkItem.tsx:185; src/components/admin/WorkItem.tsx:190; src/components/admin/WorkItem.tsx:192; src/components/admin/WorkItem.tsx:197; src/components/admin/WorkItem.tsx:439; src/components/admin/WorkItem.tsx:474; src/components/PostCard.tsx:221; src/components/PostCard.tsx:369; src/components/PostCard.tsx:373; src/components/PostCard.tsx:374; src/components/PostCard.tsx:376; src/components/PostCard.tsx:378; src/components/PostCard.tsx:379; src/components/PostCard.tsx:380; src/components/PostCard.tsx:381; src/components/PostPreviewCard.tsx:14; src/components/PostPreviewCard.tsx:49; src/components/PostPreviewCard.tsx:61; src/components/PostPreviewCard.tsx:72; src/components/PostPreviewCard.tsx:127; src/components/PostPreviewCard.tsx:132; src/lib/complianceCSV.ts:118; src/lib/dashboard/widgets.tsx:992; src/lib/dashboard/widgets.tsx:994; src/lib/dashboard/widgets.tsx:998; src/lib/dashboard/widgets.tsx:1275; src/lib/dashboard/widgets.tsx:1281; src/lib/dashboard/widgets.tsx:1462; src/lib/dashboard/widgets.tsx:1463; src/lib/dashboard/widgets.tsx:1468; src/lib/excelXML.ts:117; src/lib/excelXML.ts:161; src/lib/identity.ts:22; src/lib/moderation.ts:892; src/lib/moderation.ts:981; src/lib/moderation.ts:982; src/lib/utils.ts:142; src/lib/utils.ts:188; src/lib/utils.ts:325; src/lib/utils.ts:327; src/lib/utils.ts:400; src/main.tsx:135; src/pages/admin/ActivityStream.tsx:98; src/pages/admin/ActivityStream.tsx:129; src/pages/admin/ActivityStream.tsx:132; src/pages/admin/ActivityStream.tsx:134; src/pages/admin/agent-chat/ActionPreviews.tsx:137; src/pages/admin/agent-chat/ActionPreviews.tsx:139; src/pages/admin/agent-chat/ActionPreviews.tsx:600; src/pages/admin/agent-chat/ActionPreviews.tsx:1108; src/pages/admin/agent-chat/tool-meta.ts:190; src/pages/admin/agent-chat/tool-meta.ts:191; src/pages/admin/agent-office/ApprovalAlert.tsx:23; src/pages/admin/OpsCenter.tsx:55; src/pages/admin/OpsCenter.tsx:125; src/pages/admin/OpsCenter.tsx:138; src/pages/admin/OpsCenter.tsx:148; src/pages/admin/OpsCenter.tsx:158; src/pages/admin/OpsCenter.tsx:426; src/pages/admin/OpsCenter.tsx:427; src/pages/admin/OpsCenter.tsx:1106; src/pages/admin/OpsCenter.tsx:1395; src/pages/admin/Overview.tsx:789; src/pages/admin/Overview.tsx:795; src/pages/admin/Overview.tsx:913; src/pages/admin/Overview.tsx:1325; src/pages/admin/PostsTable.tsx:61; src/pages/admin/PostsTable.tsx:122; src/pages/admin/PostsTable.tsx:127; src/pages/admin/PostsTable.tsx:428; src/pages/admin/PostsTable.tsx:449; src/pages/admin/PostsTable.tsx:628; src/pages/admin/PostsTable.tsx:645; src/pages/admin/PostsTable.tsx:650; src/pages/admin/PostsTable.tsx:816; src/pages/admin/PostsTable.tsx:817; src/pages/admin/PostsTable.tsx:903; src/pages/admin/PostsTable.tsx:906; src/pages/admin/PostsTable.tsx:908; src/pages/admin/PostsTable.tsx:909; src/pages/admin/PostsTable.tsx:910; src/pages/admin/PostsTable.tsx:911; src/pages/admin/ProviderSettings.tsx:22; src/pages/admin/ProviderSettings.tsx:308; src/pages/admin/ProviderSettings.tsx:341; src/pages/admin/ProviderSettings.tsx:534; src/pages/admin/ProviderSettings.tsx:557; src/pages/admin/Reports.tsx:99; src/pages/admin/Reports.tsx:124; src/pages/admin/Reports.tsx:150; src/pages/admin/Reports.tsx:358; src/pages/admin/Reports.tsx:1293; src/pages/admin/Reports.tsx:1564; src/pages/admin/Reports.tsx:1757; src/pages/admin/Reports.tsx:1941; src/pages/admin/Reports.tsx:1943; src/pages/admin/Reports.tsx:2287; src/pages/admin/Reports.tsx:2288; src/pages/admin/Reports.tsx:2291; src/pages/admin/UnifiedInbox.tsx:57; src/pages/admin/UnifiedInbox.tsx:308; src/pages/admin/UnifiedInbox.tsx:309; src/pages/admin/UnifiedInbox.tsx:310; src/pages/admin/UnifiedInbox.tsx:312; src/pages/admin/UnifiedInbox.tsx:455; src/pages/admin/UnifiedInbox.tsx:461; src/pages/admin/UnifiedInbox.tsx:462; src/pages/PostDetail.tsx:468; src/pages/Submit.tsx:51; src/pages/Submit.tsx:59; src/pages/Submit.tsx:159; src/pages/Submit.tsx:422; src/pages/Submit.tsx:455; src/pages/Submit.tsx:1583; src/types/index.ts:32; src/types/index.ts:201; src/__tests__/ActivityStream.test.tsx:36; src/__tests__/ActivityStream.test.tsx:46; src/__tests__/ApprovalAlert.test.tsx:30; src/__tests__/ApprovalAlert.test.tsx:44; src/__tests__/complianceCSV.test.ts:29; src/__tests__/complianceCSV.test.ts:288; src/__tests__/dashboard-widgets.test.tsx:63; src/__tests__/excelXML.test.ts:96; src/__tests__/ExportCSVButton.test.tsx:37; src/__tests__/ExportCSVButton.test.tsx:44; src/__tests__/Home.live.test.tsx:76; src/__tests__/Home.realtime.test.tsx:101; src/__tests__/Home.test.tsx:278; src/__tests__/Home.test.tsx:291; src/__tests__/Home.test.tsx:337; src/__tests__/Home.test.tsx:348; src/__tests__/Home.test.tsx:409; src/__tests__/Home.test.tsx:420; src/__tests__/OpsCenter.test.tsx:135; src/__tests__/OpsCenter.test.tsx:152; src/__tests__/OpsCenter.test.tsx:169; src/__tests__/OpsCenter.test.tsx:414; src/__tests__/OpsCenter.test.tsx:502; src/__tests__/OpsCenter.test.tsx:724; src/__tests__/OpsCenter.test.tsx:727; src/__tests__/OpsCenter.test.tsx:753; src/__tests__/OpsCenter.test.tsx:756; src/__tests__/Overview.test.tsx:100; src/__tests__/Overview.test.tsx:108; src/__tests__/Overview.test.tsx:121; src/__tests__/Overview.test.tsx:810; src/__tests__/Overview.test.tsx:821; src/__tests__/Overview.test.tsx:968; src/__tests__/Overview.test.tsx:1186; src/__tests__/PostCard.test.tsx:67; src/__tests__/PostDetail.test.tsx:159; src/__tests__/PostsTable.test.tsx:4; src/__tests__/PostsTable.test.tsx:6; src/__tests__/PostsTable.test.tsx:142; src/__tests__/PostsTable.test.tsx:236; src/__tests__/PostsTable.test.tsx:239; src/__tests__/PostsTable.test.tsx:761; src/__tests__/PostsTable.test.tsx:788; src/__tests__/PostsTable.test.tsx:806; src/__tests__/PostsTable.test.tsx:809; src/__tests__/PostsTable.test.tsx:914; src/__tests__/PostsTable.test.tsx:934; src/__tests__/primitives2.test.tsx:31; src/__tests__/ProviderSettings.test.tsx:34; src/__tests__/ProviderSettings.test.tsx:46; src/__tests__/ProviderSettings.test.tsx:58; src/__tests__/Reports.test.tsx:69; src/__tests__/Reports.test.tsx:104; src/__tests__/Saved.test.tsx:68; src/__tests__/Saved.test.tsx:80; src/__tests__/Search.test.tsx:51; src/__tests__/Submit.test.tsx:67; src/__tests__/Submit.test.tsx:847; src/__tests__/UnifiedInbox.test.tsx:468; src/__tests__/UnifiedInbox.test.tsx:478; src/__tests__/utils.test.ts:261; src/__tests__/utils.test.ts:495; src/__tests__/utils.test.ts:510; src/__tests__/utils.test.ts:513; src/__tests__/utils.test.ts:517; src/__tests__/workforce-reality.test.ts:135
+- [PASS] 11 Failure handling exists — execution_failed outcome + ledger error; class-B onEscalate
+- [PASS] 12 Retry exists — per-worker consecutive-failure backoff (10min, then 30min); cron runs defer with auto-retry, manual runs bypass
+- [NA] 13 Rollback where appropriate — cleanup-class; supervisor rollback stack available
+- [PASS] 14 Disable test exists — api/_worker-disable-tests.js: documented 24h-off consequence
+- [PARTIAL] 15 Evaluation exists — continuous-evaluation scorecards derive from ledger; per-worker registered_eval_cases vary
+- [PASS] 16 Regression tests exist — tests/api/agent-actions.test.ts:5; tests/api/agent-actions.test.ts:351; tests/api/agent-actions.test.ts:362; tests/api/agent-actions.test.ts:363
+- [PASS] 17 Monitoring exists — supervisor scan + ops-summary + AI Failures surface
+- [PARTIAL] 18 Cost controls exist — runs/hour + affected-records caps; no token-cost accounting
+- [PASS] 19 Security boundaries exist — class-gated execution; C never executes; tool-gateway authZ (proof-tested)
+- [PASS] 20 Connected to production workflow — cron tick + manual automation-run + ops-summary
+
+### case-assignment — ACCEPTABLE-WITH-NOTES (16/20 pass, 3 partial, 0 fail)
+- [PASS] 1 Trigger exists — cron,admin_manual
+- [PASS] 2 Real input exists — observe() reads live state
+- [PASS] 3 Real tools exist — read_query,create_task
+- [PASS] 4 Permission exists — class A / risk low
+- [PASS] 5 Real action exists — execute(dec, ev)
+- [PASS] 6 Real state can change
+- [PASS] 7 Verification exists — self-verify AND mapped independent verifier (runWorker requires both)
+- [PASS] 8 Metrics exist — measure() before/after
+- [PASS] 9 Evidence exists — core ledger row per run (table or workforce_actions_kv, 500 rows)
+- [PARTIAL] 10 UI exists where useful — surfaced via aggregate dashboards (Ops Center/Quality), not per-worker
+- [PASS] 11 Failure handling exists — execution_failed outcome + ledger error; class-B onEscalate
+- [PASS] 12 Retry exists — per-worker consecutive-failure backoff (10min, then 30min); cron runs defer with auto-retry, manual runs bypass
+- [NA] 13 Rollback where appropriate — cleanup-class; supervisor rollback stack available
+- [PASS] 14 Disable test exists — api/_worker-disable-tests.js: documented 24h-off consequence
+- [PARTIAL] 15 Evaluation exists — continuous-evaluation scorecards derive from ledger; per-worker registered_eval_cases vary
+- [PASS] 16 Regression tests exist — tests/api/workforce-batch2.test.ts:9; tests/api/workforce-batch2.test.ts:560; tests/api/workforce-batch2.test.ts:591; tests/api/workforce-batch2.test.ts:86
+- [PASS] 17 Monitoring exists — supervisor scan + ops-summary + AI Failures surface
+- [PARTIAL] 18 Cost controls exist — runs/hour + affected-records caps; no token-cost accounting
+- [PASS] 19 Security boundaries exist — class-gated execution; C never executes; tool-gateway authZ (proof-tested)
+- [PASS] 20 Connected to production workflow — cron tick + manual automation-run + ops-summary
+
+### resolution-verification — ACCEPTABLE-WITH-NOTES (16/20 pass, 3 partial, 0 fail)
+- [PASS] 1 Trigger exists — cron,admin_manual
+- [PASS] 2 Real input exists — observe() reads live state
+- [PASS] 3 Real tools exist — read_query,classify_content,update_reports,quarantine_content,write_audit_log,send_admin_alert
+- [PASS] 4 Permission exists — class B / risk medium
+- [PASS] 5 Real action exists — execute(dec, ev)
+- [PASS] 6 Real state can change
+- [PASS] 7 Verification exists — self-verify AND mapped independent verifier (runWorker requires both)
+- [PASS] 8 Metrics exist — measure() before/after
+- [PASS] 9 Evidence exists — core ledger row per run (table or workforce_actions_kv, 500 rows)
+- [PARTIAL] 10 UI exists where useful — surfaced via aggregate dashboards (Ops Center/Quality), not per-worker
+- [PASS] 11 Failure handling exists — execution_failed outcome + ledger error; class-B onEscalate
+- [PASS] 12 Retry exists — per-worker consecutive-failure backoff (10min, then 30min); cron runs defer with auto-retry, manual runs bypass
+- [NA] 13 Rollback where appropriate — cleanup-class; supervisor rollback stack available
+- [PASS] 14 Disable test exists — api/_worker-disable-tests.js: documented 24h-off consequence
+- [PARTIAL] 15 Evaluation exists — continuous-evaluation scorecards derive from ledger; per-worker registered_eval_cases vary
+- [PASS] 16 Regression tests exist — tests/api/reports.test.ts:571; tests/api/reports.test.ts:586; tests/api/workforce-batch3.test.ts:12
+- [PASS] 17 Monitoring exists — supervisor scan + ops-summary + AI Failures surface
+- [PARTIAL] 18 Cost controls exist — runs/hour + affected-records caps; no token-cost accounting
+- [PASS] 19 Security boundaries exist — class-gated execution; C never executes; tool-gateway authZ (proof-tested)
+- [PASS] 20 Connected to production workflow — cron tick + manual automation-run + ops-summary
+
+### report-disposition — ACCEPTABLE-WITH-NOTES (17/20 pass, 2 partial, 0 fail)
+- [PASS] 1 Trigger exists — cron,admin_manual
+- [PASS] 2 Real input exists — observe() reads live state
+- [PASS] 3 Real tools exist — read_query,classify_content,update_reports,quarantine_content,write_audit_log,send_admin_alert
+- [PASS] 4 Permission exists — class B / risk medium
+- [PASS] 5 Real action exists — execute(dec, ev)
+- [PASS] 6 Real state can change
+- [PASS] 7 Verification exists — self-verify AND mapped independent verifier (runWorker requires both)
+- [PASS] 8 Metrics exist — measure() before/after
+- [PASS] 9 Evidence exists — core ledger row per run (table or workforce_actions_kv, 500 rows)
+- [PASS] 10 UI exists where useful — src/__tests__/Reports.test.tsx:596; src/__tests__/Reports.test.tsx:628
+- [PASS] 11 Failure handling exists — execution_failed outcome + ledger error; class-B onEscalate
+- [PASS] 12 Retry exists — per-worker consecutive-failure backoff (10min, then 30min); cron runs defer with auto-retry, manual runs bypass
+- [NA] 13 Rollback where appropriate — cleanup-class; supervisor rollback stack available
+- [PASS] 14 Disable test exists — api/_worker-disable-tests.js: documented 24h-off consequence
+- [PARTIAL] 15 Evaluation exists — continuous-evaluation scorecards derive from ledger; per-worker registered_eval_cases vary
+- [PASS] 16 Regression tests exist — tests/api/reports.test.ts:541; tests/api/reports.test.ts:558; tests/api/reports.test.ts:598; tests/api/reports.test.ts:621
+- [PASS] 17 Monitoring exists — supervisor scan + ops-summary + AI Failures surface
+- [PARTIAL] 18 Cost controls exist — runs/hour + affected-records caps; no token-cost accounting
+- [PASS] 19 Security boundaries exist — class-gated execution; C never executes; tool-gateway authZ (proof-tested)
+- [PASS] 20 Connected to production workflow — cron tick + manual automation-run + ops-summary
+
+### cost-intelligence — ACCEPTABLE-WITH-NOTES (16/20 pass, 3 partial, 0 fail)
+- [PASS] 1 Trigger exists — cron,admin_manual
+- [PASS] 2 Real input exists — observe() reads live state
+- [PASS] 3 Real tools exist — read_query,write_audit_log,send_admin_alert
+- [PASS] 4 Permission exists — class B / risk low
+- [PASS] 5 Real action exists — execute(dec, ev)
+- [PASS] 6 Real state can change
+- [PASS] 7 Verification exists — self-verify AND mapped independent verifier (runWorker requires both)
+- [PASS] 8 Metrics exist — measure() before/after
+- [PASS] 9 Evidence exists — core ledger row per run (table or workforce_actions_kv, 500 rows)
+- [PARTIAL] 10 UI exists where useful — surfaced via aggregate dashboards (Ops Center/Quality), not per-worker
+- [PASS] 11 Failure handling exists — execution_failed outcome + ledger error; class-B onEscalate
+- [PASS] 12 Retry exists — per-worker consecutive-failure backoff (10min, then 30min); cron runs defer with auto-retry, manual runs bypass
+- [NA] 13 Rollback where appropriate — cleanup-class; supervisor rollback stack available
+- [PASS] 14 Disable test exists — api/_worker-disable-tests.js: documented 24h-off consequence
+- [PARTIAL] 15 Evaluation exists — continuous-evaluation scorecards derive from ledger; per-worker registered_eval_cases vary
+- [PASS] 16 Regression tests exist — tests/api/workforce-cost-intel.test.ts:2; tests/api/workforce-cost-intel.test.ts:108; tests/api/workforce-cost-intel.test.ts:111; tests/api/workforce-cost-intel.test.ts:117
+- [PASS] 17 Monitoring exists — supervisor scan + ops-summary + AI Failures surface
+- [PARTIAL] 18 Cost controls exist — runs/hour + affected-records caps; no token-cost accounting
+- [PASS] 19 Security boundaries exist — class-gated execution; C never executes; tool-gateway authZ (proof-tested)
+- [PASS] 20 Connected to production workflow — cron tick + manual automation-run + ops-summary
+
+### multilingual — ACCEPTABLE-WITH-NOTES (16/20 pass, 3 partial, 0 fail)
+- [PASS] 1 Trigger exists — cron,admin_manual
+- [PASS] 2 Real input exists — observe() reads live state
+- [PASS] 3 Real tools exist — read_query,translate,write_audit_log
+- [PASS] 4 Permission exists — class B / risk low
+- [PASS] 5 Real action exists — execute(dec, ev)
+- [PASS] 6 Real state can change
+- [PASS] 7 Verification exists — self-verify AND mapped independent verifier (runWorker requires both)
+- [PASS] 8 Metrics exist — measure() before/after
+- [PASS] 9 Evidence exists — core ledger row per run (table or workforce_actions_kv, 500 rows)
+- [PARTIAL] 10 UI exists where useful — surfaced via aggregate dashboards (Ops Center/Quality), not per-worker
+- [PASS] 11 Failure handling exists — execution_failed outcome + ledger error; class-B onEscalate
+- [PASS] 12 Retry exists — per-worker consecutive-failure backoff (10min, then 30min); cron runs defer with auto-retry, manual runs bypass
+- [NA] 13 Rollback where appropriate — cleanup-class; supervisor rollback stack available
+- [PASS] 14 Disable test exists — api/_worker-disable-tests.js: documented 24h-off consequence
+- [PARTIAL] 15 Evaluation exists — continuous-evaluation scorecards derive from ledger; per-worker registered_eval_cases vary
+- [PASS] 16 Regression tests exist — tests/api/context-classify.test.ts:112; tests/api/workforce-batch3.test.ts:7; tests/api/workforce-batch3.test.ts:356; tests/api/workforce-batch3.test.ts:390
+- [PASS] 17 Monitoring exists — supervisor scan + ops-summary + AI Failures surface
+- [PARTIAL] 18 Cost controls exist — runs/hour + affected-records caps; no token-cost accounting
+- [PASS] 19 Security boundaries exist — class-gated execution; C never executes; tool-gateway authZ (proof-tested)
+- [PASS] 20 Connected to production workflow — cron tick + manual automation-run + ops-summary
+
+### search-intel — ACCEPTABLE-WITH-NOTES (16/20 pass, 3 partial, 0 fail)
+- [PASS] 1 Trigger exists — cron,admin_manual
+- [PASS] 2 Real input exists — observe() reads live state
+- [PASS] 3 Real tools exist — metric_retrieval,write_audit_log
+- [PASS] 4 Permission exists — class B / risk low
+- [PASS] 5 Real action exists — execute(dec, ev)
+- [PASS] 6 Real state can change
+- [PASS] 7 Verification exists — self-verify AND mapped independent verifier (runWorker requires both)
+- [PASS] 8 Metrics exist — measure() before/after
+- [PASS] 9 Evidence exists — core ledger row per run (table or workforce_actions_kv, 500 rows)
+- [PARTIAL] 10 UI exists where useful — surfaced via aggregate dashboards (Ops Center/Quality), not per-worker
+- [PASS] 11 Failure handling exists — execution_failed outcome + ledger error; class-B onEscalate
+- [PASS] 12 Retry exists — per-worker consecutive-failure backoff (10min, then 30min); cron runs defer with auto-retry, manual runs bypass
+- [NA] 13 Rollback where appropriate — cleanup-class; supervisor rollback stack available
+- [PASS] 14 Disable test exists — api/_worker-disable-tests.js: documented 24h-off consequence
+- [PARTIAL] 15 Evaluation exists — continuous-evaluation scorecards derive from ledger; per-worker registered_eval_cases vary
+- [PASS] 16 Regression tests exist — tests/api/workforce-batch3.test.ts:8; tests/api/workforce-batch3.test.ts:432; tests/api/workforce-batch3.test.ts:473; tests/api/workforce-batch5b.test.ts:207
+- [PASS] 17 Monitoring exists — supervisor scan + ops-summary + AI Failures surface
+- [PARTIAL] 18 Cost controls exist — runs/hour + affected-records caps; no token-cost accounting
+- [PASS] 19 Security boundaries exist — class-gated execution; C never executes; tool-gateway authZ (proof-tested)
+- [PASS] 20 Connected to production workflow — cron tick + manual automation-run + ops-summary
+
+## Deterministic registry workers
+
+### poll-sweep — ACCEPTABLE-WITH-NOTES (15/20 pass, 4 partial, 0 fail)
+- [PASS] 1 Trigger exists — cron tick (agent-cron, 5min) + manual automation-run
+- [PASS] 2 Real input exists — ./_poll-sweeper.js#sweepExpiredPolls
+- [PASS] 3 Real tools exist — direct DB/API ops in run fn
+- [PASS] 4 Permission exists — cron-secret gate + fail-soft degraded modes
+- [PASS] 5 Real action exists — writes alerts/audit/records
+- [PASS] 6 Real state can change
+- [PARTIAL] 7 Verification exists — no explicit verify step
+- [PASS] 8 Metrics exist — structured result counts + last-run summaries
+- [PASS] 9 Evidence exists — alerts + audit rows + last_runs ledger
+- [PARTIAL] 10 UI exists where useful — via Ops Center live work + summaries
+- [PASS] 11 Failure handling exists — try/catch + degraded/deferred states
+- [PASS] 12 Retry exists — per-worker consecutive-failure backoff (10min, then 30min); cron runs defer with auto-retry, manual runs bypass
+- [NA] 13 Rollback where appropriate — alert-style workers resolve/supersede rather than roll back
+- [PASS] 14 Disable test exists — api/_worker-disable-tests.js: documented 24h-off consequence
+- [PARTIAL] 15 Evaluation exists — ledger-derived scorecards
+- [PASS] 16 Regression tests exist — tests/api/poll-sweeper.test.ts:18; tests/api/workforce-automation.test.ts:175; tests/api/poll-sweeper.test.ts:49; tests/api/poll-sweeper.test.ts:64
+- [PASS] 17 Monitoring exists — last_runs + ops-summary + AI Failures
+- [PARTIAL] 18 Cost controls exist — bounded sweep limits; no token accounting (deterministic, no LLM)
+- [PASS] 19 Security boundaries exist — read-mostly; writes scoped to alerts/own tables
+- [PASS] 20 Connected to production workflow — registry + cron + UI Run button
+
+### sla — ACCEPTABLE-WITH-NOTES (16/20 pass, 3 partial, 0 fail)
+- [PASS] 1 Trigger exists — cron tick (agent-cron, 5min) + manual automation-run
+- [PASS] 2 Real input exists — ./_sla.js#checkSLA
+- [PASS] 3 Real tools exist — direct DB/API ops in run fn
+- [PASS] 4 Permission exists — cron-secret gate + fail-soft degraded modes
+- [PASS] 5 Real action exists — writes alerts/audit/records
+- [PASS] 6 Real state can change
+- [PARTIAL] 7 Verification exists — no explicit verify step
+- [PASS] 8 Metrics exist — structured result counts + last-run summaries
+- [PASS] 9 Evidence exists — alerts + audit rows + last_runs ledger
+- [PASS] 10 UI exists where useful — src/components/Confetti.tsx:34; src/components/Layout.tsx:715; src/components/PremiumCard.tsx:35; src/components/PremiumCard.tsx:56; src/components/PremiumCard.tsx:59; src/components/primitives.tsx:166; src/components/primitives.tsx:186; src/components/ui/shimmer-button.tsx:72; src/lib/adminTabs.ts:25; src/lib/adminTabs.ts:69; src/lib/api.ts:319; src/lib/lexicon.ts:4; src/lib/lexicon.ts:17; src/lib/lexicon.ts:119; src/lib/lexicon.ts:120; src/lib/lexicon.ts:121; src/lib/lexicon.ts:122; src/lib/lexicon.ts:123; src/lib/lexicon.ts:124; src/lib/lexicon.ts:125; src/lib/lexicon.ts:126; src/lib/lexicon.ts:127; src/lib/lexicon.ts:128; src/lib/lexicon.ts:129; src/lib/lexicon.ts:130; src/lib/lexicon.ts:131; src/lib/lexicon.ts:132; src/lib/lexicon.ts:133; src/lib/lexicon.ts:134; src/lib/lexicon.ts:135; src/lib/lexicon.ts:136; src/lib/lexicon.ts:137; src/lib/lexicon.ts:138; src/lib/lexicon.ts:139; src/lib/lexicon.ts:140; src/lib/lexicon.ts:141; src/lib/lexicon.ts:142; src/lib/lexicon.ts:143; src/lib/lexicon.ts:144; src/lib/lexicon.ts:145; src/lib/lexicon.ts:146; src/lib/lexicon.ts:147; src/lib/lexicon.ts:148; src/lib/lexicon.ts:149; src/lib/lexicon.ts:150; src/lib/lexicon.ts:151; src/lib/lexicon.ts:152; src/lib/lexicon.ts:153; src/lib/lexicon.ts:154; src/lib/lexicon.ts:155; src/lib/lexicon.ts:156; src/lib/lexicon.ts:157; src/lib/lexicon.ts:158; src/lib/lexicon.ts:159; src/lib/lexicon.ts:160; src/lib/lexicon.ts:161; src/lib/lexicon.ts:162; src/lib/lexicon.ts:163; src/lib/lexicon.ts:164; src/lib/lexicon.ts:165; src/lib/lexicon.ts:166; src/lib/lexicon.ts:167; src/lib/lexicon.ts:168; src/lib/lexicon.ts:169; src/lib/lexicon.ts:170; src/lib/lexicon.ts:171; src/lib/lexicon.ts:172; src/lib/lexicon.ts:173; src/lib/lexicon.ts:174; src/lib/lexicon.ts:190; src/lib/moderation.ts:7; src/lib/moderation.ts:661; src/lib/moderation.ts:674; src/lib/moderation.ts:676; src/lib/moderation.ts:680; src/lib/moderation.ts:765; src/lib/moderation.ts:803; src/pages/About.tsx:160; src/pages/admin/ActivityStream.tsx:311; src/pages/admin/agent-chat/ActionCard.tsx:39; src/pages/admin/agent-chat/ActionPreviews.tsx:289; src/pages/admin/agent-chat/ActionPreviews.tsx:295; src/pages/admin/agent-chat/ActionPreviews.tsx:307; src/pages/admin/agent-chat/ActionPreviews.tsx:334; src/pages/admin/agent-chat/ActionPreviews.tsx:340; src/pages/admin/agent-chat/ActionPreviews.tsx:352; src/pages/admin/agent-chat/tool-meta.ts:149; src/pages/admin/agent-chat/tool-meta.ts:150; src/pages/admin/agent-chat/tool-meta.ts:151; src/pages/admin/agent-chat/tool-meta.ts:152; src/pages/admin/agent-chat/tool-meta.ts:326; src/pages/admin/PostsTable.tsx:781; src/pages/admin/PostsTable.tsx:1024; src/pages/admin/ProviderSettings.tsx:92; src/pages/admin/ProviderSettings.tsx:574; src/pages/admin/ProviderSettings.tsx:584; src/pages/admin/Reports.tsx:1849; src/pages/admin/SecurityCenter.tsx:224; src/pages/admin/SlangLeaders.tsx:21; src/pages/admin/SlangLeaders.tsx:25; src/pages/admin/SlangLeaders.tsx:38; src/pages/admin/SlangLeaders.tsx:43; src/pages/admin/SlangLeaders.tsx:71; src/pages/admin/SlangLeaders.tsx:77; src/pages/admin/SlangLeaders.tsx:78; src/pages/admin/SlangLeaders.tsx:90; src/pages/admin/SlangLeaders.tsx:100; src/pages/admin/SlangLeaders.tsx:117; src/pages/admin/UnifiedInbox.tsx:71; src/pages/admin/UnifiedInbox.tsx:315; src/pages/admin/UnifiedInbox.tsx:317; src/pages/admin/UnifiedInbox.tsx:319; src/pages/admin/UnifiedInbox.tsx:321; src/pages/admin/UnifiedInbox.tsx:417; src/pages/admin/UnifiedInbox.tsx:456; src/pages/admin/UnifiedInbox.tsx:467; src/pages/admin/UnifiedInbox.tsx:470; src/pages/admin/UnifiedInbox.tsx:1085; src/pages/admin/UnifiedInbox.tsx:1099; src/pages/admin/UnifiedInbox.tsx:1107; src/pages/admin/UnifiedInbox.tsx:1146; src/pages/admin/UnifiedInbox.tsx:1460; src/pages/admin/UnifiedInbox.tsx:1463; src/pages/admin/UserManager.tsx:276; src/pages/Admin.tsx:585; src/pages/Admin.tsx:586; src/pages/Faq.tsx:69; src/pages/Home.tsx:210; src/pages/Home.tsx:782; src/pages/Home.tsx:813; src/pages/Home.tsx:998; src/pages/PostDetail.tsx:721; src/pages/Search.tsx:270; src/pages/Search.tsx:283; src/pages/Settings.tsx:867; src/pages/SolvingBoard.tsx:24; src/pages/Submit.tsx:1697; src/pages/Suggestions.tsx:256; src/__tests__/adminTabs.test.ts:20; src/__tests__/api.test.ts:740; src/__tests__/Comments.gate.test.tsx:141; src/__tests__/moderation.test.ts:491; src/__tests__/OpsCenter.test.tsx:836; src/__tests__/platform.test.ts:85; src/__tests__/primitives1.test.tsx:55; src/__tests__/SlangLeaders.test.tsx:1; src/__tests__/SlangLeaders.test.tsx:54; src/__tests__/SlangLeaders.test.tsx:56; src/__tests__/SlangLeaders.test.tsx:58; src/__tests__/SlangLeaders.test.tsx:65; src/__tests__/SlangLeaders.test.tsx:75; src/__tests__/SlangLeaders.test.tsx:77; src/__tests__/SlangLeaders.test.tsx:78; src/__tests__/SlangLeaders.test.tsx:88; src/__tests__/SlangLeaders.test.tsx:93; src/__tests__/SlangLeaders.test.tsx:101; src/__tests__/SlangLeaders.test.tsx:103; src/__tests__/SlangLeaders.test.tsx:109; src/__tests__/SlangLeaders.test.tsx:112; src/__tests__/SlangLeaders.test.tsx:122; src/__tests__/Submit.test.tsx:175; src/__tests__/Submit.test.tsx:193; src/__tests__/Submit.test.tsx:207; src/__tests__/Submit.test.tsx:226; src/__tests__/Submit.test.tsx:238; src/__tests__/Submit.test.tsx:619; src/__tests__/Submit.test.tsx:663; src/__tests__/Submit.test.tsx:783; src/__tests__/Submit.test.tsx:826; src/__tests__/Submit.test.tsx:990; src/__tests__/Submit.test.tsx:1033; src/__tests__/Submit.test.tsx:1129; src/__tests__/Submit.test.tsx:1168; src/__tests__/Submit.test.tsx:1183; src/__tests__/UnifiedInbox.test.tsx:734; src/__tests__/UnifiedInbox.test.tsx:736; src/__tests__/UnifiedInbox.test.tsx:742; src/__tests__/UnifiedInbox.test.tsx:757; src/__tests__/UnifiedInbox.test.tsx:765; src/__tests__/UnifiedInbox.test.tsx:770; src/__tests__/UnifiedInbox.test.tsx:771; src/__tests__/UnifiedInbox.test.tsx:773; src/__tests__/UnifiedInbox.test.tsx:775; src/__tests__/UnifiedInbox.test.tsx:783; src/__tests__/UnifiedInbox.test.tsx:784; src/__tests__/UnifiedInbox.test.tsx:785; src/__tests__/UnifiedInbox.test.tsx:786
+- [PASS] 11 Failure handling exists — try/catch + degraded/deferred states
+- [PASS] 12 Retry exists — per-worker consecutive-failure backoff (10min, then 30min); cron runs defer with auto-retry, manual runs bypass
+- [NA] 13 Rollback where appropriate — alert-style workers resolve/supersede rather than roll back
+- [PASS] 14 Disable test exists — api/_worker-disable-tests.js: documented 24h-off consequence
+- [PARTIAL] 15 Evaluation exists — ledger-derived scorecards
+- [PASS] 16 Regression tests exist — tests/api/agent-cron-registry.test.ts:166; tests/api/comment-slang-tiers.test.ts:3; tests/api/comment-slang-tiers.test.ts:25; tests/api/comment-slang-tiers.test.ts:26
+- [PASS] 17 Monitoring exists — last_runs + ops-summary + AI Failures
+- [PARTIAL] 18 Cost controls exist — bounded sweep limits; no token accounting (deterministic, no LLM)
+- [PASS] 19 Security boundaries exist — read-mostly; writes scoped to alerts/own tables
+- [PASS] 20 Connected to production workflow — registry + cron + UI Run button
+
+### reopen — ACCEPTABLE-WITH-NOTES (17/20 pass, 2 partial, 0 fail)
+- [PASS] 1 Trigger exists — cron tick (agent-cron, 5min) + manual automation-run
+- [PASS] 2 Real input exists — ./_reopen.js#checkReopen
+- [PASS] 3 Real tools exist — direct DB/API ops in run fn
+- [PASS] 4 Permission exists — cron-secret gate + fail-soft degraded modes
+- [PASS] 5 Real action exists — writes alerts/audit/records
+- [PASS] 6 Real state can change
+- [PASS] 7 Verification exists — verified flag + re-read
+- [PASS] 8 Metrics exist — structured result counts + last-run summaries
+- [PASS] 9 Evidence exists — alerts + audit rows + last_runs ledger
+- [PASS] 10 UI exists where useful — src/contexts/AppContext.tsx:625; src/pages/admin/Reports.tsx:539; src/pages/admin/Reports.tsx:540; src/pages/admin/Reports.tsx:567; src/pages/admin/Reports.tsx:571; src/pages/admin/UnifiedInbox.tsx:817; src/pages/Admin.tsx:98; src/__tests__/UnifiedInbox.test.tsx:7; src/__tests__/UnifiedInbox.test.tsx:381; src/__tests__/UnifiedInbox.test.tsx:618
+- [PASS] 11 Failure handling exists — try/catch + degraded/deferred states
+- [PASS] 12 Retry exists — per-worker consecutive-failure backoff (10min, then 30min); cron runs defer with auto-retry, manual runs bypass
+- [NA] 13 Rollback where appropriate — alert-style workers resolve/supersede rather than roll back
+- [PASS] 14 Disable test exists — api/_worker-disable-tests.js: documented 24h-off consequence
+- [PARTIAL] 15 Evaluation exists — ledger-derived scorecards
+- [PASS] 16 Regression tests exist — tests/api/agent-cron-registry.test.ts:167; tests/api/reopen.test.ts:1; tests/api/reopen.test.ts:2; tests/api/reopen.test.ts:22
+- [PASS] 17 Monitoring exists — last_runs + ops-summary + AI Failures
+- [PARTIAL] 18 Cost controls exist — bounded sweep limits; no token accounting (deterministic, no LLM)
+- [PASS] 19 Security boundaries exist — read-mostly; writes scoped to alerts/own tables
+- [PASS] 20 Connected to production workflow — registry + cron + UI Run button
+
+### followup — ACCEPTABLE-WITH-NOTES (18/20 pass, 2 partial, 0 fail)
+- [PASS] 1 Trigger exists — cron tick (agent-cron, 5min) + manual automation-run
+- [PASS] 2 Real input exists — ./_followup.js#checkFollowups
+- [PASS] 3 Real tools exist — direct DB/API ops in run fn
+- [PASS] 4 Permission exists — cron-secret gate + fail-soft degraded modes
+- [PASS] 5 Real action exists — writes alerts/audit/records
+- [PASS] 6 Real state can change
+- [PASS] 7 Verification exists — verified flag + re-read
+- [PASS] 8 Metrics exist — structured result counts + last-run summaries
+- [PASS] 9 Evidence exists — alerts + audit rows + last_runs ledger
+- [PASS] 10 UI exists where useful — src/__tests__/OpsCenter.test.tsx:659
+- [PASS] 11 Failure handling exists — try/catch + degraded/deferred states
+- [PASS] 12 Retry exists — per-worker consecutive-failure backoff (10min, then 30min); cron runs defer with auto-retry, manual runs bypass
+- [PASS] 13 Rollback where appropriate — alert-style workers resolve/supersede rather than roll back
+- [PASS] 14 Disable test exists — api/_worker-disable-tests.js: documented 24h-off consequence
+- [PARTIAL] 15 Evaluation exists — ledger-derived scorecards
+- [PASS] 16 Regression tests exist — tests/api/agent-cron-registry.test.ts:168; tests/api/followup.test.ts:18; tests/api/followup.test.ts:81; tests/api/followup.test.ts:89
+- [PASS] 17 Monitoring exists — last_runs + ops-summary + AI Failures
+- [PARTIAL] 18 Cost controls exist — bounded sweep limits; no token accounting (deterministic, no LLM)
+- [PASS] 19 Security boundaries exist — read-mostly; writes scoped to alerts/own tables
+- [PASS] 20 Connected to production workflow — registry + cron + UI Run button
+
+### poll-integrity — ACCEPTABLE-WITH-NOTES (16/20 pass, 4 partial, 0 fail)
+- [PASS] 1 Trigger exists — cron tick (agent-cron, 5min) + manual automation-run
+- [PASS] 2 Real input exists — ./_poll-integrity.js#checkPollIntegrity
+- [PASS] 3 Real tools exist — direct DB/API ops in run fn
+- [PASS] 4 Permission exists — cron-secret gate + fail-soft degraded modes
+- [PASS] 5 Real action exists — writes alerts/audit/records
+- [PASS] 6 Real state can change
+- [PARTIAL] 7 Verification exists — no explicit verify step
+- [PASS] 8 Metrics exist — structured result counts + last-run summaries
+- [PASS] 9 Evidence exists — alerts + audit rows + last_runs ledger
+- [PARTIAL] 10 UI exists where useful — via Ops Center live work + summaries
+- [PASS] 11 Failure handling exists — try/catch + degraded/deferred states
+- [PASS] 12 Retry exists — per-worker consecutive-failure backoff (10min, then 30min); cron runs defer with auto-retry, manual runs bypass
+- [PASS] 13 Rollback where appropriate — alert-style workers resolve/supersede rather than roll back
+- [PASS] 14 Disable test exists — api/_worker-disable-tests.js: documented 24h-off consequence
+- [PARTIAL] 15 Evaluation exists — ledger-derived scorecards
+- [PASS] 16 Regression tests exist — tests/api/poll-integrity.test.ts:18; tests/api/workforce-automation.test.ts:184; tests/api/workforce-batch4.test.ts:6; tests/api/workforce-batch4.test.ts:16
+- [PASS] 17 Monitoring exists — last_runs + ops-summary + AI Failures
+- [PARTIAL] 18 Cost controls exist — bounded sweep limits; no token accounting (deterministic, no LLM)
+- [PASS] 19 Security boundaries exist — read-mostly; writes scoped to alerts/own tables
+- [PASS] 20 Connected to production workflow — registry + cron + UI Run button
+
+### storage — ACCEPTABLE-WITH-NOTES (16/20 pass, 3 partial, 0 fail)
+- [PASS] 1 Trigger exists — cron tick (agent-cron, 5min) + manual automation-run
+- [PASS] 2 Real input exists — ./_storage.js#sweepStorage
+- [PASS] 3 Real tools exist — direct DB/API ops in run fn
+- [PASS] 4 Permission exists — cron-secret gate + fail-soft degraded modes
+- [PASS] 5 Real action exists — writes alerts/audit/records
+- [PASS] 6 Real state can change
+- [PARTIAL] 7 Verification exists — no explicit verify step
+- [PASS] 8 Metrics exist — structured result counts + last-run summaries
+- [PASS] 9 Evidence exists — alerts + audit rows + last_runs ledger
+- [PASS] 10 UI exists where useful — src/components/Layout.tsx:130; src/components/PollCard.tsx:137; src/lib/api.ts:443; src/lib/api.ts:445; src/lib/api.ts:470; src/lib/api.ts:471; src/lib/api.ts:473; src/lib/appUpdate.ts:62; src/lib/identity.ts:7; src/lib/identity.ts:13; src/lib/identity.ts:18; src/lib/identity.ts:19; src/lib/identity.ts:143; src/lib/identity.ts:191; src/lib/identity.ts:215; src/lib/identity.ts:280; src/lib/image.ts:5; src/lib/image.ts:8; src/lib/platform.ts:134; src/lib/privacyCopy.ts:20; src/lib/retryLazy.ts:51; src/lib/storage.ts:2; src/lib/storage.ts:14; src/lib/storage.ts:223; src/lib/storage.ts:230; src/lib/storage.ts:231; src/lib/storage.ts:236; src/lib/storage.ts:252; src/lib/storage.ts:449; src/lib/storage.ts:523; src/main.tsx:9; src/main.tsx:87; src/main.tsx:100; src/pages/admin/AdminSettings.tsx:515; src/pages/admin/AgentChat.tsx:169; src/pages/admin/SystemHealth.tsx:44; src/pages/admin/SystemHealth.tsx:68; src/pages/admin/UserManager.tsx:120; src/pages/Communities.tsx:88; src/pages/Faq.tsx:11; src/pages/Privacy.tsx:12; src/pages/Privacy.tsx:96; src/pages/Submit.tsx:642; src/__tests__/api.test.ts:590; src/__tests__/api.test.ts:597; src/__tests__/AppContextCore.test.tsx:155; src/__tests__/AppContextCore.test.tsx:515; src/__tests__/device-storage.test.ts:2; src/__tests__/device-storage.test.ts:4; src/__tests__/device-storage.test.ts:29; src/__tests__/device-storage.test.ts:30; src/__tests__/device-storage.test.ts:36; src/__tests__/device-storage.test.ts:140; src/__tests__/device-storage.test.ts:154; src/__tests__/device-storage.test.ts:161; src/__tests__/device-storage.test.ts:167; src/__tests__/device-storage.test.ts:172; src/__tests__/device-storage.test.ts:174; src/__tests__/device-storage.test.ts:212; src/__tests__/device-storage.test.ts:350; src/__tests__/device-storage.test.ts:374; src/__tests__/Home.test.tsx:588; src/__tests__/Home.test.tsx:676; src/__tests__/identity-blocked.test.ts:2; src/__tests__/identity-blocked.test.ts:6; src/__tests__/identity-blocked.test.ts:27; src/__tests__/identity-blocked.test.ts:49; src/__tests__/identity-blocked.test.ts:61; src/__tests__/identity-blocked.test.ts:71; src/__tests__/identity-blocked.test.ts:82; src/__tests__/identity-blocked.test.ts:87; src/__tests__/identity-blocked.test.ts:96; src/__tests__/identity-blocked.test.ts:105; src/__tests__/identity-blocked.test.ts:115; src/__tests__/identity-blocked.test.ts:116; src/__tests__/identity-blocked.test.ts:123; src/__tests__/identity-blocked.test.ts:129; src/__tests__/identity-blocked.test.ts:139; src/__tests__/identity.test.ts:171; src/__tests__/identity.test.ts:172; src/__tests__/identity.test.ts:234; src/__tests__/identity.test.ts:236; src/__tests__/identity.test.ts:274; src/__tests__/identityStable.test.ts:19; src/__tests__/platform.test.ts:3; src/__tests__/platform.test.ts:5; src/__tests__/platform.test.ts:136; src/__tests__/platform.test.ts:138; src/__tests__/platform.test.ts:143; src/__tests__/platform.test.ts:144; src/__tests__/platform.test.ts:151; src/__tests__/retryLazy.test.tsx:99; src/__tests__/retryLazy.test.tsx:102; src/__tests__/storage-contract.test.ts:50
+- [PASS] 11 Failure handling exists — try/catch + degraded/deferred states
+- [PASS] 12 Retry exists — per-worker consecutive-failure backoff (10min, then 30min); cron runs defer with auto-retry, manual runs bypass
+- [NA] 13 Rollback where appropriate — alert-style workers resolve/supersede rather than roll back
+- [PASS] 14 Disable test exists — api/_worker-disable-tests.js: documented 24h-off consequence
+- [PARTIAL] 15 Evaluation exists — ledger-derived scorecards
+- [PASS] 16 Regression tests exist — tests/api/agent-cron-registry.test.ts:170; tests/api/context-classify.test.ts:216; tests/api/domain-enrollment.test.ts:326; tests/api/follows.test.ts:11
+- [PASS] 17 Monitoring exists — last_runs + ops-summary + AI Failures
+- [PARTIAL] 18 Cost controls exist — bounded sweep limits; no token accounting (deterministic, no LLM)
+- [PASS] 19 Security boundaries exist — read-mostly; writes scoped to alerts/own tables
+- [PASS] 20 Connected to production workflow — registry + cron + UI Run button
+
+### trends — ACCEPTABLE-WITH-NOTES (16/20 pass, 3 partial, 0 fail)
+- [PASS] 1 Trigger exists — cron tick (agent-cron, 5min) + manual automation-run
+- [PASS] 2 Real input exists — ./_trend-watch.js#checkTrends
+- [PASS] 3 Real tools exist — direct DB/API ops in run fn
+- [PASS] 4 Permission exists — cron-secret gate + fail-soft degraded modes
+- [PASS] 5 Real action exists — writes alerts/audit/records
+- [PASS] 6 Real state can change
+- [PARTIAL] 7 Verification exists — no explicit verify step
+- [PASS] 8 Metrics exist — structured result counts + last-run summaries
+- [PASS] 9 Evidence exists — alerts + audit rows + last_runs ledger
+- [PASS] 10 UI exists where useful — src/lib/dashboard/widgets.tsx:84; src/lib/dashboard/widgets.tsx:85; src/lib/dashboard/widgets.tsx:826; src/lib/dashboard/widgets.tsx:918; src/lib/dashboard/widgets.tsx:930; src/lib/dashboard/widgets.tsx:942; src/lib/dashboard/widgets.tsx:953; src/lib/dashboard/widgets.tsx:965; src/lib/dashboard/widgets.tsx:977; src/lib/dashboard/widgets.tsx:987; src/lib/dashboard/widgets.tsx:997; src/lib/dashboard/widgets.tsx:998; src/lib/dashboard/widgets.tsx:1007; src/lib/dashboard/widgets.tsx:1257; src/lib/dashboard/widgets.tsx:1268; src/lib/dashboard/widgets.tsx:1280; src/lib/dashboard/widgets.tsx:1281; src/lib/dashboard/widgets.tsx:1290; src/lib/dashboard/widgets.tsx:1301; src/lib/dashboard/widgets.tsx:1313; src/lib/dashboard/widgets.tsx:2086; src/pages/admin/agent-chat/ActionPreviews.tsx:938; src/pages/Home.tsx:920; src/__tests__/dashboard-widgets.test.tsx:63; src/__tests__/dashboard-widgets.test.tsx:138; src/__tests__/dashboard-widgets.test.tsx:155; src/__tests__/dashboard-widgets.test.tsx:156; src/__tests__/dashboard-widgets.test.tsx:196; src/__tests__/dashboard-widgets.test.tsx:204; src/__tests__/dashboard-widgets.test.tsx:255; src/__tests__/OpsCenter.test.tsx:830; src/__tests__/OpsCenter.test.tsx:874; src/__tests__/OpsCenter.test.tsx:889; src/__tests__/Overview.test.tsx:1378; src/__tests__/utils.test.ts:355
+- [PASS] 11 Failure handling exists — try/catch + degraded/deferred states
+- [PASS] 12 Retry exists — per-worker consecutive-failure backoff (10min, then 30min); cron runs defer with auto-retry, manual runs bypass
+- [NA] 13 Rollback where appropriate — alert-style workers resolve/supersede rather than roll back
+- [PASS] 14 Disable test exists — api/_worker-disable-tests.js: documented 24h-off consequence
+- [PARTIAL] 15 Evaluation exists — ledger-derived scorecards
+- [PASS] 16 Regression tests exist — tests/api/agent-cron-registry.test.ts:171; tests/api/agent-team.test.ts:564; tests/api/agent-team.test.ts:581; tests/api/orchestrator.test.ts:543
+- [PASS] 17 Monitoring exists — last_runs + ops-summary + AI Failures
+- [PARTIAL] 18 Cost controls exist — bounded sweep limits; no token accounting (deterministic, no LLM)
+- [PASS] 19 Security boundaries exist — read-mostly; writes scoped to alerts/own tables
+- [PASS] 20 Connected to production workflow — registry + cron + UI Run button
+
+### anonymity — ACCEPTABLE-WITH-NOTES (16/20 pass, 3 partial, 0 fail)
+- [PASS] 1 Trigger exists — cron tick (agent-cron, 5min) + manual automation-run
+- [PASS] 2 Real input exists — ./_anonymity.js#checkAnonymity
+- [PASS] 3 Real tools exist — direct DB/API ops in run fn
+- [PASS] 4 Permission exists — cron-secret gate + fail-soft degraded modes
+- [PASS] 5 Real action exists — writes alerts/audit/records
+- [PASS] 6 Real state can change
+- [PARTIAL] 7 Verification exists — no explicit verify step
+- [PASS] 8 Metrics exist — structured result counts + last-run summaries
+- [PASS] 9 Evidence exists — alerts + audit rows + last_runs ledger
+- [PASS] 10 UI exists where useful — src/pages/About.tsx:10; src/pages/Terms.tsx:16; src/pages/Terms.tsx:20
+- [PASS] 11 Failure handling exists — try/catch + degraded/deferred states
+- [PASS] 12 Retry exists — per-worker consecutive-failure backoff (10min, then 30min); cron runs defer with auto-retry, manual runs bypass
+- [NA] 13 Rollback where appropriate — alert-style workers resolve/supersede rather than roll back
+- [PASS] 14 Disable test exists — api/_worker-disable-tests.js: documented 24h-off consequence
+- [PARTIAL] 15 Evaluation exists — ledger-derived scorecards
+- [PASS] 16 Regression tests exist — tests/api/agent-cron-registry.test.ts:172; tests/api/agent-team.test.ts:521; tests/api/agent-team.test.ts:524; tests/api/anonymity.test.ts:18
+- [PASS] 17 Monitoring exists — last_runs + ops-summary + AI Failures
+- [PARTIAL] 18 Cost controls exist — bounded sweep limits; no token accounting (deterministic, no LLM)
+- [PASS] 19 Security boundaries exist — read-mostly; writes scoped to alerts/own tables
+- [PASS] 20 Connected to production workflow — registry + cron + UI Run button
+
+### comment-watch — ACCEPTABLE-WITH-NOTES (16/20 pass, 3 partial, 0 fail)
+- [PASS] 1 Trigger exists — cron tick (agent-cron, 5min) + manual automation-run
+- [PASS] 2 Real input exists — ./_comment-watch.js#watchComments
+- [PASS] 3 Real tools exist — direct DB/API ops in run fn
+- [PASS] 4 Permission exists — cron-secret gate + fail-soft degraded modes
+- [PASS] 5 Real action exists — writes alerts/audit/records
+- [PASS] 6 Real state can change
+- [PASS] 7 Verification exists — verified flag + re-read
+- [PASS] 8 Metrics exist — structured result counts + last-run summaries
+- [PASS] 9 Evidence exists — alerts + audit rows + last_runs ledger
+- [PARTIAL] 10 UI exists where useful — via Ops Center live work + summaries
+- [PASS] 11 Failure handling exists — try/catch + degraded/deferred states
+- [PASS] 12 Retry exists — per-worker consecutive-failure backoff (10min, then 30min); cron runs defer with auto-retry, manual runs bypass
+- [NA] 13 Rollback where appropriate — alert-style workers resolve/supersede rather than roll back
+- [PASS] 14 Disable test exists — api/_worker-disable-tests.js: documented 24h-off consequence
+- [PARTIAL] 15 Evaluation exists — ledger-derived scorecards
+- [PASS] 16 Regression tests exist — tests/api/comment-watch.test.ts:20; tests/api/comment-watch.test.ts:197; tests/api/comment-watch.test.ts:244; tests/api/comment-watch.test.ts:245
+- [PASS] 17 Monitoring exists — last_runs + ops-summary + AI Failures
+- [PARTIAL] 18 Cost controls exist — bounded sweep limits; no token accounting (deterministic, no LLM)
+- [PASS] 19 Security boundaries exist — read-mostly; writes scoped to alerts/own tables
+- [PASS] 20 Connected to production workflow — registry + cron + UI Run button
+
+### voice-intake — ACCEPTABLE-WITH-NOTES (9/20 pass, 10 partial, 0 fail)
+- [PASS] 1 Trigger exists — cron tick (agent-cron, 5min) + manual automation-run
+- [PARTIAL] 2 Real input exists — ./_workforce-workers.js#runVoiceIntake
+- [PASS] 3 Real tools exist — direct DB/API ops in run fn
+- [PASS] 4 Permission exists — cron-secret gate + fail-soft degraded modes
+- [PARTIAL] 5 Real action exists — no write detected statically
+- [PARTIAL] 6 Real state can change
+- [PARTIAL] 7 Verification exists — no explicit verify step
+- [PARTIAL] 8 Metrics exist — structured result counts + last-run summaries
+- [PARTIAL] 9 Evidence exists — alerts + audit rows + last_runs ledger
+- [PARTIAL] 10 UI exists where useful — via Ops Center live work + summaries
+- [PARTIAL] 11 Failure handling exists — try/catch + degraded/deferred states
+- [PASS] 12 Retry exists — per-worker consecutive-failure backoff (10min, then 30min); cron runs defer with auto-retry, manual runs bypass
+- [NA] 13 Rollback where appropriate — alert-style workers resolve/supersede rather than roll back
+- [PASS] 14 Disable test exists — api/_worker-disable-tests.js: documented 24h-off consequence
+- [PARTIAL] 15 Evaluation exists — ledger-derived scorecards
+- [PASS] 16 Regression tests exist — tests/api/workforce-batch1.test.ts:5; tests/api/workforce-batch1.test.ts:170; tests/api/workforce-core-coverage.test.ts:99; tests/api/workforce-batch1.test.ts:43
+- [PASS] 17 Monitoring exists — last_runs + ops-summary + AI Failures
+- [PARTIAL] 18 Cost controls exist — bounded sweep limits; no token accounting (deterministic, no LLM)
+- [PASS] 19 Security boundaries exist — read-mostly; writes scoped to alerts/own tables
+- [PASS] 20 Connected to production workflow — registry + cron + UI Run button
+
+### submission-understanding — ACCEPTABLE-WITH-NOTES (9/20 pass, 10 partial, 0 fail)
+- [PASS] 1 Trigger exists — cron tick (agent-cron, 5min) + manual automation-run
+- [PARTIAL] 2 Real input exists — ./_workforce-workers.js#runSubmissionUnderstanding
+- [PASS] 3 Real tools exist — direct DB/API ops in run fn
+- [PASS] 4 Permission exists — cron-secret gate + fail-soft degraded modes
+- [PARTIAL] 5 Real action exists — no write detected statically
+- [PARTIAL] 6 Real state can change
+- [PARTIAL] 7 Verification exists — no explicit verify step
+- [PARTIAL] 8 Metrics exist — structured result counts + last-run summaries
+- [PARTIAL] 9 Evidence exists — alerts + audit rows + last_runs ledger
+- [PARTIAL] 10 UI exists where useful — via Ops Center live work + summaries
+- [PARTIAL] 11 Failure handling exists — try/catch + degraded/deferred states
+- [PASS] 12 Retry exists — per-worker consecutive-failure backoff (10min, then 30min); cron runs defer with auto-retry, manual runs bypass
+- [NA] 13 Rollback where appropriate — alert-style workers resolve/supersede rather than roll back
+- [PASS] 14 Disable test exists — api/_worker-disable-tests.js: documented 24h-off consequence
+- [PARTIAL] 15 Evaluation exists — ledger-derived scorecards
+- [PASS] 16 Regression tests exist — tests/api/workforce-batch1.test.ts:6; tests/api/workforce-batch1.test.ts:200; tests/api/workforce-batch1.test.ts:41; tests/api/workforce-batch1.test.ts:224
+- [PASS] 17 Monitoring exists — last_runs + ops-summary + AI Failures
+- [PARTIAL] 18 Cost controls exist — bounded sweep limits; no token accounting (deterministic, no LLM)
+- [PASS] 19 Security boundaries exist — read-mostly; writes scoped to alerts/own tables
+- [PASS] 20 Connected to production workflow — registry + cron + UI Run button
+
+### missing-info — ACCEPTABLE-WITH-NOTES (9/20 pass, 10 partial, 0 fail)
+- [PASS] 1 Trigger exists — cron tick (agent-cron, 5min) + manual automation-run
+- [PARTIAL] 2 Real input exists — ./_workforce-workers.js#runMissingInfo
+- [PASS] 3 Real tools exist — direct DB/API ops in run fn
+- [PASS] 4 Permission exists — cron-secret gate + fail-soft degraded modes
+- [PARTIAL] 5 Real action exists — no write detected statically
+- [PARTIAL] 6 Real state can change
+- [PARTIAL] 7 Verification exists — no explicit verify step
+- [PARTIAL] 8 Metrics exist — structured result counts + last-run summaries
+- [PARTIAL] 9 Evidence exists — alerts + audit rows + last_runs ledger
+- [PARTIAL] 10 UI exists where useful — via Ops Center live work + summaries
+- [PARTIAL] 11 Failure handling exists — try/catch + degraded/deferred states
+- [PASS] 12 Retry exists — per-worker consecutive-failure backoff (10min, then 30min); cron runs defer with auto-retry, manual runs bypass
+- [NA] 13 Rollback where appropriate — alert-style workers resolve/supersede rather than roll back
+- [PASS] 14 Disable test exists — api/_worker-disable-tests.js: documented 24h-off consequence
+- [PARTIAL] 15 Evaluation exists — ledger-derived scorecards
+- [PASS] 16 Regression tests exist — tests/api/workforce-batch1.test.ts:7; tests/api/workforce-batch1.test.ts:235; tests/api/workforce-core-coverage.test.ts:100; tests/api/workforce-batch1.test.ts:40
+- [PASS] 17 Monitoring exists — last_runs + ops-summary + AI Failures
+- [PARTIAL] 18 Cost controls exist — bounded sweep limits; no token accounting (deterministic, no LLM)
+- [PASS] 19 Security boundaries exist — read-mostly; writes scoped to alerts/own tables
+- [PASS] 20 Connected to production workflow — registry + cron + UI Run button
+
+### category-assignment — ACCEPTABLE-WITH-NOTES (9/20 pass, 10 partial, 0 fail)
+- [PASS] 1 Trigger exists — cron tick (agent-cron, 5min) + manual automation-run
+- [PARTIAL] 2 Real input exists — ./_workforce-workers.js#runCategoryAssignment
+- [PASS] 3 Real tools exist — direct DB/API ops in run fn
+- [PASS] 4 Permission exists — cron-secret gate + fail-soft degraded modes
+- [PARTIAL] 5 Real action exists — no write detected statically
+- [PARTIAL] 6 Real state can change
+- [PARTIAL] 7 Verification exists — no explicit verify step
+- [PARTIAL] 8 Metrics exist — structured result counts + last-run summaries
+- [PARTIAL] 9 Evidence exists — alerts + audit rows + last_runs ledger
+- [PARTIAL] 10 UI exists where useful — via Ops Center live work + summaries
+- [PARTIAL] 11 Failure handling exists — try/catch + degraded/deferred states
+- [PASS] 12 Retry exists — per-worker consecutive-failure backoff (10min, then 30min); cron runs defer with auto-retry, manual runs bypass
+- [NA] 13 Rollback where appropriate — alert-style workers resolve/supersede rather than roll back
+- [PASS] 14 Disable test exists — api/_worker-disable-tests.js: documented 24h-off consequence
+- [PARTIAL] 15 Evaluation exists — ledger-derived scorecards
+- [PASS] 16 Regression tests exist — tests/api/workforce-batch1.test.ts:8; tests/api/workforce-batch1.test.ts:268; tests/api/workforce-batch1.test.ts:38; tests/api/workforce-batch1.test.ts:291
+- [PASS] 17 Monitoring exists — last_runs + ops-summary + AI Failures
+- [PARTIAL] 18 Cost controls exist — bounded sweep limits; no token accounting (deterministic, no LLM)
+- [PASS] 19 Security boundaries exist — read-mostly; writes scoped to alerts/own tables
+- [PASS] 20 Connected to production workflow — registry + cron + UI Run button
+
+### category-correction — ACCEPTABLE-WITH-NOTES (9/20 pass, 10 partial, 0 fail)
+- [PASS] 1 Trigger exists — cron tick (agent-cron, 5min) + manual automation-run
+- [PARTIAL] 2 Real input exists — ./_workforce-workers.js#runCategoryCorrection
+- [PASS] 3 Real tools exist — direct DB/API ops in run fn
+- [PASS] 4 Permission exists — cron-secret gate + fail-soft degraded modes
+- [PARTIAL] 5 Real action exists — no write detected statically
+- [PARTIAL] 6 Real state can change
+- [PARTIAL] 7 Verification exists — no explicit verify step
+- [PARTIAL] 8 Metrics exist — structured result counts + last-run summaries
+- [PARTIAL] 9 Evidence exists — alerts + audit rows + last_runs ledger
+- [PARTIAL] 10 UI exists where useful — via Ops Center live work + summaries
+- [PARTIAL] 11 Failure handling exists — try/catch + degraded/deferred states
+- [PASS] 12 Retry exists — per-worker consecutive-failure backoff (10min, then 30min); cron runs defer with auto-retry, manual runs bypass
+- [NA] 13 Rollback where appropriate — alert-style workers resolve/supersede rather than roll back
+- [PASS] 14 Disable test exists — api/_worker-disable-tests.js: documented 24h-off consequence
+- [PARTIAL] 15 Evaluation exists — ledger-derived scorecards
+- [PASS] 16 Regression tests exist — tests/api/workforce-batch1.test.ts:9; tests/api/workforce-batch1.test.ts:303; tests/api/workforce-batch1.test.ts:39; tests/api/workforce-batch1.test.ts:327
+- [PASS] 17 Monitoring exists — last_runs + ops-summary + AI Failures
+- [PARTIAL] 18 Cost controls exist — bounded sweep limits; no token accounting (deterministic, no LLM)
+- [PASS] 19 Security boundaries exist — read-mostly; writes scoped to alerts/own tables
+- [PASS] 20 Connected to production workflow — registry + cron + UI Run button
+
+### suggestion-detection — ACCEPTABLE-WITH-NOTES (9/20 pass, 10 partial, 0 fail)
+- [PASS] 1 Trigger exists — cron tick (agent-cron, 5min) + manual automation-run
+- [PARTIAL] 2 Real input exists — ./_workforce-workers.js#runSuggestionDetection
+- [PASS] 3 Real tools exist — direct DB/API ops in run fn
+- [PASS] 4 Permission exists — cron-secret gate + fail-soft degraded modes
+- [PARTIAL] 5 Real action exists — no write detected statically
+- [PARTIAL] 6 Real state can change
+- [PARTIAL] 7 Verification exists — no explicit verify step
+- [PARTIAL] 8 Metrics exist — structured result counts + last-run summaries
+- [PARTIAL] 9 Evidence exists — alerts + audit rows + last_runs ledger
+- [PARTIAL] 10 UI exists where useful — via Ops Center live work + summaries
+- [PARTIAL] 11 Failure handling exists — try/catch + degraded/deferred states
+- [PASS] 12 Retry exists — per-worker consecutive-failure backoff (10min, then 30min); cron runs defer with auto-retry, manual runs bypass
+- [NA] 13 Rollback where appropriate — alert-style workers resolve/supersede rather than roll back
+- [PASS] 14 Disable test exists — api/_worker-disable-tests.js: documented 24h-off consequence
+- [PARTIAL] 15 Evaluation exists — ledger-derived scorecards
+- [PASS] 16 Regression tests exist — tests/api/workforce-batch1.test.ts:10; tests/api/workforce-batch1.test.ts:341; tests/api/workforce-batch1.test.ts:42; tests/api/workforce-batch1.test.ts:363
+- [PASS] 17 Monitoring exists — last_runs + ops-summary + AI Failures
+- [PARTIAL] 18 Cost controls exist — bounded sweep limits; no token accounting (deterministic, no LLM)
+- [PASS] 19 Security boundaries exist — read-mostly; writes scoped to alerts/own tables
+- [PASS] 20 Connected to production workflow — registry + cron + UI Run button
+
+### duplicate-case — ACCEPTABLE-WITH-NOTES (9/20 pass, 10 partial, 0 fail)
+- [PASS] 1 Trigger exists — cron tick (agent-cron, 5min) + manual automation-run
+- [PARTIAL] 2 Real input exists — ./_workforce-workers.js#runDuplicateCase
+- [PASS] 3 Real tools exist — direct DB/API ops in run fn
+- [PASS] 4 Permission exists — cron-secret gate + fail-soft degraded modes
+- [PARTIAL] 5 Real action exists — no write detected statically
+- [PARTIAL] 6 Real state can change
+- [PARTIAL] 7 Verification exists — no explicit verify step
+- [PARTIAL] 8 Metrics exist — structured result counts + last-run summaries
+- [PARTIAL] 9 Evidence exists — alerts + audit rows + last_runs ledger
+- [PARTIAL] 10 UI exists where useful — via Ops Center live work + summaries
+- [PARTIAL] 11 Failure handling exists — try/catch + degraded/deferred states
+- [PASS] 12 Retry exists — per-worker consecutive-failure backoff (10min, then 30min); cron runs defer with auto-retry, manual runs bypass
+- [NA] 13 Rollback where appropriate — alert-style workers resolve/supersede rather than roll back
+- [PASS] 14 Disable test exists — api/_worker-disable-tests.js: documented 24h-off consequence
+- [PARTIAL] 15 Evaluation exists — ledger-derived scorecards
+- [PASS] 16 Regression tests exist — tests/api/workforce-batch2.test.ts:6; tests/api/workforce-batch2.test.ts:341; tests/api/workforce-batch2.test.ts:378; tests/api/workforce-batch3.test.ts:551
+- [PASS] 17 Monitoring exists — last_runs + ops-summary + AI Failures
+- [PARTIAL] 18 Cost controls exist — bounded sweep limits; no token accounting (deterministic, no LLM)
+- [PASS] 19 Security boundaries exist — read-mostly; writes scoped to alerts/own tables
+- [PASS] 20 Connected to production workflow — registry + cron + UI Run button
+
+### related-case — ACCEPTABLE-WITH-NOTES (9/20 pass, 10 partial, 0 fail)
+- [PASS] 1 Trigger exists — cron tick (agent-cron, 5min) + manual automation-run
+- [PARTIAL] 2 Real input exists — ./_workforce-workers.js#runRelatedCase
+- [PASS] 3 Real tools exist — direct DB/API ops in run fn
+- [PASS] 4 Permission exists — cron-secret gate + fail-soft degraded modes
+- [PARTIAL] 5 Real action exists — no write detected statically
+- [PARTIAL] 6 Real state can change
+- [PARTIAL] 7 Verification exists — no explicit verify step
+- [PARTIAL] 8 Metrics exist — structured result counts + last-run summaries
+- [PARTIAL] 9 Evidence exists — alerts + audit rows + last_runs ledger
+- [PARTIAL] 10 UI exists where useful — via Ops Center live work + summaries
+- [PARTIAL] 11 Failure handling exists — try/catch + degraded/deferred states
+- [PASS] 12 Retry exists — per-worker consecutive-failure backoff (10min, then 30min); cron runs defer with auto-retry, manual runs bypass
+- [NA] 13 Rollback where appropriate — alert-style workers resolve/supersede rather than roll back
+- [PASS] 14 Disable test exists — api/_worker-disable-tests.js: documented 24h-off consequence
+- [PARTIAL] 15 Evaluation exists — ledger-derived scorecards
+- [PASS] 16 Regression tests exist — tests/api/workforce-batch2.test.ts:7; tests/api/workforce-batch2.test.ts:414; tests/api/workforce-batch2.test.ts:451; tests/api/workforce-batch2.test.ts:457
+- [PASS] 17 Monitoring exists — last_runs + ops-summary + AI Failures
+- [PARTIAL] 18 Cost controls exist — bounded sweep limits; no token accounting (deterministic, no LLM)
+- [PASS] 19 Security boundaries exist — read-mostly; writes scoped to alerts/own tables
+- [PASS] 20 Connected to production workflow — registry + cron + UI Run button
+
+### priority — ACCEPTABLE-WITH-NOTES (10/20 pass, 9 partial, 0 fail)
+- [PASS] 1 Trigger exists — cron tick (agent-cron, 5min) + manual automation-run
+- [PARTIAL] 2 Real input exists — ./_workforce-workers.js#runPriority
+- [PASS] 3 Real tools exist — direct DB/API ops in run fn
+- [PASS] 4 Permission exists — cron-secret gate + fail-soft degraded modes
+- [PARTIAL] 5 Real action exists — no write detected statically
+- [PARTIAL] 6 Real state can change
+- [PARTIAL] 7 Verification exists — no explicit verify step
+- [PARTIAL] 8 Metrics exist — structured result counts + last-run summaries
+- [PARTIAL] 9 Evidence exists — alerts + audit rows + last_runs ledger
+- [PASS] 10 UI exists where useful — src/components/admin/WorkItem.tsx:63; src/components/admin/WorkItem.tsx:185; src/components/admin/WorkItem.tsx:190; src/components/admin/WorkItem.tsx:192; src/components/admin/WorkItem.tsx:197; src/components/admin/WorkItem.tsx:439; src/components/admin/WorkItem.tsx:474; src/components/PostCard.tsx:221; src/components/PostCard.tsx:369; src/components/PostCard.tsx:373; src/components/PostCard.tsx:374; src/components/PostCard.tsx:376; src/components/PostCard.tsx:378; src/components/PostCard.tsx:379; src/components/PostCard.tsx:380; src/components/PostCard.tsx:381; src/components/PostPreviewCard.tsx:14; src/components/PostPreviewCard.tsx:49; src/components/PostPreviewCard.tsx:61; src/components/PostPreviewCard.tsx:72; src/components/PostPreviewCard.tsx:127; src/components/PostPreviewCard.tsx:132; src/lib/complianceCSV.ts:118; src/lib/dashboard/widgets.tsx:992; src/lib/dashboard/widgets.tsx:994; src/lib/dashboard/widgets.tsx:998; src/lib/dashboard/widgets.tsx:1275; src/lib/dashboard/widgets.tsx:1281; src/lib/dashboard/widgets.tsx:1462; src/lib/dashboard/widgets.tsx:1463; src/lib/dashboard/widgets.tsx:1468; src/lib/excelXML.ts:117; src/lib/excelXML.ts:161; src/lib/identity.ts:22; src/lib/moderation.ts:892; src/lib/moderation.ts:981; src/lib/moderation.ts:982; src/lib/utils.ts:142; src/lib/utils.ts:188; src/lib/utils.ts:325; src/lib/utils.ts:327; src/lib/utils.ts:400; src/main.tsx:135; src/pages/admin/ActivityStream.tsx:98; src/pages/admin/ActivityStream.tsx:129; src/pages/admin/ActivityStream.tsx:132; src/pages/admin/ActivityStream.tsx:134; src/pages/admin/agent-chat/ActionPreviews.tsx:137; src/pages/admin/agent-chat/ActionPreviews.tsx:139; src/pages/admin/agent-chat/ActionPreviews.tsx:600; src/pages/admin/agent-chat/ActionPreviews.tsx:1108; src/pages/admin/agent-chat/tool-meta.ts:190; src/pages/admin/agent-chat/tool-meta.ts:191; src/pages/admin/agent-office/ApprovalAlert.tsx:23; src/pages/admin/OpsCenter.tsx:55; src/pages/admin/OpsCenter.tsx:125; src/pages/admin/OpsCenter.tsx:138; src/pages/admin/OpsCenter.tsx:148; src/pages/admin/OpsCenter.tsx:158; src/pages/admin/OpsCenter.tsx:426; src/pages/admin/OpsCenter.tsx:427; src/pages/admin/OpsCenter.tsx:1106; src/pages/admin/OpsCenter.tsx:1395; src/pages/admin/Overview.tsx:789; src/pages/admin/Overview.tsx:795; src/pages/admin/Overview.tsx:913; src/pages/admin/Overview.tsx:1325; src/pages/admin/PostsTable.tsx:61; src/pages/admin/PostsTable.tsx:122; src/pages/admin/PostsTable.tsx:127; src/pages/admin/PostsTable.tsx:428; src/pages/admin/PostsTable.tsx:449; src/pages/admin/PostsTable.tsx:628; src/pages/admin/PostsTable.tsx:645; src/pages/admin/PostsTable.tsx:650; src/pages/admin/PostsTable.tsx:816; src/pages/admin/PostsTable.tsx:817; src/pages/admin/PostsTable.tsx:903; src/pages/admin/PostsTable.tsx:906; src/pages/admin/PostsTable.tsx:908; src/pages/admin/PostsTable.tsx:909; src/pages/admin/PostsTable.tsx:910; src/pages/admin/PostsTable.tsx:911; src/pages/admin/ProviderSettings.tsx:22; src/pages/admin/ProviderSettings.tsx:308; src/pages/admin/ProviderSettings.tsx:341; src/pages/admin/ProviderSettings.tsx:534; src/pages/admin/ProviderSettings.tsx:557; src/pages/admin/Reports.tsx:99; src/pages/admin/Reports.tsx:124; src/pages/admin/Reports.tsx:150; src/pages/admin/Reports.tsx:358; src/pages/admin/Reports.tsx:1293; src/pages/admin/Reports.tsx:1564; src/pages/admin/Reports.tsx:1757; src/pages/admin/Reports.tsx:1941; src/pages/admin/Reports.tsx:1943; src/pages/admin/Reports.tsx:2287; src/pages/admin/Reports.tsx:2288; src/pages/admin/Reports.tsx:2291; src/pages/admin/UnifiedInbox.tsx:57; src/pages/admin/UnifiedInbox.tsx:308; src/pages/admin/UnifiedInbox.tsx:309; src/pages/admin/UnifiedInbox.tsx:310; src/pages/admin/UnifiedInbox.tsx:312; src/pages/admin/UnifiedInbox.tsx:455; src/pages/admin/UnifiedInbox.tsx:461; src/pages/admin/UnifiedInbox.tsx:462; src/pages/PostDetail.tsx:468; src/pages/Submit.tsx:51; src/pages/Submit.tsx:59; src/pages/Submit.tsx:159; src/pages/Submit.tsx:422; src/pages/Submit.tsx:455; src/pages/Submit.tsx:1583; src/types/index.ts:32; src/types/index.ts:201; src/__tests__/ActivityStream.test.tsx:36; src/__tests__/ActivityStream.test.tsx:46; src/__tests__/ApprovalAlert.test.tsx:30; src/__tests__/ApprovalAlert.test.tsx:44; src/__tests__/complianceCSV.test.ts:29; src/__tests__/complianceCSV.test.ts:288; src/__tests__/dashboard-widgets.test.tsx:63; src/__tests__/excelXML.test.ts:96; src/__tests__/ExportCSVButton.test.tsx:37; src/__tests__/ExportCSVButton.test.tsx:44; src/__tests__/Home.live.test.tsx:76; src/__tests__/Home.realtime.test.tsx:101; src/__tests__/Home.test.tsx:278; src/__tests__/Home.test.tsx:291; src/__tests__/Home.test.tsx:337; src/__tests__/Home.test.tsx:348; src/__tests__/Home.test.tsx:409; src/__tests__/Home.test.tsx:420; src/__tests__/OpsCenter.test.tsx:135; src/__tests__/OpsCenter.test.tsx:152; src/__tests__/OpsCenter.test.tsx:169; src/__tests__/OpsCenter.test.tsx:414; src/__tests__/OpsCenter.test.tsx:502; src/__tests__/OpsCenter.test.tsx:724; src/__tests__/OpsCenter.test.tsx:727; src/__tests__/OpsCenter.test.tsx:753; src/__tests__/OpsCenter.test.tsx:756; src/__tests__/Overview.test.tsx:100; src/__tests__/Overview.test.tsx:108; src/__tests__/Overview.test.tsx:121; src/__tests__/Overview.test.tsx:810; src/__tests__/Overview.test.tsx:821; src/__tests__/Overview.test.tsx:968; src/__tests__/Overview.test.tsx:1186; src/__tests__/PostCard.test.tsx:67; src/__tests__/PostDetail.test.tsx:159; src/__tests__/PostsTable.test.tsx:4; src/__tests__/PostsTable.test.tsx:6; src/__tests__/PostsTable.test.tsx:142; src/__tests__/PostsTable.test.tsx:236; src/__tests__/PostsTable.test.tsx:239; src/__tests__/PostsTable.test.tsx:761; src/__tests__/PostsTable.test.tsx:788; src/__tests__/PostsTable.test.tsx:806; src/__tests__/PostsTable.test.tsx:809; src/__tests__/PostsTable.test.tsx:914; src/__tests__/PostsTable.test.tsx:934; src/__tests__/primitives2.test.tsx:31; src/__tests__/ProviderSettings.test.tsx:34; src/__tests__/ProviderSettings.test.tsx:46; src/__tests__/ProviderSettings.test.tsx:58; src/__tests__/Reports.test.tsx:69; src/__tests__/Reports.test.tsx:104; src/__tests__/Saved.test.tsx:68; src/__tests__/Saved.test.tsx:80; src/__tests__/Search.test.tsx:51; src/__tests__/Submit.test.tsx:67; src/__tests__/Submit.test.tsx:847; src/__tests__/UnifiedInbox.test.tsx:468; src/__tests__/UnifiedInbox.test.tsx:478; src/__tests__/utils.test.ts:261; src/__tests__/utils.test.ts:495; src/__tests__/utils.test.ts:510; src/__tests__/utils.test.ts:513; src/__tests__/utils.test.ts:517; src/__tests__/workforce-reality.test.ts:135
+- [PARTIAL] 11 Failure handling exists — try/catch + degraded/deferred states
+- [PASS] 12 Retry exists — per-worker consecutive-failure backoff (10min, then 30min); cron runs defer with auto-retry, manual runs bypass
+- [NA] 13 Rollback where appropriate — alert-style workers resolve/supersede rather than roll back
+- [PASS] 14 Disable test exists — api/_worker-disable-tests.js: documented 24h-off consequence
+- [PARTIAL] 15 Evaluation exists — ledger-derived scorecards
+- [PASS] 16 Regression tests exist — tests/api/agent-actions.test.ts:5; tests/api/agent-actions.test.ts:351; tests/api/agent-actions.test.ts:362; tests/api/agent-actions.test.ts:363
+- [PASS] 17 Monitoring exists — last_runs + ops-summary + AI Failures
+- [PARTIAL] 18 Cost controls exist — bounded sweep limits; no token accounting (deterministic, no LLM)
+- [PASS] 19 Security boundaries exist — read-mostly; writes scoped to alerts/own tables
+- [PASS] 20 Connected to production workflow — registry + cron + UI Run button
+
+### case-assignment — ACCEPTABLE-WITH-NOTES (9/20 pass, 10 partial, 0 fail)
+- [PASS] 1 Trigger exists — cron tick (agent-cron, 5min) + manual automation-run
+- [PARTIAL] 2 Real input exists — ./_workforce-workers.js#runCaseAssignment
+- [PASS] 3 Real tools exist — direct DB/API ops in run fn
+- [PASS] 4 Permission exists — cron-secret gate + fail-soft degraded modes
+- [PARTIAL] 5 Real action exists — no write detected statically
+- [PARTIAL] 6 Real state can change
+- [PARTIAL] 7 Verification exists — no explicit verify step
+- [PARTIAL] 8 Metrics exist — structured result counts + last-run summaries
+- [PARTIAL] 9 Evidence exists — alerts + audit rows + last_runs ledger
+- [PARTIAL] 10 UI exists where useful — via Ops Center live work + summaries
+- [PARTIAL] 11 Failure handling exists — try/catch + degraded/deferred states
+- [PASS] 12 Retry exists — per-worker consecutive-failure backoff (10min, then 30min); cron runs defer with auto-retry, manual runs bypass
+- [NA] 13 Rollback where appropriate — alert-style workers resolve/supersede rather than roll back
+- [PASS] 14 Disable test exists — api/_worker-disable-tests.js: documented 24h-off consequence
+- [PARTIAL] 15 Evaluation exists — ledger-derived scorecards
+- [PASS] 16 Regression tests exist — tests/api/workforce-batch2.test.ts:9; tests/api/workforce-batch2.test.ts:560; tests/api/workforce-batch2.test.ts:591; tests/api/workforce-batch2.test.ts:86
+- [PASS] 17 Monitoring exists — last_runs + ops-summary + AI Failures
+- [PARTIAL] 18 Cost controls exist — bounded sweep limits; no token accounting (deterministic, no LLM)
+- [PASS] 19 Security boundaries exist — read-mostly; writes scoped to alerts/own tables
+- [PASS] 20 Connected to production workflow — registry + cron + UI Run button
+
+### resolution-verification — ACCEPTABLE-WITH-NOTES (9/20 pass, 10 partial, 0 fail)
+- [PASS] 1 Trigger exists — cron tick (agent-cron, 5min) + manual automation-run
+- [PARTIAL] 2 Real input exists — ./_workforce-workers.js#runResolutionVerification
+- [PASS] 3 Real tools exist — direct DB/API ops in run fn
+- [PASS] 4 Permission exists — cron-secret gate + fail-soft degraded modes
+- [PARTIAL] 5 Real action exists — no write detected statically
+- [PARTIAL] 6 Real state can change
+- [PARTIAL] 7 Verification exists — no explicit verify step
+- [PARTIAL] 8 Metrics exist — structured result counts + last-run summaries
+- [PARTIAL] 9 Evidence exists — alerts + audit rows + last_runs ledger
+- [PARTIAL] 10 UI exists where useful — via Ops Center live work + summaries
+- [PARTIAL] 11 Failure handling exists — try/catch + degraded/deferred states
+- [PASS] 12 Retry exists — per-worker consecutive-failure backoff (10min, then 30min); cron runs defer with auto-retry, manual runs bypass
+- [NA] 13 Rollback where appropriate — alert-style workers resolve/supersede rather than roll back
+- [PASS] 14 Disable test exists — api/_worker-disable-tests.js: documented 24h-off consequence
+- [PARTIAL] 15 Evaluation exists — ledger-derived scorecards
+- [PASS] 16 Regression tests exist — tests/api/reports.test.ts:571; tests/api/reports.test.ts:586; tests/api/workforce-batch3.test.ts:12
+- [PASS] 17 Monitoring exists — last_runs + ops-summary + AI Failures
+- [PARTIAL] 18 Cost controls exist — bounded sweep limits; no token accounting (deterministic, no LLM)
+- [PASS] 19 Security boundaries exist — read-mostly; writes scoped to alerts/own tables
+- [PASS] 20 Connected to production workflow — registry + cron + UI Run button
+
+### report-disposition — ACCEPTABLE-WITH-NOTES (10/20 pass, 9 partial, 0 fail)
+- [PASS] 1 Trigger exists — cron tick (agent-cron, 5min) + manual automation-run
+- [PARTIAL] 2 Real input exists — ./_workforce-workers.js#runReportDisposition
+- [PASS] 3 Real tools exist — direct DB/API ops in run fn
+- [PASS] 4 Permission exists — cron-secret gate + fail-soft degraded modes
+- [PARTIAL] 5 Real action exists — no write detected statically
+- [PARTIAL] 6 Real state can change
+- [PARTIAL] 7 Verification exists — no explicit verify step
+- [PARTIAL] 8 Metrics exist — structured result counts + last-run summaries
+- [PARTIAL] 9 Evidence exists — alerts + audit rows + last_runs ledger
+- [PASS] 10 UI exists where useful — src/__tests__/Reports.test.tsx:596; src/__tests__/Reports.test.tsx:628
+- [PARTIAL] 11 Failure handling exists — try/catch + degraded/deferred states
+- [PASS] 12 Retry exists — per-worker consecutive-failure backoff (10min, then 30min); cron runs defer with auto-retry, manual runs bypass
+- [NA] 13 Rollback where appropriate — alert-style workers resolve/supersede rather than roll back
+- [PASS] 14 Disable test exists — api/_worker-disable-tests.js: documented 24h-off consequence
+- [PARTIAL] 15 Evaluation exists — ledger-derived scorecards
+- [PASS] 16 Regression tests exist — tests/api/reports.test.ts:541; tests/api/reports.test.ts:558; tests/api/reports.test.ts:598; tests/api/reports.test.ts:621
+- [PASS] 17 Monitoring exists — last_runs + ops-summary + AI Failures
+- [PARTIAL] 18 Cost controls exist — bounded sweep limits; no token accounting (deterministic, no LLM)
+- [PASS] 19 Security boundaries exist — read-mostly; writes scoped to alerts/own tables
+- [PASS] 20 Connected to production workflow — registry + cron + UI Run button
+
+### cost-intelligence — ACCEPTABLE-WITH-NOTES (9/20 pass, 10 partial, 0 fail)
+- [PASS] 1 Trigger exists — cron tick (agent-cron, 5min) + manual automation-run
+- [PARTIAL] 2 Real input exists — ./_workforce-workers.js#runCostIntelligence
+- [PASS] 3 Real tools exist — direct DB/API ops in run fn
+- [PASS] 4 Permission exists — cron-secret gate + fail-soft degraded modes
+- [PARTIAL] 5 Real action exists — no write detected statically
+- [PARTIAL] 6 Real state can change
+- [PARTIAL] 7 Verification exists — no explicit verify step
+- [PARTIAL] 8 Metrics exist — structured result counts + last-run summaries
+- [PARTIAL] 9 Evidence exists — alerts + audit rows + last_runs ledger
+- [PARTIAL] 10 UI exists where useful — via Ops Center live work + summaries
+- [PARTIAL] 11 Failure handling exists — try/catch + degraded/deferred states
+- [PASS] 12 Retry exists — per-worker consecutive-failure backoff (10min, then 30min); cron runs defer with auto-retry, manual runs bypass
+- [NA] 13 Rollback where appropriate — alert-style workers resolve/supersede rather than roll back
+- [PASS] 14 Disable test exists — api/_worker-disable-tests.js: documented 24h-off consequence
+- [PARTIAL] 15 Evaluation exists — ledger-derived scorecards
+- [PASS] 16 Regression tests exist — tests/api/workforce-cost-intel.test.ts:2; tests/api/workforce-cost-intel.test.ts:108; tests/api/workforce-cost-intel.test.ts:111; tests/api/workforce-cost-intel.test.ts:117
+- [PASS] 17 Monitoring exists — last_runs + ops-summary + AI Failures
+- [PARTIAL] 18 Cost controls exist — bounded sweep limits; no token accounting (deterministic, no LLM)
+- [PASS] 19 Security boundaries exist — read-mostly; writes scoped to alerts/own tables
+- [PASS] 20 Connected to production workflow — registry + cron + UI Run button
+
+### multilingual — ACCEPTABLE-WITH-NOTES (9/20 pass, 10 partial, 0 fail)
+- [PASS] 1 Trigger exists — cron tick (agent-cron, 5min) + manual automation-run
+- [PARTIAL] 2 Real input exists — ./_workforce-workers.js#runMultilingual
+- [PASS] 3 Real tools exist — direct DB/API ops in run fn
+- [PASS] 4 Permission exists — cron-secret gate + fail-soft degraded modes
+- [PARTIAL] 5 Real action exists — no write detected statically
+- [PARTIAL] 6 Real state can change
+- [PARTIAL] 7 Verification exists — no explicit verify step
+- [PARTIAL] 8 Metrics exist — structured result counts + last-run summaries
+- [PARTIAL] 9 Evidence exists — alerts + audit rows + last_runs ledger
+- [PARTIAL] 10 UI exists where useful — via Ops Center live work + summaries
+- [PARTIAL] 11 Failure handling exists — try/catch + degraded/deferred states
+- [PASS] 12 Retry exists — per-worker consecutive-failure backoff (10min, then 30min); cron runs defer with auto-retry, manual runs bypass
+- [NA] 13 Rollback where appropriate — alert-style workers resolve/supersede rather than roll back
+- [PASS] 14 Disable test exists — api/_worker-disable-tests.js: documented 24h-off consequence
+- [PARTIAL] 15 Evaluation exists — ledger-derived scorecards
+- [PASS] 16 Regression tests exist — tests/api/context-classify.test.ts:112; tests/api/workforce-batch3.test.ts:7; tests/api/workforce-batch3.test.ts:356; tests/api/workforce-batch3.test.ts:390
+- [PASS] 17 Monitoring exists — last_runs + ops-summary + AI Failures
+- [PARTIAL] 18 Cost controls exist — bounded sweep limits; no token accounting (deterministic, no LLM)
+- [PASS] 19 Security boundaries exist — read-mostly; writes scoped to alerts/own tables
+- [PASS] 20 Connected to production workflow — registry + cron + UI Run button
+
+### search-intel — ACCEPTABLE-WITH-NOTES (9/20 pass, 10 partial, 0 fail)
+- [PASS] 1 Trigger exists — cron tick (agent-cron, 5min) + manual automation-run
+- [PARTIAL] 2 Real input exists — ./_workforce-workers.js#runSearchIntel
+- [PASS] 3 Real tools exist — direct DB/API ops in run fn
+- [PASS] 4 Permission exists — cron-secret gate + fail-soft degraded modes
+- [PARTIAL] 5 Real action exists — no write detected statically
+- [PARTIAL] 6 Real state can change
+- [PARTIAL] 7 Verification exists — no explicit verify step
+- [PARTIAL] 8 Metrics exist — structured result counts + last-run summaries
+- [PARTIAL] 9 Evidence exists — alerts + audit rows + last_runs ledger
+- [PARTIAL] 10 UI exists where useful — via Ops Center live work + summaries
+- [PARTIAL] 11 Failure handling exists — try/catch + degraded/deferred states
+- [PASS] 12 Retry exists — per-worker consecutive-failure backoff (10min, then 30min); cron runs defer with auto-retry, manual runs bypass
+- [NA] 13 Rollback where appropriate — alert-style workers resolve/supersede rather than roll back
+- [PASS] 14 Disable test exists — api/_worker-disable-tests.js: documented 24h-off consequence
+- [PARTIAL] 15 Evaluation exists — ledger-derived scorecards
+- [PASS] 16 Regression tests exist — tests/api/workforce-batch3.test.ts:8; tests/api/workforce-batch3.test.ts:432; tests/api/workforce-batch3.test.ts:473; tests/api/workforce-batch5b.test.ts:207
+- [PASS] 17 Monitoring exists — last_runs + ops-summary + AI Failures
+- [PARTIAL] 18 Cost controls exist — bounded sweep limits; no token accounting (deterministic, no LLM)
+- [PASS] 19 Security boundaries exist — read-mostly; writes scoped to alerts/own tables
+- [PASS] 20 Connected to production workflow — registry + cron + UI Run button
+
+### knowledge — ACCEPTABLE-WITH-NOTES (17/20 pass, 2 partial, 0 fail)
+- [PASS] 1 Trigger exists — cron tick (agent-cron, 5min) + manual automation-run
+- [PASS] 2 Real input exists — ./_kb-maintain.js#maintainKB
+- [PASS] 3 Real tools exist — direct DB/API ops in run fn
+- [PASS] 4 Permission exists — cron-secret gate + fail-soft degraded modes
+- [PASS] 5 Real action exists — writes alerts/audit/records
+- [PASS] 6 Real state can change
+- [PASS] 7 Verification exists — verified flag + re-read
+- [PASS] 8 Metrics exist — structured result counts + last-run summaries
+- [PASS] 9 Evidence exists — alerts + audit rows + last_runs ledger
+- [PASS] 10 UI exists where useful — src/components/admin/CriticalAlertBanner.tsx:7; src/components/admin/CriticalAlertBanner.tsx:9; src/components/admin/CriticalAlertBanner.tsx:25; src/components/admin/CriticalAlertBanner.tsx:26; src/components/admin/CriticalAlertBanner.tsx:56; src/components/admin/CriticalAlertBanner.tsx:60; src/components/admin/CriticalAlertBanner.tsx:63; src/components/admin/CriticalAlertBanner.tsx:132; src/components/admin/CriticalAlertBanner.tsx:134; src/components/admin/CriticalAlertBanner.tsx:149; src/lib/dashboard/widgets.tsx:1918; src/lib/dashboard/widgets.tsx:1923; src/lib/utils.ts:386; src/pages/admin/OpsCenter.tsx:114; src/pages/admin/OpsCenter.tsx:280; src/pages/admin/OpsCenter.tsx:285; src/pages/admin/OpsCenter.tsx:288; src/pages/admin/OpsCenter.tsx:291; src/pages/admin/OpsCenter.tsx:295; src/pages/admin/OpsCenter.tsx:315; src/pages/admin/OpsCenter.tsx:342; src/pages/admin/OpsCenter.tsx:344; src/pages/admin/OpsCenter.tsx:359; src/pages/admin/OpsCenter.tsx:363; src/pages/admin/OpsCenter.tsx:364; src/pages/admin/OpsCenter.tsx:366; src/pages/admin/OpsCenter.tsx:740; src/pages/admin/OpsCenter.tsx:742; src/pages/admin/OpsCenter.tsx:743; src/pages/admin/OpsCenter.tsx:747; src/pages/admin/OpsCenter.tsx:865; src/pages/admin/OpsCenter.tsx:868; src/pages/admin/OpsCenter.tsx:873; src/pages/admin/OpsCenter.tsx:937; src/pages/admin/OpsCenter.tsx:940; src/pages/admin/OpsCenter.tsx:1306; src/pages/admin/OpsCenter.tsx:1333; src/pages/admin/Overview.tsx:660; src/pages/admin/Overview.tsx:663; src/pages/admin/Overview.tsx:666; src/pages/admin/Overview.tsx:670; src/pages/Changelog.tsx:20; src/pages/Changelog.tsx:54; src/__tests__/CriticalAlertBanner.test.tsx:8; src/__tests__/CriticalAlertBanner.test.tsx:31; src/__tests__/CriticalAlertBanner.test.tsx:32; src/__tests__/CriticalAlertBanner.test.tsx:73; src/__tests__/CriticalAlertBanner.test.tsx:79; src/__tests__/CriticalAlertBanner.test.tsx:83; src/__tests__/CriticalAlertBanner.test.tsx:124; src/__tests__/CriticalAlertBanner.test.tsx:127; src/__tests__/CriticalAlertBanner.test.tsx:134; src/__tests__/OpsCenter.test.tsx:194; src/__tests__/OpsCenter.test.tsx:195; src/__tests__/OpsCenter.test.tsx:279; src/__tests__/OpsCenter.test.tsx:284; src/__tests__/OpsCenter.test.tsx:286; src/__tests__/OpsCenter.test.tsx:523; src/__tests__/OpsCenter.test.tsx:539; src/__tests__/OpsCenter.test.tsx:543; src/__tests__/OpsCenter.test.tsx:549; src/__tests__/OpsCenter.test.tsx:553; src/__tests__/OpsCenter.test.tsx:554; src/__tests__/OpsCenter.test.tsx:573; src/__tests__/OpsCenter.test.tsx:575; src/__tests__/OpsCenter.test.tsx:578; src/__tests__/OpsCenter.test.tsx:587; src/__tests__/OpsCenter.test.tsx:588; src/__tests__/OpsCenter.test.tsx:609; src/__tests__/Overview.test.tsx:23; src/__tests__/Overview.test.tsx:177; src/__tests__/Overview.test.tsx:178; src/__tests__/Overview.test.tsx:663; src/__tests__/Overview.test.tsx:666; src/__tests__/Overview.test.tsx:669; src/__tests__/Overview.test.tsx:674
+- [PASS] 11 Failure handling exists — try/catch + degraded/deferred states
+- [PASS] 12 Retry exists — per-worker consecutive-failure backoff (10min, then 30min); cron runs defer with auto-retry, manual runs bypass
+- [NA] 13 Rollback where appropriate — alert-style workers resolve/supersede rather than roll back
+- [PASS] 14 Disable test exists — api/_worker-disable-tests.js: documented 24h-off consequence
+- [PARTIAL] 15 Evaluation exists — ledger-derived scorecards
+- [PASS] 16 Regression tests exist — tests/api/action-center.test.ts:128; tests/api/action-center.test.ts:137; tests/api/agent-team.test.ts:766; tests/api/agent-team.test.ts:771
+- [PASS] 17 Monitoring exists — last_runs + ops-summary + AI Failures
+- [PARTIAL] 18 Cost controls exist — bounded sweep limits; no token accounting (deterministic, no LLM)
+- [PASS] 19 Security boundaries exist — read-mostly; writes scoped to alerts/own tables
+- [PASS] 20 Connected to production workflow — registry + cron + UI Run button
+
+### briefing — ACCEPTABLE-WITH-NOTES (17/20 pass, 2 partial, 0 fail)
+- [PASS] 1 Trigger exists — cron tick (agent-cron, 5min) + manual automation-run
+- [PASS] 2 Real input exists — ./_briefing.js#generateBriefing
+- [PASS] 3 Real tools exist — direct DB/API ops in run fn
+- [PASS] 4 Permission exists — cron-secret gate + fail-soft degraded modes
+- [PASS] 5 Real action exists — writes alerts/audit/records
+- [PASS] 6 Real state can change
+- [PASS] 7 Verification exists — verified flag + re-read
+- [PASS] 8 Metrics exist — structured result counts + last-run summaries
+- [PASS] 9 Evidence exists — alerts + audit rows + last_runs ledger
+- [PASS] 10 UI exists where useful — src/pages/admin/OpsCenter.tsx:633; src/pages/admin/OpsCenter.tsx:719; src/pages/admin/OpsCenter.tsx:722; src/pages/admin/OpsCenter.tsx:725; src/pages/admin/OpsCenter.tsx:1051; src/pages/admin/OpsCenter.tsx:1052; src/pages/admin/OpsCenter.tsx:1055; src/pages/admin/OpsCenter.tsx:1057; src/pages/admin/OpsCenter.tsx:1058; src/pages/admin/OpsCenter.tsx:1060; src/pages/admin/OpsCenter.tsx:1062; src/pages/admin/OpsCenter.tsx:1067; src/pages/admin/UnifiedInbox.tsx:392; src/pages/admin/UnifiedInbox.tsx:815; src/pages/admin/UnifiedInbox.tsx:829; src/pages/admin/UnifiedInbox.tsx:843; src/pages/admin/UnifiedInbox.tsx:1345; src/__tests__/OpsCenter.test.tsx:649; src/__tests__/OpsCenter.test.tsx:653; src/__tests__/OpsCenter.test.tsx:669; src/__tests__/OpsCenter.test.tsx:678; src/__tests__/OpsCenter.test.tsx:686; src/__tests__/UnifiedInbox.test.tsx:588; src/__tests__/UnifiedInbox.test.tsx:604; src/__tests__/UnifiedInbox.test.tsx:608
+- [PASS] 11 Failure handling exists — try/catch + degraded/deferred states
+- [PASS] 12 Retry exists — per-worker consecutive-failure backoff (10min, then 30min); cron runs defer with auto-retry, manual runs bypass
+- [NA] 13 Rollback where appropriate — alert-style workers resolve/supersede rather than roll back
+- [PASS] 14 Disable test exists — api/_worker-disable-tests.js: documented 24h-off consequence
+- [PARTIAL] 15 Evaluation exists — ledger-derived scorecards
+- [PASS] 16 Regression tests exist — tests/api/workforce-batch3.test.ts:10; tests/api/workforce-batch3.test.ts:18; tests/api/workforce-batch3.test.ts:94; tests/api/workforce-batch3.test.ts:224
+- [PASS] 17 Monitoring exists — last_runs + ops-summary + AI Failures
+- [PARTIAL] 18 Cost controls exist — bounded sweep limits; no token accounting (deterministic, no LLM)
+- [PASS] 19 Security boundaries exist — read-mostly; writes scoped to alerts/own tables
+- [PASS] 20 Connected to production workflow — registry + cron + UI Run button
+
+### search-gap-recovery — ACCEPTABLE-WITH-NOTES (16/20 pass, 3 partial, 0 fail)
+- [PASS] 1 Trigger exists — cron tick (agent-cron, 5min) + manual automation-run
+- [PASS] 2 Real input exists — ./_search-quality.js#recoverSearchGaps
+- [PASS] 3 Real tools exist — direct DB/API ops in run fn
+- [PASS] 4 Permission exists — cron-secret gate + fail-soft degraded modes
+- [PASS] 5 Real action exists — writes alerts/audit/records
+- [PASS] 6 Real state can change
+- [PASS] 7 Verification exists — verified flag + re-read
+- [PASS] 8 Metrics exist — structured result counts + last-run summaries
+- [PASS] 9 Evidence exists — alerts + audit rows + last_runs ledger
+- [PARTIAL] 10 UI exists where useful — via Ops Center live work + summaries
+- [PASS] 11 Failure handling exists — try/catch + degraded/deferred states
+- [PASS] 12 Retry exists — per-worker consecutive-failure backoff (10min, then 30min); cron runs defer with auto-retry, manual runs bypass
+- [NA] 13 Rollback where appropriate — alert-style workers resolve/supersede rather than roll back
+- [PASS] 14 Disable test exists — api/_worker-disable-tests.js: documented 24h-off consequence
+- [PARTIAL] 15 Evaluation exists — ledger-derived scorecards
+- [PASS] 16 Regression tests exist — tests/api/search-gap-recovery.test.ts:59; tests/api/search-gap-recovery.test.ts:39; tests/api/search-gap-recovery.test.ts:48; tests/api/search-gap-recovery.test.ts:52
+- [PASS] 17 Monitoring exists — last_runs + ops-summary + AI Failures
+- [PARTIAL] 18 Cost controls exist — bounded sweep limits; no token accounting (deterministic, no LLM)
+- [PASS] 19 Security boundaries exist — read-mostly; writes scoped to alerts/own tables
+- [PASS] 20 Connected to production workflow — registry + cron + UI Run button
+
+### poll-create — ACCEPTABLE-WITH-NOTES (16/20 pass, 3 partial, 0 fail)
+- [PASS] 1 Trigger exists — cron tick (agent-cron, 5min) + manual automation-run
+- [PASS] 2 Real input exists — ./_poll-create.js#runPollCreate
+- [PASS] 3 Real tools exist — direct DB/API ops in run fn
+- [PASS] 4 Permission exists — cron-secret gate + fail-soft degraded modes
+- [PASS] 5 Real action exists — writes alerts/audit/records
+- [PASS] 6 Real state can change
+- [PASS] 7 Verification exists — verified flag + re-read
+- [PASS] 8 Metrics exist — structured result counts + last-run summaries
+- [PASS] 9 Evidence exists — alerts + audit rows + last_runs ledger
+- [PARTIAL] 10 UI exists where useful — via Ops Center live work + summaries
+- [PASS] 11 Failure handling exists — try/catch + degraded/deferred states
+- [PASS] 12 Retry exists — per-worker consecutive-failure backoff (10min, then 30min); cron runs defer with auto-retry, manual runs bypass
+- [NA] 13 Rollback where appropriate — alert-style workers resolve/supersede rather than roll back
+- [PASS] 14 Disable test exists — api/_worker-disable-tests.js: documented 24h-off consequence
+- [PARTIAL] 15 Evaluation exists — ledger-derived scorecards
+- [PASS] 16 Regression tests exist — tests/api/workforce-batch4.test.ts:5; tests/api/workforce-batch4.test.ts:16; tests/api/workforce-batch4.test.ts:98; tests/api/workforce-batch4.test.ts:293
+- [PASS] 17 Monitoring exists — last_runs + ops-summary + AI Failures
+- [PARTIAL] 18 Cost controls exist — bounded sweep limits; no token accounting (deterministic, no LLM)
+- [PASS] 19 Security boundaries exist — read-mostly; writes scoped to alerts/own tables
+- [PASS] 20 Connected to production workflow — registry + cron + UI Run button
+
+### community-health — ACCEPTABLE-WITH-NOTES (16/20 pass, 3 partial, 0 fail)
+- [PASS] 1 Trigger exists — cron tick (agent-cron, 5min) + manual automation-run
+- [PASS] 2 Real input exists — ./_community-health.js#runCommunityHealth
+- [PASS] 3 Real tools exist — direct DB/API ops in run fn
+- [PASS] 4 Permission exists — cron-secret gate + fail-soft degraded modes
+- [PASS] 5 Real action exists — writes alerts/audit/records
+- [PASS] 6 Real state can change
+- [PASS] 7 Verification exists — verified flag + re-read
+- [PASS] 8 Metrics exist — structured result counts + last-run summaries
+- [PASS] 9 Evidence exists — alerts + audit rows + last_runs ledger
+- [PARTIAL] 10 UI exists where useful — via Ops Center live work + summaries
+- [PASS] 11 Failure handling exists — try/catch + degraded/deferred states
+- [PASS] 12 Retry exists — per-worker consecutive-failure backoff (10min, then 30min); cron runs defer with auto-retry, manual runs bypass
+- [NA] 13 Rollback where appropriate — alert-style workers resolve/supersede rather than roll back
+- [PASS] 14 Disable test exists — api/_worker-disable-tests.js: documented 24h-off consequence
+- [PARTIAL] 15 Evaluation exists — ledger-derived scorecards
+- [PASS] 16 Regression tests exist — tests/api/domain-enrollment.test.ts:183; tests/api/workforce-batch4.test.ts:7; tests/api/workforce-batch4.test.ts:16; tests/api/workforce-batch4.test.ts:97
+- [PASS] 17 Monitoring exists — last_runs + ops-summary + AI Failures
+- [PARTIAL] 18 Cost controls exist — bounded sweep limits; no token accounting (deterministic, no LLM)
+- [PASS] 19 Security boundaries exist — read-mostly; writes scoped to alerts/own tables
+- [PASS] 20 Connected to production workflow — registry + cron + UI Run button
+
+### abuse — ACCEPTABLE-WITH-NOTES (17/20 pass, 2 partial, 0 fail)
+- [PASS] 1 Trigger exists — cron tick (agent-cron, 5min) + manual automation-run
+- [PASS] 2 Real input exists — ./_abuse.js#runAbuseWatch
+- [PASS] 3 Real tools exist — direct DB/API ops in run fn
+- [PASS] 4 Permission exists — cron-secret gate + fail-soft degraded modes
+- [PASS] 5 Real action exists — writes alerts/audit/records
+- [PASS] 6 Real state can change
+- [PASS] 7 Verification exists — verified flag + re-read
+- [PASS] 8 Metrics exist — structured result counts + last-run summaries
+- [PASS] 9 Evidence exists — alerts + audit rows + last_runs ledger
+- [PASS] 10 UI exists where useful — src/lib/moderation.ts:162; src/pages/admin/SecurityCenter.tsx:55; src/pages/Changelog.tsx:36; src/pages/Submit.tsx:1973; src/pages/Submit.tsx:1974; src/__tests__/ApprovalAlert.test.tsx:42; src/__tests__/ApprovalAlert.test.tsx:84; src/__tests__/moderation.test.ts:385; src/__tests__/Reports.test.tsx:94
+- [PASS] 11 Failure handling exists — try/catch + degraded/deferred states
+- [PASS] 12 Retry exists — per-worker consecutive-failure backoff (10min, then 30min); cron runs defer with auto-retry, manual runs bypass
+- [NA] 13 Rollback where appropriate — alert-style workers resolve/supersede rather than roll back
+- [PASS] 14 Disable test exists — api/_worker-disable-tests.js: documented 24h-off consequence
+- [PARTIAL] 15 Evaluation exists — ledger-derived scorecards
+- [PASS] 16 Regression tests exist — tests/api/admin-audit-reads.test.ts:2; tests/api/admin-audit-reads.test.ts:63; tests/api/admin-audit-reads.test.ts:89; tests/api/admin-audit-reads.test.ts:96
+- [PASS] 17 Monitoring exists — last_runs + ops-summary + AI Failures
+- [PARTIAL] 18 Cost controls exist — bounded sweep limits; no token accounting (deterministic, no LLM)
+- [PASS] 19 Security boundaries exist — read-mostly; writes scoped to alerts/own tables
+- [PASS] 20 Connected to production workflow — registry + cron + UI Run button
+
+### upload-intel — ACCEPTABLE-WITH-NOTES (16/20 pass, 3 partial, 0 fail)
+- [PASS] 1 Trigger exists — cron tick (agent-cron, 5min) + manual automation-run
+- [PASS] 2 Real input exists — ./_storage.js#runUploadIntel
+- [PASS] 3 Real tools exist — direct DB/API ops in run fn
+- [PASS] 4 Permission exists — cron-secret gate + fail-soft degraded modes
+- [PASS] 5 Real action exists — writes alerts/audit/records
+- [PASS] 6 Real state can change
+- [PASS] 7 Verification exists — verified flag + re-read
+- [PASS] 8 Metrics exist — structured result counts + last-run summaries
+- [PASS] 9 Evidence exists — alerts + audit rows + last_runs ledger
+- [PARTIAL] 10 UI exists where useful — via Ops Center live work + summaries
+- [PASS] 11 Failure handling exists — try/catch + degraded/deferred states
+- [PASS] 12 Retry exists — per-worker consecutive-failure backoff (10min, then 30min); cron runs defer with auto-retry, manual runs bypass
+- [NA] 13 Rollback where appropriate — alert-style workers resolve/supersede rather than roll back
+- [PASS] 14 Disable test exists — api/_worker-disable-tests.js: documented 24h-off consequence
+- [PARTIAL] 15 Evaluation exists — ledger-derived scorecards
+- [PASS] 16 Regression tests exist — tests/api/workforce-batch4.test.ts:9; tests/api/workforce-batch4.test.ts:515; tests/api/workforce-batch4.test.ts:100; tests/api/workforce-batch4.test.ts:533
+- [PASS] 17 Monitoring exists — last_runs + ops-summary + AI Failures
+- [PARTIAL] 18 Cost controls exist — bounded sweep limits; no token accounting (deterministic, no LLM)
+- [PASS] 19 Security boundaries exist — read-mostly; writes scoped to alerts/own tables
+- [PASS] 20 Connected to production workflow — registry + cron + UI Run button
+
+### ai-quality — ACCEPTABLE-WITH-NOTES (16/20 pass, 3 partial, 0 fail)
+- [PASS] 1 Trigger exists — cron tick (agent-cron, 5min) + manual automation-run
+- [PASS] 2 Real input exists — ./_evaluation-engine.js#runAIQuality
+- [PASS] 3 Real tools exist — direct DB/API ops in run fn
+- [PASS] 4 Permission exists — cron-secret gate + fail-soft degraded modes
+- [PASS] 5 Real action exists — writes alerts/audit/records
+- [PASS] 6 Real state can change
+- [PASS] 7 Verification exists — verified flag + re-read
+- [PASS] 8 Metrics exist — structured result counts + last-run summaries
+- [PASS] 9 Evidence exists — alerts + audit rows + last_runs ledger
+- [PARTIAL] 10 UI exists where useful — via Ops Center live work + summaries
+- [PASS] 11 Failure handling exists — try/catch + degraded/deferred states
+- [PASS] 12 Retry exists — per-worker consecutive-failure backoff (10min, then 30min); cron runs defer with auto-retry, manual runs bypass
+- [NA] 13 Rollback where appropriate — alert-style workers resolve/supersede rather than roll back
+- [PASS] 14 Disable test exists — api/_worker-disable-tests.js: documented 24h-off consequence
+- [PARTIAL] 15 Evaluation exists — ledger-derived scorecards
+- [PASS] 16 Regression tests exist — tests/api/workforce-batch5.test.ts:5; tests/api/workforce-batch5.test.ts:187; tests/api/workforce-batch5.test.ts:36; tests/api/workforce-batch5.test.ts:210
+- [PASS] 17 Monitoring exists — last_runs + ops-summary + AI Failures
+- [PARTIAL] 18 Cost controls exist — bounded sweep limits; no token accounting (deterministic, no LLM)
+- [PASS] 19 Security boundaries exist — read-mostly; writes scoped to alerts/own tables
+- [PASS] 20 Connected to production workflow — registry + cron + UI Run button
+
+### red-team — ACCEPTABLE-WITH-NOTES (14/20 pass, 5 partial, 0 fail)
+- [PASS] 1 Trigger exists — cron tick (agent-cron, 5min) + manual automation-run
+- [PASS] 2 Real input exists — ./_redteam-cases.js#runRedTeam
+- [PASS] 3 Real tools exist — direct DB/API ops in run fn
+- [PASS] 4 Permission exists — cron-secret gate + fail-soft degraded modes
+- [PASS] 5 Real action exists — writes alerts/audit/records
+- [PASS] 6 Real state can change
+- [PARTIAL] 7 Verification exists — no explicit verify step
+- [PARTIAL] 8 Metrics exist — structured result counts + last-run summaries
+- [PASS] 9 Evidence exists — alerts + audit rows + last_runs ledger
+- [PARTIAL] 10 UI exists where useful — via Ops Center live work + summaries
+- [PASS] 11 Failure handling exists — try/catch + degraded/deferred states
+- [PASS] 12 Retry exists — per-worker consecutive-failure backoff (10min, then 30min); cron runs defer with auto-retry, manual runs bypass
+- [NA] 13 Rollback where appropriate — alert-style workers resolve/supersede rather than roll back
+- [PASS] 14 Disable test exists — api/_worker-disable-tests.js: documented 24h-off consequence
+- [PARTIAL] 15 Evaluation exists — ledger-derived scorecards
+- [PASS] 16 Regression tests exist — tests/api/domain-enrollment.test.ts:466; tests/api/prompt-injection-evals.test.ts:17; tests/api/prompt-injection-evals.test.ts:280; tests/api/workforce-batch5.test.ts:6
+- [PASS] 17 Monitoring exists — last_runs + ops-summary + AI Failures
+- [PARTIAL] 18 Cost controls exist — bounded sweep limits; no token accounting (deterministic, no LLM)
+- [PASS] 19 Security boundaries exist — read-mostly; writes scoped to alerts/own tables
+- [PASS] 20 Connected to production workflow — registry + cron + UI Run button
+
+### ai-regression — ACCEPTABLE-WITH-NOTES (12/20 pass, 7 partial, 0 fail)
+- [PASS] 1 Trigger exists — cron tick (agent-cron, 5min) + manual automation-run
+- [PASS] 2 Real input exists — ./_golden-workflows.js#runGoldenRegression
+- [PASS] 3 Real tools exist — direct DB/API ops in run fn
+- [PASS] 4 Permission exists — cron-secret gate + fail-soft degraded modes
+- [PARTIAL] 5 Real action exists — no write detected statically
+- [PARTIAL] 6 Real state can change
+- [PARTIAL] 7 Verification exists — no explicit verify step
+- [PASS] 8 Metrics exist — structured result counts + last-run summaries
+- [PARTIAL] 9 Evidence exists — alerts + audit rows + last_runs ledger
+- [PARTIAL] 10 UI exists where useful — via Ops Center live work + summaries
+- [PASS] 11 Failure handling exists — try/catch + degraded/deferred states
+- [PASS] 12 Retry exists — per-worker consecutive-failure backoff (10min, then 30min); cron runs defer with auto-retry, manual runs bypass
+- [NA] 13 Rollback where appropriate — alert-style workers resolve/supersede rather than roll back
+- [PASS] 14 Disable test exists — api/_worker-disable-tests.js: documented 24h-off consequence
+- [PARTIAL] 15 Evaluation exists — ledger-derived scorecards
+- [PASS] 16 Regression tests exist — tests/api/workforce-batch5.test.ts:7; tests/api/workforce-batch5.test.ts:286; tests/api/workforce-batch5.test.ts:38; tests/api/workforce-batch5.test.ts:298
+- [PASS] 17 Monitoring exists — last_runs + ops-summary + AI Failures
+- [PARTIAL] 18 Cost controls exist — bounded sweep limits; no token accounting (deterministic, no LLM)
+- [PASS] 19 Security boundaries exist — read-mostly; writes scoped to alerts/own tables
+- [PASS] 20 Connected to production workflow — registry + cron + UI Run button
+
+### ai-drift — ACCEPTABLE-WITH-NOTES (16/20 pass, 3 partial, 0 fail)
+- [PASS] 1 Trigger exists — cron tick (agent-cron, 5min) + manual automation-run
+- [PASS] 2 Real input exists — ./_drift.js#runDriftWatch
+- [PASS] 3 Real tools exist — direct DB/API ops in run fn
+- [PASS] 4 Permission exists — cron-secret gate + fail-soft degraded modes
+- [PASS] 5 Real action exists — writes alerts/audit/records
+- [PASS] 6 Real state can change
+- [PASS] 7 Verification exists — verified flag + re-read
+- [PASS] 8 Metrics exist — structured result counts + last-run summaries
+- [PASS] 9 Evidence exists — alerts + audit rows + last_runs ledger
+- [PARTIAL] 10 UI exists where useful — via Ops Center live work + summaries
+- [PASS] 11 Failure handling exists — try/catch + degraded/deferred states
+- [PASS] 12 Retry exists — per-worker consecutive-failure backoff (10min, then 30min); cron runs defer with auto-retry, manual runs bypass
+- [NA] 13 Rollback where appropriate — alert-style workers resolve/supersede rather than roll back
+- [PASS] 14 Disable test exists — api/_worker-disable-tests.js: documented 24h-off consequence
+- [PARTIAL] 15 Evaluation exists — ledger-derived scorecards
+- [PASS] 16 Regression tests exist — tests/api/workforce-batch5.test.ts:8; tests/api/workforce-batch5.test.ts:333; tests/api/workforce-batch5.test.ts:37; tests/api/workforce-batch5.test.ts:348
+- [PASS] 17 Monitoring exists — last_runs + ops-summary + AI Failures
+- [PARTIAL] 18 Cost controls exist — bounded sweep limits; no token accounting (deterministic, no LLM)
+- [PASS] 19 Security boundaries exist — read-mostly; writes scoped to alerts/own tables
+- [PASS] 20 Connected to production workflow — registry + cron + UI Run button
+
+### ux-intel — ACCEPTABLE-WITH-NOTES (16/20 pass, 3 partial, 0 fail)
+- [PASS] 1 Trigger exists — cron tick (agent-cron, 5min) + manual automation-run
+- [PASS] 2 Real input exists — ./_ux-intel.js#runUXIntel
+- [PASS] 3 Real tools exist — direct DB/API ops in run fn
+- [PASS] 4 Permission exists — cron-secret gate + fail-soft degraded modes
+- [PASS] 5 Real action exists — writes alerts/audit/records
+- [PASS] 6 Real state can change
+- [PASS] 7 Verification exists — verified flag + re-read
+- [PASS] 8 Metrics exist — structured result counts + last-run summaries
+- [PASS] 9 Evidence exists — alerts + audit rows + last_runs ledger
+- [PARTIAL] 10 UI exists where useful — via Ops Center live work + summaries
+- [PASS] 11 Failure handling exists — try/catch + degraded/deferred states
+- [PASS] 12 Retry exists — per-worker consecutive-failure backoff (10min, then 30min); cron runs defer with auto-retry, manual runs bypass
+- [NA] 13 Rollback where appropriate — alert-style workers resolve/supersede rather than roll back
+- [PASS] 14 Disable test exists — api/_worker-disable-tests.js: documented 24h-off consequence
+- [PARTIAL] 15 Evaluation exists — ledger-derived scorecards
+- [PASS] 16 Regression tests exist — tests/api/workforce-batch5b.test.ts:26; tests/api/workforce-batch5b.test.ts:127; tests/api/workforce-batch5b.test.ts:137; tests/api/workforce-batch5b.test.ts:149
+- [PASS] 17 Monitoring exists — last_runs + ops-summary + AI Failures
+- [PARTIAL] 18 Cost controls exist — bounded sweep limits; no token accounting (deterministic, no LLM)
+- [PASS] 19 Security boundaries exist — read-mostly; writes scoped to alerts/own tables
+- [PASS] 20 Connected to production workflow — registry + cron + UI Run button
+
+### performance-intel — ACCEPTABLE-WITH-NOTES (15/20 pass, 4 partial, 0 fail)
+- [PASS] 1 Trigger exists — cron tick (agent-cron, 5min) + manual automation-run
+- [PASS] 2 Real input exists — ./_performance.js#runPerformanceIntel
+- [PASS] 3 Real tools exist — direct DB/API ops in run fn
+- [PASS] 4 Permission exists — cron-secret gate + fail-soft degraded modes
+- [PASS] 5 Real action exists — writes alerts/audit/records
+- [PASS] 6 Real state can change
+- [PARTIAL] 7 Verification exists — no explicit verify step
+- [PASS] 8 Metrics exist — structured result counts + last-run summaries
+- [PASS] 9 Evidence exists — alerts + audit rows + last_runs ledger
+- [PARTIAL] 10 UI exists where useful — via Ops Center live work + summaries
+- [PASS] 11 Failure handling exists — try/catch + degraded/deferred states
+- [PASS] 12 Retry exists — per-worker consecutive-failure backoff (10min, then 30min); cron runs defer with auto-retry, manual runs bypass
+- [NA] 13 Rollback where appropriate — alert-style workers resolve/supersede rather than roll back
+- [PASS] 14 Disable test exists — api/_worker-disable-tests.js: documented 24h-off consequence
+- [PARTIAL] 15 Evaluation exists — ledger-derived scorecards
+- [PASS] 16 Regression tests exist — tests/api/workforce-batch6.test.ts:4; tests/api/workforce-batch6.test.ts:141; tests/api/workforce-batch6.test.ts:28; tests/api/workforce-batch6.test.ts:155
+- [PASS] 17 Monitoring exists — last_runs + ops-summary + AI Failures
+- [PARTIAL] 18 Cost controls exist — bounded sweep limits; no token accounting (deterministic, no LLM)
+- [PASS] 19 Security boundaries exist — read-mostly; writes scoped to alerts/own tables
+- [PASS] 20 Connected to production workflow — registry + cron + UI Run button
+
+### db-intel — ACCEPTABLE-WITH-NOTES (16/20 pass, 3 partial, 0 fail)
+- [PASS] 1 Trigger exists — cron tick (agent-cron, 5min) + manual automation-run
+- [PASS] 2 Real input exists — ./_db-stats.js#runDbIntel
+- [PASS] 3 Real tools exist — direct DB/API ops in run fn
+- [PASS] 4 Permission exists — cron-secret gate + fail-soft degraded modes
+- [PASS] 5 Real action exists — writes alerts/audit/records
+- [PASS] 6 Real state can change
+- [PASS] 7 Verification exists — verified flag + re-read
+- [PASS] 8 Metrics exist — structured result counts + last-run summaries
+- [PASS] 9 Evidence exists — alerts + audit rows + last_runs ledger
+- [PARTIAL] 10 UI exists where useful — via Ops Center live work + summaries
+- [PASS] 11 Failure handling exists — try/catch + degraded/deferred states
+- [PASS] 12 Retry exists — per-worker consecutive-failure backoff (10min, then 30min); cron runs defer with auto-retry, manual runs bypass
+- [NA] 13 Rollback where appropriate — alert-style workers resolve/supersede rather than roll back
+- [PASS] 14 Disable test exists — api/_worker-disable-tests.js: documented 24h-off consequence
+- [PARTIAL] 15 Evaluation exists — ledger-derived scorecards
+- [PASS] 16 Regression tests exist — tests/api/workforce-batch6.test.ts:5; tests/api/workforce-batch6.test.ts:220; tests/api/workforce-batch6.test.ts:29; tests/api/workforce-batch6.test.ts:232
+- [PASS] 17 Monitoring exists — last_runs + ops-summary + AI Failures
+- [PARTIAL] 18 Cost controls exist — bounded sweep limits; no token accounting (deterministic, no LLM)
+- [PASS] 19 Security boundaries exist — read-mostly; writes scoped to alerts/own tables
+- [PASS] 20 Connected to production workflow — registry + cron + UI Run button
+
+### queue-recovery — ACCEPTABLE-WITH-NOTES (16/20 pass, 3 partial, 0 fail)
+- [PASS] 1 Trigger exists — cron tick (agent-cron, 5min) + manual automation-run
+- [PASS] 2 Real input exists — ./_work-queue.js#runQueueRecovery
+- [PASS] 3 Real tools exist — direct DB/API ops in run fn
+- [PASS] 4 Permission exists — cron-secret gate + fail-soft degraded modes
+- [PASS] 5 Real action exists — writes alerts/audit/records
+- [PASS] 6 Real state can change
+- [PASS] 7 Verification exists — verified flag + re-read
+- [PASS] 8 Metrics exist — structured result counts + last-run summaries
+- [PASS] 9 Evidence exists — alerts + audit rows + last_runs ledger
+- [PARTIAL] 10 UI exists where useful — via Ops Center live work + summaries
+- [PASS] 11 Failure handling exists — try/catch + degraded/deferred states
+- [PASS] 12 Retry exists — per-worker consecutive-failure backoff (10min, then 30min); cron runs defer with auto-retry, manual runs bypass
+- [NA] 13 Rollback where appropriate — alert-style workers resolve/supersede rather than roll back
+- [PASS] 14 Disable test exists — api/_worker-disable-tests.js: documented 24h-off consequence
+- [PARTIAL] 15 Evaluation exists — ledger-derived scorecards
+- [PASS] 16 Regression tests exist — tests/api/workforce-batch6.test.ts:6; tests/api/workforce-batch6.test.ts:273; tests/api/workforce-batch6.test.ts:30; tests/api/workforce-batch6.test.ts:335
+- [PASS] 17 Monitoring exists — last_runs + ops-summary + AI Failures
+- [PARTIAL] 18 Cost controls exist — bounded sweep limits; no token accounting (deterministic, no LLM)
+- [PASS] 19 Security boundaries exist — read-mostly; writes scoped to alerts/own tables
+- [PASS] 20 Connected to production workflow — registry + cron + UI Run button
+
+### notification-intel — ACCEPTABLE-WITH-NOTES (16/20 pass, 3 partial, 0 fail)
+- [PASS] 1 Trigger exists — cron tick (agent-cron, 5min) + manual automation-run
+- [PASS] 2 Real input exists — ./_notification-delivery.js#runNotificationIntel
+- [PASS] 3 Real tools exist — direct DB/API ops in run fn
+- [PASS] 4 Permission exists — cron-secret gate + fail-soft degraded modes
+- [PASS] 5 Real action exists — writes alerts/audit/records
+- [PASS] 6 Real state can change
+- [PASS] 7 Verification exists — verified flag + re-read
+- [PASS] 8 Metrics exist — structured result counts + last-run summaries
+- [PASS] 9 Evidence exists — alerts + audit rows + last_runs ledger
+- [PARTIAL] 10 UI exists where useful — via Ops Center live work + summaries
+- [PASS] 11 Failure handling exists — try/catch + degraded/deferred states
+- [PASS] 12 Retry exists — per-worker consecutive-failure backoff (10min, then 30min); cron runs defer with auto-retry, manual runs bypass
+- [NA] 13 Rollback where appropriate — alert-style workers resolve/supersede rather than roll back
+- [PASS] 14 Disable test exists — api/_worker-disable-tests.js: documented 24h-off consequence
+- [PARTIAL] 15 Evaluation exists — ledger-derived scorecards
+- [PASS] 16 Regression tests exist — tests/api/workforce-batch6.test.ts:7; tests/api/workforce-batch6.test.ts:375; tests/api/workforce-batch6.test.ts:31; tests/api/workforce-batch6.test.ts:412
+- [PASS] 17 Monitoring exists — last_runs + ops-summary + AI Failures
+- [PARTIAL] 18 Cost controls exist — bounded sweep limits; no token accounting (deterministic, no LLM)
+- [PASS] 19 Security boundaries exist — read-mostly; writes scoped to alerts/own tables
+- [PASS] 20 Connected to production workflow — registry + cron + UI Run button
+
+### incident-recovery — ACCEPTABLE-WITH-NOTES (16/20 pass, 3 partial, 0 fail)
+- [PASS] 1 Trigger exists — cron tick (agent-cron, 5min) + manual automation-run
+- [PASS] 2 Real input exists — ./_incidents.js#runIncidentRecovery
+- [PASS] 3 Real tools exist — direct DB/API ops in run fn
+- [PASS] 4 Permission exists — cron-secret gate + fail-soft degraded modes
+- [PASS] 5 Real action exists — writes alerts/audit/records
+- [PASS] 6 Real state can change
+- [PASS] 7 Verification exists — verified flag + re-read
+- [PASS] 8 Metrics exist — structured result counts + last-run summaries
+- [PASS] 9 Evidence exists — alerts + audit rows + last_runs ledger
+- [PARTIAL] 10 UI exists where useful — via Ops Center live work + summaries
+- [PASS] 11 Failure handling exists — try/catch + degraded/deferred states
+- [PASS] 12 Retry exists — per-worker consecutive-failure backoff (10min, then 30min); cron runs defer with auto-retry, manual runs bypass
+- [NA] 13 Rollback where appropriate — alert-style workers resolve/supersede rather than roll back
+- [PASS] 14 Disable test exists — api/_worker-disable-tests.js: documented 24h-off consequence
+- [PARTIAL] 15 Evaluation exists — ledger-derived scorecards
+- [PASS] 16 Regression tests exist — tests/api/workforce-batch6.test.ts:9; tests/api/workforce-batch6.test.ts:446; tests/api/workforce-batch6.test.ts:32; tests/api/workforce-batch6.test.ts:490
+- [PASS] 17 Monitoring exists — last_runs + ops-summary + AI Failures
+- [PARTIAL] 18 Cost controls exist — bounded sweep limits; no token accounting (deterministic, no LLM)
+- [PASS] 19 Security boundaries exist — read-mostly; writes scoped to alerts/own tables
+- [PASS] 20 Connected to production workflow — registry + cron + UI Run button
+
+### security-ops — ACCEPTABLE-WITH-NOTES (16/20 pass, 3 partial, 0 fail)
+- [PASS] 1 Trigger exists — cron tick (agent-cron, 5min) + manual automation-run
+- [PASS] 2 Real input exists — ./_security-events.js#runSecurityOps
+- [PASS] 3 Real tools exist — direct DB/API ops in run fn
+- [PASS] 4 Permission exists — cron-secret gate + fail-soft degraded modes
+- [PASS] 5 Real action exists — writes alerts/audit/records
+- [PASS] 6 Real state can change
+- [PASS] 7 Verification exists — verified flag + re-read
+- [PASS] 8 Metrics exist — structured result counts + last-run summaries
+- [PASS] 9 Evidence exists — alerts + audit rows + last_runs ledger
+- [PARTIAL] 10 UI exists where useful — via Ops Center live work + summaries
+- [PASS] 11 Failure handling exists — try/catch + degraded/deferred states
+- [PASS] 12 Retry exists — per-worker consecutive-failure backoff (10min, then 30min); cron runs defer with auto-retry, manual runs bypass
+- [NA] 13 Rollback where appropriate — alert-style workers resolve/supersede rather than roll back
+- [PASS] 14 Disable test exists — api/_worker-disable-tests.js: documented 24h-off consequence
+- [PARTIAL] 15 Evaluation exists — ledger-derived scorecards
+- [PASS] 16 Regression tests exist — tests/api/workforce-batch6.test.ts:10; tests/api/workforce-batch6.test.ts:525; tests/api/workforce-batch6.test.ts:33; tests/api/workforce-batch6.test.ts:563
+- [PASS] 17 Monitoring exists — last_runs + ops-summary + AI Failures
+- [PARTIAL] 18 Cost controls exist — bounded sweep limits; no token accounting (deterministic, no LLM)
+- [PASS] 19 Security boundaries exist — read-mostly; writes scoped to alerts/own tables
+- [PASS] 20 Connected to production workflow — registry + cron + UI Run button
+
+## Totals
+- PASS: 1149 · PARTIAL: 343 · FAIL: 0
+- Gate: exit code = FAIL count (0). PARTIALs are documented limitations, not silent passes.
+
+## Top gaps to close (no compromise)
+1. Wire supervisor pre-execution gate + failure/success recording into runWorker (criteria 12/13/17 depth).
+2. Per-worker disable tests: DOCUMENTED in api/_worker-disable-tests.js (criterion 14 reads the map; coverage locked by tests/api/worker-disable-tests.test.ts).
+3. Independent-verifier mapping: WIRED via VERIFIER_MAP in api/_workforce-verification.js (runWorker ANDs self-verify with the mapped engine verifier; criterion 7 reads the map).
+4. Token-cost accounting per worker (criterion 18 PARTIALs).

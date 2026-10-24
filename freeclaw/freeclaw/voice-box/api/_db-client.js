@@ -105,5 +105,17 @@ function getClient() {
 	return _client;
 }
 
-const supabase = getClient();
+const supabase = new Proxy(
+	{},
+	{
+		get(_, prop) {
+			// Lazy: the client is built on first USE, not on import — so a
+			// missing env var fails only the routes that need the DB (with a
+			// clear error), instead of crashing every route at cold start.
+			const client = getClient();
+			const value = client[prop];
+			return typeof value === "function" ? value.bind(client) : value;
+		},
+	},
+);
 export default supabase;

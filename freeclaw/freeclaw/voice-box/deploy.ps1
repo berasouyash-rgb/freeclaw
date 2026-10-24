@@ -1,5 +1,5 @@
 # ============================================================
-#  Voice Box - One-Click Production Deploy
+#  Voice Flow - One-Click Production Deploy
 #  Run with:  powershell -ExecutionPolicy Bypass -File deploy.ps1
 #  or right-click -> "Run with PowerShell"
 # ============================================================
@@ -12,7 +12,7 @@ function Ok($msg)   { Write-Host "    [OK]   $msg" -ForegroundColor Green }
 function Warn($msg) { Write-Host "    [WARN] $msg" -ForegroundColor Yellow }
 function Fail($msg) { Write-Host "    [FAIL] $msg" -ForegroundColor Red; exit 1 }
 
-Say "Voice Box - Production Deploy"
+Say "Voice Flow - Production Deploy"
 Say "Working directory: $root"
 
 # ---- 0. Preflight: node + npx available? --------------------

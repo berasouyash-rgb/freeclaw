@@ -1,4 +1,4 @@
--- Voice Box v3.0 Enterprise Migration
+-- Voice Flow v3.0 Enterprise Migration
 -- Adds: tool calling, approval workflows, audit logs, knowledge base, agent memory
 -- Enhances: conversations, messages with AI metadata
 

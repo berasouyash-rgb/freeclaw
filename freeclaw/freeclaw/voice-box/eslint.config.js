@@ -6,7 +6,15 @@ import globals from "globals";
 import tseslint from "typescript-eslint";
 
 export default defineConfig([
-	globalIgnores(["dist", "coverage"]),
+	globalIgnores([
+		"dist",
+		"coverage",
+		// Generated native shells — Capacitor/Capacitor-Gradle outputs and
+		// the packaged Electron app contain thousands of vendored JS files
+		// (e.g. android/.../native-bridge.js) that must never be linted.
+		"android",
+		"electron/dist",
+	]),
 	{
 		files: ["**/*.{ts,tsx}"],
 		extends: [
@@ -45,6 +53,15 @@ export default defineConfig([
 			"no-control-regex": "off",
 			// Files export both components and constants/types — standard pattern
 			"react-refresh/only-export-components": "off",
+		},
+	},
+	{
+		// Ambient declarations describe untyped JS modules (api/*.js). `any` is
+		// the correct type at that boundary — it is a declaration, not app code,
+		// so the "no any" rule does not apply and must not fail the lint gate.
+		files: ["**/*.d.ts"],
+		rules: {
+			"@typescript-eslint/no-explicit-any": "off",
 		},
 	},
 	{

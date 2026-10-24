@@ -6,8 +6,9 @@
 // POST /api/v3/tools â€” execute a tool with validation
 // GET  /api/v3/tools â€” list tools (alternative)
 
-import { cors, isAdmin } from "../_auth.js";
+import { clientIp, cors, isAdmin } from "../_auth.js";
 import { sanitizeError } from "../_error.js";
+import { log } from "../_audit.js";
 import {
 	executeTool,
 	executeTools,
@@ -15,7 +16,28 @@ import {
 	getToolSchemasForRole,
 	getToolsForRole,
 	validateParams,
-} from "../_tool-registry.js";
+} from "../_agent-tool-registry.js";
+
+// §45 TEST 8 leg: an unauthorized attempt must leave an audit event.
+// The registry denies by returning "Tool 'x' requires y permissions" and
+// does not log the rejection itself, so the denial is recorded here on the
+// request path that carried the attempt. Only permission rejections are
+// audited — tool/validation failures are normal operation, not attacks.
+function isPermissionDenied(message) {
+	return /requires [a-z]+ permissions/i.test(String(message || ""));
+}
+
+async function auditPermissionDenied(name, role, reason, req) {
+	await log.security("permission_denied", {
+		reason,
+		target: name,
+		role,
+		requestId: req.headers?.["x-request-id"] || null,
+		ip: clientIp(req) !== "unknown" ? clientIp(req) : null,
+		source: "v3-tools",
+		action_taken: "blocked",
+	});
+}
 
 export default async function handler(req, res) {
 	cors(res, req);
@@ -75,10 +97,18 @@ export default async function handler(req, res) {
 			const result = await executeTool(body.name, body.params || {}, {
 				role,
 				requestId: req.headers["x-request-id"],
-				ip: req.headers["x-forwarded-for"],
+				ip: clientIp(req),
 			});
 
 			if (result.error) {
+				if (isPermissionDenied(result.error)) {
+					await auditPermissionDenied(
+						body.name,
+						role,
+						result.error,
+						req,
+					);
+				}
 				return res.status(400).json(result);
 			}
 			return res.status(200).json(result);
@@ -94,6 +124,17 @@ export default async function handler(req, res) {
 			}
 
 			const results = await executeTools(body.tools, { role });
+			// Each denied item records its own event; allowed items none.
+			for (const item of results) {
+				if (item && isPermissionDenied(item.error)) {
+					await auditPermissionDenied(
+						item.name,
+						role,
+						item.error,
+						req,
+					);
+				}
+			}
 			return res.status(200).json({ results });
 		}
 
