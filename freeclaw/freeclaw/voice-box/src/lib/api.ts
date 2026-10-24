@@ -128,7 +128,7 @@ const GET_CACHE_TTL_MS = 20_000;
 // socket exhaustion and 429 storms when the whole room loads at once
 // (feed + leaderboard + realtime refresh firing together × 100 users).
 // Timer-free promise chaining — no interaction with fake-timer tests.
-const MAX_INFLIGHT = 6;
+const MAX_INFLIGHT = 16;
 let inflightCount = 0;
 const waitQueue: Array<() => void> = [];
 

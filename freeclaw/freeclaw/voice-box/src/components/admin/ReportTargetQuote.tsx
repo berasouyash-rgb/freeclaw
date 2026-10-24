@@ -17,10 +17,6 @@ import { api } from "../../lib/api";
 interface Quote {
 	title: string;
 	body?: string;
-	// State distinction — WHY this target is not (or no longer) public.
-	// Without these the quote collapsed live / moderation-removed /
-	// author-deleted / under-review / locked into "ready" or "gone",
-	// so triage ran on wrong facts.
 	removed?: boolean; // moderation-hidden
 	deleted?: boolean; // author soft-deleted
 	review?: boolean; // pending_review — not public yet
@@ -34,10 +30,18 @@ type Status =
 	| { state: "error" };
 
 const inflight = new Map<string, Promise<Quote | null>>();
+let sharedCommentsPromise: Promise<
+	Array<{
+		id?: string;
+		body?: string;
+		text?: string;
+		hidden?: boolean;
+		deleted?: boolean;
+		status?: string;
+	}>
+> | null = null;
 
-/** Small status pill for WHY a reported target is not public — plain
- *  language, because triage decisions must not depend on decoding
- *  `hidden` vs `deleted` vs `status` fields. */
+/** Small status pill for WHY a reported target is not public */
 function QuoteBadge({ text, color, bg }: { text: string; color: string; bg: string }) {
 	return (
 		<span
@@ -49,7 +53,7 @@ function QuoteBadge({ text, color, bg }: { text: string; color: string; bg: stri
 	);
 }
 
-/** Highlight flagged phrases or threats in quoted text so admins spot violations instantly */
+/** Highlight flagged phrases or threats in quoted text with GPU-accelerated smooth styling */
 function HighlightFlaggedText({ text, reason }: { text: string; reason?: string }) {
 	if (!text) return null;
 
@@ -89,7 +93,7 @@ function HighlightFlaggedText({ text, reason }: { text: string; reason?: string 
 					return (
 						<mark
 							key={i}
-							className="rounded px-1 py-0.5 font-bold bg-bad/20 text-bad border border-bad/30 inline-block animate-pulse"
+							className="rounded px-1.5 py-0.5 font-bold bg-bad/20 text-bad border border-bad/30 inline-block shadow-xs transition-colors"
 						>
 							{part}
 						</mark>
@@ -132,16 +136,22 @@ function loadQuote(
 				};
 			}
 			if (targetType === "comment") {
-				const list = await api.get<
-					Array<{
-						id?: string;
-						body?: string;
-						text?: string;
-						hidden?: boolean;
-						deleted?: boolean;
-						status?: string;
-					}>
-				>(`/api/comments?all=1`);
+				if (!sharedCommentsPromise) {
+					sharedCommentsPromise = api.get<
+						Array<{
+							id?: string;
+							body?: string;
+							text?: string;
+							hidden?: boolean;
+							deleted?: boolean;
+							status?: string;
+						}>
+					>(`/api/comments?all=1`).catch((err) => {
+						sharedCommentsPromise = null;
+						throw err;
+					});
+				}
+				const list = await sharedCommentsPromise;
 				const found = (Array.isArray(list) ? list : []).find(
 					(c) => String(c?.id) === String(targetId),
 				);
@@ -172,8 +182,6 @@ function loadQuote(
 		}
 	})();
 	const guarded = job.catch((err: unknown) => {
-		// A failed fetch must never poison later rows: drop the rejection
-		// from the cache so a retry re-reads instead of replaying it.
 		if (inflight.get(key) === guarded) inflight.delete(key);
 		throw err;
 	});
@@ -184,6 +192,7 @@ function loadQuote(
 /** Test-only: clear the module memo cache between cases. */
 export function resetQuoteCacheForTests() {
 	inflight.clear();
+	sharedCommentsPromise = null;
 }
 
 export default function ReportTargetQuote({
@@ -225,15 +234,15 @@ export default function ReportTargetQuote({
 	return (
 		<div
 			data-testid={`report-quote-${reportId}`}
-			className={`mt-2 rounded-xl border-l-4 px-3 py-2 text-xs transition-all ${
+			className={`mt-2 rounded-xl border-l-4 px-3 py-2 text-xs transition-all duration-200 transform-gpu ${
 				isOpen
-					? "border-amber-500 bg-amber-500/10 dark:bg-amber-500/5 shadow-sm ring-1 ring-amber-500/20"
+					? "border-amber-500 bg-amber-500/10 dark:bg-amber-500/5 shadow-xs ring-1 ring-amber-500/20"
 					: "border-border bg-surface2/40"
 			}`}
 		>
 			<div className="flex items-center justify-between gap-2 mb-1">
 				<p className="text-[10px] font-bold uppercase tracking-wider text-ink3 flex items-center gap-1.5">
-					<span className="inline-block w-1.5 h-1.5 rounded-full bg-amber-500 animate-ping"></span>
+					<span className="inline-block w-2 h-2 rounded-full bg-amber-500 shadow-[0_0_6px_rgba(245,158,11,0.6)]"></span>
 					Reported {targetType}
 				</p>
 				{targetType === "post" && (
@@ -243,17 +252,13 @@ export default function ReportTargetQuote({
 				)}
 			</div>
 			{status.state === "loading" && (
-				<p className="text-ink3 animate-pulse">Loading reported content…</p>
+				<p className="text-ink3 opacity-70">Loading reported content…</p>
 			)}
 			{status.state === "ready" && (
 				<>
 					<p className="font-semibold text-ink leading-snug">
 						<HighlightFlaggedText text={status.quote.title} reason={reason} />
 					</p>
-					{/* State badges: live content shows none; anything else says
-					    exactly why it is not public — REMOVED (moderation hide),
-					    DELETED (author removal, terminal), UNDER REVIEW (not public
-					    yet), LOCKED (readers can no longer comment). */}
 					{status.quote.deleted && (
 						<QuoteBadge
 							text="Deleted by its author — no reader can see it"
