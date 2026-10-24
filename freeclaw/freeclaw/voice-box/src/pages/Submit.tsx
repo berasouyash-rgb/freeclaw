@@ -100,7 +100,14 @@ export default function Submit() {
 	} | null>(null);
 	const [preview, setPreview] = useState(false);
 	const [busy, setBusy] = useState(false);
-	const [draftSaved, setDraftSaved] = useState(false);
+	/**
+	 * Draft autosave status. "saved" is only ever set when the durable store
+	 * actually accepted the write — a full or blocked storage reports "failed"
+	 * instead of pretending the words are safe.
+	 */
+	const [draftState, setDraftState] = useState<"idle" | "saved" | "failed">(
+		"idle",
+	);
 	/**
 	 * Two-tap draft discard arming. Drafts are the author's own unsubmitted
 	 * words (local only, never evidence), and an abandoned draft restores
@@ -779,10 +786,17 @@ export default function Submit() {
 	}, [initialType, toast]);
 
 	// autosave draft (debounced)
+	const draftNoteTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+	useEffect(
+		() => () => {
+			if (draftNoteTimer.current) clearTimeout(draftNoteTimer.current);
+		},
+		[],
+	);
 	useEffect(() => {
 		const t = setTimeout(() => {
 			if (title || desc) {
-				lsSet(DRAFT_KEY, {
+				const durable = lsSet(DRAFT_KEY, {
 					title,
 					desc,
 					category,
@@ -790,8 +804,12 @@ export default function Submit() {
 					type,
 					savedAt: new Date().toISOString(),
 				});
-				setDraftSaved(true);
-				setTimeout(() => setDraftSaved(false), 1600);
+				setDraftState(durable ? "saved" : "failed");
+				if (draftNoteTimer.current) clearTimeout(draftNoteTimer.current);
+				draftNoteTimer.current = setTimeout(
+					() => setDraftState("idle"),
+					durable ? 1600 : 6000,
+				);
 			}
 		}, 900);
 		return () => clearTimeout(t);
@@ -2146,9 +2164,23 @@ export default function Submit() {
 						</button>
 					)}
 					<span
-						className={`text-[11px] text-ink3 flex items-center gap-1 transition-opacity duration-300 ${draftSaved ? "opacity-100" : "opacity-0"}`}
+						role="status"
+						aria-live="polite"
+						aria-atomic="true"
+						className={`text-[11px] flex items-center gap-1 transition-opacity duration-300 ${
+							draftState === "failed" ? "text-bad" : "text-ink3"
+						} ${draftState === "idle" ? "opacity-0" : "opacity-100"}`}
 					>
-						<Save size={11} /> Draft saved
+						{draftState === "failed" ? (
+							<>
+								<AlertTriangle size={11} /> Draft not saved — storage is full
+								or blocked, keep this tab open
+							</>
+						) : draftState === "saved" ? (
+							<>
+								<Save size={11} /> Draft saved
+							</>
+						) : null}
 					</span>
 					{hasDraftContent && (
 						<button

@@ -97,10 +97,17 @@ function readMemItem(key: string): string | null {
 	return mem.get(key) ?? null;
 }
 
-/** Write WITHOUT cookie fallback — for non-critical JSON (queues, prefs). */
-function writeMemItem(key: string, value: string) {
-	if (storeSet(key, value)) return;
+/**
+ * Write WITHOUT cookie fallback — for non-critical JSON (queues, prefs).
+ * Returns whether the durable backend accepted the write. `false` means the
+ * value survives only in this tab's memory (`mem`), so it is gone after a
+ * reload; callers that show a saved state must branch on this instead of
+ * assuming success.
+ */
+function writeMemItem(key: string, value: string): boolean {
+	if (storeSet(key, value)) return true;
 	mem.set(key, value);
+	return false;
 }
 
 function randomId(): string {
@@ -363,14 +370,25 @@ export function lsGet<T>(key: string, fallback: T): T {
 	}
 }
 
-export function lsSet<T>(key: string, value: T) {
+/**
+ * Persist JSON to the device store.
+ *
+ * Returns `true` only when the durable backend (localStorage / Capacitor
+ * Preferences / Electron file) accepted the write. `false` means storage was
+ * full, blocked, or the value was unserialisable: the value still lives in
+ * this tab so the UI stays usable, but it will not survive a reload. Never
+ * throws, so callers must branch on the return value rather than assume a
+ * green "saved" state.
+ */
+export function lsSet<T>(key: string, value: T): boolean {
 	try {
-		writeMemItem(key, JSON.stringify(value));
+		return writeMemItem(key, JSON.stringify(value));
 	} catch (err) {
 		console.warn("[identity] persist failed (storage full or blocked)", {
 			key,
 			error: err instanceof Error ? err.message : String(err),
 		});
+		return false;
 	}
 }
 
