@@ -73,7 +73,7 @@ const LOCAL_CATEGORIES = [
 
 const CATEGORY_KEYWORDS = {
 	Academics: ["exam", "marks", "syllabus", "homework", "lesson", "study", "padhai", "pariksha", "result", "question paper", "assignment", "test", "pora", "porashona", "syllabus"],
-	Facilities: ["building", "repair", "fan", "light", "toilet", "washroom", "bathroom", "classroom", "desk", "bench", "lift", "elevator", "door", "window", "roof", "leak", "water", "paani", "cooler", "jol", "electricity", "bijli", "current", "tap", "kol"],
+	Facilities: ["building", "repair", "fan", "light", "toilet", "washroom", "bathroom", "classroom", "desk", "bench", "lift", "elevator", "door", "window", "roof", "leak", "water", "paani", "cooler", "jol", "electricity", "bijli", "current", "tap", "kol", "ac", "a/c", "aircon", "air conditioner", "air conditioning", "broken", "hvac", "cooling", "heating", "heater", "projector", "whiteboard", "blackboard"],
 	Bullying: ["bully", "bullying", "ragging", "ragged", "harass", "tease", "teasing", "beat", "beaten", "hit me", "slapped", "threat", "dhamki", "chedd", "ched"],
 	Teachers: ["teacher", "sir", "madam", "ma'am", "professor", "shikshak", "master", "mashai", "faculty", "tutor"],
 	Events: ["event", "function", "programme", "program", "annual day", "competition", "anushthan", "ceremony", "celebration"],
@@ -98,6 +98,15 @@ const TAG_STOPWORDS = new Set([
 	"but", "of", "to", "in", "on", "for", "with", "has", "have", "had",
 	"not", "no", "very", "too", "so", "do", "does", "did", "it", "its",
 	"at", "by", "from", "as", "we", "they", "you", "he", "she", "school",
+	"will", "let", "sleep", "cant", "wont", "dont", "can", "could", "would",
+	"should", "shall", "might", "may", "must", "give", "take", "make",
+	"get", "got", "know", "think", "tell", "say", "come", "go", "put",
+	"see", "look", "want", "like", "just", "now", "then", "there", "here",
+	"all", "any", "some", "every", "more", "most", "other", "such", "only",
+	"own", "same", "than", "about", "after", "before", "over", "under",
+	"again", "further", "once", "i", "im", "me", "myself", "yourself",
+	"himself", "herself", "itself", "ourselves", "themselves", "what",
+	"which", "who", "whom", "how", "when", "where", "why",
 	"hai", "hain", "mein", "me", "ka", "ki", "ke", "ko", "ne", "aur",
 	"or", "ek", "yeh", "woh", "jo", "kya", "nahi", "nahin", "bahut",
 	"ache", "achhe", "achey", "ache", "amader", "amar", "ache", "achhe",
@@ -247,7 +256,7 @@ function structureLocally(raw) {
 		.replace(/[^a-z\u0980-\u09FF\s]/gi, " ")
 		.split(/\s+/)) {
 		const w = word.trim();
-		if (w.length <= 2 || TAG_STOPWORDS.has(w)) continue;
+		if (w.length <= 3 || TAG_STOPWORDS.has(w)) continue;
 		freq.set(w, (freq.get(w) || 0) + 1);
 	}
 	let tags = [...freq.entries()]

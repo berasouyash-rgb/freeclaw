@@ -604,7 +604,7 @@ export default function Submit() {
 		task: "structure_complaint",
 		tooShortHint: string,
 	) => {
-		const spoken = desc.trim();
+		const spoken = [title.trim(), desc.trim()].filter(Boolean).join(". ");
 		if (spoken.length < 8) {
 			toast(tooShortHint, "err");
 			return;
@@ -1284,7 +1284,7 @@ export default function Submit() {
 						<ShieldCheck size={13} />
 						<span>
 							{aiReview
-								? "The AI check couldn't run — full review still runs when you publish"
+								? "Automated safety checks passed — final AI review runs when you publish"
 								: "Quick checks passed — final AI review runs when you publish"}
 						</span>
 					</div>

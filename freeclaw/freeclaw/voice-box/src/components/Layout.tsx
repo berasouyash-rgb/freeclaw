@@ -1,5 +1,8 @@
 import {
 	Accessibility,
+	Info,
+	LifeBuoy,
+	Rocket,
 	Activity,
 	ArrowDownToLine,
 	BarChart3,
@@ -94,6 +97,10 @@ const NAV_MORE = [
 		tour: "",
 	},
 	{ to: "/download", label: "Get the app", icon: ArrowDownToLine, tour: "" },
+	{ to: "/about", label: "About Us", icon: Info, tour: "" },
+	{ to: "/contact", label: "Contact Us", icon: LifeBuoy, tour: "" },
+	{ to: "/status", label: "System Status", icon: Activity, tour: "" },
+	{ to: "/changelog", label: "Changelog", icon: Rocket, tour: "" },
 ];
 /** Full nav (core + more) for anything that needs the complete list. */
 export const NAV_ALL = [...NAV_CORE, ...NAV_MORE];
