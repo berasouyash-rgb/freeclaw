@@ -19,7 +19,10 @@ import { ConfirmDialog } from "./ui";
 interface PollCardProps {
 	poll: PollData;
 	myVote?: number[];
-	onVoted?: () => void;
+	/** Fires after a vote (with the server's post-vote poll row so callers can
+	 *  merge the new total instead of refetching) or after an admin action
+	 *  (no argument — the caller should refetch that one poll). */
+	onVoted?: (poll?: PollData) => void;
 	onDeleted?: () => void;
 }
 
@@ -218,7 +221,7 @@ const PollCard = memo(function PollCard({
 			setLocal(res);
 			setVoted(true);
 			setChangingVote(false);
-			onVoted?.();
+			onVoted?.(res);
 			toast(
 				voted
 					? "Vote updated — anonymously 🔒"

@@ -176,7 +176,7 @@ interface PostCardProps {
 	) => void;
 	pollData?: PollData | null;
 	myPollVote?: number[];
-	onPollVoted?: () => void;
+	onPollVoted?: (poll?: PollData) => void;
 }
 
 function PostCardInner({ post, myReactions, onReacted, pollData, myPollVote, onPollVoted }: PostCardProps) {

@@ -191,6 +191,30 @@ describe("PollCard", () => {
     });
   });
 
+  describe("vote response hand-off", () => {
+    it("hands the server's post-vote poll row to onVoted", async () => {
+      // The feed badge above this card renders its own copy of the poll, so the
+      // only way it can show the new total without a full reload is if this
+      // card hands the server's post-vote row to the parent. Calling
+      // `onVoted()` with no argument instead silently re-creates the reported
+      // "count shows 2, then 0, then 1" staleness.
+      const { api } = await import("../lib/api");
+      const postSpy = api.post as ReturnType<typeof vi.fn>;
+      postSpy.mockResolvedValueOnce(
+        makePoll({ vote_counts: [11, 5, 3], total_votes: 19 }),
+      );
+      const onVoted = vi.fn();
+      render(<PollCard poll={makePoll()} onVoted={onVoted} />);
+      fireEvent.click(screen.getByRole("radio", { name: /Yes/ }));
+      fireEvent.click(screen.getByRole("button", { name: /^Vote$/ }));
+      await waitFor(() => expect(onVoted).toHaveBeenCalledTimes(1));
+      expect(onVoted.mock.calls[0]?.[0]).toMatchObject({
+        id: "poll-1",
+        total_votes: 19,
+      });
+    });
+  });
+
   describe("expired/closed polls", () => {
     it("shows Ended badge for expired polls", () => {
       render(

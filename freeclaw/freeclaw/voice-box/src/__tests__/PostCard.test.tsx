@@ -434,6 +434,46 @@ describe("PostCard", () => {
       );
       expect(screen.getByRole("status", { name: "Poll with 1 vote" })).toBeInTheDocument();
     });
+
+    it("forwards the vote row from the inline card up to onPollVoted", async () => {
+      // The badge at the top of this card and the PollCard below it read
+      // different copies of the poll. Forwarding the server's post-vote row
+      // is what lets the parent (Home) update the badge in the same frame.
+      const { api } = await import("../lib/api");
+      const postSpy = api.post as ReturnType<typeof vi.fn>;
+      postSpy.mockResolvedValueOnce({
+        id: "poll-1",
+        title: "Should we fix it?",
+        options: ["Yes", "No"],
+        vote_counts: [5, 3],
+        total_votes: 8,
+        ptype: "yesno",
+        author_id: "user-1",
+      });
+      const onPollVoted = vi.fn();
+      render(
+        <PostCard
+          post={makePost({ linked_poll: "poll-1", linked_poll_votes: 4 })}
+          pollData={{
+            id: "poll-1",
+            title: "Should we fix it?",
+            options: ["Yes", "No"],
+            vote_counts: [4, 3],
+            total_votes: 7,
+            ptype: "yesno",
+            author_id: "user-1",
+          }}
+          onPollVoted={onPollVoted}
+        />,
+      );
+      fireEvent.click(screen.getByRole("radio", { name: /Yes/ }));
+      fireEvent.click(screen.getByRole("button", { name: /^Vote$/ }));
+      await waitFor(() => expect(onPollVoted).toHaveBeenCalledTimes(1));
+      expect(onPollVoted.mock.calls[0]?.[0]).toMatchObject({
+        id: "poll-1",
+        total_votes: 8,
+      });
+    });
   });
 
   describe("comment count", () => {

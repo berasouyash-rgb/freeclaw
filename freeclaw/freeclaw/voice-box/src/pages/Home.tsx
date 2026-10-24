@@ -1362,7 +1362,24 @@ export default function Home() {
 							onReacted={handleReacted}
 							pollData={p.linked_poll ? pollsMap[p.linked_poll] ?? null : null}
 							myPollVote={p.linked_poll ? myPollVotes[p.linked_poll] : undefined}
-							onPollVoted={() => fetchPolls(posts)}
+							onPollVoted={(votedPoll) => {
+								// A vote carries the server's post-vote row: merge it
+								// straight into pollsMap so the post badge shows the new
+								// total in the same frame. The previous handler refetched
+								// via fetchPolls(), which is a guaranteed no-op — its storm
+								// guard returns early whenever the set of linked poll ids
+								// is unchanged, so the badge stayed stale until a realtime
+								// polls UPDATE happened to arrive.
+								// Admin actions (archive / restore / stop voting) pass no
+								// argument and change server-side state instead of counts,
+								// so a single targeted refetch is the right follow-up.
+								const pollId = votedPoll?.id;
+								if (pollId) {
+									setPollsMap((prev) => ({ ...prev, [pollId]: votedPoll }));
+									return;
+								}
+								if (p.linked_poll) void refreshPoll(p.linked_poll);
+							}}
 						/>
 					</div>
 				))}
