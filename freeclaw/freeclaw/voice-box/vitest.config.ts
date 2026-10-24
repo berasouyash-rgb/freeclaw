@@ -19,6 +19,9 @@ export default defineConfig({
 		// One lane is slower but keeps the complete suite deterministic and
 		// prevents worker exits from being reported as false-positive passes.
 		pool: "forks",
+		forks: {
+			execArgv: ["--max-old-space-size=4096"],
+		},
 		maxWorkers: 1,
 		coverage: {
 			provider: "v8",

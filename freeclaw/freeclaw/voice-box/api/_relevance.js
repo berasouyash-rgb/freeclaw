@@ -295,7 +295,20 @@ export function assessRelevance(rawText) {
 	let confidence;
 	let explanation;
 
-	if (distressHits.length > 0) {
+	// Critical safety guard: menacing language, threats, stalking, or harassment
+	// targeting individuals must NEVER be treated as merely "unclear feedback"
+	const isThreat =
+		/\b(?:i\s+will\s+not\s+leave\s+you|will\s+not\s+leave\s+you|wont\s+leave\s+you|chhodunga\s+nahi|chodunga\s+nahi|nahi\s+chhodunga|dekh\s+lunga|watch\s+your\s+back|you\s+will\s+pay|you're\s+dead|you\s+are\s+dead|i\s+know\s+where\s+you\s+live|meet\s+me\s+after\s+school|see\s+you\s+after\s+school|meet\s+me\s+alone|kill\s+yourself|kys|go\s+die|die\s+tomorrow)\b/i.test(
+			text,
+		);
+
+	if (isThreat) {
+		verdict = "safety_violation";
+		route = "safety_block";
+		confidence = "high";
+		explanation =
+			"This contains threatening, intimidating, or harassing content targeting an individual. Personal attacks and threats are strictly prohibited and cannot be published.";
+	} else if (distressHits.length > 0) {
 		// Never judge relevance when someone may be unsafe. Hand it to the
 		// support path and say so plainly.
 		verdict = "unclear";
@@ -367,9 +380,9 @@ export function assessRelevance(rawText) {
 		],
 		explanation,
 		// Only an unqualified "this is a school problem" skips the prompt.
-		// Everything else invites the student to double-check — an invitation,
-		// never a requirement, and never a rejection.
-		askUserToConfirm: verdict !== "school_problem",
+		// Safety violations never ask the user to confirm.
+		askUserToConfirm:
+			verdict !== "school_problem" && verdict !== "safety_violation",
 		limits: LIMITS,
 	};
 }

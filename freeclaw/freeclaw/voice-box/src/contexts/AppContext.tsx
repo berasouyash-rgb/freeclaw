@@ -21,6 +21,7 @@ import {
 	type LocalProfile,
 } from "../lib/identity";
 import { apiBase, navigateTo } from "../lib/platform";
+import { loadHarness } from "../lib/loadHarness";
 import type {
 	AccountStatus,
 	ChatMessage,
@@ -581,14 +582,28 @@ export function AppProvider({ children }: { children: ReactNode }) {
 	// the tab is hidden; the server additionally throttles to one write per
 	// id per 45s. This is the single sanctioned background write in the
 	// client — failures are silent (presence is advisory, never blocking).
+	// Interval is load-harnessed with full randomized jitter to scale across 5,000+ users.
 	useEffect(() => {
+		let timer: number | undefined;
+		let cancelled = false;
 		const beat = () => {
 			if (document.hidden) return;
 			api.post("/api/me", { action: "heartbeat" }).catch(() => {});
 		};
+		const scheduleNext = () => {
+			if (cancelled) return;
+			const nextMs = loadHarness.getPollingInterval(60_000);
+			timer = window.setTimeout(() => {
+				beat();
+				scheduleNext();
+			}, nextMs);
+		};
 		beat();
-		const iv = window.setInterval(beat, 60_000);
-		return () => window.clearInterval(iv);
+		scheduleNext();
+		return () => {
+			cancelled = true;
+			if (timer !== undefined) window.clearTimeout(timer);
+		};
 	}, []);
 
 	// ---------- background notification engine ----------

@@ -93,24 +93,61 @@ export function prefetchRouteForPath(path: string): boolean {
 	return true;
 }
 
-/** Preload all core pages during browser idle time so transitions load in < 300ms */
+/** True for devices where hover never fires (phones, tablets, touch Chromebooks).
+ *  Those users get NO hover prefetch at all — every warm chunk has to come from
+ *  an idle preload instead, or the first tap waits for the network. */
+export function isTouchOnly(): boolean {
+	try {
+		if (typeof window === "undefined" || !window.matchMedia) return false;
+		return window.matchMedia("(hover: none)").matches;
+	} catch {
+		return false;
+	}
+}
+
+/** Every route reachable from the primary navigation. These are warmed on the
+ *  FIRST idle pass so any nav click paints from cache — the whole point is that
+ *  no route in the nav bar can ever be the one that pays the network cost. */
+const NAV_ROUTES = [
+	"home",
+	"polls",
+	"suggestions",
+	"board",
+	"chat",
+	"settings",
+	"activity",
+	"submit",
+	"communities",
+	"search",
+	"notifications",
+	"leaderboard",
+	"saved",
+	"insights",
+	"privacy",
+	"faq",
+] as const;
+
+/** Everything else. Warmed on the SECOND idle pass: still static assets (zero
+ *  API calls, zero staleness), just deferred so the primary nav wins the first
+ *  idle slot. `post` is in here because feed cards also prefetch it on hover —
+ *  the idle pass is what covers TOUCH devices, whose taps never hover. */
+const SECONDARY_ROUTES = ["post", "admin"] as const;
+
+/** Preload all pages during browser idle time so route changes load in < 300ms.
+ *  Two passes: the nav first (these are the tabs a user actually cycles
+ *  through), then the rest. Both are gated on the same thin-pipe check so a
+ *  2G/save-data connection pays nothing extra. */
 export function preloadCoreRoutes(): void {
 	if (typeof window === "undefined" || thinPipe()) return;
 	const run = () => {
-		const core = [
-			"home",
-			"polls",
-			"suggestions",
-			"board",
-			"chat",
-			"settings",
-			"activity",
-			"submit",
-			"communities",
-			"search",
-		];
-		for (const key of core) {
-			prefetchRouteChunk(key);
+		for (const key of NAV_ROUTES) prefetchRouteChunk(key);
+		const more = () => {
+			for (const key of SECONDARY_ROUTES) prefetchRouteChunk(key);
+		};
+		if (typeof window.requestIdleCallback === "function") {
+			window.requestIdleCallback(more, { timeout: 4000 });
+		} else {
+			setTimeout(more, 1200);
 		}
 	};
 	if (typeof window.requestIdleCallback === "function") {

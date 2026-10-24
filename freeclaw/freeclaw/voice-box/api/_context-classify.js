@@ -106,7 +106,7 @@ export function normalizeForMatch(text) {
 /** Word-boundary alternation with escaped literals. Substring matching makes
  *  "rag" fire on "average"/"storage"/"fragment"; `\b` on both ends is the
  *  difference between a lexicon and a false-positive generator. */
-export function buildWordRe(words, flags = "i") {
+export function buildWordRe(words, flags = "gi") {
 	const escaped = words
 		.filter((w) => typeof w === "string" && w.length > 0)
 		.map((w) => String(w).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
@@ -145,6 +145,15 @@ const THREAT_TERMS = [
 	"kicks you", "kicks him", "kicks her", "kicks them",
 	"kicked you", "kicked him", "kicked her", "kicked them",
 	"kicking you", "kicking him", "kicking her", "kicking them",
+	// Menace, stalking, intimidation, Indian English / Hindi idioms:
+	// "i will not leave you" is literal for "chhodunga nahi" (I will not spare you)
+	"i will not leave you", "will not leave you", "wont leave you", "won't leave you",
+	"not leave you", "chhodunga nahi", "chodunga nahi", "nahi chhodunga", "nahi chodunga",
+	"tujhe nahi chhodunga", "tujhe chhodunga nahi", "dekh lunga", "dekh lenge",
+	"watch your back", "you will pay", "wait and watch", "you will regret",
+	"youll regret", "you'll regret", "see you after school", "meet me after school",
+	"i know where you live", "i know where you stay", "i know where you go",
+	"coming for you", "i'm coming for you", "im coming for you",
 ];
 
 const HOSTILITY_TERMS = [
@@ -549,6 +558,8 @@ Judge MEANING AND CONTEXT, not keywords. The same word is not the same act:
 - "Rahul said 'I hate you'."       → the writer is REPORTING abuse, not committing it
 - "Rahul helped me with maths."    → harmless
 - "go kys" / "you're finished" / "don't come to school tomorrow" → credible threat
+- "i will not leave you [name]" / "tujhe chhodunga nahi" / "dekh lunga" / "watch your back" / "you will pay" → Indian English/Hindi idiom for "I will not spare you" / menacing threat and intimidation. MUST BE CLASSIFIED AS threat or targeted-harassment (high or critical), NEVER positive or neutral.
+- Any targeted menacing, stalking, obsessive warnings, or intimidation directed at a named individual ("I will follow you", "you will pay", "wait and see what I do") → threat / targeted-harassment (high or critical).
 - Hinglish and mixed language are normal: "ye bahut weird hai" is a complaint, not a threat
 - A name is a TARGET, never an unknown word. Do not fail because a name is unfamiliar.
 - A quoted sentence inside quotes is reported speech unless the writer also asserts it outside the quotes.

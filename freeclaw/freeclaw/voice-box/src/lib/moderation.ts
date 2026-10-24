@@ -79,18 +79,23 @@ export interface ModerationResult {
 
 /** The exact text evidence behind one relevance signal. */
 export interface RelevanceReason {
-	kind: "distress" | "plea" | "problem" | "school" | "off_topic";
+	kind: "distress" | "plea" | "problem" | "school" | "off_topic" | "threat";
 	signal: string;
 	label: string;
 	/** The literal substring that matched, for the "why" shown to the author. */
-	evidence: string;
+	evidence?: string;
 }
 
 export type RelevanceVerdict =
 	| "school_problem"
 	| "unclear"
-	| "not_school_related";
-export type RelevanceRoute = "post" | "post_with_note" | "support";
+	| "not_school_related"
+	| "safety_violation";
+export type RelevanceRoute =
+	| "post"
+	| "post_with_note"
+	| "support"
+	| "safety_block";
 
 /** Output of `api/_relevance.js`, mirrored here for the UI. */
 export interface RelevanceResult {
@@ -254,6 +259,14 @@ const DANGEROUS_PATTERNS: Array<{
 			/\b(?:bring(?:ing)?\s+(?:a\s+)?(?:gun|knife|weapon|blade|bomb|explosive))\b/i,
 		message: "Mentions of weapons are flagged for safety review.",
 		severity: "high",
+	},
+	// Harassment / Intimidation / Menacing idioms (including Indian English / Hindi idioms)
+	{
+		pattern:
+			/\b(?:i\s+will\s+not\s+leave\s+you|will\s+not\s+leave\s+you|wont\s+leave\s+you|won't\s+leave\s+you|not\s+leave\s+you|chhodunga\s+nahi|chodunga\s+nahi|nahi\s+chhodunga|nahi\s+chodunga|tujhe\s+chhodunga\s+nahi|tujhe\s+nahi\s+chhodunga|dekh\s+lunga|dekh\s+lenge|watch\s+your\s+back|you\s+will\s+pay|you're\s+dead|you\s+are\s+dead|see\s+you\s+after\s+school|meet\s+me\s+after\s+school|meet\s+me\s+alone|wait\s+and\s+watch|you\s+will\s+regret|youll\s+regret|you'll\s+regret|i\s+know\s+where\s+you\s+live|i\s+know\s+where\s+you\s+stay|i\s+know\s+where\s+you\s+go|coming\s+for\s+you|i'm\s+coming\s+for\s+you|im\s+coming\s+for\s+you)\b/i,
+		message:
+			"Threats of intimidation, personal pursuit, or harassment targeting individuals are strictly prohibited.",
+		severity: "critical",
 	},
 	// Drugs
 	{

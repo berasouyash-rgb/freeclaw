@@ -321,8 +321,25 @@ export default async function handler(req, res) {
 				"Other",
 			];
 			const VALID_PRIORITIES = ["low", "medium", "high", "critical"];
+
+			// Safety check: do not suggest cheerful or irrelevant titles for menacing or intimidating content
+			if (
+				/\b(?:i\s+will\s+not\s+leave\s+you|will\s+not\s+leave\s+you|wont\s+leave\s+you|chhodunga\s+nahi|chodunga\s+nahi|nahi\s+chhodunga|dekh\s+lunga|watch\s+your\s+back|you\s+will\s+pay|you're\s+dead|you\s+are\s+dead|i\s+know\s+where\s+you\s+live|meet\s+me\s+after\s+school|see\s+you\s+after\s+school|meet\s+me\s+alone|coming\s+for\s+you)\b/i.test(
+					input,
+				)
+			) {
+				return res.status(200).json({
+					engine: "safety-guard",
+					category: "Bullying",
+					confidence: 0.95,
+					priority: "critical",
+					tags: ["safety-alert"],
+					improved_title: null,
+				});
+			}
+
 			const SUGGEST_SYSTEM =
-				"You classify school feedback. Categories: Academics, Facilities, Food, Bullying, Teachers, Events, Transport, Sports, Technology, Library, Hostel, Security, Cleanliness, Medical, Other. Respond with STRICT valid JSON only.";
+				"You classify school feedback. Categories: Academics, Facilities, Food, Bullying, Teachers, Events, Transport, Sports, Technology, Library, Hostel, Security, Cleanliness, Medical, Other. If the content contains harassment, threats, intimidation, or stalking targeting an individual (e.g. 'i will not leave you [name]'), classify it as category: 'Bullying', priority: 'critical', tags: ['harassment-alert'], and set improved_title to null. Respond with STRICT valid JSON only.";
 			const SUGGEST_USER = `Text: """${input}"""\nReturn JSON: {"category":string,"confidence":0-1,"tags":[max 3 short kebab-case strings],"priority":"low|medium|high|critical","improved_title":string(max 80 chars, clear and specific)}`;
 			try {
 				tFast = Date.now();

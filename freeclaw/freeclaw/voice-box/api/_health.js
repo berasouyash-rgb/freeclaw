@@ -13,7 +13,7 @@ import {
 import { buildChain } from "./_providers.js";
 import { getAllCircuitStatus } from "./_reliability.js";
 import { getLoadStats } from "./_load-guard.js";
-import { aiHealthCheck } from "./_ai-health.js";
+import { aiHealthCheck, verifyRealLlmConnectivity } from "./_ai-health.js";
 
 async function checkTable(tableName) {
 	const start = Date.now();
@@ -184,6 +184,7 @@ export default async function handler(req, res) {
 			reports: reportsCheck,
 			llm_providers: llmCheck,
 			ai: aiHealthCheck(),
+			ai_verification: await verifyRealLlmConnectivity(),
 			load: { status: loadInfo.shed_total > 0 ? "warning" : "ok", ...loadInfo },
 			errors: {
 				status: errorCount < 10 ? "ok" : "warning",

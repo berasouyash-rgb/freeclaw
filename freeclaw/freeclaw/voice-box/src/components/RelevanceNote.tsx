@@ -16,7 +16,7 @@
  *     would be both wrong and cruel.
  */
 
-import { Info, LifeBuoy, ShieldCheck } from "lucide-react";
+import { AlertTriangle, Info, LifeBuoy, ShieldCheck } from "lucide-react";
 import type { RelevanceResult } from "../lib/moderation";
 
 interface RelevanceNoteProps {
@@ -44,6 +44,8 @@ interface RelevanceNoteProps {
 const MIN_CHARS = 12;
 
 function heading(r: RelevanceResult): string {
+	if (r.route === "safety_block" || r.verdict === "safety_violation")
+		return "Content Policy Violation: Threat or Harassment Detected";
 	if (r.route === "support") return "This sounds like it might be about you";
 	if (r.verdict === "school_problem") return "Reads like a school problem";
 	if (r.verdict === "not_school_related") return "We couldn't find a school issue here";
@@ -60,25 +62,40 @@ export default function RelevanceNote({
 	if (checking || !relevance) return null;
 	if (text.trim().length < MIN_CHARS) return null;
 
+	const isViolation =
+		relevance.route === "safety_block" ||
+		relevance.verdict === "safety_violation";
 	const isSupport = relevance.route === "support";
 	const isProblem = relevance.verdict === "school_problem";
-	const color = isSupport
-		? "var(--vb-accent)"
-		: isProblem
-			? "var(--vb-good)"
-			: "var(--vb-ink3)";
-	const background = isSupport
-		? "rgba(86,82,214,0.08)"
-		: isProblem
-			? "rgba(22,160,106,0.08)"
-			: "rgba(110,110,140,0.07)";
-	const border = isSupport
-		? "rgba(86,82,214,0.22)"
-		: isProblem
-			? "rgba(22,160,106,0.2)"
-			: "rgba(110,110,140,0.18)";
+	const color = isViolation
+		? "var(--vb-danger, #e11d48)"
+		: isSupport
+			? "var(--vb-accent)"
+			: isProblem
+				? "var(--vb-good)"
+				: "var(--vb-ink3)";
+	const background = isViolation
+		? "rgba(225,29,72,0.08)"
+		: isSupport
+			? "rgba(86,82,214,0.08)"
+			: isProblem
+				? "rgba(22,160,106,0.08)"
+				: "rgba(110,110,140,0.07)";
+	const border = isViolation
+		? "rgba(225,29,72,0.3)"
+		: isSupport
+			? "rgba(86,82,214,0.22)"
+			: isProblem
+				? "rgba(22,160,106,0.2)"
+				: "rgba(110,110,140,0.18)";
 
-	const Icon = isSupport ? LifeBuoy : isProblem ? ShieldCheck : Info;
+	const Icon = isViolation
+		? AlertTriangle
+		: isSupport
+			? LifeBuoy
+			: isProblem
+				? ShieldCheck
+				: Info;
 
 	return (
 		<div
@@ -137,8 +154,8 @@ export default function RelevanceNote({
 			)}
 
 			{/* An invitation, never a requirement — and never over an
-			    unresolved or failed safety check. */}
-			{relevance.askUserToConfirm && !isSupport && !hasSafetyFlags && !safetyPending && (
+			    unresolved, failed, or safety violation check. */}
+			{relevance.askUserToConfirm && !isSupport && !isViolation && !hasSafetyFlags && !safetyPending && (
 				<p className="text-ink3 mt-1.5">
 					This is only a suggestion — you can post it as it is.
 				</p>

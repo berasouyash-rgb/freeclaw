@@ -4,6 +4,7 @@ import { getAnonId, getSessionToken, markIdentityUsed, setSessionToken } from ".
 import { apiBase } from "./platform";
 import { flushQueue, queueAction, queuedCount } from "./offline";
 import { errorText } from "./utils";
+import { loadHarness, type RequestPriority } from "./loadHarness";
 
 function adminToken(): string | null {
 	try {
@@ -118,7 +119,8 @@ if (typeof window !== "undefined" && queuedCount() > 0) {
 // caches GET responses for 5s to avoid redundant fetches within a single
 // page lifecycle (e.g. mount → realtime → re-render).
 const inflight = new Map<string, Promise<unknown>>();
-const getCache = new Map<string, { data: unknown; expiresAt: number }>();
+const getCache = new Map<string, { data: unknown; expiresAt: number; staleUntil: number }>();
+const GET_CACHE_STALE_MS = 5 * 60_000;
 const GET_CACHE_TTL_MS = 20_000;
 
 // ---- Concurrency cap (100+ simultaneous users) ----
@@ -161,6 +163,7 @@ export function resetConcurrencyForTests(): void {
 	waitQueue.length = 0;
 	inflight.clear();
 	getCache.clear();
+	loadHarness.resetForTests();
 }
 
 function cacheKey(method: string, path: string, viewerKey: string): string {
@@ -231,7 +234,7 @@ async function request<T = unknown>(
 	path: string,
 	body?: unknown,
 	timeoutMs = TIMEOUT_MS,
-	opts: { noCache?: boolean } = {},
+	opts: { noCache?: boolean; priority?: RequestPriority; swr?: boolean } = {},
 ): Promise<T> {
 	const headers: Record<string, string> = {
 		"Content-Type": "application/json",
@@ -263,7 +266,16 @@ async function request<T = unknown>(
 		const key = cacheKey(method, path, viewerKey);
 		if (!opts.noCache) {
 			const cached = getCache.get(key);
-			if (cached && cached.expiresAt > Date.now()) return cached.data as T;
+			if (cached) {
+				const now = Date.now();
+				if (cached.expiresAt > now) return cached.data as T;
+				if (opts.swr && cached.staleUntil > now) {
+					setTimeout(() => {
+						request<T>(method, path, body, timeoutMs, { ...opts, swr: false }).catch(() => {});
+					}, 10);
+					return cached.data as T;
+				}
+			}
 		}
 		const pending = inflight.get(key);
 		if (pending) return pending as Promise<T>;
@@ -272,10 +284,18 @@ async function request<T = unknown>(
 	const ctrl = new AbortController();
 	let timer = setTimeout(() => ctrl.abort(), timeoutMs);
 
-	// Take a concurrency slot. Fast path stays fully synchronous (no await
-	// suspends) so simultaneous GETs still dedupe against the in-flight map
-	// registered below; only the contended path waits FIFO.
-	if (!tryAcquireSlot()) await waitForSlot();
+	const reqStart = Date.now();
+	const priority: RequestPriority =
+		opts.priority ??
+		(method !== "GET"
+			? "critical"
+			: path.includes("/me") || path.includes("/heartbeat")
+				? "background"
+				: "interactive");
+	if (!tryAcquireSlot()) {
+		if (!loadHarness.tryAcquire(priority)) await loadHarness.acquire(priority);
+		await waitForSlot();
+	}
 
 	/** Inner fetch with optional retry for transient errors */
 	const doFetch = async (attempt: number): Promise<T> => {
@@ -322,6 +342,9 @@ async function request<T = unknown>(
 				}
 			}
 			if (!res.ok) {
+				if (res.status === 429 || res.status === 503) {
+					loadHarness.recordThrottle();
+				}
 				// Prefer the Retry-After header (shared limiter) over the body's
 				// retry_after (rateLimitResponse); both may be present.
 				const retryAfter =
@@ -364,9 +387,11 @@ async function request<T = unknown>(
 			}
 			// Cache successful GET responses briefly (unless the caller asked for fresh data)
 			if (method === "GET" && !opts.noCache) {
+				const now = Date.now();
 				getCache.set(cacheKey(method, path, viewerKey), {
 					data,
-					expiresAt: Date.now() + GET_CACHE_TTL_MS,
+					expiresAt: now + GET_CACHE_TTL_MS,
+					staleUntil: now + GET_CACHE_STALE_MS,
 				});
 			}
 			return data as T;
@@ -450,6 +475,7 @@ async function request<T = unknown>(
 	const reqPromise = doFetch(0).finally(() => {
 		clearTimeout(timer);
 		releaseSlot();
+		loadHarness.release(Date.now() - reqStart);
 		if (method === "GET") inflight.delete(cacheKey(method, path, viewerKey));
 	});
 
@@ -493,6 +519,26 @@ async function uploadImage(
 }
 
 export const api = {
+	/** Stale-While-Revalidate: instant paint in <1ms with background refresh */
+	getSWR: <T = unknown>(
+		path: string,
+		onRevalidated?: (fresh: T) => void,
+	): Promise<T> => {
+		const aid = (() => {
+			try { return getAnonId() || ""; } catch { return ""; }
+		})();
+		const key = cacheKey("GET", path, JSON.stringify([adminToken() ?? "", aid]));
+		const cached = getCache.get(key);
+		if (cached && cached.staleUntil > Date.now()) {
+			if (cached.expiresAt <= Date.now() || onRevalidated) {
+				request<T>("GET", path, undefined, TIMEOUT_MS, { noCache: true })
+					.then((fresh) => { if (onRevalidated) onRevalidated(fresh); })
+					.catch(() => {});
+			}
+			return Promise.resolve(cached.data as T);
+		}
+		return request<T>("GET", path, undefined, TIMEOUT_MS, { swr: true });
+	},
 	get: <T = unknown>(path: string) => request<T>("GET", path),
 	/** Bypass the 5s GET cache — for realtime-triggered refreshes that must show live data. */
 	getFresh: <T = unknown>(path: string) =>
@@ -573,3 +619,5 @@ export const api = {
 		);
 	},
 };
+
+export { loadHarness };

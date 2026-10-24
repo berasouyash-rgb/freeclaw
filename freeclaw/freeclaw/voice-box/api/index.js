@@ -1,4 +1,4 @@
-﻿// Consolidated Vercel serverless entry point.
+// Consolidated Vercel serverless entry point.
 // All /api/* routes are rewritten to this file by vercel.json.
 // Individual handlers live as _prefixed modules (private, no separate function).
 
@@ -76,7 +76,7 @@ import metaAgent from "./_meta-agent.js";
 import moderate from "./_moderate.js";
 import notifications from "./_notifications.js";
 import { cleanupMetrics, generateRequestId, logger } from "./_observability.js";
-import { loadGuardAcquire, loadGuardRelease } from "./_load-guard.js";
+import { getRetryAfterHeader, loadGuardAcquire, loadGuardRelease } from "./_load-guard.js";
 import { recordFeatureEvent as featureHealthRecorder } from "./_feature-health.js";
 import performance from "./_performance.js";
 import persona from "./_persona.js";
@@ -460,9 +460,9 @@ export default async function handler(req, res) {
 	// _ping bypasses above so health checks pass while shedding. Cheap
 	// rejections (413/403/404) also bypass: the cap protects expensive
 	// handler work, and every acquire pairs with one finally-release.
-	if (!loadGuardAcquire()) {
+	if (!loadGuardAcquire(pathname, req.method)) {
 		corsFn(res, req);
-		res.setHeader("Retry-After", "2");
+		res.setHeader("Retry-After", getRetryAfterHeader());
 		recordRequest(0, 503, pathname);
 		return res.status(503).json({ error: "Server busy — retry shortly.", code: "OVERLOADED", requestId });
 	}

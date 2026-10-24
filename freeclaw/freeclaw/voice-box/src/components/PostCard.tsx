@@ -404,6 +404,10 @@ function PostCardInner({ post, myReactions, onReacted, pollData, myPollVote, onP
 						className="block group"
 						onMouseEnter={() => prefetchRouteChunk("post")}
 						onFocus={() => prefetchRouteChunk("post")}
+						/* touchstart fires ~100ms before the tap resolves, and is the
+						   ONLY intent signal on a phone — hover never arrives there, so
+						   without this every post tap paid the chunk fetch in full. */
+						onTouchStart={() => prefetchRouteChunk("post")}
 					>
 						<h3 className="font-display font-semibold text-[15px] sm:text-base leading-snug break-words group-hover:text-accent transition-colors duration-200">
 							{post.title}

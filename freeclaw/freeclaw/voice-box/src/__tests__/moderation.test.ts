@@ -55,6 +55,16 @@ describe("Frontend Moderation - Basic Detection", () => {
 		).toBe(true);
 	});
 
+	it("flags targeted intimidation and menacing phrases like 'i will not leave you priya' as critical", () => {
+		const result = moderateContent("i will not leave you priya");
+		expect(result.safe).toBe(false);
+		expect(
+			result.flags.some(
+				(f) => f.category === "dangerous" && f.severity === "critical",
+			),
+		).toBe(true);
+	});
+
 	it("flags doxxing attempts as high", () => {
 		const result = moderateContent("I am going to dox you");
 		expect(

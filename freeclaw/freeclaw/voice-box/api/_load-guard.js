@@ -14,13 +14,35 @@ const MAX_INFLIGHT = 200;
 
 let inflight = 0;
 let shedTotal = 0;
+let backgroundShedTotal = 0;
 
-/** Take a slot. Returns false when saturated — the caller must 503. */
-export function loadGuardAcquire() {
+/**
+ * Take a slot with priority admission.
+ * Under normal load (inflight < 170): admits all requests.
+ * Under heavy load (170-200): sheds background heartbeats & polling first,
+ * reserving critical capacity for user writes (posts, votes, comments).
+ * At saturation (>= 200): fails fast with 503 + jittered Retry-After.
+ */
+export function loadGuardAcquire(pathname = "", method = "GET") {
 	if (inflight >= MAX_INFLIGHT) {
 		shedTotal += 1;
 		return false;
 	}
+
+	// Priority-aware shedding: preserve headroom for mutations
+	if (inflight >= 170 && method === "GET") {
+		const isBackground =
+			pathname.includes("heartbeat") ||
+			pathname.endsWith("/me") ||
+			pathname.includes("stats") ||
+			pathname.includes("metrics");
+		if (isBackground) {
+			backgroundShedTotal += 1;
+			shedTotal += 1;
+			return false;
+		}
+	}
+
 	inflight += 1;
 	return true;
 }
@@ -30,13 +52,24 @@ export function loadGuardRelease() {
 	inflight = Math.max(0, inflight - 1);
 }
 
+/** Compute jittered Retry-After recommendation (1 to 3 seconds) */
+export function getRetryAfterHeader() {
+	return String(Math.floor(1 + Math.random() * 2));
+}
+
 /** Live counters for /api/health and tests. */
 export function getLoadStats() {
-	return { inflight, max_inflight: MAX_INFLIGHT, shed_total: shedTotal };
+	return {
+		inflight,
+		max_inflight: MAX_INFLIGHT,
+		shed_total: shedTotal,
+		background_shed_total: backgroundShedTotal,
+	};
 }
 
 /** Test-only reset: module state would otherwise leak across test cases. */
 export function __resetLoadGuard() {
 	inflight = 0;
 	shedTotal = 0;
+	backgroundShedTotal = 0;
 }

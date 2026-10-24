@@ -165,6 +165,10 @@ Object.defineProperty(window, "IntersectionObserver", {
 	value: MockIntersectionObserver,
 });
 
+afterEach(() => {
+	MockIntersectionObserver.clear();
+});
+
 // ─── Mock Speech Recognition ──────────────────────────────────────
 Object.defineProperty(window, "webkitSpeechRecognition", {
 	writable: true,

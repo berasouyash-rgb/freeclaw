@@ -18,11 +18,7 @@ import {
 } from "./_auth.js";
 import supabase from "./_db-client.js";
 import { maskPII } from "./_moderation.js";
-
-// ─── NVIDIA NIM API ──────────────────────────────────────────────
-const NVIDIA_API_KEY = process.env.NVIDIA_API_KEY || "";
-const NVIDIA_API_URL = "https://integrate.api.nvidia.com/v1/chat/completions";
-const NVIDIA_MODEL = "openai/gpt-oss-20b";
+import { callNvidiaFast } from "./_providers.js";
 
 async function callNvidiaLLM(systemPrompt, userPrompt, maxTokens = 2000) {
 	// ── Outbound PII redaction (defense-in-depth) ────────────────────────
@@ -38,72 +34,23 @@ async function callNvidiaLLM(systemPrompt, userPrompt, maxTokens = 2000) {
 		? `${maskedPrompt}\n\n[SYSTEM NOTE: [EMAIL], [PHONE], [ADDRESS], and [PINCODE] placeholders above replace personal information found in this submission. Flag it: set personal_info_detected: true, risk_score: 80, decision: "high_risk", and list it in privacy_issues.]`
 		: maskedPrompt;
 
-	// Try direct NVIDIA call first — 7s timeout for high-latency regions
-	// (measured ~1.5s typical; fits inside the caller's 10s race).
-	if (NVIDIA_API_KEY) {
-		const controller = new AbortController();
-		const timeout = setTimeout(() => controller.abort(), 7000);
-
-		try {
-			const response = await fetch(NVIDIA_API_URL, {
-				method: "POST",
-				headers: {
-					"Content-Type": "application/json",
-					Authorization: `Bearer ${NVIDIA_API_KEY}`,
-				},
-				body: JSON.stringify({
-					model: NVIDIA_MODEL,
-					messages: [
-						{ role: "system", content: systemPrompt },
-						{ role: "user", content: safeUserPrompt },
-					],
-					temperature: 0.15,
-					max_tokens: maxTokens,
-					top_p: 0.7,
-				}),
-				signal: controller.signal,
-			});
-
-			clearTimeout(timeout);
-
-			if (!response.ok) {
-				const errText = await response.text().catch(() => "");
-				console.error(
-					"NVIDIA API error:",
-					response.status,
-					errText.slice(0, 300),
-				);
-			} else {
-				const data = await response.json();
-				const text = data.choices?.[0]?.message?.content;
-				if (text) {
-					const jsonMatch = text.match(/\{[\s\S]*\}/);
-					if (jsonMatch) {
-						try {
-							return JSON.parse(jsonMatch[0]);
-						} catch (e) {
-							console.error("Failed to parse NVIDIA JSON:", e.message);
-						}
-					}
-					console.error(
-						"No JSON found in NVIDIA response:",
-						text.slice(0, 300),
-					);
-				} else {
-					console.error(
-						"NVIDIA API empty response:",
-						JSON.stringify(data).slice(0, 300),
-					);
+	try {
+		// Use fast lane (Groq openai/gpt-oss-120b + NVIDIA Nemotron hedged)
+		const res = await callNvidiaFast(systemPrompt, safeUserPrompt, 8000);
+		if (res?.text) {
+			const jsonMatch = res.text.match(/\{[\s\S]*\}/);
+			if (jsonMatch) {
+				try {
+					return JSON.parse(jsonMatch[0]);
+				} catch (e) {
+					console.error("Failed to parse pre-publish AI JSON:", e.message);
 				}
 			}
-		} catch (err) {
-			clearTimeout(timeout);
-			console.error("NVIDIA direct call failed:", err.message);
 		}
+	} catch (err) {
+		console.error("Pre-publish AI call failed:", err.message);
 	}
 
-	// NO provider chain fallback — it has no timeout and can hang the whole function.
-	// If NVIDIA fails, the caller falls back to emergencyRegex() which is instant.
 	return null;
 }
 
@@ -132,6 +79,8 @@ REPORTS ARE SAFE (the user is describing what someone else did):
 - "The principal is sus" → SLANG/OPINION. SAFE.
 
 ACTUAL VIOLATIONS (the POST AUTHOR is doing it):
+- "i will not leave you [name]" / "tujhe chhodunga nahi" / "dekh lunga" / "watch your back" / "you will pay" → INTIMIDATION / TARGETED THREAT / HARASSMENT. UNSAFE (risk 90+, decision: "high_risk", threats_detected: true, bullying_detected: true).
+- Targeting named students with personal menace, stalking, obsession, or warnings ("i will not leave you priya", "watch your back", "i know where you live") → TARGETED HARASSMENT / THREAT. UNSAFE.
 - "You are an idiot and everyone hates you" → DIRECT ABUSE. UNSAFE.
 - "I will kill you" → DIRECT THREAT. UNSAFE.
 - "Shut up you loser" → DIRECT ABUSE. UNSAFE.
@@ -498,14 +447,14 @@ function emergencyRegex(text) {
 		riskScore += 60;
 	}
 
-	// Harassment/blackmail — only if POST AUTHOR is doing it
+	// Harassment/blackmail/intimidation — only if POST AUTHOR is doing it
 	if (
-		/\b(i know where you live|i will get you|meet me after school|send me money|i'll tell everyone|i'll post your|or else|if you don't)\b/i.test(
+		/\b(?:i\s+will\s+not\s+leave\s+you|will\s+not\s+leave\s+you|wont\s+leave\s+you|won't\s+leave\s+you|not\s+leave\s+you|chhodunga\s+nahi|chodunga\s+nahi|nahi\s+chhodunga|dekh\s+lunga|watch\s+your\s+back|you\s+will\s+pay|you're\s+dead|you\s+are\s+dead|i\s+know\s+where\s+you\s+live|i\s+will\s+get\s+you|meet\s+me\s+after\s+school|see\s+you\s+after\s+school|meet\s+me\s+alone|coming\s+for\s+you|i'll\s+get\s+you|send\s+me\s+money|i'll\s+tell\s+everyone|i'll\s+post\s+your|or\s+else|if\s+you\s+don't)\b/i.test(
 			text,
 		)
 	) {
-		safetyIssues.push("HARASSMENT/BLACKMAIL");
-		riskScore += 55;
+		safetyIssues.push("HARASSMENT/INTIMIDATION/THREAT");
+		riskScore += 75;
 	}
 
 	// Explicit content — only if POST AUTHOR is sharing it
