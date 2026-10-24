@@ -1,4 +1,4 @@
-﻿import { ArrowLeft } from "lucide-react";
+import { ArrowLeft } from "lucide-react";
 import { Link, useNavigate } from "react-router";
 import FadeIn from "../components/FadeIn";
 
@@ -12,8 +12,8 @@ const SECTIONS = [
 		content: `Voice Flow is an anonymous feedback platform that enables students to submit concerns, suggestions, and polls to school administrators. The Service includes AI-powered analysis, emotional support features, and administrative tools. The Service is provided "as is" and may be modified or discontinued at any time.`,
 	},
 	{
-		title: "3. Anonymity and Privacy",
-		content: `Voice Flow is designed to preserve user anonymity. We do not collect IP addresses, device fingerprints, cookies, or other tracking data from student users. Administrators cannot trace submissions to individual students. For complete details, see our Privacy Policy.`,
+		title: "3. Anonymity and Zero-Signup Model",
+		content: `Voice Flow operates on a strict zero-signup, zero-login model. No accounts, emails, passwords, or personal credentials are required. Each browser and physical device maintains exactly 1 persistent anonymous identity in local hardware storage. Devices can be linked securely using a single-use 6-digit code or QR code scan without creating an account or forfeiting anonymity.`,
 	},
 	{
 		title: "4. User Conduct",

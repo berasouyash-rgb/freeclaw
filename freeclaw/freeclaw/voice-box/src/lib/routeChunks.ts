@@ -93,6 +93,33 @@ export function prefetchRouteForPath(path: string): boolean {
 	return true;
 }
 
+/** Preload all core pages during browser idle time so transitions load in < 300ms */
+export function preloadCoreRoutes(): void {
+	if (typeof window === "undefined" || thinPipe()) return;
+	const run = () => {
+		const core = [
+			"home",
+			"polls",
+			"suggestions",
+			"board",
+			"chat",
+			"settings",
+			"activity",
+			"submit",
+			"communities",
+			"search",
+		];
+		for (const key of core) {
+			prefetchRouteChunk(key);
+		}
+	};
+	if (typeof window.requestIdleCallback === "function") {
+		window.requestIdleCallback(run, { timeout: 2000 });
+	} else {
+		setTimeout(run, 600);
+	}
+}
+
 /** Test-only reset: module state would otherwise leak across test cases. */
 export function __resetRouteChunks(): void {
 	warmed.clear();

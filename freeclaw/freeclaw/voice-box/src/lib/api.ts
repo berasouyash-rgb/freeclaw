@@ -119,7 +119,7 @@ if (typeof window !== "undefined" && queuedCount() > 0) {
 // page lifecycle (e.g. mount → realtime → re-render).
 const inflight = new Map<string, Promise<unknown>>();
 const getCache = new Map<string, { data: unknown; expiresAt: number }>();
-const GET_CACHE_TTL_MS = 5000;
+const GET_CACHE_TTL_MS = 20_000;
 
 // ---- Concurrency cap (100+ simultaneous users) ----
 // At most MAX_INFLIGHT requests in flight; the rest wait FIFO. Prevents

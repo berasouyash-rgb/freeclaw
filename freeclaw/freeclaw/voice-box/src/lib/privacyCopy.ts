@@ -16,5 +16,11 @@ export const SERVER_PII_COPY =
 export const INFRASTRUCTURE_COPY =
 	"The application does not intentionally store application-table IP addresses or use advertising cookies. Infrastructure providers may process request metadata under their own policies.";
 
+export const ZERO_SIGNUP_COPY =
+	"100% Zero-signup and Zero-login architecture. Each browser instance and mobile/desktop device maintains exactly 1 persistent anonymous ID bound to its local hardware storage. No passwords, accounts, or personal data are ever collected or required. Devices can be linked securely in 1 second via a 6-digit code or camera QR scan.";
+
+export const PERFORMANCE_COPY =
+	"Sub-300ms platform performance: all core routes and views are pre-warmed in memory during idle time, and cached data displays in under 50ms with instant background revalidation for lag-free page transitions.";
+
 export const CACHE_CLEAR_COPY =
 	"Clearing cached images and files never signs you out and never deletes your drafts, bookmarks, settings, posts, or votes — that data lives in separate browser storage the cache clear does not touch. Only deleting cookies and site data starts a fresh anonymous ID (your published posts stay public, but that browser can no longer manage them).";

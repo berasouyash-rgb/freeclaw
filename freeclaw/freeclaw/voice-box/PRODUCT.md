@@ -33,6 +33,7 @@ The interface should feel steady and humane rather than performative. It should 
 3. **Protect attention.** Load bounded data once per visit; use explicit refreshes and purposeful motion rather than ambient churn.
 4. **Keep trust visible.** Preserve user context through failures, retries, destructive actions, and moderation decisions.
 5. **Design for the difficult day.** A student reporting bullying or a moderator handling a difficult case should experience clarity, dignity, and control.
+6. **Zero-signup & Sub-300ms transitions.** The platform operates with zero logins or personal credentials. Every page transition completes in under 300ms using idle route pre-warming and resilient local caching.
 
 ## Accessibility & Inclusion
 

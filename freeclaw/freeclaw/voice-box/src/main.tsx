@@ -7,6 +7,7 @@ import { initSentry } from "./lib/sentry";
 import { initVitals } from "./lib/vitals";
 import { initErrorCapture } from "./lib/errors";
 import { hydrateStore } from "./lib/storage";
+import { preloadCoreRoutes } from "./lib/routeChunks";
 
 // Initialize Sentry error tracking AFTER first paint — the SDK (~100KB+)
 // must never sit in the boot chunk parsed before first paint. Idle-deferred
@@ -112,6 +113,8 @@ async function boot(): Promise<void> {
 			<App />
 		</StrictMode>,
 	);
+	// Warm core routes during idle so all subsequent page navigations complete in < 300ms
+	preloadCoreRoutes();
 	// Primary: remove splash after first painted frame
 	requestAnimationFrame(() => requestAnimationFrame(killSplash));
 	// Backups: window load + hard 3s ceiling (React is mounted synchronously above,

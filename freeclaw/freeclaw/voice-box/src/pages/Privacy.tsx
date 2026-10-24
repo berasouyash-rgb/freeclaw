@@ -20,6 +20,7 @@ import {
 	NOTIFY_PRIVACY_COPY,
 	RETENTION_COPY,
 	SERVER_PII_COPY,
+	ZERO_SIGNUP_COPY,
 } from "../lib/privacyCopy";
 
 export default function Privacy() {
@@ -32,6 +33,11 @@ export default function Privacy() {
 		else nav("/");
 	};
 	const ITEMS = [
+		{
+			icon: ShieldCheck,
+			title: "Zero-Login & Per-Device Architecture",
+			body: ZERO_SIGNUP_COPY,
+		},
 		{
 			icon: Server,
 			title: "Public content and server-side data",
