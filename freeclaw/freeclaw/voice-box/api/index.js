@@ -414,6 +414,19 @@ export default async function handler(req, res) {
 		});
 	}
 
+	// Root API ping: /api, /api/, /api/index
+	if (!endpoint || endpoint === "index") {
+		corsFn(res, req);
+		res.setHeader("Content-Type", "application/json");
+		return res.status(200).json({
+			status: "ok",
+			name: "VoiceBox API",
+			version: "36.0.0",
+			message: "VoiceBox API is operational",
+			timestamp: new Date().toISOString(),
+		});
+	}
+
 	const routeHandler = Object.hasOwn(routes, endpoint) ? routes[endpoint] : null;
 	if (!routeHandler) {
 		corsFn(res, req);

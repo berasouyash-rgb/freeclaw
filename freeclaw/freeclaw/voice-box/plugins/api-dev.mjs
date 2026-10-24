@@ -119,7 +119,7 @@ export function apiDev() {
 	let loadError = null;
 
 	async function ensureHandler(root) {
-		if (handler || loadError) return;
+		if (handler) return;
 		loadEnvFiles(root);
 		try {
 			const mod = await import(
@@ -127,6 +127,7 @@ export function apiDev() {
 					`?api-dev=${Date.now()}`
 			);
 			handler = mod.default;
+			loadError = null;
 			console.log("[api-dev] Mounted api/index.js on /api/* (full-stack dev)");
 		} catch (err) {
 			loadError = err;
@@ -143,9 +144,14 @@ export function apiDev() {
 		async configureServer(server) {
 			await ensureHandler(server.config.root);
 			startDevPatrol();
-			server.middlewares.use((req, res, next) => {
-				const url = req.url || "";
-				if (!url.startsWith("/api/")) return next();
+			server.middlewares.use(async (req, res, next) => {
+				const rawUrl = req.url || "";
+				const pathname = rawUrl.split("?")[0];
+				if (pathname !== "/api" && !pathname.startsWith("/api/")) return next();
+
+				if (!handler) {
+					await ensureHandler(server.config.root);
+				}
 
 				if (!handler) {
 					res.statusCode = 500;

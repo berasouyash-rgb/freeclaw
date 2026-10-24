@@ -586,7 +586,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 			if (now - lastToast < 10000) return;
 			lastToast = now;
 			toast(
-				"Anonymous session lost on this device (cookies or storage cleared).",
+				"Anonymous session lost on this device (cookies or storage cleared). Pair from Settings → Account to recover the same ID.",
 				"err",
 				{
 					label: "Start Fresh",
@@ -600,7 +600,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 		};
 		window.addEventListener("vb:session-dead", handleSessionDead);
 		return () => window.removeEventListener("vb:session-dead", handleSessionDead);
-	}, [refreshIdentity]);
+	}, [refreshIdentity, toast]);
 
 	// ---------- presence heartbeat ----------
 	// One lightweight last_seen touch per minute while the tab is visible so
