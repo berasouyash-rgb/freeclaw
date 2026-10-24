@@ -41,6 +41,7 @@ import {
 	createLinkCode,
 	getDisplayName,
 	resetAnonId,
+	setSessionToken,
 } from "../lib/identity";
 import {
 	INFRASTRUCTURE_COPY,
@@ -347,14 +348,14 @@ export default function Settings() {
 
 			<div className="flex flex-col sm:flex-row gap-6">
 				{/* Tab sidebar */}
-				<nav className="sm:w-48 flex-shrink-0 flex sm:flex-col gap-1 overflow-x-auto pb-1 sm:pb-0">
+				<nav className="sm:w-48 flex-shrink-0 flex sm:flex-col gap-1 overflow-x-auto pb-1 sm:pb-0 bg-surface2/40 sm:bg-transparent p-1 sm:p-0 rounded-2xl border border-border/40 sm:border-0">
 					{tabs.map(({ key, label, icon: Icon }) => (
 						<button
 							key={key}
 							onClick={() => setTab(key)}
-							className={`whitespace-nowrap flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-sm transition-all ${
+							className={`whitespace-nowrap flex items-center gap-2 px-3 py-2 sm:py-2.5 rounded-xl text-xs sm:text-sm transition-all shrink-0 sm:shrink ${
 								tab === key
-									? "bg-accent/10 text-accent font-medium"
+									? "bg-accent/10 text-accent font-medium shadow-xs"
 									: "text-ink3 hover:text-ink hover:bg-surface2"
 							}`}
 						>
@@ -496,7 +497,7 @@ export default function Settings() {
 								<p className="text-xs text-ink3">
 									System follows your device preference automatically
 								</p>
-								<div className="flex gap-2 mt-2 flex-wrap">
+								<div className="grid grid-cols-3 gap-2 mt-2">
 									{(
 										[
 											{ value: "system", label: "System", icon: Monitor },
@@ -515,9 +516,9 @@ export default function Settings() {
 													"ok",
 												);
 											}}
-											className={`flex items-center gap-2 px-4 py-2.5 rounded-xl border text-sm transition-all ${
+											className={`flex items-center justify-center gap-2 px-3 py-2.5 rounded-xl border text-xs sm:text-sm transition-all ${
 												theme === value
-													? "border-accent bg-accent/10 text-accent"
+													? "border-accent bg-accent/10 text-accent font-medium"
 													: "border-border hover:border-accent/30 text-ink3"
 											}`}
 										>
@@ -654,9 +655,9 @@ session (id knowledge alone must not take the identity over). */}
 									<p className="text-[11px] text-warn mt-1">Valid for 5 minutes. Type it on your other device — whoever enters it joins this identity.</p>
 								</div>
 							)}
-							<div className="flex gap-2 mt-2">
-								<input value={linkInput} onChange={(e) => { setLinkInput(e.target.value); setLinkError(""); }} placeholder="6-digit pairing code" maxLength={6} inputMode="numeric" className="input !py-2 !text-sm flex-1 font-mono" aria-label="Pairing code" />
-								<button type="button" className="btn btn-soft !py-2 !px-4 !text-xs" onClick={startPairing}>
+							<div className="flex flex-col sm:flex-row gap-2 mt-2">
+								<input value={linkInput} onChange={(e) => { setLinkInput(e.target.value); setLinkError(""); }} placeholder="6-digit pairing code" maxLength={6} inputMode="numeric" className="input !py-2 !text-sm flex-1 font-mono w-full" aria-label="Pairing code" />
+								<button type="button" className="btn btn-soft !py-2 !px-4 !text-xs whitespace-nowrap w-full sm:w-auto" onClick={startPairing}>
 									Pair this device
 								</button>
 							</div>
@@ -961,10 +962,11 @@ session (id knowledge alone must not take the identity over). */}
 			setDialog(null);
 			void (async () => {
 				try {
-					const out = await api.post<{ ok?: boolean; anon_id?: string }>(
+					const out = await api.post<{ ok?: boolean; anon_id?: string; session_token?: string }>(
 						"/api/identity-link",
 						{ action: "redeem", code },
 					);
+					if (out?.session_token) setSessionToken(out.session_token);
 					const adopted = out?.anon_id ? adoptIdentityById(out.anon_id) : null;
 					if (!adopted) {
 						setLinkError(
@@ -1082,20 +1084,22 @@ function ActionRow({
 		danger: "text-red-400 hover:bg-red-400/5",
 	};
 	return (
-		<div className="flex items-center justify-between py-3 border-b border-border/50">
-			<div className="flex items-center gap-3 flex-1 min-w-0 pr-4">
-				<Icon size={16} className="text-ink3 flex-shrink-0" />
-				<div>
+		<div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 py-3.5 border-b border-border/50">
+			<div className="flex items-start sm:items-center gap-3 flex-1 min-w-0 sm:pr-4">
+				<Icon size={16} className="text-ink3 flex-shrink-0 mt-0.5 sm:mt-0" />
+				<div className="min-w-0">
 					<p className="text-sm font-medium text-ink">{label}</p>
-					<p className="text-xs text-ink3 mt-0.5">{desc}</p>
+					<p className="text-xs text-ink3 mt-0.5 leading-relaxed">{desc}</p>
 				</div>
 			</div>
-			<button
-				onClick={onClick}
-				className={`btn !text-xs !px-3 !py-1.5 flex-shrink-0 transition-all ${colors[variant]}`}
-			>
-				{action}
-			</button>
+			<div className="flex sm:justify-end shrink-0">
+				<button
+					onClick={onClick}
+					className={`btn !text-xs !px-3 !py-1.5 w-full sm:w-auto transition-all ${colors[variant]}`}
+				>
+					{action}
+				</button>
+			</div>
 		</div>
 	);
 }

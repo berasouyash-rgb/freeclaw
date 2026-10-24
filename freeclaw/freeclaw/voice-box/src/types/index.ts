@@ -159,7 +159,7 @@ export interface Notification {
 
 // ─── Chat ────────────────────────────────────────────
 
-export type ChatSender = "admin" | "student" | "user" | "ai";
+export type ChatSender = "admin" | "student" | "user" | "ai" | "system" | (string & {});
 
 export interface ChatMessage {
 	// DB messages use numeric identity ids; optimistic bubbles use string ids

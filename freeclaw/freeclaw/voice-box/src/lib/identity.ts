@@ -219,10 +219,28 @@ export function resetAnonId(): string {
 		"vb:notifications",
 		"vb:notifSnapshot",
 		"vb:drafts",
+		"vb:sessionToken",
 	]) {
 		removeItem(k);
 	}
 	return id;
+}
+
+// ---------- session token persistence -----------------------------
+const SESSION_TOKEN_KEY = "vb:sessionToken";
+
+export function getSessionToken(): string | null {
+	return readItem(SESSION_TOKEN_KEY);
+}
+
+export function setSessionToken(token: string): void {
+	if (typeof token === "string" && token.trim()) {
+		writeItem(SESSION_TOKEN_KEY, token.trim());
+	}
+}
+
+export function clearSessionToken(): void {
+	removeItem(SESSION_TOKEN_KEY);
 }
 
 // ---------- cross-device identity linking -------------------------

@@ -50,7 +50,7 @@ export default async function handler(req, res) {
 					/expired/i.test(out.error || "") || /invalid pairing code/i.test(out.error || "");
 				return res.status(gone ? 403 : 503).json({ error: out.error });
 			}
-			return res.status(200).json({ ok: true, anon_id: out.anon_id });
+			return res.status(200).json({ ok: true, anon_id: out.anon_id, session_token: out.token });
 		}
 
 		return res.status(400).json({ error: "Unknown action (issue | redeem)" });

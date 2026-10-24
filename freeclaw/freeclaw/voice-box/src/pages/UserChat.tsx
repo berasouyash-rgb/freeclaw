@@ -55,6 +55,20 @@ interface InboxResponse {
 	title?: string;
 }
 
+function bodyMatches(optBody?: string, incomingBody?: string): boolean {
+	if (!optBody || !incomingBody) return optBody === incomingBody;
+	if (optBody === incomingBody) return true;
+	if (optBody.length !== incomingBody.length) return false;
+	for (let i = 0; i < optBody.length; i++) {
+		const incChar = incomingBody[i];
+		const optChar = optBody[i];
+		if (!incChar || !optChar) return false;
+		if (incChar === "*" || optChar === "*") continue;
+		if (incChar.toLowerCase() !== optChar.toLowerCase()) return false;
+	}
+	return true;
+}
+
 // Merge server messages into the local list WITHOUT producing duplicates.
 // The optimistic user bubble (id "user-<ts>") has a different id than the
 // DB-confirmed copy, so plain id-dedup would render the user's message
@@ -83,7 +97,7 @@ export function mergeMessages(
 					typeof x.id === "string" &&
 					x.id.startsWith("user-") &&
 					x.sender === "user" &&
-					x.body === m.body,
+					bodyMatches(x.body, m.body),
 			);
 			if (optIdx >= 0) merged.splice(optIdx, 1);
 		}
@@ -741,7 +755,19 @@ export default function UserChat() {
 						</div>
 					</div>
 				)}
-				{messages.map((m) => (
+				{messages.map((m) => {
+					if (m.sender === "system") {
+						return (
+							<div
+								key={m.id}
+								data-testid="chat-system-note"
+								className="my-2 px-3 py-1.5 rounded-lg border border-border/50 text-xs text-ink3 text-center flex items-center justify-center gap-1.5"
+							>
+								<span>{m.body}</span>
+							</div>
+						);
+					}
+					return (
 					<div
 						key={m.id}
 						className={`flex ${m.sender === "user" ? "justify-end" : "justify-start"}`}
@@ -763,6 +789,11 @@ export default function UserChat() {
 							{m.sender === "ai" && (
 								<p className="text-[10px] font-bold flex items-center gap-1 text-accent/70 mb-0.5">
 									<Bot size={10} /> AI ASSISTANT
+								</p>
+							)}
+							{m.sender !== "user" && m.sender !== "ai" && m.sender !== "admin" && (
+								<p className="text-[10px] font-bold uppercase tracking-wider text-accent mb-0.5">
+									{m.sender.toUpperCase()}
 								</p>
 							)}
 							{m.attachment_url && (
@@ -799,7 +830,8 @@ export default function UserChat() {
 							</p>
 						</div>
 					</div>
-				))}
+					);
+				})}
 
 				{/* Typing indicator — premium animated dots (AI mode only) */}
 				{typing && aiEnabled && (

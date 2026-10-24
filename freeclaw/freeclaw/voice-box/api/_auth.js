@@ -83,7 +83,11 @@ export function cors(res, req) {
 	);
 	res.setHeader(
 		"Access-Control-Allow-Headers",
-		"Content-Type, Authorization, X-Admin-Token, x-anon-id, x-request-id, x-vercel-cron-secret, x-cron-secret",
+		"Content-Type, Authorization, X-Admin-Token, x-anon-id, x-session-token, x-request-id, x-vercel-cron-secret, x-cron-secret",
+	);
+	res.setHeader(
+		"Access-Control-Expose-Headers",
+		"X-Session-Token, X-Request-Id, Retry-After",
 	);
 	res.setHeader("Access-Control-Allow-Credentials", "true");
 	res.setHeader("Vary", "Origin");
@@ -648,6 +652,21 @@ function readSessionCookie(cookieHeader) {
 	return null;
 }
 
+export function extractSessionToken(req) {
+	const cookieToken = readSessionCookie(req?.headers?.cookie);
+	if (cookieToken) return cookieToken;
+	const headerToken = req?.headers?.["x-session-token"];
+	if (typeof headerToken === "string" && headerToken.trim()) {
+		return headerToken.trim();
+	}
+	const auth = req?.headers?.authorization;
+	if (typeof auth === "string" && auth.startsWith("Bearer ")) {
+		const bearer = auth.slice(7).trim();
+		if (bearer && bearer.length >= 32) return bearer;
+	}
+	return null;
+}
+
 /** Set the session cookie. Secure only when the request arrived over HTTPS.
  * Cross-site shells (Electron file:// with Origin null/absent, Capacitor in
  * any scheme) need SameSite=None + Secure or the browser never sends the
@@ -678,6 +697,7 @@ export function setSessionCookie(res, token, req) {
 	];
 	if (proto === "https") attrs.push("Secure");
 	res.setHeader("Set-Cookie", attrs.join("; "));
+	if (res?.setHeader) res.setHeader("X-Session-Token", token);
 }
 
 function sessionKey(id) {
@@ -814,7 +834,7 @@ export async function verifyCallerIdentity(req, res, claimedUserId, opts = {}) {
 		return { ok: false, status: 403, error: "Cannot operate on another user's data", code: "invalid_identity" };
 
 	const now = Date.now();
-	const cookieToken = readSessionCookie(req.headers?.cookie);
+	const cookieToken = extractSessionToken(req);
 
 	let record;
 	try {
@@ -1067,7 +1087,7 @@ export async function redeemClaimTicket(rawCode, res, req) {
 		await appendSessionToken(id, sha256Hex(token));
 		await burn();
 		setSessionCookie(res, token, req);
-		return { ok: true, anon_id: id };
+		return { ok: true, anon_id: id, token };
 	} catch (err) {
 		console.error("[auth] claim redeem failed:", err?.message || err);
 		return { ok: false, error: "Claim service unavailable" };

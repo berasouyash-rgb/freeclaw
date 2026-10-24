@@ -1229,3 +1229,96 @@ describe("UserChat — starter chips invite the first message", () => {
 		).not.toBeInTheDocument();
 	});
 });
+
+// -------------------------------------------------------------------
+// Regression: "the AI sends two kinds of message in the chat".
+// Two separate defects produced that reading:
+//  1. The server stores maskProfanity(clean(body)) — "fucking" becomes
+//     "f***ing" — so the exact-body match in mergeMessages never found the
+//     optimistic bubble and BOTH copies of the student's own message stayed
+//     in the thread.
+//  2. chat_messages also holds sender:"system" rows written by admin
+//     console actions ("📋 Task created…"). The renderer had no
+//     allow-list, so those fell into the generic left bubble with no label
+//     and read as a second, differently-styled assistant voice.
+// -------------------------------------------------------------------
+describe("UserChat — one message per send, one voice per sender", () => {
+	it("replaces the optimistic bubble when the server masked the body", async () => {
+		const user = userEvent.setup();
+		renderPage();
+		await waitFor(() =>
+			expect(screen.getByText("Hello! How can I help?")).toBeTruthy(),
+		);
+
+		mocks.postInbox.mockResolvedValue({
+			message: {
+				id: "db-user-mask",
+				sender: "user",
+				body: "this is f***ing broken",
+				created_at: "2026-08-01T10:01:00.000Z",
+				read: true,
+			},
+			auto_reply: {
+				id: "db-ai-mask",
+				sender: "ai",
+				body: "I hear you",
+				created_at: "2026-08-01T10:01:01.000Z",
+				read: false,
+			},
+			emotion: { level: "none" },
+		});
+
+		await user.type(screen.getByLabelText("Chat message"), "this is fucking broken");
+		await user.click(screen.getByRole("button", { name: /send/i }));
+
+		await waitFor(() => expect(screen.getByText("I hear you")).toBeTruthy());
+		// Exactly one copy of what the student sent — the server's normalised
+		// version. The raw optimistic copy must be gone, not stacked on top.
+		expect(screen.queryAllByText("this is fucking broken").length).toBe(0);
+		expect(screen.queryAllByText("this is f***ing broken").length).toBe(1);
+	});
+
+	it("renders an admin system notice as a note, not as a chat bubble", async () => {
+		mocks.get.mockResolvedValueOnce({
+			messages: [
+				...SERVER_MESSAGES,
+				{
+					id: "sys-1",
+					sender: "system",
+					body: "📋 Task created: \"Fix the lift\" — Assigned to: auto-assign",
+					created_at: "2026-08-01T10:03:00.000Z",
+					read: true,
+				},
+			],
+			thread: { thread_id: "anon-test", status: "open" },
+		});
+		renderPage();
+
+		const note = await screen.findByTestId("chat-system-note");
+		expect(note).toHaveTextContent(/Task created/);
+		// It must not borrow the assistant/admin bubble chrome — that is what
+		// made an internal admin action read as a second AI reply.
+		expect(note.className).not.toContain("bg-surface2");
+		expect(note.className).not.toContain("rounded-2xl");
+	});
+
+	it("labels a non-standard sender instead of leaving it unlabelled", async () => {
+		mocks.get.mockResolvedValueOnce({
+			messages: [
+				...SERVER_MESSAGES,
+				{
+					id: "m-support",
+					sender: "support",
+					body: "Handled by the front desk",
+					created_at: "2026-08-01T10:04:00.000Z",
+					read: false,
+				},
+			],
+			thread: { thread_id: "anon-test", status: "open" },
+		});
+		renderPage();
+
+		expect(await screen.findByText("SUPPORT")).toBeInTheDocument();
+		expect(screen.getByText("Handled by the front desk")).toBeInTheDocument();
+	});
+});

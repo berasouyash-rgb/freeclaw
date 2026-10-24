@@ -1034,7 +1034,31 @@ async function callProviderInner(provider, messages, timeoutMs) {
 // These keys are user-provided and specific to this deployment.
 // Keys are read at RUNTIME via getNimFallbackChain() so tests can set env vars.
 function getNimFallbackChain() {
+	const chain = [];
+	if (process.env.GROQ_API_KEY) {
+		chain.push({
+			id: "groq-gpt-oss",
+			name: "Groq GPT-OSS 120B",
+			defaultModel: "openai/gpt-oss-120b",
+			baseUrl: "https://api.groq.com/openai/v1/chat/completions",
+			model: "openai/gpt-oss-120b",
+			key: process.env.GROQ_API_KEY,
+			buildHeaders: (key) => ({
+				Authorization: `Bearer ${key}`,
+				"Content-Type": "application/json",
+			}),
+			buildBody: (model, messages) => ({
+				model,
+				max_tokens: 2048,
+				temperature: 0.2,
+				messages,
+			}),
+			parseResponse: (data) => stripThinking(data?.choices?.[0]?.message?.content),
+			timeout: 7000,
+		});
+	}
 	return [
+		...chain,
 	// Tier 1: Nemotron 3 Super 120B — measured live 2026-09-26 as the
 	// fastest responder on this key (200 in ~2.5s). Leads the serial chain
 	// AND the hedge lane. (The old "needs higher access tier" note was
@@ -1147,11 +1171,16 @@ const NVIDIA_FAST_MODELS = [
 	"openai/gpt-oss-20b",
 ];
 
-/** One bounded attempt against a single NVIDIA model. Rejects on any failure. */
-function nvidiaFastOnce(key, model, system, user, timeoutMs) {
+export function stripThinking(text) {
+	if (!text || typeof text !== "string") return "";
+	return text.replace(/<think>[\s\S]*?<\/think>\s*/gi, "").trim();
+}
+
+/** One bounded attempt against a single Groq model. Rejects on any failure. */
+function groqFastOnce(key, model, system, user, timeoutMs) {
 	const ctrl = new AbortController();
 	const timer = setTimeout(() => ctrl.abort(), timeoutMs);
-	return fetch("https://integrate.api.nvidia.com/v1/chat/completions", {
+	return fetch("https://api.groq.com/openai/v1/chat/completions", {
 		method: "POST",
 		headers: {
 			Authorization: `Bearer ${key}`,
@@ -1159,7 +1188,7 @@ function nvidiaFastOnce(key, model, system, user, timeoutMs) {
 		},
 		body: JSON.stringify({
 			model,
-			max_tokens: 512,
+			max_tokens: 1024,
 			temperature: 0.2,
 			messages: [
 				{ role: "system", content: system },
@@ -1173,44 +1202,85 @@ function nvidiaFastOnce(key, model, system, user, timeoutMs) {
 			const data = await res.json().catch(() => null);
 			const text = data?.choices?.[0]?.message?.content;
 			if (!text) throw new Error("empty response");
-			return text;
+			return stripThinking(text);
+		})
+		.finally(() => clearTimeout(timer));
+}
+
+/** One bounded attempt against a single NVIDIA model. Rejects on any failure. */
+function nvidiaFastOnce(key, model, system, user, timeoutMs) {
+	const ctrl = new AbortController();
+	const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+	return fetch("https://integrate.api.nvidia.com/v1/chat/completions", {
+		method: "POST",
+		headers: {
+			Authorization: `Bearer ${key}`,
+			"Content-Type": "application/json",
+		},
+		body: JSON.stringify({
+			model,
+			max_tokens: 1024,
+			temperature: 0.2,
+			messages: [
+				{ role: "system", content: system },
+				{ role: "user", content: user },
+			],
+		}),
+		signal: ctrl.signal,
+	})
+		.then(async (res) => {
+			if (!res.ok) throw new Error(`http ${res.status}`);
+			const data = await res.json().catch(() => null);
+			const text = data?.choices?.[0]?.message?.content;
+			if (!text) throw new Error("empty response");
+			return stripThinking(text);
 		})
 		.finally(() => clearTimeout(timer));
 }
 
 /**
- * Fast NVIDIA lane with hedging. Starts the first model immediately and the
- * next ones after short delays; the first valid response wins and the losers
- * abort harmlessly. NEVER throws — returns null when the key is missing, the
- * lane is cooling down, or every model fails within the budget, so callers
- * can fall back to the chain or a local path.
- *
- * The budget is hard-capped (7s) so a congested endpoint can never stall a
- * user request for the caller's full timeout — previously a hung model burned
- * 12s on this lane plus 8s on the chain before any fallback appeared.
+ * Fast hedging lane (Groq + NVIDIA). Starts the fastest model immediately and
+ * hedges against alternatives; the first valid response wins and the losers
+ * abort harmlessly. NEVER throws — returns null when keys are missing or all fail.
  */
 export async function callNvidiaFast(system, user, timeoutMs = 12000) {
-	const key = process.env.NVIDIA_API_KEY || "";
-	if (!key) return null;
-	const lane = "nvidia-fast";
+	const groqKey = process.env.GROQ_API_KEY || "";
+	const nvidiaKey = process.env.NVIDIA_API_KEY || "";
+	if (!groqKey && !nvidiaKey) return null;
+	const lane = "fast-lane";
 	if (isOnCooldown(lane)) return null;
 
-	const budget = Math.max(3000, Math.min(timeoutMs, 7000));
-	const stagger = [0, 900, 2000];
+	const budget = Math.max(4000, Math.min(timeoutMs, 14000));
+	const attempts = [];
 
-	const attempts = NVIDIA_FAST_MODELS.map((model, i) => {
-		const start = () => {
-			const slice = Math.max(2500, budget - stagger[i] + 500);
-			return nvidiaFastOnce(key, model, system, user, slice).then(
-				(text) => ({ provider: lane, model, text }),
+	if (groqKey) {
+		attempts.push(
+			groqFastOnce(groqKey, "openai/gpt-oss-120b", system, user, budget).then(
+				(text) => ({ provider: "groq", model: "openai/gpt-oss-120b", text }),
 				() => null,
+			),
+		);
+	}
+
+	if (nvidiaKey) {
+		const stagger = groqKey ? [800, 2000] : [0, 1000];
+		const models = [NVIDIA_FAST_MODELS[0], NVIDIA_FAST_MODELS[1]].filter(Boolean);
+		models.forEach((model, i) => {
+			const start = () => {
+				const slice = Math.max(2500, budget - stagger[i]);
+				return nvidiaFastOnce(nvidiaKey, model, system, user, slice).then(
+					(text) => ({ provider: "nvidia", model, text }),
+					() => null,
+				);
+			};
+			attempts.push(
+				new Promise((resolve) => {
+					if (stagger[i] === 0) resolve(start());
+					else setTimeout(() => resolve(start()), stagger[i]);
+				}),
 			);
-		};
-		return new Promise((resolve) => {
-			if (stagger[i] === 0) resolve(start());
-			else setTimeout(() => resolve(start()), stagger[i]);
 		});
-	});
+	}
 
 	const winner = await new Promise((resolve) => {
 		let settled = false;
@@ -1219,7 +1289,7 @@ export async function callNvidiaFast(system, user, timeoutMs = 12000) {
 			if (settled) return;
 			settled = true;
 			resolve(null);
-		}, budget + 800);
+		}, budget + 500);
 		for (const p of attempts) {
 			p.then((r) => {
 				done++;
@@ -1237,10 +1307,6 @@ export async function callNvidiaFast(system, user, timeoutMs = 12000) {
 		}
 	});
 
-	// Brief cool-down after a total failure: while NIM is fully congested every
-	// caller degrades to the instant local path instead of re-waiting 7s each.
-	// Short (15s) because the endpoint recovers quickly and we do not want to
-	// starve real AI answers for a whole minute.
 	if (!winner) markCooldown(lane, 15000);
 	return winner;
 }

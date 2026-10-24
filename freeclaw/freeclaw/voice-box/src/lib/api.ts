@@ -1,6 +1,6 @@
 /** Thin fetch wrapper for Voice Flow API routes with offline queue for failed writes. */
 
-import { getAnonId, markIdentityUsed } from "./identity";
+import { getAnonId, getSessionToken, markIdentityUsed, setSessionToken } from "./identity";
 import { apiBase } from "./platform";
 import { flushQueue, queueAction, queuedCount } from "./offline";
 import { errorText } from "./utils";
@@ -245,6 +245,8 @@ async function request<T = unknown>(
 	try {
 		aid = getAnonId() || "";
 		if (aid) headers["x-anon-id"] = aid;
+		const st = getSessionToken();
+		if (st) headers["x-session-token"] = st;
 	} catch { /* identity module not ready */ }
 	// A mutating request issues server-side writes under this identity —
 	// a provisional (pre-hydration) id that owns fresh content must never
@@ -303,11 +305,18 @@ async function request<T = unknown>(
 			// - ok but not JSON (SPA fallback, misconfigured proxy, HTML error page)
 			//   → THROW instead of returning {} — returning {} used to crash pages
 			//   that read nested fields (e.g. Insights: `data.trend.map`).
+			const sessionTokenHeader = res.headers?.get?.("x-session-token");
+			if (sessionTokenHeader) {
+				try { setSessionToken(sessionTokenHeader); } catch { /* ignore */ }
+			}
 			const text = await res.text();
 			let data: unknown = {};
 			if (text) {
 				try {
 					data = JSON.parse(text);
+					if (data && typeof data === "object" && "session_token" in data && typeof (data as Record<string, unknown>).session_token === "string") {
+						try { setSessionToken((data as Record<string, unknown>).session_token as string); } catch { /* ignore */ }
+					}
 				} catch {
 					data = undefined;
 				}
