@@ -1,13 +1,15 @@
 import {
+	ArrowLeft,
 	ArrowRight,
 	Compass,
 	Heart,
+	Home,
 	Shield,
 	Sparkles,
 	Target,
 	Users,
 } from "lucide-react";
-import { Link } from "react-router";
+import { Link, useNavigate } from "react-router";
 import FadeIn from "../components/FadeIn";
 import {
 	CopyrightShieldDiagram,
@@ -71,8 +73,34 @@ const MILESTONES = [
 ];
 
 export default function About() {
+	const nav = useNavigate();
+	const goBack = () => {
+		if (typeof window !== "undefined" && window.history.length > 1) {
+			window.history.back();
+		} else {
+			nav("/");
+		}
+	};
+
 	return (
 		<div className="min-h-screen bg-bg vb-page-enter">
+			{/* Top Navigation Bar with Back Button */}
+			<div className="max-w-4xl mx-auto px-6 pt-5 flex items-center justify-between">
+				<button
+					type="button"
+					onClick={goBack}
+					className="inline-flex items-center gap-1.5 text-xs font-semibold text-ink2 hover:text-ink px-3 py-1.5 rounded-lg bg-surface2/80 hover:bg-surface2 border border-border transition-all cursor-pointer shadow-2xs"
+					aria-label="Go back"
+				>
+					<ArrowLeft size={14} /> Back
+				</button>
+				<Link
+					to="/"
+					className="inline-flex items-center gap-1 text-xs font-medium text-ink3 hover:text-accent transition-colors"
+				>
+					<Home size={13} /> Feed
+				</Link>
+			</div>
 			{/* Hero */}
 			<section className="relative overflow-hidden pt-20 pb-16 md:pt-28 md:pb-24">
 				<div className="absolute inset-0 bg-gradient-to-b from-accent/5 via-transparent to-transparent pointer-events-none" />

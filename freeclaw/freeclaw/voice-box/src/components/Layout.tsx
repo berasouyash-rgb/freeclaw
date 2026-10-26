@@ -21,6 +21,7 @@ import {
 	PlusCircle,
 	Scale,
 	Search,
+	Settings as SettingsIcon,
 	ShieldCheck,
 	Sun,		Trash2,
 		Trophy,
@@ -67,6 +68,7 @@ const NAV_CORE = [
 /** Low-traffic pages stay reachable but leave the primary nav: every extra
  *  item costs scan time on every page view for zero school-day value. */
 const NAV_MORE = [
+	{ to: "/settings", label: "Settings", icon: SettingsIcon, tour: "nav-settings" },
 	{ to: "/insights", label: "Insights", icon: Activity, tour: "" },
 	{ to: "/suggestions", label: "Suggestions", icon: Lightbulb, tour: "" },
 	{

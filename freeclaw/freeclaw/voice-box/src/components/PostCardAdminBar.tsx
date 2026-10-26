@@ -40,8 +40,23 @@ function PostCardAdminBarInner({ post, onStatusChange }: PostCardAdminBarProps) 
 					toast("Marked in progress", "ok");
 				else if (patch.status === "verified")
 					toast("Marked verified", "ok");
-				else if (patch.hidden !== undefined)
+				else if (patch.hidden !== undefined) {
 					toast(patch.hidden ? "Post hidden" : "Post unhidden", "ok");
+					if (typeof window !== "undefined") {
+						window.dispatchEvent(
+							new CustomEvent("vb:post-hidden", {
+								detail: { id: post.id, hidden: patch.hidden },
+							})
+						);
+						try {
+							const bc = new BroadcastChannel("vb:feed-sync");
+							bc.postMessage({ type: "post-hidden", id: post.id, hidden: patch.hidden });
+							bc.close();
+						} catch {
+							/* optional */
+						}
+					}
+				}
 				if (patch.status && onStatusChange) onStatusChange(post.id, patch.status);
 			} catch (e: unknown) {
 				toast(e instanceof Error ? e.message : "Action failed", "err");

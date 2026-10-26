@@ -1,13 +1,15 @@
 import {
+	ArrowLeft,
 	ArrowRight,
 	ChevronDown,
 	HelpCircle,
+	Home,
 	Search,
 	Sparkles,
 	X,
 } from "lucide-react";
 import { useMemo, useState } from "react";
-import { Link } from "react-router";
+import { Link, useNavigate } from "react-router";
 import {
 	DataFlowDiagram,
 	SolvingPipelineDiagram,
@@ -71,10 +73,19 @@ const FAQ_SCHEMA = JSON.stringify({
 });
 
 export default function Faq() {
+	const nav = useNavigate();
 	const [open, setOpen] = useState<number | null>(0);
 	const [search, setSearch] = useState("");
 	const [activeCategory, setActiveCategory] = useState<string>("all");
 	const [showVisual, setShowVisual] = useState<boolean>(false);
+
+	const goBack = () => {
+		if (typeof window !== "undefined" && window.history.length > 1) {
+			window.history.back();
+		} else {
+			nav("/");
+		}
+	};
 
 	const CATEGORIES = [
 		{ id: "all", label: "All Questions" },
@@ -101,6 +112,23 @@ export default function Faq() {
 
 	return (
 		<div className="max-w-4xl mx-auto px-4 py-8">
+			{/* Top Navigation Bar with Back Button */}
+			<div className="flex items-center justify-between mb-6">
+				<button
+					type="button"
+					onClick={goBack}
+					className="inline-flex items-center gap-1.5 text-xs font-semibold text-ink2 hover:text-ink px-3 py-1.5 rounded-lg bg-surface2/80 hover:bg-surface2 border border-border transition-all cursor-pointer shadow-2xs"
+					aria-label="Go back"
+				>
+					<ArrowLeft size={14} /> Back
+				</button>
+				<Link
+					to="/"
+					className="inline-flex items-center gap-1 text-xs font-medium text-ink3 hover:text-accent transition-colors"
+				>
+					<Home size={13} /> Feed
+				</Link>
+			</div>
 			{/* Schema.org JSON-LD */}
 			<script
 				type="application/ld+json"

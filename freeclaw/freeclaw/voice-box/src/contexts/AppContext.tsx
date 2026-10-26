@@ -452,12 +452,17 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
 	const toast = useCallback(
 		(text: string, kind: Toast["kind"] = "info", action?: Toast["action"]) => {
-			const id = toastSeq++;
-			setToasts((prev) => [...prev, { id, text, kind, action }]);
-			setTimeout(
-				() => setToasts((prev) => prev.filter((t) => t.id !== id)),
-				action ? 30000 : 3800,
-			);
+			setToasts((prev) => {
+				if (prev.some((t) => t.text === text && t.kind === kind)) {
+					return prev;
+				}
+				const id = toastSeq++;
+				setTimeout(
+					() => setToasts((curr) => curr.filter((t) => t.id !== id)),
+					action ? 12000 : 3800,
+				);
+				return [...prev, { id, text, kind, action }];
+			});
 		},
 		[],
 	);
@@ -583,7 +588,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 		let lastToast = 0;
 		const handleSessionDead = () => {
 			const now = Date.now();
-			if (now - lastToast < 10000) return;
+			if (now - lastToast < 15000) return;
 			lastToast = now;
 			toast(
 				"Anonymous session lost on this device (cookies or storage cleared). Pair from Settings → Account to recover the same ID.",
@@ -593,6 +598,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
 					fn: () => {
 						resetAnonId();
 						refreshIdentity();
+						setToasts((prev) =>
+							prev.filter((t) => !t.text.includes("Anonymous session")),
+						);
 						toast("Started fresh with a new anonymous ID!", "ok");
 					},
 				},

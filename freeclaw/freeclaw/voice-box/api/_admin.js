@@ -15,6 +15,7 @@ import supabase from "./_db-client.js";
 import { sanitizeError } from "./_error.js";
 import { getSpamConfig, normalizeSpamConfig } from "./_moderation.js";
 import { scanSlang } from "./_slang.js";
+import { callLLMChain } from "./_providers.js";
 
 const SESSION_MS = 60 * 60 * 1000; // 60 minute session timeout
 
@@ -470,6 +471,113 @@ export default async function handler(req, res) {
 			}
 
 			return res.status(200).json(data || []);
+		}
+
+		if (action === "escalated_users") {
+			const { data, error } = await supabase
+				.from("users_meta")
+				.select("anon_id, strikes, warnings, suspended_until, banned, last_seen")
+				.gte("strikes", 3)
+				.order("strikes", { ascending: false })
+				.limit(50);
+			if (error) throw error;
+			return res.status(200).json({ users: data || [] });
+		}
+
+		if (action === "admin_accountability") {
+			const { period = "month" } = b || {};
+			const days = period === "today" ? 1 : period === "3days" ? 3 : period === "week" ? 7 : 30;
+			const since = new Date(Date.now() - days * 86400000).toISOString();
+			const { data, error } = await supabase
+				.from("activity_logs")
+				.select("*")
+				.gte("created_at", since)
+				.order("created_at", { ascending: false })
+				.limit(100);
+			if (error) throw error;
+			return res.status(200).json({ logs: data || [], period, since });
+		}
+
+		if (action === "ai_executive_summary") {
+			const { period = "today" } = b || {};
+			const days = period === "today" ? 1 : period === "3days" ? 3 : period === "week" ? 7 : 30;
+			const since = new Date(Date.now() - days * 86400000).toISOString();
+
+			// Fetch recent activity data to ground the AI summary in factual evidence
+			const [postsRes, reportsRes, logsRes, usersRes] = await Promise.all([
+				supabase.from("posts").select("id, title, category, status, created_at, hidden, author_id").gte("created_at", since).limit(100),
+				supabase.from("reports").select("id, target_type, reason, status, created_at").gte("created_at", since).limit(100),
+				supabase.from("activity_logs").select("id, action, detail, created_at").gte("created_at", since).limit(100),
+				supabase.from("users_meta").select("anon_id, strikes, suspended_until, banned").gte("strikes", 3).limit(20)
+			]);
+
+			const recentPosts = postsRes.data || [];
+			const recentReports = reportsRes.data || [];
+			const recentLogs = logsRes.data || [];
+			const repeatOffenders = usersRes.data || [];
+
+			const categories = {};
+			for (const p of recentPosts) {
+				categories[p.category || "General"] = (categories[p.category || "General"] || 0) + 1;
+			}
+
+			const suspensions = recentLogs.filter(l => l.action === "update_user" && String(l.detail || "").includes("suspended"));
+			const hiddenPosts = recentPosts.filter(p => p.hidden);
+			const solvedPosts = recentPosts.filter(p => p.status === "solved");
+
+			const facts = {
+				period,
+				since,
+				total_posts: recentPosts.length,
+				categories,
+				solved_issues: solvedPosts.length,
+				hidden_posts: hiddenPosts.length,
+				total_reports: recentReports.length,
+				unresolved_reports: recentReports.filter(r => r.status !== "resolved").length,
+				users_with_3_strikes: repeatOffenders.length,
+				suspensions_issued: suspensions.length,
+			};
+
+			const systemPrompt = "You are the Voice Flow Principal School Community Intelligence Officer. Write a concise, professional executive briefing for school administrators covering student concerns, community health, and administrative accountability. Output clear JSON with keys: {\"headline\": string, \"summary\": string, \"safety_pulse\": string, \"admin_actions_summary\": string, \"action_items\": string[]}. Keep it honest, grounded strictly in provided facts.";
+			const userPrompt = `Generate executive summary for period: ${period} (past ${days} days). Community Facts: ${JSON.stringify(facts)}`;
+
+			let aiResult = null;
+			try {
+				const res = await callLLMChain(systemPrompt, userPrompt);
+				if (res && res.text) {
+					try {
+						const cleaned = res.text.replace(/^```jsons*/i, "").replace(/```s*$/, "").trim();
+						aiResult = JSON.parse(cleaned);
+					} catch {
+						aiResult = {
+							headline: `Executive Briefing (${period})`,
+							summary: res.text,
+							safety_pulse: `${recentReports.length} reports logged, ${repeatOffenders.length} repeat violations monitored.`,
+							admin_actions_summary: `${suspensions.length} suspensions active, ${hiddenPosts.length} posts moderated.`,
+							action_items: ["Review pending reports in moderation desk", "Follow up on high-urgency safety topics"]
+						};
+					}
+				}
+			} catch (e) {
+				console.warn("[Admin] AI summary LLM error:", e.message);
+			}
+
+			if (!aiResult) {
+				// Deterministic rich fallback if LLM is offline
+				aiResult = {
+					headline: `Community & Safety Briefing — ${period.toUpperCase()}`,
+					summary: `Over the past ${days} day(s), ${recentPosts.length} submission(s) were received across ${Object.keys(categories).length} categories. ${solvedPosts.length} issue(s) have been verified solved for students.`,
+					safety_pulse: `${recentReports.length} total report(s) filed. ${repeatOffenders.length} user(s) currently carry 3+ safety strikes.`,
+					admin_actions_summary: `Administrators have executed ${suspensions.length} suspension(s) and moderated ${hiddenPosts.length} post(s). Complete audit trail logged below.`,
+					action_items: [
+						recentReports.some(r => r.status !== "resolved") ? "Resolve open user reports" : "All current reports resolved",
+						repeatOffenders.length > 0 ? `Review ${repeatOffenders.length} escalated user(s) for disciplinary decision` : "No 3-strike escalations pending",
+						"Verify latest student resolutions on the Solving Board"
+					]
+				};
+			}
+
+			return res.status(200).json({ facts, briefing: aiResult });
 		}
 
 		if (action === "log") {

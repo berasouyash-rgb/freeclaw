@@ -40,19 +40,23 @@ async function attachResults(polls, strict = false) {
 	// trip, same as before. Error semantics preserved: strict throws (the
 	// no-fake-zeros contract), non-strict keeps rows read so far.
 	const PAGE = 1000;
+	const CHUNK = 50;
 	const votes = [];
-	for (let page = 0; ; page += 1) {
-		const { data: chunk, error } = await supabase
-			.from("poll_votes")
-			.select("poll_id,choices")
-			.in("poll_id", ids)
-			.range(page * PAGE, page * PAGE + PAGE - 1);
-		if (error) {
-			if (strict) throw error;
-			break;
+	for (let i = 0; i < ids.length; i += CHUNK) {
+		const chunkIds = ids.slice(i, i + CHUNK);
+		for (let page = 0; ; page += 1) {
+			const { data: chunk, error } = await supabase
+				.from("poll_votes")
+				.select("poll_id,choices")
+				.in("poll_id", chunkIds)
+				.range(page * PAGE, page * PAGE + PAGE - 1);
+			if (error) {
+				if (strict) throw error;
+				break;
+			}
+			if (chunk && chunk.length) votes.push(...chunk);
+			if (!chunk || chunk.length < PAGE) break;
 		}
-		if (chunk && chunk.length) votes.push(...chunk);
-		if (!chunk || chunk.length < PAGE) break;
 	}
 	// Strict mode is used after a write: a failed results read must not
 	// masquerade as "0 votes" — the vote DID persist, so report the error.
@@ -182,8 +186,9 @@ export default async function handler(req, res) {
 			// Cache: 30s browser + CDN for poll listings. Voter-specific responses
 			// (a user's own vote rows) must never be publicly cacheable — the CDN
 			// could serve one user's votes to another. Mirrors the posts route.
-			if (voter) {
-				res.setHeader("Cache-Control", "private, no-cache");
+			const viewer = clean(req.query.viewer, 40);
+			if (voter || viewer || id || requestedIds.length || post_id || admin) {
+				res.setHeader("Cache-Control", "private, no-cache, no-store, must-revalidate");
 			} else {
 				res.setHeader(
 					"Cache-Control",
@@ -437,11 +442,13 @@ export default async function handler(req, res) {
 				// realtime vote signal) was invisible to every metric and
 				// looked identical to a healthy feed. Inspect the result,
 				// count it, report it — then still return 200.
+				const nowIso = new Date().toISOString();
 				try {
 					const { error: touchError } = await supabase
 						.from("polls")
-						.update({ updated_at: new Date().toISOString() })
+						.update({ updated_at: nowIso })
 						.eq("id", poll.id);
+					if (!touchError) poll.updated_at = nowIso;
 					if (touchError) {
 						touchFailureCount += 1;
 						trackError(
@@ -461,6 +468,7 @@ export default async function handler(req, res) {
 						poll_id: poll.id,
 					});
 				}
+				poll.updated_at = poll.updated_at || nowIso;
 				const [withResults] = await attachResults([poll], true);
 				// Emit poll.voted event for workforce consumption
 				emitEventAndBridge(EVENT_TYPES.REACTION_ADDED, {

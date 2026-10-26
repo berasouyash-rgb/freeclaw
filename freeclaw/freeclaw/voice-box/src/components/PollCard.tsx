@@ -49,13 +49,26 @@ interface PollCardProps {
 export function pickNewerPoll(local: PollData | null, incoming: PollData): PollData {
 	if (!local) return incoming;
 	if (!incoming.vote_counts) return local;
+	const localVotes = local.total_votes ?? 0;
+	const incomingVotes = incoming.total_votes ?? 0;
 	const stamp = (row: PollData) =>
 		row.updated_at ? Date.parse(row.updated_at) : Number.NaN;
 	const held = stamp(local);
 	const next = stamp(incoming);
-	if (Number.isNaN(next)) return local;
-	if (Number.isNaN(held)) return incoming;
-	return next > held ? incoming : local;
+	// If incoming timestamp is newer, incoming wins
+	if (!Number.isNaN(next) && !Number.isNaN(held)) {
+		if (next > held) return incoming;
+		if (held > next) {
+			// Local is newer, but never let a 0-vote local clobber an incoming row with real votes
+			if (localVotes === 0 && incomingVotes > 0) return incoming;
+			return local;
+		}
+	}
+	// Equal timestamps or missing stamps: never regress higher vote totals to 0
+	if (incomingVotes > localVotes) return incoming;
+	if (localVotes > 0 && incomingVotes === 0) return local;
+	if (Number.isNaN(held) && !Number.isNaN(next)) return incoming;
+	return local;
 }
 
 const PollCard = memo(function PollCard({

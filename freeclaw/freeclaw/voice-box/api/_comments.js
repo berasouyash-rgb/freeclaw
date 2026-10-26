@@ -37,17 +37,6 @@ export default async function handler(req, res) {
 				paginate,
 			} = req.query;
 			const admin = all === "1" ? await isAdmin(req) : false;
-			// Private-post guard: comments on a private post are visible only to
-			// its author and admins — mirrors the posts visibility model.
-			let privatePostOwner = null;
-			if (post_id && !admin) {
-				const { data: prow } = await supabase
-					.from("posts")
-					.select("id,visibility,author_id")
-					.eq("id", post_id)
-					.maybeSingle();
-				if (prow?.visibility === "private") privatePostOwner = prow.author_id;
-			}
 			const isPaginated = paginate === "1" || paginate === "true";
 			const PAGE_LIMIT = Math.min(parseInt(limitParam) || 30, 100);
 
@@ -80,17 +69,54 @@ export default async function handler(req, res) {
 			}
 
 			// Support cursor pagination for ALL query types (post_id, author, general)
-			// The artifact filter runs in JS AFTER this SQL limit, so fetch a wide
-			// window — otherwise fuzz comments filling the newest rows would starve
-			// real comments out of the response.
+			// The artifact filter runs in JS AFTER this SQL limit, so the scan
+			// needs headroom over the page size — otherwise fuzz comments filling
+			// the newest rows would starve real comments out of the response.
+			// But a flat 2000-row scan for a 20-comment page is pure transfer
+			// latency, so scale the window to the page and keep the historic
+			// ceiling only for the unpaginated read (which slices to 500).
+			const scanLimit = isPaginated
+				? Math.min(2000, Math.max(PAGE_LIMIT * 4 + 100, 200))
+				: 2000;
+			if (isPaginated && cursor) q = q.lt("created_at", cursor);
+			q = q.limit(scanLimit);
+
+			// The private-post guard, the rows themselves, and the honest total
+			// are three INDEPENDENT reads. Run sequentially they cost three remote
+			// round-trips — measured at ~684ms p50 for a thread that usually holds
+			// a handful of comments — so fire them together and pay for one.
+			const guardP =
+				post_id && !admin
+					? supabase
+							.from("posts")
+							.select("id,visibility,author_id")
+							.eq("id", post_id)
+							.maybeSingle()
+					: Promise.resolve({ data: null });
+
+			let totalP = Promise.resolve({ count: null });
 			if (isPaginated) {
-				if (cursor) q = q.lt("created_at", cursor);
-				q = q.limit(2000);
-			} else {
-				q = q.limit(2000);
+				let totalQ = supabase
+					.from("comments")
+					.select("id", { count: "exact", head: true });
+				if (post_id) totalQ = totalQ.eq("post_id", post_id);
+				if (!admin) totalQ = totalQ.eq("hidden", false).eq("deleted", false);
+				totalP = totalQ;
 			}
-			const { data, error } = await q;
+
+			const [{ data, error }, guardRes, totalRes] = await Promise.all([
+				q,
+				guardP,
+				totalP,
+			]);
 			if (error) throw error;
+
+			// Private-post guard: comments on a private post are visible only to
+			// its author and admins — mirrors the posts visibility model.
+			const privatePostOwner =
+				guardRes?.data?.visibility === "private"
+					? guardRes.data.author_id
+					: null;
 
 			// Full-site zero-fuzz: hide test/fuzz comment bodies on every surface,
 			// admin included (mirrors _search.js, which already filters comment
@@ -135,12 +161,7 @@ export default async function handler(req, res) {
 								: c.author_id.slice(0, 9) + "...",
 					};
 				});
-				let totalQ = supabase
-					.from("comments")
-					.select("id", { count: "exact", head: true });
-				if (post_id) totalQ = totalQ.eq("post_id", post_id);
-				if (!admin) totalQ = totalQ.eq("hidden", false).eq("deleted", false);
-				const { count } = await totalQ;
+				const { count } = totalRes || {};
 				return res
 					.status(200)
 					.json({ data: masked, nextCursor, total: count || 0 });
@@ -208,12 +229,9 @@ export default async function handler(req, res) {
 			}
 			// Server-side PII/safety gate — verdict from the unified safety
 			// pipeline (same blocked set the old inline check computed).
+			let autoQueueForReview = false;
+			let autoReviewReason = "";
 			if (!is_admin_msg) {
-				// DEEP path: deterministic gates + deterministic contextual scan
-				// PLUS a real model judging meaning (bounded ~10s, skips when
-				// already blocked). The model catches what no list can —
-				// politely-phrased threats, unnamed targets, contextual PII —
-				// and can only ADD flags, never clear the floor.
 				const decision = await evaluateContentDeep(rawBody, "direct", null, {
 					taskKey: "comments.write",
 				});
@@ -221,34 +239,64 @@ export default async function handler(req, res) {
 					const isPII = decision.flags.some(
 						(f) => f.type === "privacy" || f.type === "privacy_weak",
 					);
+					const isSevereThreat = decision.flags.some(
+						(f) => f.type === "threat" || f.type === "suicide" || f.type === "crisis",
+					);
+					if (isSevereThreat) {
+						await alertAdminThreat({
+							surface: "comment",
+							authorId: author_id,
+							excerpt: rawBody,
+							flags: decision.flags,
+						});
+						await auditLog(
+							"moderation",
+							"comment_threat_blocked",
+							`${author_id}: ${rawBody.slice(0, 60)} [${decision.flags.map((f) => f.type).join(", ")}]`,
+						);
+						return res.status(403).json({
+							error: decision.message || "Threatening or violent content is strictly prohibited.",
+							code: decision.code || "THREAT_BLOCKED",
+						});
+					}
+					// Strictly block PII leaks to protect student anonymity
+					if (isPII) {
+						await auditLog(
+							"moderation",
+							"comment_blocked",
+							`${author_id}: ${rawBody.slice(0, 60)}`,
+						);
+						return res.status(403).json({
+							error: "Personal information detected (address, phone, or email). This is an anonymous platform — please remove personal details.",
+							code: "PII_BLOCKED",
+						});
+					}
+					const isSlangOnly =
+						decision.flags.length > 0 &&
+						decision.flags.every((f) => f.type === "profanity" || f.type === "slang");
+					if (!isSlangOnly) {
+						await auditLog(
+							"moderation",
+							"comment_blocked",
+							`${author_id}: ${rawBody.slice(0, 60)} [${decision.flags.map((f) => f.type).join(", ")}]`,
+						);
+						return res.status(403).json({
+							error: decision.message,
+							code: decision.code || "CONTENT_BLOCKED",
+						});
+					}
+					// For slang/profanity: mask profanity, post comment,
+					// and queue to Reports for moderator review
+					autoQueueForReview = true;
+					autoReviewReason = decision.flags.map((f) => f.type).join(", ") || "content review";
 					await auditLog(
 						"moderation",
-						"comment_blocked",
-						`${author_id}: ${rawBody.slice(0, 60)} [${decision.flags.map((f) => f.type).join(", ")}]`,
+						"comment_flagged_for_review",
+						`${author_id}: ${rawBody.slice(0, 60)} [${autoReviewReason}]`,
 					);
-					await recordSafetyRepost(
-						supabase,
-						rawBody,
-						(decision.flags[0] || {}).type || "policy",
-					);
-					// Threats page a human (same contract as posts: block stops
-					// the content, the alert names who did it for fast action).
-					await alertAdminThreat({
-						surface: "comment",
-						authorId: author_id,
-						excerpt: rawBody,
-						flags: decision.flags,
-					});
-					// Slang auto-strike (same rule as posts).
-					if (decision.flags.some((f) => f.type === "profanity")) {
+					if (decision.flags.some((f) => f.type === "profanity" || f.type === "slang")) {
 						await strikeSlangAbuse(author_id, "comment", rawBody);
 					}
-					return res.status(403).json({
-						error: isPII
-							? "Personal information detected (address, phone, or email). This is an anonymous platform — please remove personal details."
-							: decision.message,
-						code: isPII ? "PII_BLOCKED" : decision.code,
-					});
 				}
 			}
 			// Store the masked text; every gate above already ran on the raw text.
@@ -322,6 +370,19 @@ export default async function handler(req, res) {
 				.select()
 				.single();
 			if (error) throw error;
+			if (autoQueueForReview && data?.id) {
+				const rIns = supabase.from("reports").insert({
+					target_id: data.id,
+					target_type: "comment",
+					reason: `[Auto-Review] Flagged comment: ${autoReviewReason}`,
+					details: rawBody.slice(0, 200),
+					status: "pending",
+					author_id: author_id,
+				});
+				if (rIns && typeof rIns.then === "function") {
+					rIns.then(() => {}).catch(() => {});
+				}
+			}
 			if (!is_admin_msg) await ensureUser(author_id);
 			// Activity resets the auto-deletion countdown on solved/archived posts
 			await supabase

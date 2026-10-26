@@ -31,6 +31,7 @@
 // ═══════════════════════════════════════════════════════════════════
 
 import http from "node:http";
+import https from "node:https";
 import { randomUUID } from "node:crypto";
 
 const args = process.argv.slice(2);
@@ -41,8 +42,14 @@ function arg(name, fallback) {
 	return v && !v.startsWith("--") ? v : true;
 }
 
-const BASE_URL = String(arg("url", "http://localhost:5173"));
-const TARGET_USERS = Math.max(1, parseInt(arg("users", "500"), 10));
+let BASE_URL = String(arg("url", "http://127.0.0.1:5173"));
+// On Node on Windows, 'localhost' often resolves to ::1 (IPv6) where dev servers
+// bound to 127.0.0.1 drop connections. Normalize to 127.0.0.1.
+if (BASE_URL.startsWith("http://localhost:")) {
+	BASE_URL = BASE_URL.replace("http://localhost:", "http://127.0.0.1:");
+}
+const httpClient = BASE_URL.startsWith("https:") ? https : http;
+const TARGET_USERS = Math.max(1, parseInt(arg("users", "100"), 10));
 const DURATION_S = Math.max(5, parseInt(arg("duration", "30"), 10));
 const RAMPUP_S = Math.max(0, parseInt(arg("rampup", "10"), 10));
 const CONFIRMED = arg("yes", false) === true;
@@ -61,11 +68,56 @@ if (!isLocal && !CONFIRMED) {
 	process.exit(1);
 }
 
+// Pre-flight check: ensure target is actually reachable before launching thousands of requests
+const preflightPath = "/api/polls";
+try {
+	await new Promise((resolve, reject) => {
+		const req = httpClient.get(`${BASE_URL}${preflightPath}`, { timeout: 8000 }, (res) => {
+			res.resume();
+			resolve(res.statusCode);
+		});
+		req.on("error", reject);
+		req.on("timeout", () => {
+			req.destroy();
+			reject(new Error("Connection timed out (8000ms)"));
+		});
+	});
+} catch (err) {
+	console.error(
+		`\n❌ Target server is not reachable at ${BASE_URL} (${err.message}).\n` +
+		`   Please make sure the Voice Flow server is running before executing the load test:\n` +
+		`   - For local testing: run "npm run dev" in another terminal (listens on http://127.0.0.1:5173)\n` +
+		`   - For remote testing: pass --url https://your-deployment.vercel.app --yes\n`
+	);
+	process.exit(1);
+}
+
+// ─── Connection pooling ───────────────────────────────────────────
+// Without keep-alive, every request opens a fresh TCP socket and closes it,
+// leaving the local port in TIME_WAIT (120s on Windows). At thousands of
+// users that exhausts the ~16k ephemeral port range long before the run
+// ends, and the remaining requests fail at the socket layer with
+// EADDRNOTAVAIL / ECONNRESET — which the report renders as "100% errors"
+// with no status codes, indistinguishable from a dead server. One pooled
+// agent reuses sockets instead, so the load test measures the app rather
+// than the client machine's port table.
+const AGENT = new httpClient.Agent({
+	keepAlive: true,
+	keepAliveMsecs: 30_000,
+	// Never open more sockets than virtual users — extra ones are pure
+	// overhead and push the port table harder.
+	maxSockets: Math.max(64, Math.min(TARGET_USERS, 2048)),
+	maxFreeSockets: 256,
+	scheduling: "lifo",
+});
+
 // ─── Metrics ──────────────────────────────────────────────────────
 class Metrics {
 	constructor() {
 		this.byEndpoint = new Map(); // label → latencies[]
 		this.statusCodes = new Map();
+		this.statusByEndpoint = new Map(); // label → Map(status → count)
+		this.networkCodes = new Map(); // failure code → count (ECONNRESET, TIMEOUT, …)
 		this.errors = 0; // network / timeout
 		this.serverErrors = 0; // 5xx — hard failures
 		this.clientErrors = 0; // 4xx — reported, not SLO-failing (429 backoff is correct behavior under load)
@@ -77,12 +129,16 @@ class Metrics {
 		if (!this.byEndpoint.has(label)) this.byEndpoint.set(label, []);
 		this.byEndpoint.get(label).push(ms);
 		this.statusCodes.set(status, (this.statusCodes.get(status) || 0) + 1);
+		if (!this.statusByEndpoint.has(label)) this.statusByEndpoint.set(label, new Map());
+		const perEndpoint = this.statusByEndpoint.get(label);
+		perEndpoint.set(status, (perEndpoint.get(status) || 0) + 1);
 		if (status >= 500) this.serverErrors++;
 		else if (status >= 400) this.clientErrors++;
 	}
-	recordError(label) {
+	recordError(label, code = "ERROR") {
 		this.requests++;
 		this.errors++;
+		this.networkCodes.set(code, (this.networkCodes.get(code) || 0) + 1);
 		if (!this.byEndpoint.has(label)) this.byEndpoint.set(label, []);
 		this.byEndpoint.get(label).push(NaN); // count as failure
 	}
@@ -131,6 +187,40 @@ class Metrics {
 			.map(([s, n]) => `${s}:${n}`)
 			.join("  ");
 		console.log("\nstatus codes:", codes || "(none)");
+		// Which endpoint produced which non-2xx — the global line alone cannot
+		// tell you whether the 429s are one hot write path or the whole app.
+		const problemEndpoints = [...this.statusByEndpoint.entries()]
+			.map(([label, counts]) => ({
+				label,
+				bad: [...counts.entries()].filter(([s]) => s < 200 || s >= 300),
+			}))
+			.filter((e) => e.bad.length);
+		if (problemEndpoints.length) {
+			console.log("non-2xx by endpoint:");
+			for (const { label, bad } of problemEndpoints.sort((a, b) => a.label.localeCompare(b.label))) {
+				console.log(
+					`  ${label.padEnd(26)}${bad.map(([s, n]) => `${s}:${n}`).join("  ")}`,
+				);
+			}
+		}
+		// When no response ever arrived, the status-code line alone reads like
+		// an app outage. The transport-level code says what actually happened
+		// (dead port, port exhaustion, DNS, TLS) — always print it.
+		if (this.networkCodes.size) {
+			const netCodes = [...this.networkCodes.entries()]
+				.sort((a, b) => b[1] - a[1])
+				.map(([c, n]) => `${c}:${n}`)
+				.join("  ");
+			console.log("network errors:", netCodes);
+			if (this.statusCodes.size === 0) {
+				console.log(
+					`  ↑ zero HTTP responses received — this is a transport/connectivity failure, not an app error.`,
+				);
+				console.log(
+					`    Check that the server is listening at ${BASE_URL} and that the client is not out of ephemeral ports.`,
+				);
+			}
+		}
 
 		// ── SLO verdict ───────────────────────────────────────────────
 		// Overall p95 across every successful request + hard-error rate
@@ -182,116 +272,167 @@ const SEARCH_TERMS = [
 	"classroom",
 ];
 
-function request(label, method, path, body, identity) {
+// A pooled keep-alive socket can be closed by the server between the moment
+// the agent hands it out and the moment we write to it — the classic
+// server-keepAliveTimeout race. It surfaces as ECONNRESET/EPIPE against a
+// perfectly healthy server. Browsers retry idempotent requests in that case,
+// and so do we (once), instead of charging the app with an error it did not
+// cause. Non-idempotent POSTs are never retried.
+const RETRYABLE_CODES = new Set(["ECONNRESET", "EPIPE", "ECONNABORTED"]);
+
+/**
+ * One HTTP round-trip. Never touches metrics — the caller decides whether the
+ * result is an error and whether to retry, so a retried attempt cannot be
+ * double-counted.
+ */
+function send(method, path, headers, payload, collectBody) {
 	return new Promise((resolve) => {
-		const started = performance.now();
-		const payload = body ? JSON.stringify(body) : null;
-		const headers = {
-			"content-type": "application/json",
-			...(payload ? { "content-length": Buffer.byteLength(payload) } : {}),
-		};
-		if (identity) headers["x-anon-id"] = identity;
-		// A timeout must count exactly like a network error: without this the
-		// promise dangles, the virtual user stalls for the rest of the run,
-		// and effective concurrency silently decays while the report understates
-		// the load. The guard also prevents double-counting when destroy()
-		// triggers a follow-up 'error'.
+		const chunks = [];
 		let settled = false;
-		const fail = () => {
+		const done = (result) => {
 			if (settled) return;
 			settled = true;
-			metrics.recordError(label);
-			resolve({ status: 0 });
+			resolve(result);
 		};
-		const req = http.request(
+		const req = httpClient.request(
 			`${BASE_URL}${path}`,
-			{
-				method,
-				headers,
-				timeout: 15_000,
-			},
+			{ method, headers, timeout: 15_000, agent: AGENT },
 			(res) => {
-				res.resume(); // drain
+				if (collectBody) res.on("data", (c) => chunks.push(c));
+				res.resume(); // drain (no-op body when collecting)
 				res.on("end", () => {
-					if (settled) return;
-					settled = true;
-					metrics.record(label, performance.now() - started, res.statusCode);
-					resolve({ status: res.statusCode });
+					let data = null;
+					if (collectBody) {
+						try {
+							data = JSON.parse(Buffer.concat(chunks).toString());
+						} catch {
+							/* non-JSON */
+						}
+					}
+					done({ status: res.statusCode, data, code: null });
 				});
 			},
 		);
 		req.on("timeout", () => {
-			fail();
+			done({ status: 0, data: null, code: "TIMEOUT", reused: false });
 			req.destroy();
 		});
-		req.on("error", () => {
-			fail();
+		req.on("error", (err) => {
+			done({
+				status: 0,
+				data: null,
+				code: err?.code || "ERROR",
+				// `reusedSocket` is true when the agent handed back a pooled
+				// keep-alive socket. A reset on a reused socket is the server's
+				// keepAliveTimeout closing it between hand-out and write — a
+				// client-side race, not an app failure — so it earns an extra
+				// retry instead of being charged to the app.
+				reused: req.reusedSocket === true,
+			});
 		});
 		if (payload) req.write(payload);
 		req.end();
 	});
 }
 
+function buildHeaders(payload, identity) {
+	const headers = {
+		"content-type": "application/json",
+		...(payload ? { "content-length": Buffer.byteLength(payload) } : {}),
+	};
+	if (identity) headers["x-anon-id"] = identity;
+	// Spread virtual users across a small pool of NAT addresses. Every user on
+	// one synthetic IP is not a realistic client population — a real deployment
+	// receives traffic from many buildings, carriers and campuses — and it makes
+	// the per-IP flood backstops the only thing under test. The pool is sized so
+	// a run still exercises those backstops, just at NAT scale (a few hundred
+	// users per address) rather than "the whole internet is one person".
+	headers["x-forwarded-for"] = natIpFor(identity);
+	return headers;
+}
+
+// 198.51.100.0/24 is TEST-NET-2 (RFC 5737): documentation-only, never routed,
+// so synthetic client addresses can never collide with a real host.
+const NAT_POOL = Array.from({ length: 32 }, (_, i) => `198.51.100.${i + 1}`);
+
+function natIpFor(identity) {
+	const s = String(identity || "anon");
+	let h = 0;
+	for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
+	return NAT_POOL[Math.abs(h) % NAT_POOL.length];
+}
+
+/**
+ * Idempotent retry. A pooled keep-alive socket closed by the server between
+ * agent hand-out and write surfaces as ECONNRESET/EPIPE against a healthy
+ * server; a fresh-socket failure is more likely real. So: one retry for any
+ * retryable GET failure, two when the failing attempt was on a reused socket.
+ * Non-GET methods are never retried — a POST may already have been applied.
+ */
+async function withRetry(method, path, headers, payload, collectBody) {
+	let result = await send(method, path, headers, payload, collectBody);
+	let attempts = 1;
+	while (
+		result.status === 0 &&
+		method === "GET" &&
+		RETRYABLE_CODES.has(result.code) &&
+		attempts < (result.reused ? 3 : 2)
+	) {
+		attempts++;
+		result = await send(method, path, headers, payload, collectBody);
+	}
+	return result;
+}
+
+/** Fire-and-forget request (body discarded). */
+async function request(label, method, path, body, identity) {
+	const started = performance.now();
+	const payload = body ? JSON.stringify(body) : null;
+	const headers = buildHeaders(payload, identity);
+	const result = await withRetry(method, path, headers, payload, false);
+	// A timeout must count exactly like a network error: without this the
+	// virtual user stalls for the rest of the run and effective concurrency
+	// silently decays while the report understates the load.
+	if (result.status === 0) {
+		metrics.recordError(label, result.code);
+		return { status: 0 };
+	}
+	metrics.record(label, performance.now() - started, result.status);
+	return { status: result.status };
+}
+
 // ─── Buffered request (journey logic needs response data) ───────
-function requestJson(label, method, path, body, identity) {
-	return new Promise((resolve) => {
-		const started = performance.now();
-		const payload = body ? JSON.stringify(body) : null;
-		const headers = {
-			"content-type": "application/json",
-			...(payload ? { "content-length": Buffer.byteLength(payload) } : {}),
-		};
-		if (identity) headers["x-anon-id"] = identity;
-		const chunks = [];
-		// Same settle-guard as request(): a timeout must resolve as an error,
-		// never dangle the journey (see above).
-		let settled = false;
-		const fail = () => {
-			if (settled) return;
-			settled = true;
-			metrics.recordError(label);
-			resolve({ status: 0, data: null });
-		};
-		const req = http.request(
-			`${BASE_URL}${path}`,
-			{
-				method,
-				headers,
-				timeout: 15_000,
-			},
-			(res) => {
-				res.on("data", (c) => chunks.push(c));
-				res.on("end", () => {
-					if (settled) return;
-					settled = true;
-					metrics.record(label, performance.now() - started, res.statusCode);
-					let parsed = null;
-					try {
-						parsed = JSON.parse(Buffer.concat(chunks).toString());
-					} catch {
-						/* non-JSON */
-					}
-					resolve({ status: res.statusCode, data: parsed });
-				});
-			},
-		);
-		req.on("timeout", () => {
-			fail();
-			req.destroy();
-		});
-		req.on("error", () => {
-			fail();
-		});
-		if (payload) req.write(payload);
-		req.end();
-	});
+async function requestJson(label, method, path, body, identity) {
+	const started = performance.now();
+	const payload = body ? JSON.stringify(body) : null;
+	const headers = buildHeaders(payload, identity);
+	const result = await withRetry(method, path, headers, payload, true);
+	if (result.status === 0) {
+		metrics.recordError(label, result.code);
+		return { status: 0, data: null };
+	}
+	metrics.record(label, performance.now() - started, result.status);
+	return { status: result.status, data: result.data };
 }
 
 // ─── Virtual user journeys ────────────────────────────────────────
 let anonCounter = 0;
 
+// Real browsers mint `anon_` + 14 base36 chars (src/lib/identity.ts). Using the
+// same shape keeps the harness on the same validation path the app uses —
+// a made-up id with underscores would silently fall back to IP bucketing and
+// hide exactly the per-user rate-limit bug we are testing for.
+function newAnonId() {
+	let s = "";
+	while (s.length < 10) s += Math.random().toString(36).slice(2);
+	// Counter tail keeps ids unique per run without breaking the `anon_[a-z0-9]+`
+	// format the server validates.
+	const tail = (++anonCounter).toString(36).padStart(4, "0").slice(-4);
+	return `anon_${s.slice(0, 10)}${tail}`;
+}
+
 async function virtualUser(stopAt, onDone) {
-	const anonId = `anon_loadtest_${randomUUID().slice(0, 8)}_${++anonCounter}`;
+	const anonId = newAnonId();
 	while (Date.now() < stopAt) {
 		try {
 			const roll = Math.random();
@@ -397,8 +538,8 @@ async function virtualUser(stopAt, onDone) {
 					}, anonId);
 				}
 			}
-		} catch {
-			metrics.recordError("journey-error");
+		} catch (err) {
+			metrics.recordError("journey-error", err?.code || "JOURNEY_ERROR");
 		}
 		// Think time: real readers pause between actions (0.5–3s)
 		await sleep(500 + Math.random() * 2500);
@@ -437,11 +578,16 @@ for (let i = 0; i < TARGET_USERS; i++) {
 		spawned++;
 		virtualUser(stopAt, () => finished++);
 	}, delay);
-}		setTimeout(() => {
-			clearInterval(ticker);
-			// Give in-flight requests up to 10s to drain
-			setTimeout(() => {
-				const passed = metrics.report();
-				process.exit(passed ? 0 : 1);
-			}, 10_000);
-		}, DURATION_S * 1000 + RAMPUP_S * 1000);
+}
+
+setTimeout(() => {
+	clearInterval(ticker);
+	// Give in-flight requests up to 10s to drain
+	setTimeout(() => {
+		const passed = metrics.report();
+		// Close pooled sockets so the process can exit immediately instead of
+		// lingering until every keep-alive socket times out.
+		AGENT.destroy();
+		process.exit(passed ? 0 : 1);
+	}, 10_000);
+}, DURATION_S * 1000 + RAMPUP_S * 1000);

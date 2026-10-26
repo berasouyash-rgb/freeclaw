@@ -324,28 +324,47 @@ export async function runCleanup() {
 
 	// 8. Orphaned poll_votes (polls deleted but votes remain)
 	try {
-		const { data: allVotes } = await supabase
+		const { data: allVotes, error: votesReadErr } = await supabase
 			.from("poll_votes")
 			.select("id,poll_id")
 			.limit(500);
+		if (votesReadErr) throw votesReadErr;
 		if (allVotes && allVotes.length > 0) {
-			const pollIds = [...new Set(allVotes.map((v) => v.poll_id))];
-			const { data: existingPolls } = await supabase
-				.from("polls")
-				.select("id")
-				.in("id", pollIds);
-			const existingSet = new Set((existingPolls || []).map((p) => p.id));
-			const orphanIds = allVotes
-				.filter((v) => !existingSet.has(v.poll_id))
-				.map((v) => v.id);
-			if (orphanIds.length > 0) {
-				const batch = orphanIds.slice(0, BATCH_SIZE);
-				const { error: deleteError } = await supabase
-					.from("poll_votes")
-					.delete()
-					.in("id", batch);
-				if (deleteError) throw deleteError;
-				results.deleted_orphan_votes = batch.length;
+			const pollIds = [...new Set(allVotes.map((v) => v.poll_id).filter(Boolean))];
+			if (pollIds.length > 0) {
+				const existingSet = new Set();
+				let pollLookupFailed = false;
+				const CHUNK = 50;
+				for (let i = 0; i < pollIds.length; i += CHUNK) {
+					const chunk = pollIds.slice(i, i + CHUNK);
+					const { data: existingPolls, error: pollsErr } = await supabase
+						.from("polls")
+						.select("id")
+						.in("id", chunk);
+					if (pollsErr || !existingPolls) {
+						pollLookupFailed = true;
+						console.error("[cleanup] poll lookup failed in orphan sweep:", pollsErr?.message);
+						break;
+					}
+					for (const p of existingPolls) {
+						if (p?.id) existingSet.add(p.id);
+					}
+				}
+				// Safe sweep: only prune if every chunk query succeeded without errors
+				if (!pollLookupFailed) {
+					const orphanIds = allVotes
+						.filter((v) => v.poll_id && !existingSet.has(v.poll_id))
+						.map((v) => v.id);
+					if (orphanIds.length > 0) {
+						const batch = orphanIds.slice(0, BATCH_SIZE);
+						const { error: deleteError } = await supabase
+							.from("poll_votes")
+							.delete()
+							.in("id", batch);
+						if (deleteError) throw deleteError;
+						results.deleted_orphan_votes = batch.length;
+					}
+				}
 			}
 		}
 	} catch (e) {
@@ -411,37 +430,57 @@ export async function runCleanup() {
 
 	// 11. Orphaned reactions (target post/comment deleted)
 	try {
-		const { data: allReactions } = await supabase
+		const { data: allReactions, error: reactionsReadErr } = await supabase
 			.from("reactions")
 			.select("id,target_id,target_type")
 			.limit(500);
+		if (reactionsReadErr) throw reactionsReadErr;
 		if (allReactions && allReactions.length > 0) {
-			const postIds = allReactions
-				.filter((r) => r.target_type === "post")
-				.map((r) => r.target_id);
+			const postIds = [
+				...new Set(
+					allReactions
+						.filter((r) => r.target_type === "post")
+						.map((r) => r.target_id)
+						.filter(Boolean),
+				),
+			];
 			if (postIds.length > 0) {
-				const { data: existingPosts } = await supabase
-					.from("posts")
-					.select("id")
-					.in("id", postIds);
-				const existingSet = new Set(
-					(existingPosts || []).map((p) => p.id),
-				);
-				const orphanIds = allReactions
-					.filter(
-						(r) =>
-							r.target_type === "post" &&
-							!existingSet.has(r.target_id),
-					)
-					.map((r) => r.id);
-				if (orphanIds.length > 0) {
-					const batch = orphanIds.slice(0, BATCH_SIZE);
-					const { error: deleteError } = await supabase
-						.from("reactions")
-						.delete()
-						.in("id", batch);
-					if (deleteError) throw deleteError;
-					results.deleted_orphan_reactions = batch.length;
+				const existingSet = new Set();
+				let postLookupFailed = false;
+				const CHUNK = 50;
+				for (let i = 0; i < postIds.length; i += CHUNK) {
+					const chunk = postIds.slice(i, i + CHUNK);
+					const { data: existingPosts, error: postsErr } = await supabase
+						.from("posts")
+						.select("id")
+						.in("id", chunk);
+					if (postsErr || !existingPosts) {
+						postLookupFailed = true;
+						console.error("[cleanup] post lookup failed in orphan reactions sweep:", postsErr?.message);
+						break;
+					}
+					for (const p of existingPosts) {
+						if (p?.id) existingSet.add(p.id);
+					}
+				}
+				if (!postLookupFailed) {
+					const orphanIds = allReactions
+						.filter(
+							(r) =>
+								r.target_type === "post" &&
+								r.target_id &&
+								!existingSet.has(r.target_id),
+						)
+						.map((r) => r.id);
+					if (orphanIds.length > 0) {
+						const batch = orphanIds.slice(0, BATCH_SIZE);
+						const { error: deleteError } = await supabase
+							.from("reactions")
+							.delete()
+							.in("id", batch);
+						if (deleteError) throw deleteError;
+						results.deleted_orphan_reactions = batch.length;
+					}
 				}
 			}
 		}

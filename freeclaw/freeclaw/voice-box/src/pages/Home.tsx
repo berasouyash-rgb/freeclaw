@@ -33,6 +33,7 @@ import WordCloud from "../components/WordCloud";
 import { useApp } from "../contexts/AppContext";
 import { useCategories } from "../hooks/useCategories";
 import { api } from "../lib/api";
+import { resetAnonId } from "../lib/identity";
 import {
 	applyServerMine,
 	mergeReactionCounts,
@@ -181,7 +182,7 @@ function buildPostsPath({
 }
 
 export default function Home() {
-	const { anonId } = useApp();
+	const { anonId, refreshIdentity } = useApp();
 	const categories = useCategories();
 	const [posts, setPosts] = useState<PostData[]>([]);
 	const [myReactions, setMyReactions] = useState<Record<string, string[]>>({});
@@ -240,6 +241,10 @@ export default function Home() {
 				const seq = ++loadSeqRef.current;
 				try {
 					setError("");
+					if (fresh) {
+						pollsLoadedRef.current = false;
+						pollsKeyRef.current = "";
+					}
 					// The first bounded load is cached for route entry. Explicit
 					// refreshes and realtime updates bypass the 5s client cache so
 					// a user never has to wait for a stale snapshot to expire.
@@ -341,7 +346,7 @@ export default function Home() {
 	// Fetch poll data + user's poll votes for posts that have linked_poll.
 	// Runs after every post load so the feed always has up-to-date poll info.
 	const fetchPolls = useCallback(
-		async (postList: PostData[]) => {
+		async (postList: PostData[], force = false) => {
 			const pollIds = postList
 				.map((p) => p.linked_poll)
 				.filter((id): id is string => !!id);
@@ -352,7 +357,7 @@ export default function Home() {
 			// in the realtime handler. Skipping avoids an N+1 request burst per
 			// realtime event ("too many requests" / server churn).
 			const key = uniquePollIds.slice().sort().join("\u0000");
-			if (pollsLoadedRef.current && key === pollsKeyRef.current) return;
+			if (!force && pollsLoadedRef.current && key === pollsKeyRef.current) return;
 			pollsLoadedRef.current = true;
 			pollsKeyRef.current = key;
 			if (!uniquePollIds.length) {
@@ -361,11 +366,13 @@ export default function Home() {
 			}
 			// One bounded batch replaces the previous one-request-per-poll fanout.
 			// A failed poll fetch keeps the feed usable rather than failing it.
+			let batchFailed = false;
 			const pollsFetch = api
 				.getFresh<PollData[]>(
 					`/api/polls?ids=${encodeURIComponent(uniquePollIds.join(","))}&viewer=${anonId}`,
 				)
 				.catch((err: unknown) => {
+					batchFailed = true;
 					console.error("[home] poll batch fetch failed", {
 						error: err instanceof Error ? err.message : String(err),
 					});
@@ -380,21 +387,23 @@ export default function Home() {
 					})
 				: Promise.resolve([]);
 			const [pollResults, votes] = await Promise.all([pollsFetch, votesFetch]);
-			const pMap: Record<string, PollData> = {};
-			(Array.isArray(pollResults) ? pollResults : []).forEach((poll) => {
-				if (poll?.id) pMap[poll.id] = poll;
-			});
-			setPollsMap(pMap);
-			if (Array.isArray(votes)) {
-				const vMap: Record<string, number[]> = {};
-				for (const v of votes)
-					if (v?.poll_id) vMap[v.poll_id] = v.choices || [];
-			setMyPollVotes(vMap);
-			// Poll/vote data is view-independent — fold it into a live
-			// snapshot so revisits paint it instantly too.
-			if (homeSnapshot) {
-				homeSnapshot = persistSnapshot({ ...homeSnapshot, pollsMap: pMap, myPollVotes: vMap });
-			}
+			if (batchFailed) {
+				pollsLoadedRef.current = false;
+			} else {
+				const pMap: Record<string, PollData> = {};
+				(Array.isArray(pollResults) ? pollResults : []).forEach((poll) => {
+					if (poll?.id) pMap[poll.id] = poll;
+				});
+				setPollsMap((prev) => ({ ...prev, ...pMap }));
+				if (Array.isArray(votes)) {
+					const vMap: Record<string, number[]> = {};
+					for (const v of votes)
+						if (v?.poll_id) vMap[v.poll_id] = v.choices || [];
+					setMyPollVotes(vMap);
+					if (homeSnapshot) {
+						homeSnapshot = persistSnapshot({ ...homeSnapshot, pollsMap: { ...homeSnapshot.pollsMap, ...pMap }, myPollVotes: vMap });
+					}
+				}
 			}
 		},
 		[anonId],
@@ -557,7 +566,15 @@ export default function Home() {
 				const row = (Array.isArray(rows) ? rows : []).find(
 					(p) => p?.id === pollId,
 				);
-				if (row) setPollsMap((prev) => ({ ...prev, [pollId]: row }));
+				if (row) {
+					setPollsMap((prev) => {
+						const next = { ...prev, [pollId]: row };
+						if (homeSnapshot) {
+							homeSnapshot = persistSnapshot({ ...homeSnapshot, pollsMap: next });
+						}
+						return next;
+					});
+				}
 			} catch {
 				/* keep stale poll */
 			}
@@ -713,6 +730,36 @@ export default function Home() {
 			void flushPostRows();
 		}, 400);
 	}, [flushPostRows]);
+
+	// Real-time immediate post hide across all open tabs
+	useEffect(() => {
+		const handleHide = (e: Event) => {
+			const detail = (e as CustomEvent)?.detail;
+			const targetId = detail?.id;
+			if (!targetId) return;
+			if (detail.hidden !== false) {
+				setPosts((prev) => prev.filter((p) => p.id !== targetId));
+				knownIdsRef.current.delete(targetId);
+			} else {
+				pendingRowIds.current.add(targetId);
+				scheduleRowFlush();
+			}
+		};
+		window.addEventListener("vb:post-hidden", handleHide);
+		let bc: BroadcastChannel | null = null;
+		try {
+			bc = new BroadcastChannel("vb:feed-sync");
+			bc.onmessage = (msg) => {
+				if (msg?.data?.type === "post-hidden" && msg.data.id) {
+					handleHide(new CustomEvent("vb:post-hidden", { detail: msg.data }));
+				}
+			};
+		} catch {}
+		return () => {
+			window.removeEventListener("vb:post-hidden", handleHide);
+			bc?.close();
+		};
+	}, [scheduleRowFlush]);
 
 	useRealtime(
 		["posts", "reactions", "comments", "poll_votes"],
@@ -1286,6 +1333,21 @@ export default function Home() {
 				</div>
 			</div>
 
+			{/* You Said → We Did Banner */}
+			{statusFilter === "solved" && (
+				<div className="card p-3.5 mb-4 bg-accent/5 border border-accent/20 flex items-center gap-3 animate-in fade-in">
+					<div className="w-9 h-9 rounded-xl bg-accent/10 text-accent flex items-center justify-center shrink-0">
+						<CheckCircle2 size={18} />
+					</div>
+					<div>
+						<h3 className="text-xs font-bold text-accent">You Said → We Did</h3>
+						<p className="text-[11px] text-ink3">
+							Verified resolutions and improvements delivered by the school administration in response to student feedback.
+						</p>
+					</div>
+				</div>
+			)}
+
 			{/* Feed */}
 			<h2 className="sr-only">Recent posts</h2>
 			{error && (
@@ -1303,21 +1365,42 @@ export default function Home() {
 							App is trying: {apiBase() || "(no API address set — rebuild with VITE_API_BASE)"}
 						</p>
 					)}
-					<button
-						className={`btn btn-soft ${hasLastKnownPosts ? "mt-2" : "mt-3"}`}
-						onClick={() => {
-							if (!hasLastKnownPosts) setHasLoaded(false);
-							void load({
-								fresh: true,
-								search: query,
-								feedType,
-								category: cat,
-								status: statusFilter,
-							});
-						}}
-					>
-						Try again
-					</button>
+					{error.toLowerCase().includes("session") && (error.toLowerCase().includes("not recognized") || error.toLowerCase().includes("lost") || error.toLowerCase().includes("cleared")) ? (
+						<div className="flex flex-wrap items-center justify-center gap-3 mt-4">
+							<button
+								type="button"
+								className="btn btn-primary"
+								onClick={() => {
+									resetAnonId();
+									refreshIdentity();
+									setError("");
+									setHasLoaded(false);
+									void load({ fresh: true });
+								}}
+							>
+								Start Fresh
+							</button>
+							<Link to="/settings" className="btn btn-soft">
+								Pair This Device
+							</Link>
+						</div>
+					) : (
+						<button
+							className={`btn btn-soft ${hasLastKnownPosts ? "mt-2" : "mt-3"}`}
+							onClick={() => {
+								if (!hasLastKnownPosts) setHasLoaded(false);
+								void load({
+									fresh: true,
+									search: query,
+									feedType,
+									category: cat,
+									status: statusFilter,
+								});
+							}}
+						>
+							Try again
+						</button>
+					)}
 				</div>
 			)}
 			{/* APK-only skeleton loaders: shimmer placeholders while the first

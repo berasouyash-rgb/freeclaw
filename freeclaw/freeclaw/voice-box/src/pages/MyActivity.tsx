@@ -1,4 +1,4 @@
-﻿import {
+import {
 	AlertTriangle,
 	BarChart3,
 	Bell,
@@ -8,8 +8,11 @@
 	FileText,
 	MessageCircle,
 	PlayCircle,
-	RefreshCcw,		Save,
+	RefreshCcw,
+	Settings as SettingsIcon,
+	Save,
 		Scale,
+		Sparkles,
 		Trash2,
 		UserCircle2,
 	} from "lucide-react";
@@ -596,15 +599,44 @@ export default function MyActivity() {
 					>
 						<PlayCircle size={13} /> Replay tutorial
 					</button>						<Link
-							to="/settings"
-							className="btn btn-ghost !text-xs"
-						>
-							<UserCircle2 size={13} /> Edit profile
-						</Link>
+						to="/settings"
+						className="btn btn-ghost !text-xs flex items-center gap-1.5"
+						title="Open platform settings & preferences"
+					>
+						<SettingsIcon size={13} /> Edit profile & Settings
+					</Link>
 					</div>
 				<p className="text-[11px] text-ink3 mt-3 flex items-start gap-1.5">
 					<AlertTriangle size={11} className="mt-0.5 shrink-0" /> {SERVER_PII_COPY}
 				</p>
+			</div>
+
+			{/* Personal Impact Card */}
+			<div className="card p-4 sm:p-5 mb-5 bg-gradient-to-r from-accent/5 to-surface2 border-border/80">
+				<div className="flex items-center justify-between mb-3">
+					<h2 className="text-xs font-bold uppercase tracking-wider text-accent flex items-center gap-1.5">
+						<Sparkles size={14} /> Your Voice Impact
+					</h2>
+					<span className="text-[11px] text-ink3 font-medium">Anonymous & Protected</span>
+				</div>
+				<div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+					<div className="p-2.5 rounded-xl bg-surface/70 border border-border/50 text-center">
+						<div className="text-lg font-bold text-ink">{posts.length}</div>
+						<div className="text-[10px] text-ink3 mt-0.5">Issues Raised</div>
+					</div>
+					<div className="p-2.5 rounded-xl bg-surface/70 border border-border/50 text-center">
+						<div className="text-lg font-bold text-accent">{posts.filter((p) => p.status === "solved" || p.admin_reply).length}</div>
+						<div className="text-[10px] text-ink3 mt-0.5">Admin Resolutions</div>
+					</div>
+					<div className="p-2.5 rounded-xl bg-surface/70 border border-border/50 text-center">
+						<div className="text-lg font-bold text-ink">{pollVotes.length}</div>
+						<div className="text-[10px] text-ink3 mt-0.5">Poll Votes Cast</div>
+					</div>
+					<div className="p-2.5 rounded-xl bg-surface/70 border border-border/50 text-center">
+						<div className="text-lg font-bold text-ink">{comments.length + reactions.length}</div>
+						<div className="text-[10px] text-ink3 mt-0.5">Community Actions</div>
+					</div>
+				</div>
 			</div>
 
 			{/* Tabs */}

@@ -711,6 +711,7 @@ function reportDetailPayload(
 		enforcement: (r as Record<string, unknown>).enforcement as WorkItemData["enforcement"],
 	};
 }
+
 export default function Reports() {
 	const { toast } = useApp();
 	const [tab, setTab] = useState<Tab>("reports");
@@ -859,9 +860,12 @@ export default function Reports() {
 	const load = useCallback(
 		async (silent = false) => {
 			await loadFast(silent);
-			await loadPosts();
+			// Only scan posts if the admin is actively on the review tab
+			if (tab === "review") {
+				await loadPosts();
+			}
 		},
-		[loadFast, loadPosts],
+		[loadFast, loadPosts, tab],
 	);
 
 	// Explicit user Refresh — always fresh, bypasses the posts throttle.
@@ -978,7 +982,7 @@ export default function Reports() {
 	// rows show Removed, missing rows show Target not found, visible rows
 	// show nothing. One lazy index fetch covers every comment-target row.
 	const [commentStates, setCommentStates] = useState<
-		Record<string, { hidden?: boolean; deleted?: boolean; postId?: string }>
+		Record<string, { hidden?: boolean; deleted?: boolean; notFound?: boolean; postId?: string }>
 	>({});
 	const [commentIndexReady, setCommentIndexReady] = useState(false);
 	const commentIndexFlight = useRef<Promise<void> | null>(null);
@@ -998,16 +1002,27 @@ export default function Reports() {
 				const list = await api.get<
 					Array<{ id?: string; hidden?: boolean; deleted?: boolean; post_id?: string }>
 				>("/api/comments?all=1");
-				if (!Array.isArray(list)) return;
-				const next: Record<string, { hidden?: boolean; deleted?: boolean; postId?: string }> = { ...commentStates };
-				for (const c of list) {
-					if (!c || typeof c.id !== "string") continue;
-					next[c.id] = { hidden: c.hidden, deleted: c.deleted, postId: c.post_id };
+				const next: Record<string, { hidden?: boolean; deleted?: boolean; notFound?: boolean; postId?: string }> = { ...commentStates };
+				if (Array.isArray(list)) {
+					for (const c of list) {
+						if (!c || typeof c.id !== "string") continue;
+						next[c.id] = { hidden: c.hidden, deleted: c.deleted, postId: c.post_id };
+					}
+				}
+				// Mark remaining missing items so the effect NEVER loops infinitely on deleted/absent IDs
+				for (const mid of missing) {
+					if (next[mid] === undefined) {
+						next[mid] = { notFound: true };
+					}
 				}
 				setCommentStates(next);
 				setCommentIndexReady(true);
 			} catch {
-				// Unknown states: render no unlock affordance rather than guessing.
+				const next: Record<string, { hidden?: boolean; deleted?: boolean; notFound?: boolean; postId?: string }> = { ...commentStates };
+				for (const mid of missing) {
+					if (next[mid] === undefined) next[mid] = { notFound: true };
+				}
+				setCommentStates(next);
 			} finally {
 				commentIndexFlight.current = null;
 			}
@@ -1030,9 +1045,10 @@ export default function Reports() {
 			const found = (Array.isArray(list) ? list : []).find(
 				(c) => c.id === targetId,
 			);
-			const verified: { hidden?: boolean; deleted?: boolean; postId?: string } = {
+			const verified: { hidden?: boolean; deleted?: boolean; notFound?: boolean; postId?: string } = {
 				hidden: found !== undefined && found.hidden === true,
 				deleted: found !== undefined && found.deleted === true,
+				notFound: found === undefined,
 				postId: found?.post_id,
 			};
 			setCommentStates((prev) => ({ ...prev, [targetId]: verified }));
@@ -1065,7 +1081,7 @@ export default function Reports() {
 		const targetId = String(r.target_id);
 		if (!commentIndexReady) return null;
 		const st = commentStates[targetId];
-		if (st === undefined)
+		if (st === undefined || st.notFound)
 			return <span className="text-[11px] text-ink3">Target not found</span>;
 		if (st.deleted)
 			return <span className="text-[11px] text-ink3">Removed</span>;

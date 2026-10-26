@@ -582,8 +582,9 @@ export default function UserChat() {
 			const synced = (await load()) || [];
 			if (!synced.some((m) => m.body === body && m.sender === "user")) {
 				// The message provably did NOT land server-side — restore the
-				// draft instead of eating the user's words.
+				// draft instead of eating the user's words, and clean up the failed bubble.
 				setText(body);
+				setMessages((prev) => prev.filter((m) => m.id !== userMsg.id));
 			}
 			if (/offline|taking too long|timed out|network|failed to fetch/i.test(errMsg)) {
 				toast("Message sent — AI is still composing a reply.", "info");
@@ -651,9 +652,9 @@ export default function UserChat() {
 		setDeleting(false);
 	};
 	return (
-		<div className="max-w-3xl mx-auto px-4 py-6 vb-page-enter flex flex-col h-[calc(100vh-9.5rem)] lg:h-[calc(100vh-8rem)]">
+		<div className="max-w-3xl mx-auto px-4 py-3 sm:py-6 vb-page-enter flex flex-col h-[calc(100dvh-6rem)] sm:h-[calc(100dvh-8rem)]">
 			{/* Header — same treatment as Community insights */}
-			<div className="flex items-center gap-2.5 mb-5">
+			<div className="flex items-center gap-2.5 mb-3 sm:mb-5">
 				<span className="vb-empty-icon !w-9 !h-9">
 					<MessageSquare size={17} />
 				</span>
@@ -661,7 +662,7 @@ export default function UserChat() {
 					<h1 className="font-display font-bold text-xl sm:text-2xl leading-tight">
 						Anonymous inbox
 					</h1>
-					<p className="text-xs text-ink3 truncate">
+					<p className="text-xs text-ink3 line-clamp-2 sm:line-clamp-none">
 						{aiEnabled
 							? "Chat directly — our AI assistant responds instantly. An admin will join when available."
 							: "AI replies are paused. Your messages reach the admin team directly."}
@@ -708,7 +709,15 @@ export default function UserChat() {
 						<Bot size={13} />
 					)}
 					<span className="font-medium">{agentLabel}</span>
-					<span className="text-ink3 ml-auto">Responding instantly</span>
+					<span className="text-ink3 ml-auto">
+						{busy || typing ? (
+							<span className="inline-flex items-center gap-1.5 text-accent font-medium animate-pulse">
+								<Loader2 size={11} className="animate-spin" /> Thinking...
+							</span>
+						) : (
+							aiEnabled ? "Online" : "AI Paused"
+						)}
+					</span>
 				</div>
 			)}
 
@@ -941,9 +950,10 @@ export default function UserChat() {
 					)}
 				</button>
 			</div>
-		<p className="mt-1.5 text-[10px] text-ink3">Replies can be read back in your device voice.</p>
-			{/* READBACK-TOGGLE */}
-			<button type="button" onClick={() => { const next = !readBack; setReadBack(next); lsSet("vb:readaloud", next); if (!next) stopReading(); }} aria-pressed={readBack} aria-label="Read AI replies aloud" title="Hear AI replies in your device voice" className="mt-1 text-[10px] font-bold text-accent/70 hover:text-accent">🔊 Read aloud: {readBack ? "on" : "off"}</button>
+		<div className="mt-1.5 flex items-center justify-between text-[10px] text-ink3">
+			<span>Replies can be read back in your device voice.</span>
+			<button type="button" onClick={() => { const next = !readBack; setReadBack(next); lsSet("vb:readaloud", next); if (!next) stopReading(); }} aria-pressed={readBack} aria-label="Read AI replies aloud" title="Hear AI replies in your device voice" className="font-bold text-accent/80 hover:text-accent">🔊 Voice: {readBack ? "on" : "off"}</button>
+		</div>
 	<ConfirmDialog
 		open={confirmDelete}
 		onClose={() => setConfirmDelete(false)}

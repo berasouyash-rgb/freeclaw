@@ -110,7 +110,10 @@ export function isNativeShell(req) {
 		origin === "file://" ||
 		origin.startsWith("capacitor://") ||
 		origin.startsWith("ionic://") ||
-		ua.includes("Electron")
+		origin.startsWith("https://localhost") ||
+		origin.startsWith("http://localhost") ||
+		ua.includes("Electron") ||
+		ua.includes("Capacitor")
 	);
 }
 
@@ -630,6 +633,28 @@ export function maskProfanity(text) {
 	return moderateContent(text).maskedText;
 }
 
+const DB_TABLE_COLUMNS = {
+	posts: "author_id",
+	comments: "author_id",
+	polls: "author_id",
+	reports: "author_id",
+	reactions: "author_id",
+	chat_messages: "thread_id",
+};
+
+function pruneRateLimitState(now, windowMs) {
+	if (_rateLimitState.size > 5000) {
+		for (const [k, v] of _rateLimitState) {
+			if (now - v.windowStart > windowMs) _rateLimitState.delete(k);
+		}
+		while (_rateLimitState.size > 5000) {
+			const oldest = _rateLimitState.keys().next();
+			if (oldest.done) break;
+			_rateLimitState.delete(oldest.value);
+		}
+	}
+}
+
 /** Persistent rate limit: max `limit` writes by author in table within `seconds` (survives warm invocations) */
 export async function rateLimited(table, authorId, seconds, limit) {
 	const key = `${table}:${authorId}`;
@@ -641,31 +666,39 @@ export async function rateLimited(table, authorId, seconds, limit) {
 		state.count++;
 		return false;
 	}
+
+	const col = DB_TABLE_COLUMNS[table];
+	// Non-table virtual actions (ai-summary, assist_suggest, uploads, etc.) are throttled purely in-memory
+	if (!col) {
+		_rateLimitState.set(key, { count: 1, windowStart: now });
+		pruneRateLimitState(now, windowMs);
+		return false;
+	}
+
 	// New window — do a real DB count and seed the in-memory counter
 	const since = new Date(now - windowMs).toISOString();
-	const { count, error } = await supabase
-		.from(table)
-		.select("*", { count: "exact", head: true })
-		.eq("author_id", authorId)
-		.gte("created_at", since);
-	if (error) {
-		console.error("[auth] rateLimited DB error:", error.message);
-		return true; // H5: fail closed
-	}
-	const currentCount = count || 0;
-	_rateLimitState.set(key, { count: currentCount + 1, windowStart: now });
-	// Prune stale entries periodically (max 5000 keys)
-	if (_rateLimitState.size > 5000) {
-		for (const [k, v] of _rateLimitState) {
-			if (now - v.windowStart > windowMs) _rateLimitState.delete(k);
+	try {
+		const { count, error } = await supabase
+			.from(table)
+			.select("*", { count: "exact", head: true })
+			.eq(col, authorId)
+			.gte("created_at", since);
+		if (error) {
+			console.warn("[auth] rateLimited DB check failed, falling back to memory:", error.message);
+			_rateLimitState.set(key, { count: 1, windowStart: now });
+			pruneRateLimitState(now, windowMs);
+			return false;
 		}
-		while (_rateLimitState.size > 5000) {
-			const oldest = _rateLimitState.keys().next();
-			if (oldest.done) break;
-			_rateLimitState.delete(oldest.value);
-		}
+		const currentCount = count || 0;
+		_rateLimitState.set(key, { count: currentCount + 1, windowStart: now });
+		pruneRateLimitState(now, windowMs);
+		return currentCount >= limit;
+	} catch (e) {
+		console.warn("[auth] rateLimited DB exception, falling back to memory:", e?.message);
+		_rateLimitState.set(key, { count: 1, windowStart: now });
+		pruneRateLimitState(now, windowMs);
+		return false;
 	}
-	return currentCount >= limit;
 }
 
 // ─── Session-based caller verification ──────────────────────────
@@ -1203,7 +1236,7 @@ export function clientIp(req) {
 }
 
 // Shared anon_id format validation (matches checkUser + users_meta)
-function validAnonId(id) {
+export function validAnonId(id) {
 	return (
 		typeof id === "string" &&
 		id.length >= 5 &&

@@ -209,12 +209,13 @@ export default async function handler(req, res) {
 	if (req.method === "OPTIONS") return res.status(204).end();
 
 	req._searchStart = Date.now();
+	let q = "";
 
 	try {
 		if (req.method !== "GET")
 			return res.status(405).json({ error: "GET only" });
 
-		const q = (req.query.q || "").trim();
+		q = (req.query?.q || "").trim();
 		// Same normalization as scanSearchRows above (which has its own copy
 		// — the scorer below runs in handler scope, not in that function).
 		const qText = q.replace(/#/g, "");
@@ -243,10 +244,27 @@ export default async function handler(req, res) {
 			viewer && a && String(a).toLowerCase() === viewer ? a : null;
 
 		// Flood gate (after the trivial early-returns above, before the scan).
-		const searchIdentity = viewer ? `id:${viewer}` : `ip:${clientIp(req)}`;
+		//
+		// Key on the caller's stable per-browser id FIRST. Every API call already
+		// carries `x-anon-id` (src/lib/api.ts) precisely so each user gets their
+		// own bucket, but this gate only looked at `viewer` — which the Search
+		// page sends empty — so every request fell through to `ip:`. A school
+		// puts hundreds of students behind one NAT address: the 120/min identity
+		// bucket then belonged to the whole building, and one class searching for
+		// ten minutes returned 429 to everybody behind that address. That is a
+		// user-visible outage, not throttling.
+		//
+		// `x-anon-id` is client-supplied and spoofable, so the per-IP backstop
+		// below still bounds a caller that rotates the header — but it is sized
+		// for a NAT (hundreds of users), not for one person. Scan cost stays
+		// bounded by the 15s stale-while-revalidate cache above, so a NAT's
+		// repeat queries do not translate into repeat full-table scans.
+		const headerAnon = String(req.headers?.["x-anon-id"] || "").toLowerCase();
+		const isAnon = headerAnon.length >= 8 && headerAnon.length <= 64 && /^[a-zA-Z0-9_-]+$/.test(headerAnon);
+		const searchIdentity = isAnon ? `id:${headerAnon}` : viewer ? `id:${viewer}` : `ip:${clientIp(req)}`;
 		if (
 			searchRateLimited(`search:${searchIdentity}`) ||
-			searchRateLimited(`search-ip:${clientIp(req)}`, 60000, 600)
+			searchRateLimited(`search-ip:${clientIp(req)}`, 60000, 3000)
 		)
 			return rateLimitResponse(res, 60, "Too many searches. Please slow down.");
 

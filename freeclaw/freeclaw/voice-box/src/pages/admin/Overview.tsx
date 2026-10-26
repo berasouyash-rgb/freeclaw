@@ -68,6 +68,7 @@ import CountUp from "../../components/CountUp";
 import ErrorBoundary from "../../components/ErrorBoundary";
 import ActionCenter from "./ActionCenter";
 import ThreadDrawer from "../../components/admin/ThreadDrawer";
+import AdminDailyBriefing from "../../components/admin/AdminDailyBriefing";
 import WorkSections from "./WorkSections";
 import { useApp } from "../../contexts/AppContext";
 import { useUpdateSignal } from "../../hooks/useUpdateSignal";
@@ -1067,6 +1068,14 @@ const queueCounts: Record<QueueKey, number> = {
 					setDrawerThread(null);
 					gotoThread(id);
 				}}
+			/>
+
+			{/* AI Daily Executive Briefing & AI Moderator To-Do List */}
+			<AdminDailyBriefing
+				openReportsCount={reports.filter((r) => r.status !== "resolved").length}
+				flaggedPostsCount={posts.filter((p) => p.status === "reported").length}
+				onOpenReportsTab={() => window.dispatchEvent(new CustomEvent("vb:admin-tab", { detail: "reports" }))}
+				onOpenUsersTab={() => window.dispatchEvent(new CustomEvent("vb:admin-tab", { detail: "users" }))}
 			/>
 
 			{/* ── Hero header ───────────────────────────────────────── */}

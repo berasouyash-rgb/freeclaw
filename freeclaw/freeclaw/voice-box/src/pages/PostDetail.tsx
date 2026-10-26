@@ -226,6 +226,7 @@ export default function PostDetail() {
 	const [follows, setFollows] = useState<string[]>([]);
 	const [followBusy, setFollowBusy] = useState(false);
 	const [linkedPoll, setLinkedPoll] = useState<PollData | null>(null);
+	const [pollLoading, setPollLoading] = useState(false);
 	const [attachPollOpen, setAttachPollOpen] = useState(false);
 	const [attachQuestion, setAttachQuestion] = useState("");
 	const [attachOptions, setAttachOptions] = useState<string[]>(["", ""]);
@@ -295,15 +296,30 @@ export default function PostDetail() {
 	// the card needs its options/vote data to be interactive).
 	const fetchPoll = useCallback(async () => {
 		if (!postId) return;
+		setPollLoading(true);
 		try {
-			const polls = await api.getFresh<PollData[]>(
-				`/api/polls?post_id=${postId}&viewer=${anonId}`,
-			);
-			setLinkedPoll(pickCanonicalLinkedPoll(Array.isArray(polls) ? polls : []));
+			const linkedId = p?.linked_poll;
+			const query = linkedId
+				? `/api/polls?ids=${encodeURIComponent(linkedId)}&viewer=${anonId}`
+				: `/api/polls?post_id=${postId}&viewer=${anonId}`;
+			let polls = await api.getFresh<PollData[]>(query).catch(() => [] as PollData[]);
+			let canonical = pickCanonicalLinkedPoll(Array.isArray(polls) ? polls : []);
+			// Fallback: If linkedId didn't return a poll, try lookup by post_id
+			if (!canonical && linkedId) {
+				polls = await api.getFresh<PollData[]>(`/api/polls?post_id=${postId}&viewer=${anonId}`).catch(() => [] as PollData[]);
+				canonical = pickCanonicalLinkedPoll(Array.isArray(polls) ? polls : []);
+			}
+			if (canonical) {
+				setLinkedPoll(canonical);
+			} else if (!linkedId) {
+				setLinkedPoll(null);
+			}
 		} catch {
-			setLinkedPoll(null);
+			/* keep existing linkedPoll on transient network error */
+		} finally {
+			setPollLoading(false);
 		}
-	}, [postId, anonId]);
+	}, [postId, anonId, p?.linked_poll]);
 
 	// Load the viewer's existing poll votes so the linked card opens in the voted
 	// state (feed "liked" bug: without this the card shows un-voted until the
@@ -1072,9 +1088,20 @@ export default function PostDetail() {
 								fetchMyVotes();
 							}}
 						/>
-					) : (
+					) : pollLoading ? (
 						<div className="card p-4 text-sm text-ink3 animate-pulse">
-							Loading linked poll�
+							Loading linked poll…
+						</div>
+					) : (
+						<div className="card p-4 text-xs text-ink3 flex items-center justify-between border border-border/70 bg-surface2/40">
+							<span>Linked poll could not be loaded or was removed</span>
+							<button
+								type="button"
+								onClick={() => void fetchPoll()}
+								className="text-accent hover:underline font-semibold text-xs ml-2 cursor-pointer"
+							>
+								Retry
+							</button>
 						</div>
 					)}
 				</div>

@@ -73,6 +73,8 @@ export function isSessionDeadError(err: unknown): boolean {
 export const SESSION_DEAD_MESSAGE =
 	"Your anonymous session isn't recognized on this device anymore (its data was cleared). Your published posts stay up — recover the same ID in Settings → Account: on a device that still holds this ID press Show my pairing code, then type that 6-digit code here and press Pair this device. Or reset your anonymous ID there → Start fresh.";
 
+let lastSessionDeadDispatch = 0;
+
 export function hasAdminSession(): boolean {
 	return !!adminToken();
 }
@@ -364,11 +366,15 @@ async function request<T = unknown>(
 				const sessionDead =
 					serverCode !== undefined && SESSION_DEAD_CODES.has(serverCode);
 				if (sessionDead && typeof window !== "undefined") {
-					window.dispatchEvent(
-						new CustomEvent("vb:session-dead", {
-							detail: { message: SESSION_DEAD_MESSAGE },
-						}),
-					);
+					const now = Date.now();
+					if (now - lastSessionDeadDispatch > 15000) {
+						lastSessionDeadDispatch = now;
+						window.dispatchEvent(
+							new CustomEvent("vb:session-dead", {
+								detail: { message: SESSION_DEAD_MESSAGE },
+							}),
+						);
+					}
 				}
 				throw new ApiError(
 					res.status === 429 && retryAfter > 0

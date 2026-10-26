@@ -26,6 +26,13 @@ function chainStub() {
 vi.mock("../../api/_db-client.js", () => ({
 	default: { from: vi.fn(() => chainStub()) },
 }));
+vi.mock("../../api/_providers.js", () => ({
+	callNvidiaFast: vi.fn(async () => ({
+		text: JSON.stringify({ summary: "Food price concerns", keywords: ["food", "canteen"], category: "Food" }),
+		provider: "mock",
+		model: "mock-fast",
+	})),
+}));
 
 function response() {
 	const res = { statusCode: 200, body: undefined as unknown };
