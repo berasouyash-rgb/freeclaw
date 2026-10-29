@@ -882,7 +882,11 @@ describe("comments — private posts, repost guard, and identity gate", () => {
 		expect(res.statusCode).toBe(403);
 	});
 
-	it("blocks reposting previously removed content and audits the attempt", async () => {
+	it("holds a repost of previously removed content for review instead of hard-blocking it", async () => {
+		// A fingerprint match means "this text was removed before", not "this
+		// is a fresh violation" — so it must NOT 403. Legitimate resubmission
+		// should still reach a human: the comment publishes, but a pending
+		// review report is queued and the hold is audited.
 		const { checkSafetyRepost } = await import("../../api/_moderation.js");
 		(checkSafetyRepost as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
 			blocked: true,
@@ -900,12 +904,27 @@ describe("comments — private posts, repost guard, and identity gate", () => {
 			},
 			res,
 		);
-		expect(res.statusCode).toBe(403);
-		expect((res.body as { code?: string }).code).toBe("SAFETY_REPOST_BLOCKED");
+		// Published (created), not rejected.
+		expect(res.statusCode).toBe(201);
+		// A pending review report was queued for the held repost.
+		const report = state.lastInsert as {
+			target_type?: string;
+			status?: string;
+			reason?: string;
+		};
+		expect(report?.target_type).toBe("comment");
+		expect(report?.status).toBe("pending");
+		expect(report?.reason).toContain("safety repost held for review");
+		// The hold is audited (not a block).
 		expect(authMocks.auditLog).toHaveBeenCalledWith(
 			"moderation",
-			"comment_repost_blocked",
+			"comment_repost_held",
 			expect.stringContaining("anon-2"),
+		);
+		expect(authMocks.auditLog).not.toHaveBeenCalledWith(
+			"moderation",
+			"comment_repost_blocked",
+			expect.anything(),
 		);
 	});
 

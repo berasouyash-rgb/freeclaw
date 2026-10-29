@@ -747,20 +747,22 @@ export default async function handler(req, res) {
 					.status(400)
 					.json({ error: "Description must be at least 10 characters." });
 
-			// Safety repost guard: previously removed content can't return
-			// with trivial changes. Runs before the duplicate scan so reposts
-			// get the safety code (and bump the persistence counter).
+			// Safety repost guard: previously removed content resurfacing is
+			// NOT a hard block. A fingerprint match only means the text looks
+			// like something removed before — it does not re-prove a violation,
+			// and a blanket 403 stops legitimate resubmission (edited, appealed,
+			// or recontextualised posts). Instead we hold the post for a human
+			// and let the moderation pipeline below keep blocking anything that
+			// is genuinely harmful on its own merits. Audit trail preserved.
+			let repostHold = false;
 			const repost = await checkSafetyRepost(supabase, `${title} ${description}`);
 			if (repost.blocked) {
+				repostHold = true;
 				await auditLog(
 					"moderation",
-					"post_repost_blocked",
+					"post_repost_held",
 					`${author_id}: ${title.slice(0, 60)} [rule=${repost.rule} attempts=${repost.attempts}]`,
 				);
-				return res.status(403).json({
-					error: "This content was previously removed for safety reasons and cannot be reposted.",
-					code: "SAFETY_REPOST_BLOCKED",
-				});
 			}
 
 			// Duplicate detection: check for posts with very similar titles in the same category
@@ -916,8 +918,7 @@ export default async function handler(req, res) {
 			// also never publish: posts route to the review queue for an admin
 			// decision, while comments/polls hard-block outright.
 			const weakPII = decision.flags.some((f) => f.type === "privacy_weak");
-			const needsReview = decision.needsReview;
-			// Genuine cry for help — model-read distress with no attack flags,
+			const needsReview = decision.needsReview;			// Genuine cry for help — model-read distress with no attack flags,
 			// or a deterministic plea ("help me", "save me"): never public.
 			// Forced private + review so the support team sees it; the client
 			// explains this up front, but the server enforces it so no client
@@ -927,7 +928,11 @@ export default async function handler(req, res) {
 				needsSupport(decision) ||
 				assessRelevance(`${title} ${description}`).route === "support";
 			const holdForReview =
-				needsReview || weakPII || b.pending_review === true || supportRouting;
+				needsReview ||
+				weakPII ||
+				b.pending_review === true ||
+				supportRouting ||
+				repostHold;
 			const finalVisibility = supportRouting ? "private" : visibility;
 
 			// ── Real spam analysis (multi-signal, deterministic) ────────
@@ -967,7 +972,12 @@ export default async function handler(req, res) {
 				);
 			}
 
-			const initialStatus = (holdForReview || spamHold) ? "pending_review" : "reported";
+			// Deliberate private posts between students and administration do not require public moderator review.
+			// However, public posts diverted into private for crisis support (supportRouting) are held for review.
+			const initialStatus =
+				supportRouting || (visibility !== "private" && (holdForReview || spamHold))
+					? "pending_review"
+					: "reported";
 
 			const type = b.type === "suggestion" ? "suggestion" : "problem";
 			// Priority is computed automatically from content urgency —
@@ -991,7 +1001,11 @@ export default async function handler(req, res) {
 				visibility: finalVisibility,
 				priority,
 				tags,
-				image_url: clean(b.image_url, 500) || null,
+				// Only a stored https URL: a `data:` payload would carry the image
+				// bytes past /api/upload and its safety review.
+				image_url: /^https:\/\//i.test(String(b.image_url || ""))
+					? clean(b.image_url, 500)
+					: null,
 				author_id,
 				status: initialStatus,
 				progress: 0,

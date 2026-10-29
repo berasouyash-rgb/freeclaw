@@ -213,19 +213,20 @@ export default async function handler(req, res) {
 			const rawBody = clean(b.body, 500);
 			if (rawBody.length < 2)
 				return res.status(400).json({ error: "Comment is too short." });
-			// Safety repost guard (see _posts.js): previously removed content
-			// can't return with trivial changes; attempts feed repeat-offender evidence.
+			// Safety repost guard (see _posts.js): a fingerprint match means
+			// "this looks like text removed before" — not a fresh violation.
+			// Don't hard-block; hold for a human instead so legitimate
+			// resubmission still gets reviewed. The moderation pipeline below
+			// keeps blocking genuinely harmful content on its own merits.
+			let repostHold = false;
 			const repost = await checkSafetyRepost(supabase, rawBody);
 			if (repost.blocked) {
+				repostHold = true;
 				await auditLog(
 					"moderation",
-					"comment_repost_blocked",
+					"comment_repost_held",
 					`${author_id}: ${rawBody.slice(0, 60)} [rule=${repost.rule} attempts=${repost.attempts}]`,
 				);
-				return res.status(403).json({
-					error: "This content was previously removed for safety reasons and cannot be reposted.",
-					code: "SAFETY_REPOST_BLOCKED",
-				});
 			}
 			// Server-side PII/safety gate — verdict from the unified safety
 			// pipeline (same blocked set the old inline check computed).
@@ -243,17 +244,30 @@ export default async function handler(req, res) {
 						(f) => f.type === "threat" || f.type === "suicide" || f.type === "crisis",
 					);
 					if (isSevereThreat) {
-						await alertAdminThreat({
-							surface: "comment",
-							authorId: author_id,
-							excerpt: rawBody,
-							flags: decision.flags,
-						});
-						await auditLog(
-							"moderation",
-							"comment_threat_blocked",
-							`${author_id}: ${rawBody.slice(0, 60)} [${decision.flags.map((f) => f.type).join(", ")}]`,
-						);
+						await Promise.allSettled([
+							alertAdminThreat({
+								surface: "comment",
+								authorId: author_id,
+								excerpt: rawBody,
+								flags: decision.flags,
+							}),
+							strikeSlangAbuse(author_id, "comment_threat", rawBody),
+							typeof supabase?.from?.("reports")?.insert === "function"
+								? supabase.from("reports").insert({
+										target_id: b.post_id || "unknown",
+										target_type: "post",
+										reason: `[Threat Protection] Comment threat: ${decision.flags.map((f) => f.type).join(", ")}`,
+										details: `Student ${author_id} blocked for threat in comment: "${rawBody.slice(0, 300)}"`,
+										status: "pending",
+										author_id: author_id,
+									})
+								: Promise.resolve(),
+							auditLog(
+								"moderation",
+								"comment_threat_blocked",
+								`${author_id}: ${rawBody.slice(0, 60)} [${decision.flags.map((f) => f.type).join(", ")}]`,
+							),
+						]);
 						return res.status(403).json({
 							error: decision.message || "Threatening or violent content is strictly prohibited.",
 							code: decision.code || "THREAT_BLOCKED",
@@ -370,17 +384,25 @@ export default async function handler(req, res) {
 				.select()
 				.single();
 			if (error) throw error;
-			if (autoQueueForReview && data?.id) {
+			// A safety-repost hit is queued for a human here (never blocked):
+			// the comment publishes, but a moderator decides whether the
+			// resurfaced text should stand. Keeps legitimate resubmission alive.
+			const queueReason = autoQueueForReview
+				? autoReviewReason
+				: repostHold
+					? "safety repost held for review"
+					: "";
+			if (queueReason && data?.id) {
 				const rIns = supabase.from("reports").insert({
 					target_id: data.id,
 					target_type: "comment",
-					reason: `[Auto-Review] Flagged comment: ${autoReviewReason}`,
+					reason: `[Auto-Review] Flagged comment: ${queueReason}`,
 					details: rawBody.slice(0, 200),
 					status: "pending",
 					author_id: author_id,
 				});
-				if (rIns && typeof rIns.then === "function") {
-					rIns.then(() => {}).catch(() => {});
+				if (rIns) {
+					Promise.resolve(rIns).catch(() => {});
 				}
 			}
 			if (!is_admin_msg) await ensureUser(author_id);

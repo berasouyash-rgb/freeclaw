@@ -18,7 +18,20 @@ import {
 } from "./_auth.js";
 import supabase from "./_db-client.js";
 import { maskPII } from "./_moderation.js";
-import { callNvidiaFast } from "./_providers.js";
+import { callLLMChain, callNvidiaFast, callPublicFrontierLLM } from "./_providers.js";
+import { contextualModeration } from "./_context-moderation.js";
+import { evaluateContentDeep } from "./_safety-pipeline.js";
+
+function parseJsonSafe(text) {
+	if (!text || typeof text !== "string") return null;
+	const jsonMatch = text.match(/\{[\s\S]*\}/);
+	if (jsonMatch) {
+		try {
+			return JSON.parse(jsonMatch[0]);
+		} catch {}
+	}
+	return null;
+}
 
 async function callNvidiaLLM(systemPrompt, userPrompt, maxTokens = 2000) {
 	// ── Outbound PII redaction (defense-in-depth) ────────────────────────
@@ -34,21 +47,34 @@ async function callNvidiaLLM(systemPrompt, userPrompt, maxTokens = 2000) {
 		? `${maskedPrompt}\n\n[SYSTEM NOTE: [EMAIL], [PHONE], [ADDRESS], and [PINCODE] placeholders above replace personal information found in this submission. Flag it: set personal_info_detected: true, risk_score: 80, decision: "high_risk", and list it in privacy_issues.]`
 		: maskedPrompt;
 
+	// Lane 1: Fast Hedged Lane (sub-second NVIDIA Nemotron + Groq)
 	try {
-		// Use fast lane (Groq openai/gpt-oss-120b + NVIDIA Nemotron hedged)
 		const res = await callNvidiaFast(systemPrompt, safeUserPrompt, 8000);
-		if (res?.text) {
-			const jsonMatch = res.text.match(/\{[\s\S]*\}/);
-			if (jsonMatch) {
-				try {
-					return JSON.parse(jsonMatch[0]);
-				} catch (e) {
-					console.error("Failed to parse pre-publish AI JSON:", e.message);
-				}
-			}
-		}
+		const parsed = parseJsonSafe(res?.text);
+		if (parsed) return parsed;
 	} catch (err) {
-		console.error("Pre-publish AI call failed:", err.message);
+		console.warn("Pre-publish AI fast lane failed:", err.message);
+	}
+
+	// Lane 2: Full Provider Chain
+	try {
+		const res = await callLLMChain(systemPrompt, safeUserPrompt, [], "high");
+		const parsed = parseJsonSafe(res?.text);
+		if (parsed) return parsed;
+	} catch (err) {
+		console.warn("Pre-publish AI chain failed:", err.message);
+	}
+
+	// Lane 3: Frontier Public Fallback (OpenAI GPT-4o / Mistral)
+	try {
+		const res = await callPublicFrontierLLM([
+			{ role: "system", content: systemPrompt },
+			{ role: "user", content: safeUserPrompt },
+		], 8000);
+		const parsed = parseJsonSafe(res?.text);
+		if (parsed) return parsed;
+	} catch (err) {
+		console.warn("Pre-publish AI public frontier failed:", err.message);
 	}
 
 	return null;
@@ -91,6 +117,12 @@ ACTUAL VIOLATIONS (the POST AUTHOR is doing it):
 - "I'll post your nudes" → BLACKMAIL/EXPLICIT. UNSAFE.
 - "All [racial group] are terrible" → HATE SPEECH. UNSAFE.
 - "I want to kill myself, I'm going to end it" → FIRST-PERSON SELF-HARM. UNSAFE (hold for review — never publish a suicidal crisis post unreviewed).
+
+VEILED / IMPLIED INTIMIDATION (second-person, future-oriented, no stated act):
+- "Enjoy it while it lasts." / "You seem pretty comfortable with the way things are right now. I wonder if you'll feel the same way a little later." → MAY imply intimidation. It does NOT establish a threat on its own. Do not call it a threat, do not set threats_detected, do not use "high_risk". Set risk_score 40, decision "revision", and put an entry in safety_issues whose wording says the wording MAY imply intimidation but does not establish a threat on its own, so a human can read the surrounding thread.
+- Same for "we'll see what happens", "sooner than you think", "when you least expect it", "wait and see who laughs", "hope you sleep well" used as a closing line toward a person.
+- ONE weak marker ("we'll see", "a little later", "I wonder if you'll…") is ordinary conversation → SAFE, risk 0. Only flag when several such markers stack, or one unmistakable one appears.
+- If the author is quoting or describing someone else ("he said he'd make me regret it") → REPORT, SAFE, risk 0.
 
 SLANG THAT IS NOT ABUSE (when used as opinions or casual speech):
 - "no cap" = no lie/truth → SAFE
@@ -181,6 +213,7 @@ SCORING RULES:
 - POST AUTHOR expresses first-person self-harm/suicidal intent → risk >= 75, self_harm_detected = true, decision = "high_risk" (reports like "a kid told me to kill myself" stay SAFE with risk 0)
 - Spam in POST → risk >= 45, spam_detected = true, decision = "revision"
 - Gibberish/too short → risk >= 25, decision = "revision"
+- Veiled/implied intimidation (see above) → risk = 40, decision = "revision", threats_detected = false, high_risk is WRONG here. Say the wording MAY imply intimidation but does not establish a threat on its own.
 
 REPORTING is not a violation. A post saying "someone bullied me" or "a student uses profanity" is a REPORT and should be marked SAFE. Slang like "no cap", "bruh", "sus", "mid", "slay" is NOT abuse.`;
 
@@ -271,8 +304,65 @@ async function detectDuplicates(title, description) {
 	]);
 }
 
+// ─── Veiled / implied intimidation ────────────────────────────────
+// Non-explicit wording that does NOT establish a threat on its own but is a
+// recognised coercion/grooming pattern: second-person, future-oriented,
+// conditional menace with no stated act. The old regexes only caught explicit
+// phrasing ("watch your back", "you will pay"), so "Enjoy it while it lasts" +
+// "I wonder if you'll feel the same way a little later" scored 0/100 and
+// published silently. That is wrong in the other direction: a human should
+// decide with the surrounding thread in view.
+//
+// Design contract:
+//   * never auto-blocks — floors the score into the "needs review" band
+//   * one STRONG marker or two WEAK markers is enough
+//   * describing someone else's behaviour ("he said ...") never flags
+//   * a single weak marker ("we'll see", "I wonder if you'll like the canteen")
+//     stays silent, so ordinary conversation is untouched
+const VEILED_STRONG = [
+	/\benjoy\s+it\s+while\s+(?:it|you)\s+(?:lasts?|can)\b/i,
+	/\b(?:you'?ll|you\s+will)\s+(?:see|find\s+out|regret)\s+(?:what\s+happens|it|later|soon)\b/i,
+	/\bwhen\s+you\s+least\s+expect\s+it\b/i,
+	/\bsooner\s+than\s+you\s+think\b/i,
+	/\b(?:we'?ll|we\s+will)\s+see\s+(?:about\s+that|what\s+happens|who\s+laughs)\b/i,
+	/\bwait\s+and\s+see\s+(?:what|who|how)\b/i,
+	/\b(?:you'?ll|you\s+will)\s+pay\s+for\s+(?:this|that)\b/i,
+];
+const VEILED_WEAK = [
+	/\bi\s+wonder\s+if\s+you'?ll\b/i,
+	/\bfeel\s+the\s+same\s+way\b/i,
+	/\ba\s+(?:little|bit)\s+later\b/i,
+	/\b(?:we'?ll|we\s+will)\s+see\b/i,
+	/\bjust\s+(?:you\s+)?wait\b/i,
+	/\bhope\s+you'?re\s+ready\b/i,
+	/\bhope\s+you\s+sleep\s+well\b/i,
+	/\bthe\s+way\s+things\s+are\s+right\s+now\b/i,
+	/\bthings\s+(?:are\s+going\s+to|will)\s+change\b/i,
+	/\b(?:comfortable|safe)\s+right\s+now\b/i,
+	/\b(?:you\s+seem|you\s+look)\s+(?:pretty\s+)?comfortable\b/i,
+];
+
+/** Deterministic veiled-intimidation signal. Returns matched marker count. */
+function veiledIntimidation(text) {
+	const t = String(text || "");
+	// Quoting / reporting someone else's words is not the author doing it.
+	if (/\b(?:he|she|they)\s+(?:said|says|told|tells|wrote|writes|messaged|texted|threatened)\b/i.test(t))
+		return { flagged: false, hits: 0 };
+	const strong = VEILED_STRONG.filter((re) => re.test(t)).length;
+	const weak = VEILED_WEAK.filter((re) => re.test(t)).length;
+	return { flagged: strong >= 1 || weak >= 2, hits: strong + weak };
+}
+
+export const VEILED_INTIMIDATION_ISSUE =
+	"VEILED INTIMIDATION — the wording may imply a threat but does not establish one on its own; held for contextual review.";
+
+/** Public, side-effect-free probe used by the API test suite. */
+export function detectVeiledIntimidation(text) {
+	return veiledIntimidation(text);
+}
+
 // ─── Emergency Regex Fallback (when NVIDIA API is down) ───────────
-function emergencyRegex(text) {
+async function emergencyRegex(text, visibility = "public") {
 	const lower = String(text || "")
 		.slice(0, 10000)
 		.toLowerCase(); // FIX-M4: cap input length to prevent ReDoS
@@ -430,11 +520,12 @@ function emergencyRegex(text) {
 			text,
 		)
 	) {
-		// If it's a report ("student is disruptive"), it's likely describing someone else's behavior
+		// If it's a report ("student is disruptive") or feedback about staff/teachers, it's feedback/reporting
 		const isReportAboutOthers =
-			/\b(student|teacher|staff|someone|they|he|she|person)\s+(is|was)\s+(a\s+)?(bad|ugly|stupid|dumb|annoying|terrible|horrible|disgusting)\b/i.test(
+			/\b(student|teacher|staff|faculty|principal|someone|they|he|she|person)\s+(is|was)\s+(a\s+)?(bad|ugly|stupid|dumb|annoying|terrible|horrible|disgusting)\b/i.test(
 				text,
-			);
+			) ||
+			/\b(?:sir|ma'?am|mam|teacher|professor|faculty|staff|principal|instructor)\b/i.test(text);
 		if (!isReportAboutOthers && !isReporting) {
 			safetyIssues.push("BULLYING: targeting a specific person");
 			riskScore += 45;
@@ -455,6 +546,14 @@ function emergencyRegex(text) {
 	) {
 		safetyIssues.push("HARASSMENT/INTIMIDATION/THREAT");
 		riskScore += 75;
+	}
+
+	// Veiled / implied intimidation — floors the score into the human-review
+	// band. Never high_risk on its own, never 0 either.
+	const veiled = veiledIntimidation(text);
+	if (veiled.flagged && !isDescribingOthers) {
+		safetyIssues.push(VEILED_INTIMIDATION_ISSUE);
+		riskScore = Math.max(riskScore, 40);
 	}
 
 	// Explicit content — only if POST AUTHOR is sharing it
@@ -480,7 +579,20 @@ function emergencyRegex(text) {
 	// the severe safety categories are never merely "revision", and any
 	// other safety issue floors at revision (never silently "safe").
 	let decision = "safe";
-	if (
+	if (visibility === "private") {
+		// Private posts are direct to school administration.
+		// Only direct severe profanity / hate speech / malice stops them.
+		// Contact info (phone/email/address) does NOT block private reports to admin.
+		const hasDirectSevereMalice = safetyIssues.some((i) =>
+			/HATE|BLACKMAIL|SELF-HARM/.test(i),
+		);
+		if (hasDirectSevereMalice) {
+			decision = "high_risk";
+		} else {
+			decision = "safe";
+			riskScore = 0;
+		}
+	} else if (
 		riskScore >= 70 ||
 		privacyIssues.length > 0 ||
 		safetyIssues.some((i) =>
@@ -492,6 +604,35 @@ function emergencyRegex(text) {
 		decision = "revision";
 	}
 
+	// Unified contextual moderation check
+	let ctxMod = null;
+	try {
+		ctxMod = await contextualModeration(text);
+	} catch {}
+	const hasAbuseReport = ctxMod && ctxMod.flags && ctxMod.flags.some((f) => 
+		f.type === "threat_report" || 
+		f.type === "reported-abuse" || 
+		f.type === "violence" || 
+		f.type === "bullying" ||
+		f.type === "coercion" ||
+		f.type === "privacy" ||
+		f.type === "privacy_weak"
+	);
+	if (hasAbuseReport && (!isReporting || isDirectAbuse)) {
+		if (visibility === "private") {
+			decision = "safe";
+			riskScore = 0;
+		} else {
+			if (decision !== "high_risk") {
+				decision = "revision";
+				riskScore = Math.max(riskScore, 40);
+				if (!safetyIssues.some((s) => s.includes("report of abuse") || s.includes("held for a human"))) {
+					safetyIssues.unshift("This reads as a report of abuse — held for a human to review.");
+				}
+			}
+		}
+	}
+
 	return {
 		riskScore,
 		decision,
@@ -499,7 +640,9 @@ function emergencyRegex(text) {
 			? safetyIssues.join("; ")
 			: privacyIssues.length
 				? privacyIssues.join("; ")
-				: "Regex fallback analysis",
+				: visibility === "private"
+					? "Private report — submitted directly to school administration."
+					: "Content passed automated checks",
 		checks: {
 			privacy: { pass: privacyIssues.length === 0, issues: privacyIssues },
 			safety: { pass: safetyIssues.length === 0, issues: safetyIssues },
@@ -519,11 +662,16 @@ function emergencyRegex(text) {
 		blackmail_detected: safetyIssues.some((i) => i.includes("BLACKMAIL")),
 		explicit_detected: safetyIssues.some((i) => i.includes("EXPLICIT")),
 		self_harm_detected: safetyIssues.some((i) => i.includes("SELF-HARM")),
+		// Contextual signal only — never high_risk on its own. Consumers must
+		// treat this as "a human should look with the thread in view".
+		veiled_intimidation_detected: safetyIssues.includes(
+			VEILED_INTIMIDATION_ISSUE,
+		),
 		spam_detected: false,
 		suggested_priority:
 			riskScore >= 70 ? "critical" : riskScore >= 40 ? "high" : "medium",
 		suggested_category: "Other",
-		summary: `Regex fallback: risk ${riskScore}`,
+		summary: `Safety score: ${100 - riskScore}/100`,
 	};
 }
 
@@ -536,6 +684,7 @@ async function runChecks(
 	category,
 	authorId,
 	startTime,
+	visibility = "public",
 ) {
 	// ── Call NVIDIA Nemotron + DB checks in parallel ─────────────
 	const [aiResult, spamDB, duplicates] = await Promise.all([
@@ -552,7 +701,7 @@ async function runChecks(
 	// ── If NVIDIA API failed, use emergency regex ────────────────
 	if (!aiResult) {
 		console.error("NVIDIA LLM unavailable — using emergency regex fallback");
-		const fallback = emergencyRegex(combinedText);
+		const fallback = await emergencyRegex(combinedText, visibility);
 		const checks = {
 			...fallback.checks,
 			spam: { pass: spamDB.pass, issues: spamDB.issues },
@@ -560,6 +709,12 @@ async function runChecks(
 		};
 		return {
 			...fallback,
+			// Map the fallback's suggested_priority onto the `priority` field
+			// unifiedReview reads. Without this, a veiled-intimidation floor at
+			// risk 40 would report priority "medium" (the default) instead of
+			// "high" — the score and the priority would disagree on the LLM-down
+			// path while agreeing on the LLM-up path.
+			priority: fallback.suggested_priority || "medium",
 			checks,
 			spamDB,
 			duplicates,
@@ -581,7 +736,7 @@ async function runChecks(
 	// ALWAYS run the deterministic regex scan too — the LLM must never
 	// "forgive" a clear address/phone/email. Merge regex hits into the
 	// AI result and raise the score so a leaked address is never published.
-	const regexScan = emergencyRegex(combinedText);
+	const regexScan = await emergencyRegex(combinedText, visibility);
 	for (const issue of regexScan.checks.privacy.issues || []) {
 		if (
 			!allPrivacy.some((i) =>
@@ -597,7 +752,7 @@ async function runChecks(
 		aiResult.risk_score = Math.max(aiResult.risk_score || 0, 80);
 	}
 
-	const allSafety = [...(aiResult.safety_issues || [])];
+	let allSafety = [...(aiResult.safety_issues || [])];
 	if (aiResult.threats_detected) allSafety.push("⚠️ THREATS DETECTED");
 	if (aiResult.bullying_detected) allSafety.push("⚠️ BULLYING DETECTED");
 	if (aiResult.hate_speech_detected) allSafety.push("⚠️ HATE SPEECH DETECTED");
@@ -614,10 +769,39 @@ async function runChecks(
 
 	let riskScore = aiResult.risk_score || 0;
 	if (!spamDB.pass) riskScore = Math.max(riskScore, 45);
+
+	// Veiled / implied intimidation — deterministic half merged into the AI path.
+	// The model frequently scores non-explicit menace as 0 ("no threat stated"),
+	// which published it silently. Floor at 40 => "revision" (human review) but
+	// NEVER high_risk from this signal alone, and never when the author is
+	// quoting/describing someone else. Explicit severe categories keep their own
+	// higher floors.
+	const veiledDetected = Boolean(regexScan.veiled_intimidation_detected);
+	if (veiledDetected) {
+		if (!allSafety.includes(VEILED_INTIMIDATION_ISSUE))
+			allSafety.push(VEILED_INTIMIDATION_ISSUE);
+		const severe =
+			aiResult.threats_detected ||
+			aiResult.hate_speech_detected ||
+			aiResult.doxxing_detected ||
+			aiResult.blackmail_detected ||
+			aiResult.self_harm_detected ||
+			aiResult.explicit_detected;
+		if (!severe) riskScore = Math.max(riskScore, 40);
+	}
 	riskScore = Math.min(100, riskScore);
 
 	let decision = aiResult.decision || "safe";
-	if (
+	if (visibility === "private") {
+		// Private posts are direct to administration.
+		// Only direct severe profanity / hate speech / blackmail stops them.
+		if (aiResult.hate_speech_detected || aiResult.blackmail_detected || aiResult.explicit_detected) {
+			decision = "high_risk";
+		} else {
+			decision = "safe";
+			riskScore = 0;
+		}
+	} else if (
 		riskScore >= 70 ||
 		aiResult.threats_detected ||
 		aiResult.hate_speech_detected ||
@@ -633,16 +817,52 @@ async function runChecks(
 		decision = "revision";
 	}
 
+	// ── Unified reconciliation with Contextual Content Review ──
+	let ctxMod = null;
+	try {
+		ctxMod = await contextualModeration(combinedText);
+	} catch {}
+	const hasAbuseReport = ctxMod && ctxMod.flags && ctxMod.flags.some((f) => 
+		f.type === "threat_report" || 
+		f.type === "reported-abuse" || 
+		f.type === "violence" || 
+		f.type === "bullying" ||
+		f.type === "coercion" ||
+		f.type === "privacy" ||
+		f.type === "privacy_weak"
+	);
+	if (hasAbuseReport && aiResult?.decision !== "safe") {
+		if (visibility === "private") {
+			// In private posts between student and admin, no moderator review is needed
+			decision = "safe";
+			riskScore = 0;
+			allSafety = allSafety.filter((s) => !/abuse|threat/i.test(s));
+		} else {
+			// In public posts, reports of abuse must be held for human review before going public
+			if (decision !== "high_risk") {
+				decision = "revision";
+				riskScore = Math.max(riskScore, 40);
+				if (!allSafety.some((s) => s.includes("report of abuse") || s.includes("held for a human"))) {
+					allSafety.unshift("This reads as a report of abuse — held for a human to review.");
+				}
+			}
+		}
+	}
+
 	const reason =
-		aiResult.reason ||
 		(allSafety.length
 			? allSafety.join("; ")
 			: allPrivacy.length
 				? allPrivacy.join("; ")
-				: "Content passed all checks");
+				: visibility === "private"
+					? "Private report — submitted directly to school administration."
+					: aiResult.reason || "Content passed all checks");
 
 	const checks = {
-		privacy: { pass: allPrivacy.length === 0, issues: allPrivacy },
+		privacy: {
+			pass: visibility === "private" ? true : allPrivacy.length === 0,
+			issues: allPrivacy,
+		},
 		safety: { pass: allSafety.length === 0, issues: allSafety },
 		spam: { pass: allSpam.length === 0, issues: allSpam },
 		quality: { pass: allQuality.length === 0, issues: allQuality },
@@ -678,6 +898,256 @@ async function runChecks(
 	};
 }
 
+// ══════════════════════════════════════════════════════════════
+// UNIFIED REVIEW — ONE verdict for the author
+// ══════════════════════════════════════════════════════════════
+// Before this, the Submit page ran TWO independent reviews that could
+// contradict each other: the live "content review" (the deterministic +
+// contextual safety gate) and the "AI review — safe to publish" panel
+// (this module's LLM analysis). A post the gate flagged could still be
+// painted green by the analysis, because each judge only saw half the
+// picture. A creator cannot act on two verdicts that disagree.
+//
+// `unifiedReview` runs both passes and merges them so the STRICTER one
+// wins. Neither judge can downgrade the other:
+//   * the safety gate's `blocked` is final (it is the write-path policy);
+//   * its flags are merged into the four check buckets;
+//   * the risk score is the max of both;
+//   * categories that either pass flags force at least "revision".
+// The result is the single object both `/api/pre-publish` and the live
+// `/api/moderate` preview return, so the preview and the publish gate can
+// never disagree.
+
+const GATE_CHECKS = {
+	privacy: "privacy",
+	privacy_weak: "privacy",
+	doxxing: "privacy",
+	spam: "spam",
+	profanity: "quality",
+};
+
+const SEVERITY_SCORE = { none: 0, low: 20, medium: 45, high: 75, critical: 100 };
+
+function gateScore(flags) {
+	return (Array.isArray(flags) ? flags : []).reduce(
+		(max, f) => {
+			if (f?.type === "threat_report" || f?.type === "reported-abuse") return max;
+			return Math.max(max, SEVERITY_SCORE[f?.severity] ?? 0);
+		},
+		0,
+	);
+}
+
+export function toClientReview(result) {
+	return {
+		decision: result.decision,
+		risk_score: result.riskScore,
+		reason: result.reason,
+		checks: result.checks,
+		analysis: {
+			priority: result.priority,
+			department: result.department,
+			category: result.category,
+			summary: result.summary,
+			estimated_resolution_time: result.resolutionTime,
+			llm_analyzed: result.llmAnalyzed,
+			// Which engines produced this verdict — the UI shows it so
+			// "AI reviewed" is a fact, not a guess.
+			engines: result.engines,
+		},
+		// The gate's own verdict, for the client's "the server will reject
+		// this" affordance and its flag messages.
+		blocked: result.gate?.blocked === true,
+		code: result.gate?.code || null,
+	};
+}
+
+/**
+ * Run the safety gate and the LLM analysis, then merge them into one
+ * verdict. Never throws: a failed pass degrades to the other pass's
+ * answer, and both failing yields the fail-closed "held for review"
+ * answer that this module already returns on pipeline errors.
+ */
+export async function unifiedReview(opts = {}) {
+	const {
+		text,
+		surface = "queued",
+		contentType = "post",
+		title = "",
+		description = "",
+		category = "",
+		authorId = "anonymous",
+		visibility = "public",
+	} = opts;
+	const startTime = Date.now();
+	const combined = String(text || "").slice(0, 12000);
+
+	const [gateOutcome, analysisOutcome] = await Promise.allSettled([
+		evaluateContentDeep(combined, surface, null, {
+			timeoutMs: 8000,
+			taskKey: "review.unified",
+		}),
+		runChecks(
+			combined,
+			contentType,
+			title,
+			description,
+			category,
+			authorId,
+			startTime,
+			visibility,
+		),
+	]);
+
+	const gate =
+		gateOutcome.status === "fulfilled" && gateOutcome.value
+			? gateOutcome.value
+			: null;
+	const analysis =
+		analysisOutcome.status === "fulfilled" && analysisOutcome.value
+			? analysisOutcome.value
+			: null;
+
+	if (!gate && !analysis) {
+		// Both passes failed. Hold for review — never auto-approve.
+		return {
+			riskScore: 75,
+			decision: "high_risk",
+			reason: "Content review unavailable — held for admin review",
+			checks: {
+				privacy: { pass: false, issues: ["Review unavailable"] },
+				safety: { pass: false, issues: ["Review unavailable"] },
+				spam: { pass: false, issues: ["Review unavailable"] },
+				quality: { pass: false, issues: ["Review unavailable"] },
+				duplicates: { count: 0, items: [] },
+			},
+			priority: "high",
+			department: category || "Other",
+			category: category || "Other",
+			summary: "Review system error — held for review",
+			resolutionTime: "4-8 hours",
+			duplicates: [],
+			contentType,
+			authorId,
+			startTime,
+			llmAnalyzed: false,
+			engines: [],
+			title,
+			description,
+			body: combined,
+			options: null,
+			aiResult: null,
+			gate: null,
+			gateDecision: {
+				blocked: false,
+				flags: [],
+				action: "UNKNOWN",
+				model_used: false,
+			},
+		};
+	}
+
+	const gateFlags = Array.isArray(gate?.flags) ? gate.flags : [];
+
+	// Start from the analysis checks when they exist. An absent check stays
+	// absent (a check that never ran is not a pass); when only the gate ran,
+	// only the buckets it can actually judge are reported.
+	const checks = analysis?.checks
+		? { ...analysis.checks }
+		: {
+				duplicates: { count: 0, items: [] },
+			};
+
+	for (const key of ["privacy", "safety", "spam", "quality"]) {
+		if (checks[key]) {
+			checks[key] = {
+				pass: checks[key].pass !== false,
+				issues: [...(checks[key].issues || [])],
+			};
+		}
+	}
+	const ensure = (key) => {
+		if (!checks[key]) checks[key] = { pass: true, issues: [] };
+		return checks[key];
+	};
+
+	// Merge every gate flag into exactly one bucket, so the same finding can
+	// never be counted twice and no finding can be dropped.
+	for (const flag of gateFlags) {
+		if (analysis?.decision === "safe" && (flag?.type === "threat_report" || flag?.type === "reported-abuse")) {
+			continue;
+		}
+		const bucket = GATE_CHECKS[flag?.type] || "safety";
+		const target = ensure(bucket);
+		const message = String(flag?.message || flag?.type || "Policy violation");
+		if (!target.issues.some((i) => i.toLowerCase() === message.toLowerCase()))
+			target.issues.push(message);
+		target.pass = false;
+	}
+
+	const score = Math.max(
+		Number(analysis?.riskScore) || 0,
+		gateScore(gateFlags),
+		gate?.blocked ? 80 : 0,
+	);
+
+	let decision = analysis?.decision || "safe";
+	if (gate?.blocked || score >= 70) decision = "high_risk";
+	else if (decision !== "high_risk" && (score >= 30 || gateFlags.some((f) => f?.type !== "threat_report" && f?.type !== "reported-abuse")))
+		decision = "revision";
+	else if (decision !== "high_risk" && decision !== "revision") decision = "safe";
+
+	const gateMessage = gate?.blocked
+		? String(gate?.message || gateFlags[0]?.message || "This content breaks the school safety policy.")
+		: null;
+
+	const reason =
+		gateMessage ||
+		analysis?.reason ||
+		(!gateFlags.length ? "Content passed all checks" : gateFlags.map((f) => f.message).join("; "));
+
+	const engines = [];
+	if (gate) engines.push("safety-gate");
+	if (gate?.model_used) engines.push("gate-model");
+	if (analysis?.llmAnalyzed) engines.push("analysis-model");
+
+	return {
+		riskScore: Math.min(100, score),
+		decision,
+		reason,
+		checks,
+		priority: analysis?.priority || "medium",
+		department: analysis?.department || category || "Other",
+		category: analysis?.category || category || "Other",
+		summary: analysis?.summary || reason,
+		resolutionTime: analysis?.resolutionTime || "1-3 days",
+		duplicates: analysis?.duplicates || [],
+		contentType,
+		authorId,
+		startTime,
+		llmAnalyzed: Boolean(analysis?.llmAnalyzed || gate?.model_used),
+		engines,
+		title,
+		description,
+		body: combined,
+		options: null,
+		aiResult: analysis?.aiResult || null,
+		gate: gate
+			? {
+					blocked: gate.blocked === true,
+					code: gate.code || null,
+					message: gate.message || null,
+				}
+			: null,
+		gateDecision: gate || {
+			blocked: false,
+			flags: [],
+			action: "UNKNOWN",
+			model_used: false,
+		},
+	};
+}
+
 // ─── Main Handler ───────────────────────────────────────────────
 export default async function handler(req, res) {
 	cors(res, req);
@@ -703,6 +1173,7 @@ export default async function handler(req, res) {
 	const body = clean(b.body || "", 500);
 	const contentType = b.content_type || "post";
 	const category = b.category || "";
+	const visibility = b.visibility === "private" ? "private" : "public";
 	const options = Array.isArray(b.options)
 		? b.options
 				.map((o) => clean(o, 60))
@@ -727,22 +1198,28 @@ export default async function handler(req, res) {
 
 	try {
 		// ── Overall 10s timeout — must return within budget ───────────
+		// ONE review: the safety gate and the LLM analysis merged, stricter wins.
+		// `/api/moderate` calls this exact function for the live preview, so the
+		// panel the student reads and the check that publishes cannot disagree.
 		const result = await Promise.race([
-			runChecks(
-				combinedText,
+			unifiedReview({
+				text: combinedText,
+				// Match the surface the write path will apply: polls publish
+				// through "direct" (no review queue), posts through "queued".
+				surface: contentType === "poll" ? "direct" : "queued",
 				contentType,
 				title,
 				description,
 				category,
 				authorId,
-				startTime,
-			),
+				visibility,
+			}),
 			new Promise((resolve) =>
 				setTimeout(
-					() =>
+					async () =>
 						resolve({
 							timedOut: true,
-							fallback: emergencyRegex(combinedText),
+							fallback: await emergencyRegex(combinedText, visibility),
 						}),
 					10000,
 				),
