@@ -68,8 +68,11 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # Go through scripts/vitest-run.mjs so Vitest's transform cache is pinned
+      # inside the workspace instead of a shared system temp dir that cleaners
+      # can sweep mid-run (which surfaces as ENOENT collection failures).
       - name: Run Vitest
-        run: npx vitest run --reporter=verbose
+        run: node ./scripts/vitest-run.mjs run --reporter=verbose
         env:
           NODE_OPTIONS: '--max-old-space-size=4096'
 
@@ -100,7 +103,7 @@ jobs:
         run: npm ci
 
       - name: Run API tests
-        run: npx vitest run --config vitest.config.api.ts --maxWorkers=1 --minWorkers=1
+        run: node ./scripts/vitest-run.mjs run --config vitest.config.api.ts --maxWorkers=1 --minWorkers=1
         env:
           NODE_OPTIONS: '--max-old-space-size=4096'
 

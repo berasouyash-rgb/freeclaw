@@ -98,7 +98,7 @@ export function useAdminStream(onUpdate: () => void) {
 
 		/** Detect a NEW pending escalation (not yet decided). */
 		const pollEscalations = async () => {
-			if (cancelled || polling || !hasAdminSession()) return;
+			if (cancelled || polling || !hasAdminSession() || failures >= MAX_FAILURES) return;
 			polling = true;
 			try {
 				const r = await api.post<{ pending_escalations?: unknown }>("/api/admin", {
