@@ -436,6 +436,15 @@ export default async function handler(req, res) {
 			});
 		} catch (err) { console.warn("[search] telemetry drop", { error: err?.message || String(err) }); }
 
+		if (!viewer && !searchAdmin) {
+			res.setHeader(
+				"Cache-Control",
+				"public, max-age=0, s-maxage=10, stale-while-revalidate=10, stale-if-error=60",
+			);
+		} else {
+			res.setHeader("Cache-Control", "private, no-cache");
+		}
+
 		return res.status(200).json({
 			results: paged,
 			total,

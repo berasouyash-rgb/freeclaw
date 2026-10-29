@@ -255,6 +255,13 @@ export function staleWhileRevalidate(fn, options = {}) {
 				});
 				return result;
 			})
+			.catch((err) => {
+				if (entry && entry.value) {
+					logger.warn("cache", "stale_fallback_on_error", { key: cacheKey, error: err?.message || String(err) });
+					return entry.value;
+				}
+				throw err;
+			})
 			.finally(() => {
 				_inflightFetch.delete(cacheKey);
 			});
