@@ -15,6 +15,13 @@ import { storageBackend, storageReady } from "./storage";
 
 const ID_KEY = "vb:anonId";
 const CREATED_KEY = "vb:anonCreated";
+// Provisional id + the "it owns writes" flag, mirrored into the local
+// channels (localStorage / cookie) rather than the device store. The device
+// store keeps the durable id untouched — the mirror only stops a slow boot
+// from minting a NEW temp id every launch, which is what made a returning
+// student's reputation appear to reset.
+const PROVISIONAL_KEY = "vb:anonProvisional";
+const PROVISIONAL_USED_KEY = "vb:anonProvisionalUsed";
 
 // ---- best-effort storage adapter ---------------------------------------
 // The durable store is picked by lib/storage.ts: the device's OWN storage in
@@ -125,6 +132,16 @@ export function getAnonId(): string {
 	// retry, a slow bridge answering late), and the durable id wins unless
 	// this session already wrote under the provisional one.
 	if (provisionalId) return convergeProvisional();
+	// A previous launch's provisional that already owns content outranks the
+	// device store: it is the identity the student's visible writes belong
+	// to. Without this, every reboot during a slow boot advertised a brand
+	// new identity and the durable one silently took back over next launch.
+	const mirrored = readProvisionalMirror();
+	if (mirrored && readProvisionalUsed()) {
+		provisionalId = mirrored;
+		provisionalUsed = true;
+		return convergeProvisional();
+	}
 	let id = readItem(ID_KEY);
 	if (!id) {
 		if (deviceBackendUnsettled()) {
@@ -133,7 +150,10 @@ export function getAnonId(): string {
 			// overwrite the real id with a temp and orphan every vote,
 			// comment and reaction the student made. convergeProvisional
 			// adopts the durable id (or persists this one) once known.
-			provisionalId = randomId();
+			// Reuse the mirrored temp id when a previous unsettled launch
+			// already minted one — a hung bridge must not churn identities.
+			provisionalId = mirrored ?? randomId();
+			if (!mirrored) writeItem(PROVISIONAL_KEY, provisionalId);
 			return provisionalId;
 		}
 		id = randomId();
@@ -171,13 +191,15 @@ function convergeProvisional(): string {
 		const durable = readItem(ID_KEY);
 		if (durable && durable.toLowerCase() !== current.toLowerCase()) {
 			if (!provisionalUsed) {
+				clearProvisionalMirror();
 				provisionalId = null;
 				return durable.toLowerCase();
 			}
-			// Used provisional: keep it in memory only, never persist over
-			// the durable id. Next boot returns to the durable id; the few
-			// provisional writes orphan, exactly like today's worst case —
-			// now confined to the race window instead of every slow boot.
+			// Used provisional: keep the durable id where it is, but keep the
+			// mirror (with its used flag) so the next launch continues under
+			// the identity that owns the writes the student can still see.
+			writeItem(PROVISIONAL_KEY, current);
+			writeItem(PROVISIONAL_USED_KEY, "1");
 			return current;
 		}
 		if (!durable) {
@@ -185,9 +207,11 @@ function convergeProvisional(): string {
 			// becomes the real one, persisted exactly once.
 			writeItem(ID_KEY, current);
 			writeItem(CREATED_KEY, new Date().toISOString());
+			clearProvisionalMirror();
 			provisionalId = null;
 			return current;
 		}
+		clearProvisionalMirror();
 		provisionalId = null;
 		return durable.toLowerCase();
 	} catch {
@@ -203,6 +227,30 @@ function convergeProvisional(): string {
  */
 export function markIdentityUsed(): void {
 	provisionalUsed = true;
+	// Persist the claim: if the app is closed mid-window, the next launch
+	// must know this provisional already owns server-side writes.
+	if (provisionalId) {
+		writeItem(PROVISIONAL_KEY, provisionalId);
+		writeItem(PROVISIONAL_USED_KEY, "1");
+	}
+}
+
+/** The mirrored provisional id, or null. Normalized like every other id. */
+function readProvisionalMirror(): string | null {
+	const raw = readItem(PROVISIONAL_KEY);
+	if (!raw) return null;
+	const id = raw.toLowerCase();
+	return id.startsWith("anon_") ? id : null;
+}
+
+function readProvisionalUsed(): boolean {
+	return readItem(PROVISIONAL_USED_KEY) === "1";
+}
+
+/** A settled identity has no provisional — drop both mirror keys. */
+function clearProvisionalMirror(): void {
+	removeItem(PROVISIONAL_KEY);
+	removeItem(PROVISIONAL_USED_KEY);
 }
 
 export function resetAnonId(): string {
@@ -210,6 +258,7 @@ export function resetAnonId(): string {
 	writeItem(ID_KEY, id);
 	writeItem(CREATED_KEY, new Date().toISOString());
 	// An explicit reset is a settled decision, never provisional.
+	clearProvisionalMirror();
 	provisionalId = null;
 	provisionalUsed = false;
 	// ownership data belongs to the old ID — clear it
@@ -356,6 +405,10 @@ export function clearAllLocalData() {
 // ---------- test seam ----------
 /** Reset provisional module state between tests. */
 export function __resetIdentityForTests(): void {
+	// Module memory only: callers use this to simulate a reboot, so the
+	// durable channels (device store, localStorage, cookies — including the
+	// provisional mirror) must survive it exactly as they do in a real
+	// relaunch.
 	provisionalId = null;
 	provisionalUsed = false;
 }

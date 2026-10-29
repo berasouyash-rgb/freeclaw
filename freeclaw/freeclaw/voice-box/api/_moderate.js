@@ -48,6 +48,7 @@ import {
 	evaluateContentDeep,
 	needsSupport,
 } from "./_safety-pipeline.js";
+import { toClientReview, unifiedReview } from "./_pre-publish.js";
 
 /** Server flag type -> the client-facing category vocabulary. */
 const CATEGORY = {
@@ -130,8 +131,12 @@ export default async function handler(req, res) {
 		// sits above the ~50/min ceiling of the client's 1200ms settle (a
 		// careful typer never trips it) while a looped client cannot burn
 		// unbounded provider calls. The deterministic pass keeps 120/min.
-		const ip = req.headers["x-forwarded-for"] || "anon";
+		const ip = req.headers?.["x-forwarded-for"] || "anon";
 		const aiJudge = req.body?.aiJudge === true;
+		// `fullReview` asks for the ONE unified verdict (safety gate + LLM
+		// analysis merged, stricter wins) instead of the gate alone. It costs
+		// the analysis round trip, so it shares the model-call bucket.
+		const fullReview = aiJudge && req.body?.fullReview === true;
 		if (aiJudge) {
 			if (await rateLimited("moderation_preview_ai", ip, 60, 60)) {
 				return rateLimitResponse(
@@ -160,17 +165,53 @@ export default async function handler(req, res) {
 		// deterministic scan as its base, so its verdict is a strict
 		// superset of the default pass). Bounded to 8s: a preview must not
 		// hold a request slot the way a publish may.
-		const decision = aiJudge
-			? await evaluateContentDeep(text, surface, null, {
-					timeoutMs: 8000,
-					taskKey: "moderation.preview",
-				})
-			: await evaluateContentAsync(text, surface);
+		let review = null;
+		let decision;
+		if (fullReview) {
+			// The full review runs two passes; bound it so a slow provider can
+			// never hold this request slot. On timeout the deterministic gate
+			// below still answers — the client then shows "quick checks"
+			// instead of a fabricated AI verdict.
+			let timer = null;
+			try {
+				const unified = await Promise.race([
+					unifiedReview({
+						text,
+						surface,
+						contentType: req.body?.contentType === "poll" ? "poll" : "post",
+						title: String(req.body?.title || "").slice(0, 140),
+						description: String(req.body?.description || "").slice(0, 500),
+						category: String(req.body?.category || "").slice(0, 40),
+						authorId: String(req.body?.author_id || "anonymous").slice(0, 40),
+						visibility: req.body?.visibility === "private" ? "private" : "public",
+					}),
+					new Promise((_, reject) => {
+						timer = setTimeout(() => reject(new Error("review timeout")), 9000);
+					}),
+				]);
+				// The gate's own decision drives `serverBlocked`; the merged verdict
+				// drives the review panel. Both come from the same function.
+				decision = unified.gateDecision;
+				review = toClientReview(unified);
+			} catch {
+				decision = null;
+			} finally {
+				if (timer) clearTimeout(timer);
+			}
+		}
+		if (!decision) {
+			decision = aiJudge
+				? await evaluateContentDeep(text, surface, null, {
+						timeoutMs: 8000,
+						taskKey: "moderation.preview",
+					})
+				: await evaluateContentAsync(text, surface);
+		}
 		// `aiChecked` is true ONLY when a model actually judged this text.
 		// Every other outcome — deterministic pass, already-blocked skip,
 		// timeout, outage — reports false, and the client must not paint
 		// the "AI reviewed" green from it.
-		const aiChecked = aiJudge && decision.model_used === true;
+		const aiChecked = aiJudge && (decision.model_used === true || review?.analysis?.llm_analyzed === true);
 		const aiTimedOut = aiJudge && decision.timedOut === true;
 		// Advisory only: is this an actionable school problem, or noise?
 		// It never blocks and never changes `serverBlocked` — the write path
@@ -191,10 +232,19 @@ export default async function handler(req, res) {
 			.filter((f) => f.category && f.message);
 
 		const overallSeverity = worstSeverity(flags);
-		const serverBlocked = decision.blocked === true;
+		// The merged review can be stricter than the gate alone (the analysis
+		// pass may catch spam or PII the deterministic scan misses). If the
+		// combined verdict is high_risk, publishing will hold the draft — so
+		// "the server will reject this" must say so here too.
+		const serverBlocked =
+			decision.blocked === true ||
+			review?.blocked === true ||
+			review?.decision === "high_risk";
 
 		return res.status(200).json({
-			safe: flags.length === 0,
+			// "safe" must agree with the ONE verdict: a clean gate plus an
+			// analysis that flagged spam is not a safe draft.
+			safe: flags.length === 0 && (!review || review.decision === "safe"),
 			overallSeverity,
 			flags,
 			maskedText: text,
@@ -230,6 +280,9 @@ export default async function handler(req, res) {
 			// path can never disagree: support routing is a server verdict,
 			// never a client derivation.
 			supportNeeded: needsSupport(decision),
+			// The single merged review the Submit page renders: risk score,
+			// four checks, summary, and suggestions — one card, one verdict.
+			review,
 		});
 	} catch (error) {
 		// A broken moderation check must NOT be reported to the user as

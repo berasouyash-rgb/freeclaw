@@ -724,7 +724,7 @@ export default async function handler(req, res) {
 				const caller = await verifyCallerIdentity(req, res, author_id);
 				if (!caller.ok) return res.status(caller.status || 403).json({ error: caller.error, code: caller.code });
 			}
-			const gate = await checkUser(author_id);
+			const gate = await checkUser(author_id, "post_write");
 			if (!gate.ok) return res.status(403).json({ error: gate.error });
 			if (await rateLimited("posts", author_id, 60, 3)) {
 				return rateLimitResponse(
@@ -1126,7 +1126,7 @@ export default async function handler(req, res) {
 				// match a live session, or anyone knowing the id edits as them.
 				const caller = await verifyCallerIdentity(req, res, callerId);
 				if (!caller.ok) return res.status(caller.status || 403).json({ error: caller.error, code: caller.code });
-				const gate = await checkUser(callerId);
+				const gate = await checkUser(callerId, "post_write");
 				if (!gate.ok) return res.status(403).json({ error: gate.error });
 			}
 

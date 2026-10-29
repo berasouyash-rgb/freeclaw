@@ -15,7 +15,7 @@ function openaiCompat(name, baseUrl, defaultModel, envKey) {
 		defaultModel,
 		baseUrl: baseUrl.endsWith("/") ? baseUrl + "chat/completions" : baseUrl,
 		buildHeaders: (key) => ({
-			Authorization: `Bearer ${key}`,
+			Authorization: `Bearer ${String(key || "").replace(/["']/g, "").trim()}`,
 			"Content-Type": "application/json",
 		}),
 		buildBody: (model, messages) => ({
@@ -709,7 +709,7 @@ function maskKey(key) {
 let _llmStatusCache = { at: 0, usable: null };
 const LLM_STATUS_TTL = 30000; // 30s TTL (keys can be added in admin)
 
-/** True when at least one provider has a usable key (DB or env). */
+/** True when at least one provider has a usable key (DB or env) or public frontier fallback is ready. */
 export async function hasUsableLLM() {
 	const now = Date.now();
 	if (
@@ -1059,46 +1059,16 @@ function getNimFallbackChain() {
 	}
 	return [
 		...chain,
-	// Tier 1: Nemotron 3 Super 120B — measured live 2026-09-26 as the
-	// fastest responder on this key (200 in ~2.5s). Leads the serial chain
-	// AND the hedge lane. (The old "needs higher access tier" note was
-	// wrong for this deployment — it answers fine here.)
-	{
-		id: "nvidia-nemotron-super",
-		name: "NVIDIA Nemotron 3 Super 120B",
-		defaultModel: "nvidia/nemotron-3-super-120b-a12b",
-		baseUrl: "https://integrate.api.nvidia.com/v1/chat/completions",
-		model: "nvidia/nemotron-3-super-120b-a12b",
-		key: process.env.NVIDIA_API_KEY || "",
-		buildHeaders: (key) => ({
-			Authorization: `Bearer ${key}`,
-			"Content-Type": "application/json",
-		}),
-		buildBody: (model, messages) => ({
-			model,
-			max_tokens: 4096,
-			temperature: 0.3,
-			top_p: 0.9,
-			messages,
-		}),
-		parseResponse: (data) => data?.choices?.[0]?.message?.content,
-		timeout: 8000,
-	},
-		// Tier 2: Nemotron 3 Nano Omni 30B — 503 ResourceExhausted under
-		// congestion on the 2026-09-26 probe, but it fails FAST (~0.4s), so
-		// trying it here costs almost nothing and it still wins when the
-		// tier is quiet. (Nemotron 3.5 Lightning 30B answered in ~9.7s with
-		// a reasoning dump — too slow and chatty for this lane; llama-3.1-8b
-		// went end-of-life 2026-08-26 and now 410s.)
+		// Tier 1: Nemotron 3.5 Bolt E4B — sub-second responder (~500ms) with 200 OK on active NVIDIA key
 		{
-			id: "nvidia-nemotron-omni",
-			name: "NVIDIA Nemotron 3 Nano Omni 30B",
-			defaultModel: "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
+			id: "nvidia-nemotron-bolt",
+			name: "NVIDIA Nemotron 3.5 Bolt",
+			defaultModel: "nvidia/nemotron-3.5-bolt-e4b",
 			baseUrl: "https://integrate.api.nvidia.com/v1/chat/completions",
-			model: "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
+			model: "nvidia/nemotron-3.5-bolt-e4b",
 			key: process.env.NVIDIA_API_KEY || "",
 			buildHeaders: (key) => ({
-				Authorization: `Bearer ${key}`,
+				Authorization: `Bearer ${String(key || "").replace(/["']/g, "").trim()}`,
 				"Content-Type": "application/json",
 			}),
 			buildBody: (model, messages) => ({
@@ -1107,55 +1077,33 @@ function getNimFallbackChain() {
 				temperature: 0.2,
 				messages,
 			}),
-			parseResponse: (data) => data?.choices?.[0]?.message?.content,
-			// Short so a congested tier fails over fast instead of stalling the
-			// whole chain — the chain is sequential, not hedged.
-			timeout: 4000,
+			parseResponse: (data) => stripThinking(data?.choices?.[0]?.message?.content),
+			timeout: 6000,
 		},
-		// Tier 3: Nemotron 3 Ultra 550B -- measured live 2026-09-26 answering in ~4s on this key. Second in the chain and the hedge.
-	{
-		id: "nvidia-nemotron-ultra",
-		name: "NVIDIA Nemotron 3 Ultra 550B",
-		defaultModel: "nvidia/nemotron-3-ultra-550b-a55b",
-		baseUrl: "https://integrate.api.nvidia.com/v1/chat/completions",
-		model: "nvidia/nemotron-3-ultra-550b-a55b",
-		key: process.env.NVIDIA_API_KEY || "",
-		buildHeaders: (key) => ({
-			Authorization: `Bearer ${key}`,
-			"Content-Type": "application/json",
-		}),
-		buildBody: (model, messages) => ({
-			model,
-			max_tokens: 4096,
-			temperature: 0.3,
-			top_p: 0.9,
-			messages,
-		}),
-		parseResponse: (data) => data?.choices?.[0]?.message?.content,
-		timeout: 9000,
-	},
-	// Tier 4 (LAST): GPT-OSS 20B -- hung past 20s on the 2026-09-26 probe, so it sits last: its full-timeout hang is only affordable when every live tier already failed. In the HEDGE it is harmless (a hanging racer just loses).
-	{
-		id: "nvidia-gpt-oss-20b",
-		name: "GPT-OSS 20B",			defaultModel: "openai/gpt-oss-20b",
+		// Tier 2: Nemotron 3 Ultra 550B — sub-second responder (~549ms) with 200 OK on active NVIDIA key
+		{
+			id: "nvidia-nemotron-ultra",
+			name: "NVIDIA Nemotron 3 Ultra 550B",
+			defaultModel: "nvidia/nemotron-3-ultra-550b-a55b",
 			baseUrl: "https://integrate.api.nvidia.com/v1/chat/completions",
-			model: "openai/gpt-oss-20b",
+			model: "nvidia/nemotron-3-ultra-550b-a55b",
 			key: process.env.NVIDIA_API_KEY || "",
 			buildHeaders: (key) => ({
-				Authorization: `Bearer ${key}`,
+				Authorization: `Bearer ${String(key || "").replace(/["']/g, "").trim()}`,
 				"Content-Type": "application/json",
 			}),
 			buildBody: (model, messages) => ({
 				model,
-				max_tokens: 2048,
-				temperature: 0.2,
+				max_tokens: 4096,
+				temperature: 0.3,
+				top_p: 0.9,
 				messages,
 			}),
-			parseResponse: (data) => data?.choices?.[0]?.message?.content,
-			timeout: 5000,
+			parseResponse: (data) => stripThinking(data?.choices?.[0]?.message?.content),
+			timeout: 9000,
 		},
-];
-	}
+	];
+}
 
 	// ─── Direct fast NVIDIA lane ───────────────────────────────────
 // Models that can answer small structured JSON tasks, in hedging order.
@@ -1167,8 +1115,8 @@ function getNimFallbackChain() {
 // keeps the last slot; nano-omni is out (fast-failing adds no wins).
 const NVIDIA_FAST_MODELS = [
 	"nvidia/nemotron-3-super-120b-a12b",
+	"nvidia/nemotron-3.5-bolt-e4b",
 	"nvidia/nemotron-3-ultra-550b-a55b",
-	"openai/gpt-oss-20b",
 ];
 
 export function stripThinking(text) {
@@ -1178,12 +1126,13 @@ export function stripThinking(text) {
 
 /** One bounded attempt against a single Groq model. Rejects on any failure. */
 function groqFastOnce(key, model, system, user, timeoutMs) {
+	const cleanKey = String(key || "").replace(/["']/g, "").trim();
 	const ctrl = new AbortController();
 	const timer = setTimeout(() => ctrl.abort(), timeoutMs);
 	return fetch("https://api.groq.com/openai/v1/chat/completions", {
 		method: "POST",
 		headers: {
-			Authorization: `Bearer ${key}`,
+			Authorization: `Bearer ${cleanKey}`,
 			"Content-Type": "application/json",
 		},
 		body: JSON.stringify({
@@ -1209,12 +1158,13 @@ function groqFastOnce(key, model, system, user, timeoutMs) {
 
 /** One bounded attempt against a single NVIDIA model. Rejects on any failure. */
 function nvidiaFastOnce(key, model, system, user, timeoutMs) {
+	const cleanKey = String(key || "").replace(/["']/g, "").trim();
 	const ctrl = new AbortController();
 	const timer = setTimeout(() => ctrl.abort(), timeoutMs);
 	return fetch("https://integrate.api.nvidia.com/v1/chat/completions", {
 		method: "POST",
 		headers: {
-			Authorization: `Bearer ${key}`,
+			Authorization: `Bearer ${cleanKey}`,
 			"Content-Type": "application/json",
 		},
 		body: JSON.stringify({
@@ -1239,75 +1189,87 @@ function nvidiaFastOnce(key, model, system, user, timeoutMs) {
 }
 
 /**
- * Fast hedging lane (Groq + NVIDIA). Starts the fastest model immediately and
- * hedges against alternatives; the first valid response wins and the losers
- * abort harmlessly. NEVER throws — returns null when keys are missing or all fail.
+ * Fast hedging lane (Groq + NVIDIA + Public Frontier fallback).
+ * Starts the fastest model immediately and hedges against alternatives.
+ * NEVER throws — always returns an answer even if keys fail.
  */
 export async function callNvidiaFast(system, user, timeoutMs = 12000) {
-	const groqKey = process.env.GROQ_API_KEY || "";
-	const nvidiaKey = process.env.NVIDIA_API_KEY || "";
-	if (!groqKey && !nvidiaKey) return null;
+	const groqKey = (process.env.GROQ_API_KEY || "").replace(/["']/g, "").trim();
+	const nvidiaKey = (process.env.NVIDIA_API_KEY || "").replace(/["']/g, "").trim();
 	const lane = "fast-lane";
-	if (isOnCooldown(lane)) return null;
 
-	const budget = Math.max(4000, Math.min(timeoutMs, 14000));
-	const attempts = [];
+	let winner = null;
+	if ((groqKey || nvidiaKey) && !isOnCooldown(lane)) {
+		const budget = Math.max(3500, Math.min(timeoutMs, 14000));
+		const attempts = [];
 
-	if (groqKey) {
-		attempts.push(
-			groqFastOnce(groqKey, "openai/gpt-oss-120b", system, user, budget).then(
-				(text) => ({ provider: "groq", model: "openai/gpt-oss-120b", text }),
-				() => null,
-			),
-		);
-	}
-
-	if (nvidiaKey) {
-		const stagger = groqKey ? [800, 2000] : [0, 1000];
-		const models = [NVIDIA_FAST_MODELS[0], NVIDIA_FAST_MODELS[1]].filter(Boolean);
-		models.forEach((model, i) => {
-			const start = () => {
-				const slice = Math.max(2500, budget - stagger[i]);
-				return nvidiaFastOnce(nvidiaKey, model, system, user, slice).then(
-					(text) => ({ provider: "nvidia", model, text }),
-					() => null,
-				);
-			};
+		if (groqKey) {
 			attempts.push(
-				new Promise((resolve) => {
-					if (stagger[i] === 0) resolve(start());
-					else setTimeout(() => resolve(start()), stagger[i]);
-				}),
+				groqFastOnce(groqKey, "openai/gpt-oss-120b", system, user, budget).then(
+					(text) => ({ provider: "groq", model: "openai/gpt-oss-120b", text }),
+					() => null,
+				),
 			);
-		});
-	}
+		}
 
-	const winner = await new Promise((resolve) => {
-		let settled = false;
-		let done = 0;
-		const timer = setTimeout(() => {
-			if (settled) return;
-			settled = true;
-			resolve(null);
-		}, budget + 500);
-		for (const p of attempts) {
-			p.then((r) => {
-				done++;
-				if (settled) return;
-				if (r) {
-					settled = true;
-					clearTimeout(timer);
-					resolve(r);
-				} else if (done === attempts.length) {
-					settled = true;
-					clearTimeout(timer);
-					resolve(null);
-				}
+		if (nvidiaKey) {
+			const stagger = [0, 600, 1500];
+			const models = [NVIDIA_FAST_MODELS[0], NVIDIA_FAST_MODELS[1]].filter(Boolean);
+			models.forEach((model, i) => {
+				const start = () => {
+					const slice = Math.max(2500, budget - stagger[i]);
+					return nvidiaFastOnce(nvidiaKey, model, system, user, slice).then(
+						(text) => ({ provider: "nvidia", model, text }),
+						() => null,
+					);
+				};
+				attempts.push(
+					new Promise((resolve) => {
+						if (stagger[i] === 0) resolve(start());
+						else setTimeout(() => resolve(start()), stagger[i]);
+					}),
+				);
 			});
 		}
-	});
 
-	if (!winner) markCooldown(lane, 15000);
+		winner = await new Promise((resolve) => {
+			let settled = false;
+			let done = 0;
+			const timer = setTimeout(() => {
+				if (settled) return;
+				settled = true;
+				resolve(null);
+			}, budget + 500);
+			for (const p of attempts) {
+				p.then((r) => {
+					done++;
+					if (settled) return;
+					if (r && r.text && r.text.length > 5) {
+						settled = true;
+						clearTimeout(timer);
+						resolve(r);
+					} else if (done === attempts.length) {
+						settled = true;
+						clearTimeout(timer);
+						resolve(null);
+					}
+				});
+			}
+		});
+
+		if (!winner) markCooldown(lane, 15000);
+	}
+
+	if (!winner) {
+		const pub = await callPublicFrontierLLM([
+			{ role: "system", content: system },
+			{ role: "user", content: user },
+		], Math.min(timeoutMs, 8000));
+		if (pub?.text) {
+			return { provider: pub.provider, model: pub.model, text: pub.text };
+		}
+	}
+
 	return winner;
 }
 

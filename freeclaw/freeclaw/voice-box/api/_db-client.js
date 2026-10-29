@@ -4,6 +4,64 @@ import { triggerRestore } from "./_db-wake.js";
 // Connection pooling: reuse client across warm invocations (Vercel keeps instances alive)
 let _client = null;
 
+// ─── Bounded outbound concurrency ────────────────────────────────
+// Every route is I/O-bound on Supabase HTTP round-trips. Without a bound, a
+// burst of admitted requests fans out one outbound socket each and PostgREST
+// saturates: measured at 1000 readers, 239 server 500s whose duration was
+// 15002–15016ms — i.e. requests that had already spent the whole 15s timeout
+// waiting on a queue at the far end. The fix is to make the wait explicit and
+// bounded HERE, where the socket is cheap, instead of letting it happen
+// inside a TCP connect we cannot see.
+//
+// This is a backstop, not a throughput target: at ~200ms per round-trip,
+// 32 slots ≈ 160 queries/s per worker, which is far above the ~24 qps a
+// 5000-reader feed generates once cold-miss coalescing is in place. Raise it
+// only with a measured p95, exactly like MAX_INFLIGHT.
+const DB_MAX_CONCURRENCY = (() => {
+	const raw = Number.parseInt(process.env.DB_MAX_CONCURRENCY || "", 10);
+	return Number.isFinite(raw) && raw > 0 ? raw : 32;
+})();
+
+// A stuck query must free its slot, but a cold Supabase project legitimately
+// needs several seconds to wake. 15s is the historic value; keep it tunable so
+// capacity runs can prove a tighter number before changing the default.
+const DB_TIMEOUT_MS = (() => {
+	const raw = Number.parseInt(process.env.DB_TIMEOUT_MS || "", 10);
+	return Number.isFinite(raw) && raw > 0 ? raw : 15000;
+})();
+
+let _dbActive = 0;
+const _dbWaiters = [];
+
+/** Take a slot, waiting in FIFO order when saturated. */
+function _dbAcquire() {
+	if (_dbActive < DB_MAX_CONCURRENCY) {
+		_dbActive += 1;
+		return Promise.resolve();
+	}
+	return new Promise((resolve) => _dbWaiters.push(resolve));
+}
+
+/** Release a slot, handing it directly to the next waiter when present. */
+function _dbRelease() {
+	const next = _dbWaiters.shift();
+	if (next) {
+		// The slot is transferred, not freed — _dbActive is unchanged.
+		next();
+	} else {
+		_dbActive = Math.max(0, _dbActive - 1);
+	}
+}
+
+/** Live counters for /api/health and tests. */
+export function getDbPoolStats() {
+	return {
+		active: _dbActive,
+		queued: _dbWaiters.length,
+		max_concurrency: DB_MAX_CONCURRENCY,
+	};
+}
+
 /**
  * Server-side Supabase client.
  * Uses SUPABASE_SERVICE_ROLE_KEY to bypass RLS (API routes handle auth themselves).
@@ -44,46 +102,52 @@ function getClient() {
 	_client = createClient(url, key, {
 		global: {
 			fetch: async (url, options) => {
-				// Add request timeout to prevent hung connections
-				const controller = new AbortController();
-				const timeout = setTimeout(() => controller.abort(), 15000);
+				await _dbAcquire();
 				try {
-					const res = await fetch(url, {
-						...options,
-						signal: controller.signal,
-					});
-					clearTimeout(timeout);
-					if (!res.ok && res.status >= 500) {
-						triggerRestore();
-						const ct = res.headers.get("content-type") || "";
-						if (!ct.includes("json")) {
-							console.warn(
-								"[db-client] Non-JSON response from Supabase (cold start?), retrying...",
-							);
-							clearTimeout(timeout);
-							const retryController = new AbortController();
-							const retryTimeout = setTimeout(
-								() => retryController.abort(),
-								30000,
-							);
-							try {
-								const retryRes = await fetch(url, {
-									...options,
-									signal: retryController.signal,
-								});
-								clearTimeout(retryTimeout);
-								return retryRes;
-							} catch (retryErr) {
-								clearTimeout(retryTimeout);
-								throw retryErr;
+					// Add request timeout to prevent hung connections
+					const controller = new AbortController();
+					const timeout = setTimeout(() => controller.abort(), DB_TIMEOUT_MS);
+					try {
+						const res = await fetch(url, {
+							...options,
+							signal: controller.signal,
+						});
+						clearTimeout(timeout);
+						if (!res.ok && res.status >= 500) {
+							triggerRestore();
+							const ct = res.headers.get("content-type") || "";
+							if (!ct.includes("json")) {
+								console.warn(
+									"[db-client] Non-JSON response from Supabase (cold start?), retrying...",
+								);
+								const retryController = new AbortController();
+								const retryTimeout = setTimeout(
+									() => retryController.abort(),
+									30000,
+								);
+								try {
+									const retryRes = await fetch(url, {
+										...options,
+										signal: retryController.signal,
+									});
+									clearTimeout(retryTimeout);
+									return retryRes;
+								} catch (retryErr) {
+									clearTimeout(retryTimeout);
+									throw retryErr;
+								}
 							}
 						}
+						return res;
+					} catch (err) {
+						clearTimeout(timeout);
+						if (err.name === "AbortError") triggerRestore();
+						throw err;
 					}
-					return res;
-				} catch (err) {
-					clearTimeout(timeout);
-					if (err.name === "AbortError") triggerRestore();
-					throw err;
+				} finally {
+					// Always hand the slot back — including on abort/timeout, so a
+					// single hung query can never permanently shrink the pool.
+					_dbRelease();
 				}
 			},
 		},

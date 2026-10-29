@@ -75,6 +75,14 @@ export interface ModerationResult {
 	 * than a noisy inbox.
 	 */
 	relevance?: RelevanceResult | null;
+	/**
+	 * The ONE merged review verdict: the safety gate and the LLM analysis
+	 * combined server-side, stricter wins. Present only when the server ran
+	 * the full review (`fullReview: true`). This is the same object
+	 * `/api/pre-publish` returns on publish, so the panel and the publish
+	 * gate can never contradict each other.
+	 */
+	review?: PrePubResult | null;
 }
 
 /** The exact text evidence behind one relevance signal. */

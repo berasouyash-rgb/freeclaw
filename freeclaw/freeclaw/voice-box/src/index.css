@@ -323,6 +323,60 @@ h1,h2,h3,h4 { font-family: var(--font-display); letter-spacing: -0.01em; }
 @keyframes vb-burst-fly { 0% { opacity: 1; transform: translate(0, 0) scale(1); } 100% { opacity: 0; transform: translate(var(--tx), var(--ty)) scale(.3); } }
 .vb-bar-anim { animation: vb-bar 0.05s cubic-bezier(.22,.9,.3,1) both; }
 
+/* ---------- Rank-move chip — "↑ 2 / ↓ 1" after a vote reorders a feed.
+   Pairs with useFlipList: the card glides to its new slot and says where it
+   went, then leaves after 3s. Decorative (aria-hidden) — the count itself
+   is the accessible confirmation. Reduced-motion keeps the chip, drops the
+   entrance. */
+.vb-rank-delta {
+  position: absolute;
+  /* Pinned to the card's top edge, not inside its padding: the header row
+     already owns the top-right corner and a transient chip must never sit
+     on top of a real badge. */
+  top: -.5rem;
+  right: .75rem;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+  padding: 2px 6px 2px 4px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.4;
+  pointer-events: none;
+  animation: vb-rank-delta-in .24s cubic-bezier(.2,.9,.3,1) both;
+}
+.vb-rank-delta-up { color: var(--vb-good); background: color-mix(in srgb, var(--vb-good) 14%, var(--vb-surface)); }
+.vb-rank-delta-down { color: var(--vb-warn); background: color-mix(in srgb, var(--vb-warn) 14%, var(--vb-surface)); }
+@keyframes vb-rank-delta-in { from { opacity: 0; transform: translateY(-2px) scale(.9); } to { opacity: 1; transform: none; } }
+
+/* ---------- Poll result fill — the share eases to its new value over 600ms
+   instead of snapping, and the leading edge carries one light sweep when a
+   vote lands. The sweep is a ::after so it never touches layout. */
+.vb-poll-fill {
+  position: absolute;
+  inset-block: 0;
+  left: 0;
+  overflow: hidden;
+  transition: width 600ms cubic-bezier(.2,.9,.3,1);
+  will-change: width;
+}
+.vb-poll-fill::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  background: linear-gradient(90deg, transparent 0%, color-mix(in srgb, var(--vb-accent) 26%, transparent) 50%, transparent 100%);
+}
+.vb-poll-fill[data-fresh="true"]::after { animation: vb-poll-sweep 620ms ease-out both; }
+@keyframes vb-poll-sweep { 0% { opacity: .9; transform: translateX(-100%); } 100% { opacity: 0; transform: translateX(100%); } }
+@media (prefers-reduced-motion: reduce) {
+  .vb-rank-delta { animation: none; }
+  .vb-poll-fill { transition: none; }
+  .vb-poll-fill[data-fresh="true"]::after { animation: none; }
+}
+
 /* Trend chip is static — a bouncing arrow communicates nothing and adds
    constant motion to an otherwise calm page. */
 .vb-trend-bounce { animation: none; }

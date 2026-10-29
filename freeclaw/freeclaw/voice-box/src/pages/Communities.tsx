@@ -26,6 +26,8 @@ export interface CommunityCard {
 	hidden: boolean;
 	member_count: number;
 	post_count: number;
+	/** Members active in the last 5 minutes. null = presence unknown. */
+	online_count?: number | null;
 }
 
 const AVATAR_CHOICES = ["🌐", "🎧", "🎮", "📚", "⚽", "🎨", "💻", "🧠", "🌱", "🚀", "🎬", "🏀"];
@@ -58,7 +60,7 @@ export default function Communities() {
 			// re-render, so compare a content signature first.
 			const sig = list
 				.map((c) =>
-					[c.slug, c.name, c.description, c.avatar, c.member_count, c.post_count, c.hidden].join(":"),
+					[c.slug, c.name, c.description, c.avatar, c.member_count, c.post_count, c.online_count, c.hidden].join(":"),
 				)
 				.join("|");
 			if (sigRef.current !== sig) {
@@ -268,6 +270,15 @@ export default function Communities() {
 										<span className="inline-flex items-center gap-1">
 											<MessageSquare size={11} /> {c.post_count}
 										</span>
+										{typeof c.online_count === "number" && c.online_count > 0 && (
+											<span
+												className="inline-flex items-center gap-1 font-medium text-good"
+												title="Members active in the last 5 minutes"
+											>
+												<span className="w-1.5 h-1.5 rounded-full bg-good animate-pulse" />
+												{c.online_count} live
+											</span>
+										)}
 									</div>
 								</div>
 							</div>

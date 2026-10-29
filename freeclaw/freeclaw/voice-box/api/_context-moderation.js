@@ -63,6 +63,20 @@ const CATEGORY_FLAGS = {
 const BLOCKING = new Set(["high", "critical"]);
 
 /**
+ * Review-grade flag types: queued surfaces QUARANTINE them (a human reads
+ * the thread), direct surfaces BLOCK them. They are always severity "high",
+ * never "critical" — the deterministic severity convention every one of
+ * these rows already uses. `threat_report` is the only one whose user-facing
+ * wording mentions an abuse report; `conduct_weak` is deliberately separate
+ * so ordinary hostility is never described as "a report of abuse".
+ */
+const REVIEW_GRADE = new Set([
+	"threat_report",
+	"privacy_weak",
+	"conduct_weak",
+]);
+
+/**
  * What the student reads when a model-emitted flag fires: the CRITERION,
  * in plain school language — what rule, and why this cannot be accepted.
  * Static strings only, keyed by the emitted flag TYPE (what POLICY
@@ -83,23 +97,79 @@ const FLAG_CRITERIA = {
 	privacy: "Personal information must not be shared here.",
 	privacy_weak:
 		"Possible personal information — held for a human to review.",
+	conduct_weak:
+		"Possible hostile or aggressive wording — held for a human to review.",
 	profanity: "Profanity is not allowed here.",
 };
 
 /**
+ * Staff / teacher vocabulary. A complaint about a teacher ("Kakuli mam is a
+ * horrible teacher") is educational feedback — it is NOT a report of criminal
+ * abuse and must never be labelled one. That mislabel was the reported bug:
+ * the guard used to read the MODEL's explanation text instead of the
+ * submission, so whenever the model's prose omitted the word "teacher" the
+ * message fell through to `threat_report` and was held as an abuse report.
+ */
+const STAFF_NOUN =
+	/\b(?:teachers?|professors?|faculty|staff|principal|headmaster|headmistress|vice[\s-]?principal|sir|ma'?am|mam|madam|instructor|lecturer|coach|warden|counsell?or|class\s*teacher|class\s*incharge)\b/i;
+
+/** Opinion adjectives that describe a person's conduct, not an act of harm. */
+const OPINION_ADJ =
+	/\b(?:horrible|terrible|awful|bad|worst|rude|mean|lazy|biased|unfair|useless|incompetent|boring|strict|arrogant|disrespectful|unprofessional|annoying|stupid|dumb|idiotic|pathetic|toxic|creepy|weird|partial|negligent|irresponsible|shouts?|shouting|screams?|screaming|yells?|yelling)\b/i;
+
+/**
+ * Verbs that turn a complaint into a REPORT of actual harm. When one is
+ * present the message is no longer a mere opinion — "the teacher hits
+ * students" must stay on the review path.
+ */
+const HARM_VERB =
+	/\b(?:hit|hits|hitting|slap|slaps|slapped|beat|beats|beating|kick|kicks|kicked|punch|punches|punched|pinch|pinches|pinched|touch(?:es|ed)?|grope[sd]?|groping|molest(?:s|ed)?|abuse[sd]?|abusing|assault(?:s|ed)?|rape[sd]?|raping|threat(?:ens|ened)?|harass(?:es|ed)?|bully(?:ing|ies|ied)?|blackmail(?:s|ed)?|force[sd]?|forcing|stalk(?:s|ed|ing)?|kill(?:s|ed)?|murder(?:s|ed)?|hurt(?:s|ing)?|harm(?:s|ed)?|choking|strangl(?:e|es|ed)|die|dies|died|dead|death)\b/i;
+
+/** Explicit second-person menace — never a mere opinion, whatever else appears. */
+const SECOND_PERSON_MENACE =
+	/\b(?:dekh\s*l[uo]nga|chhod?unga\s*nahi|nahi\s*chhod?unga|watch\s+your\s+back|you\s+will\s+pay|you'?re\s+dead|you\s+are\s+dead|i\s+know\s+where\s+you\s+live|i(?:'ll|\s+will)\s+get\s+you|done\s+with\s+you)\b/i;
+
+/**
+ * True when the text is an opinion complaint about staff, not a report of
+ * abuse. Requires all of: a staff noun, an opinion adjective, no harm verb,
+ * and no explicit menace. Returning [] from `contextualFlags` for these is
+ * SAFE — the contextual layer may only ADD flags, so the deterministic gate
+ * (profanity, PII, direct abuse) still runs at full strength.
+ */
+export function isStaffComplaint(text) {
+	const t = String(text || "");
+	if (!t) return false;
+	if (!STAFF_NOUN.test(t)) return false;
+	if (!OPINION_ADJ.test(t)) return false;
+	if (HARM_VERB.test(t)) return false;
+	if (SECOND_PERSON_MENACE.test(t)) return false;
+	return true;
+}
+
+/**
  * Map a contextual decision onto deterministic flags.
+ *
+ * @param {object|null} decision classifier output
+ * @param {string} [text] the ORIGINAL submission — the staff-complaint guard
+ *   must read what the student wrote, never the model's explanation prose.
  * Returns [] when the message is neutral — a null/clean context NEVER clears
  * an existing finding.
  */
-export function contextualFlags(decision) {
+export function contextualFlags(decision, text = "") {
 	if (!decision || !decision.decision) return [];
 	const inner = decision.decision;
 	const severity = String(inner.severity || decision.level || "none");
 	const category = String(inner.category || "");
 	const reported = inner.reported_or_quoted === true;
 
-	// A report of abuse is held for a human and never auto-blocked, exactly
-	// like the deterministic threat-report path.
+	// 1. An opinion complaint about a teacher / staff member is educational
+	//    feedback. It is not a report of abuse and must not be held as one.
+	//    Checked FIRST because one "reported_or_quoted" prediction must not be
+	//    allowed to relabel a complaint the text itself disproves.
+	if (isStaffComplaint(text)) return [];
+
+	// 2. A genuine report / quotation of abuse is held for a human and never
+	//    auto-blocked, exactly like the deterministic threat-report path.
 	if (reported || category === "reported-abuse") return ["threat_report"];
 
 	let flag = CATEGORY_FLAGS[category];
@@ -115,15 +185,16 @@ export function contextualFlags(decision) {
 
 	// Mild/moderate hostility is review-grade, not auto-blocking. Keeping this
 	// distinction is what stops "I hate this exam" from being punished.
-	if (!BLOCKING.has(severity) && flag !== "threat_report") {
+	if (!BLOCKING.has(severity)) {
 		// A weak privacy signal routes to the weak-PII policy row (review on
 		// queued surfaces, block on direct ones) — never to threat_report,
 		// which would mislabel a leak as a threat.
 		if (flag === "privacy") return ["privacy_weak"];
-		// Every other review-grade hostile signal is surfaced as a report for a
-		// human to look at — never auto-blocked. (This used to be written as a
-		// ternary whose two arms were identical; behaviour is unchanged.)
-		return ["threat_report"];
+		// Any other review-grade hostile signal is held under `conduct_weak`.
+		// It used to become `threat_report`, which told a student their mild
+		// annoyance was "a report of abuse" — a contradiction they cannot act
+		// on. The hold still happens; only the label is honest now.
+		return ["conduct_weak"];
 	}
 	return [flag];
 }
@@ -148,8 +219,7 @@ export function mergeFlags(baseFlags, extraFlags) {
 			typeof entry === "string"
 				? {
 						type,
-						severity:
-							type === "threat_report" || type === "privacy_weak" ? "high" : "critical",
+						severity: REVIEW_GRADE.has(type) ? "high" : "critical",
 						message: "Contextual analysis: targeted or high-severity language",
 						source: "context-classify",
 					}
@@ -221,13 +291,13 @@ export async function contextualModerationDeep(
 	// classifyContextual swallows provider failures internally and reports
 	// model_used honestly — trust its flag, never infer success from shape.
 	const modelUsed = timedOut ? false : result?.decision?.model_used === true;
-	const types = modelUsed ? contextualFlags(result) : [];
+	const types = modelUsed ? contextualFlags(result, content) : [];
 	const flags = types.map((type) => ({
 		type,
 		// Review-grade rows keep the deterministic severity convention
 		// (high, never critical): on queued surfaces they quarantine rather
 		// than block, exactly like their deterministic counterparts.
-		severity: type === "threat_report" || type === "privacy_weak" ? "high" : String(result?.level || "high"),
+		severity: REVIEW_GRADE.has(type) ? "high" : String(result?.level || "high"),
 		message: FLAG_CRITERIA[type] || "This content breaks the safety policy.",
 		source: "context-model",
 	}));
@@ -274,11 +344,13 @@ export async function contextualModeration(text) {
 		// deterministic gates exactly as authoritative as they were.
 		return { flags: [], context: null };
 	}
-	const types = contextualFlags(result);
+	const types = contextualFlags(result, content);
 	const flags = types.map((type) => ({
 		type,
-		severity: type === "threat_report" || type === "privacy_weak" ? "high" : "critical",
-		message: `Contextual analysis: ${result?.category || "unsafe"} (${result?.level || "unknown"})`,
+		severity: REVIEW_GRADE.has(type) ? "high" : "critical",
+		message: REVIEW_GRADE.has(type)
+			? FLAG_CRITERIA[type] || "Held for a human to review."
+			: `Contextual analysis: ${result?.category || "unsafe"} (${result?.level || "unknown"})`,
 		source: "context-classify",
 	}));
 	return { flags, context: result };

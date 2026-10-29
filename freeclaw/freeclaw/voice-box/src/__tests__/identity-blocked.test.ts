@@ -9,7 +9,7 @@
 // cookie + in-memory fallback layers.
 // ═══════════════════════════════════════════════════════════════════
 
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 /** Remove every cookie in the jsdom document (per-test isolation). */
 function clearCookies() {
@@ -53,6 +53,11 @@ async function freshModule() {
 }
 
 beforeEach(() => {
+	clearCookies();
+	unblockStorage();
+});
+
+afterAll(() => {
 	clearCookies();
 	unblockStorage();
 });

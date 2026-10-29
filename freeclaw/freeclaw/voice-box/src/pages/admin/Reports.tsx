@@ -41,6 +41,7 @@ import { useApp } from "../../contexts/AppContext";
 import { api } from "../../lib/api";
 import { BULK_CONCURRENCY, mapWithConcurrency } from "../../lib/async";
 import { groupReports } from "../../lib/report-groups";
+import { triageReport, type TriageVerdict } from "../../lib/report-triage";
 import { useRealtime } from "../../lib/useRealtime";
 import { CAT_EMOJI, CATEGORIES, timeAgo } from "../../lib/utils";
 
@@ -678,7 +679,22 @@ function relatedFor(
 				? { kind: "community", url: `/communities/${slug}`, label: "Open community" }
 				: null;
 		}
+		case "community": {
+			const slug = String(r.target_id || "").replace(/^community:/, "");
+			return slug
+				? { kind: "community", url: `/communities/${slug}`, label: "Open community" }
+				: null;
+		}
 		default:
+			// Fallback rows written when the DB check constraint rejected
+			// target_type=community_post: target_id = `community:<slug>[::id]`.
+			if (String(r.target_id || "").startsWith("community:")) {
+				const firstPart = String(r.target_id).split("::")[0] || "";
+				const slug = firstPart.replace(/^community:/, "");
+				return slug
+					? { kind: "community", url: `/communities/${slug}`, label: "Open community" }
+					: null;
+			}
 			return null;
 	}
 }
@@ -1351,45 +1367,45 @@ export default function Reports() {
 	const isInboxRow = (r: ReportRow) =>
 		r.target_type === "inbox" || r.reason.startsWith("[BACKSTOP-");
 
+	/**
+	 * Allegation-only triage (src/lib/report-triage.ts).
+	 *
+	 * The previous version here ran keyword regexes over `${reason} ${details}`.
+	 * `details` is the *quoted reported content*, not the allegation — so a
+	 * normal post like "this exam is killing me" matched the crisis rule and the
+	 * AI panel then told the admin to hide it and strike the author. Triage now
+	 * reads only the allegation signals (machine tags, worker disposition, the
+	 * reporter's reason) and never the quoted text.
+	 */
+	const triageCache = useRef(new Map<number, TriageVerdict>());
+	useEffect(() => {
+		triageCache.current.clear();
+	}, [reports]);
+
+	const triageFor = (r: ReportRow): TriageVerdict => {
+		const hit = triageCache.current.get(r.id);
+		if (hit) return hit;
+		const v = triageReport({
+			reason: r.reason,
+			workerDisposition: r.worker_action?.disposition,
+			workerAction: r.worker_action?.action,
+		});
+		triageCache.current.set(r.id, v);
+		return v;
+	};
+
 	const isUrgentOrBullying = (r: ReportRow) =>
-		isInboxUrgent(r) ||
-		/bully|threat|harass|ragging|suicid|kill|hate|violence|blackmail|extort/i.test(r.reason) ||
-		/bully|threat|harass|ragging|suicid|kill|hate|violence|blackmail|extort/i.test(r.details || "");
+		isInboxUrgent(r) || triageFor(r).urgent;
 
 	const getReportGuidance = (r: ReportRow) => {
-		const text = `${r.reason} ${r.details || ""}`.toLowerCase();
-		if (/suicid|kill|self.?harm|emergency|urgent/i.test(text)) {
-			return {
-				tone: "critical",
-				badge: "🚨 Crisis Protocol",
-				action: "Escalate to school counselor & reply in private thread immediately.",
-			};
-		}
-		if (/bully|threat|harass|blackmail|extort|ragging/i.test(text)) {
-			return {
-				tone: "urgent",
-				badge: "⚡ Safety Threat",
-				action: "Recommended: Hide offending content & issue strike / 7-day suspension to author.",
-			};
-		}
-		if (/spam|fake|ad|promotion/i.test(text)) {
-			return {
-				tone: "info",
-				badge: "🧹 Spam Clean",
-				action: "Recommended: Hide content and dismiss report if already handled.",
-			};
-		}
-		if (/inappropriate|profan|vulgar|nsfw/i.test(text)) {
-			return {
-				tone: "warn",
-				badge: "⚠️ Policy Violation",
-				action: "Recommended: Hide content & warn author.",
-			};
-		}
+		const v = triageFor(r);
 		return {
-			tone: "neutral",
-			badge: "📋 User Report",
-			action: "Review quoted excerpt below. Moderate author or resolve if no violation found.",
+			tone: v.tone,
+			badge: v.label,
+			action: v.action,
+			why: v.why,
+			urgent: v.urgent,
+			noViolationFound: v.noViolationFound,
 		};
 	};
 
@@ -1420,10 +1436,18 @@ export default function Reports() {
 	};
 
 	const applyAiRecommendation = async (r: ReportRow) => {
-		const g = getReportGuidance(r);
-		if (g.tone === "critical") {
+		const v = triageFor(r);
+		// Nothing was alleged against the author — never punish on that.
+		if (v.noViolationFound) {
+			await resolve(r.id);
+			toast("Dismissed — no violation found in this report.", "ok");
+			return;
+		}
+		if (v.enforce === "escalate") {
 			await escalateReport(r.id);
-		} else if (g.tone === "urgent" || g.tone === "warn") {
+			return;
+		}
+		if (v.enforce === "hide_and_warn") {
 			if (r.target_author_id) {
 				try {
 					await moderateAuthor(r, "warn");
@@ -1432,11 +1456,13 @@ export default function Reports() {
 				}
 			}
 			await hideTargetAndResolve(r);
-		} else if (g.tone === "info") {
-			await hideTargetAndResolve(r);
-		} else {
-			await resolve(r.id);
+			return;
 		}
+		if (v.enforce === "hide") {
+			await hideTargetAndResolve(r);
+			return;
+		}
+		await resolve(r.id);
 	};
 
 	const visibleOpenReports = openReports.filter((r) => {
@@ -2057,12 +2083,15 @@ export default function Reports() {
 											}`}>
 												<div className="flex items-center justify-between gap-2 flex-wrap mb-1.5">
 													<div className="flex items-center gap-2 flex-wrap">
+														{/* This is what was *alleged*, never a proven verdict. */}
 														<span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-bold tracking-wide uppercase ${
 															urgent
 																? "bg-bad text-white shadow-xs"
-																: "bg-bad/15 text-bad border border-bad/30"
+																: guidance.noViolationFound
+																	? "bg-emerald-600/15 text-emerald-400 border border-emerald-500/30"
+																	: "bg-bad/15 text-bad border border-bad/30"
 														}`}>
-															<Flag size={13} className={urgent ? "text-white" : "text-bad"} />
+															<Flag size={13} className={urgent ? "text-white" : guidance.noViolationFound ? "text-emerald-400" : "text-bad"} />
 															<span>Violation: {r.reason}</span>
 														</span>
 														<span className="text-[10px] font-bold text-ink2 px-2 py-0.5 rounded bg-surface border border-border/60 uppercase tracking-wider">
@@ -2093,7 +2122,7 @@ export default function Reports() {
 											{/* Targeted content preview quote */}
 											<ReportTargetQuote reportId={r.id} targetType={String(r.target_type || "")} targetId={String(r.target_id || "")} reason={r.reason} isOpen={true} />
 
-											{/* ── Smart AI Decision Banner ── */}
+											{/* ── Triage Advice Banner ── */}
 											<div className="my-1 p-3 rounded-xl bg-accent/[0.08] border border-accent/25 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
 												<div className="flex items-center gap-2.5 min-w-0">
 													<div className="w-8 h-8 rounded-lg bg-accent/20 flex items-center justify-center text-accent shrink-0">
@@ -2101,10 +2130,11 @@ export default function Reports() {
 													</div>
 													<div className="min-w-0">
 														<div className="flex items-center gap-2">
-															<span className="text-xs font-bold text-ink">AI Decision Advice:</span>
+															<span className="text-xs font-bold text-ink">Suggested next step:</span>
 															<span className="text-[10px] font-bold text-accent bg-accent/15 px-2 py-0.5 rounded-full border border-accent/30">{guidance.badge}</span>
 														</div>
-														<p className="text-xs text-ink2 mt-0.5 truncate">{guidance.action}</p>
+														<p className="text-xs text-ink2 mt-0.5">{guidance.action}</p>
+														<p className="text-[11px] text-ink3 mt-0.5 italic">{guidance.why}</p>
 													</div>
 												</div>
 												<button

@@ -156,4 +156,29 @@ describe("pre-publish emergency path — decision forcing", () => {
 		expect(payload.decision).toBe("safe");
 		expect(payload.checks.safety.issues).not.toContain("SELF-HARM");
 	});
+
+	// Reported bug: a teacher complaint was labelled "a report of abuse".
+	// The verdict must come from the TEXT, not from the classifier's prose.
+	it("publishes a teacher complaint without an abuse-report label", async () => {
+		const payload = await runEmergency({
+			title: "Teacher complaint",
+			description: "Kakuli mam is a horrible teacher and she never explains anything",
+		});
+		expect(payload.decision).toBe("safe");
+		const issues: string[] = payload.checks.safety.issues;
+		expect(issues.join(" ")).not.toMatch(/report of abuse/i);
+		expect(issues.join(" ")).not.toMatch(/hostile|moderator must review/i);
+	});
+
+	// The reporting heuristic is loose (any mention of "teacher" reads as a
+	// report), so a first-person threat that also names a teacher used to be
+	// exempted. The deterministic gate must still call it what it is.
+	it("still forces a first-person threat addressed to a teacher to high_risk", async () => {
+		const payload = await runEmergency({
+			title: "Complaint",
+			description: "I will hurt you after class, teacher",
+		});
+		expect(payload.decision).toBe("high_risk");
+		expect(payload.checks.safety.issues).toContain("DIRECT THREATS");
+	});
 });

@@ -6,7 +6,6 @@ import {
 	Eye,
 	ImagePlus,
 	Lightbulb,
-	Loader2,
 	Lock,
 	Megaphone,
 	Pencil,
@@ -27,6 +26,7 @@ import { useCategories } from "../hooks/useCategories";
 import { api } from "../lib/api";
 import { downscaleImage } from "../lib/image";
 import { checkCooldown, lsGet, lsSet, stampCooldown } from "../lib/identity";
+import { triggerHaptic } from "../lib/haptics";
 import {
 	isBlockedByServer,
 	type ModerationResult,
@@ -67,6 +67,53 @@ interface PollSuggest {
 	ptype?: string | null;
 	note?: string | null;
 }
+
+const KEYWORD_CATEGORIES: Record<string, string[]> = {
+	Facilities: ["washroom", "toilet", "bathroom", "tap", "leak", "water", "plumbing", "pipe", "ac", "air conditioner", "fan", "light", "bulb", "bench", "desk", "elevator", "lift", "door", "window", "generator", "electricity"],
+	Food: ["canteen", "cafeteria", "lunch", "mess", "food", "snack", "meal", "stale", "dinner", "breakfast", "hygiene", "cook", "water cooler", "tiffin"],
+	Academics: ["class", "lecture", "professor", "teacher", "exam", "syllabus", "attendance", "grade", "marks", "assignment", "lab", "course", "schedule", "timetable"],
+	Hostel: ["hostel", "room", "warden", "curfew", "roommate", "bed", "mess", "dorm", "hot water"],
+	Safety: ["ragging", "bully", "harass", "threat", "unsafe", "dark", "security", "guard", "cctv", "fight", "stolen", "theft"],
+	Transport: ["bus", "van", "transport", "driver", "route", "parking", "auto", "shuttle"],
+};
+
+function ProgressDonut({ current, max, id }: { current: number; max: number; id?: string }) {
+	const pct = Math.min(100, Math.round((current / max) * 100));
+	const radius = 6;
+	const circumference = 2 * Math.PI * radius;
+	const strokeDashoffset = circumference - (pct / 100) * circumference;
+	const color = pct >= 100 ? "var(--vb-bad)" : pct >= 85 ? "var(--vb-warn)" : "var(--vb-accent)";
+	return (
+		<span id={id} className="inline-flex items-center gap-1.5 text-[10px] text-ink3 ml-auto">
+			<svg width="16" height="16" className="transform -rotate-90 shrink-0" aria-hidden="true">
+				<circle
+					cx="8"
+					cy="8"
+					r={radius}
+					stroke="currentColor"
+					strokeWidth="2"
+					fill="transparent"
+					className="text-border opacity-30"
+				/>
+				<circle
+					cx="8"
+					cy="8"
+					r={radius}
+					stroke={color}
+					strokeWidth="2"
+					strokeDasharray={circumference}
+					strokeDashoffset={strokeDashoffset}
+					strokeLinecap="round"
+					fill="transparent"
+					className="transition-all duration-300"
+				/>
+			</svg>
+			<span className={pct >= 100 ? "text-bad font-bold" : pct >= 85 ? "text-warn font-semibold" : ""}>
+				{current}/{max}
+			</span>
+		</span>
+	);
+}
 /**
  * The pre-publish verdict type and its normalizer live together in
  * ../lib/moderation. This page only ever renders a NORMALIZED verdict, so the
@@ -100,6 +147,17 @@ export default function Submit() {
 	} | null>(null);
 	const [preview, setPreview] = useState(false);
 	const [busy, setBusy] = useState(false);
+	const [success, setSuccess] = useState(false);
+
+	const detectedCategory = useMemo(() => {
+		const text = `${title} ${desc}`.toLowerCase();
+		for (const [cat, keywords] of Object.entries(KEYWORD_CATEGORIES)) {
+			if (keywords.some((kw) => text.includes(kw))) {
+				return cat;
+			}
+		}
+		return null;
+	}, [title, desc]);
 	/**
 	 * Draft autosave status. "saved" is only ever set when the durable store
 	 * actually accepted the write — a full or blocked storage reports "failed"
@@ -235,6 +293,13 @@ export default function Submit() {
 	/** Pre-publish AI review result */
 	const [prePubResult, setPrePubResult] = useState<PrePubResult | null>(null);
 	const [prePubBusy, setPrePubBusy] = useState(false);
+	const isPrePubBlocked = useMemo(() => {
+		return Boolean(
+			prePubResult &&
+			(prePubResult.decision === "high_risk" ||
+				Boolean(prePubResult.checks?.privacy && !prePubResult.checks.privacy.pass))
+		);
+	}, [prePubResult]);
 
 	// Smart poll AI suggestions — fires only on the poll tab, debounced while typing
 	useEffect(() => {
@@ -550,7 +615,21 @@ export default function Submit() {
 			api
 				.postSlow<ModerationResult & { checked?: boolean; serverBlocked?: boolean }>(
 					"/api/moderate",
-					{ text, surface, aiJudge: true },
+					{
+						text,
+						surface,
+						aiJudge: true,
+						// One merged verdict (safety gate + model analysis), the same
+						// function `/api/pre-publish` runs on publish. Without this the
+						// page showed two independent reviews that could disagree.
+						fullReview: true,
+						contentType: type === "poll" ? "poll" : "post",
+						title,
+						description: desc,
+						category,
+						author_id: anonId,
+						visibility: isPrivate ? "private" : "public",
+					},
 				)
 				.then((r) => {
 					// Ignore a response for text the user has already typed past.
@@ -565,6 +644,10 @@ export default function Submit() {
 					const verdict = { text, surface, result: r };
 					aiVerdictRef.current = verdict;
 					setAiVerdict(verdict);
+					// Feed the SAME merged verdict into the single review panel.
+					// The panel and the publish gate therefore describe one review,
+					// not two that can contradict each other.
+					if (r.review) setPrePubResult(normalizePrePubResult(r.review));
 				})
 				.catch(() => {
 					if (cancelled || seq !== aiSeq.current) return;
@@ -576,13 +659,12 @@ export default function Submit() {
 				.finally(() => {
 					if (cancelled || seq !== aiSeq.current) return;
 					setAiChecking(false);
-				});
-		}, 1200);
+				});			}, 1200);
 		return () => {
 			cancelled = true;
 			clearTimeout(t);
 		};
-	}, [liveText, type]);
+	}, [liveText, type, title, desc, category, isPrivate, anonId]);
 
 	const [voiceBusy, setVoiceBusy] = useState(false);
 	const [voiceDraft, setVoiceDraft] = useState<{
@@ -996,6 +1078,7 @@ export default function Submit() {
 					description: sanitize(desc, 500),
 					category,
 					author_id: anonId,
+					visibility: isPrivate ? "private" : "public",
 				}),
 			);
 			} catch (ppErr) {
@@ -1019,19 +1102,20 @@ export default function Submit() {
 			// Step 2: Handle pre-publish decision
 			if (prePub) {
 				setPrePubResult(prePub);
-				// PII (address/phone/email) is always blocked — never allow a leak to publish
+				// PII (address/phone/email) is blocked on public posts — private posts allow contacts
 				const privacyFailed =
-					prePub.checks?.privacy && !prePub.checks.privacy.pass;
-				if (prePub.decision === "high_risk" || privacyFailed) {
+					!isPrivate && prePub.checks?.privacy && !prePub.checks.privacy.pass;
+				if ((prePub.decision === "high_risk" && !isPrivate) || privacyFailed) {
 					toast(
 						`Content held for review: ${prePub.reason || "Personal information detected — remove addresses, phone numbers, or emails"}.`,
 						"err",
 					);
 					setBusy(false);
+					submitBusyRef.current = false;
 					return;
 				}
-				if (prePub.decision === "revision") {
-					// 'revision' content is NOT safe to publish immediately — queue it for
+				if (prePub.decision === "revision" && !isPrivate) {
+					// 'revision' content is NOT safe to publish immediately in public — queue it for
 					// admin review so the "reviewed before going public" promise holds.
 					holdForReview = true;
 					toast(
@@ -1118,6 +1202,8 @@ export default function Submit() {
 			} else if (attachPoll && held) {
 				toast("Post held for review — add the poll after it's approved.", "info");
 			}
+			setSuccess(true);
+			triggerHaptic("medium");
 			nav(type === "suggestion" ? "/suggestions" : `/post/${post.id}`);
 		} catch (e: unknown) {
 			const msg = e instanceof Error ? e.message : "Publish failed";
@@ -1135,11 +1221,96 @@ export default function Submit() {
 							: { category },
 				});
 			}
-		}
-		setBusy(false);
 		} finally {
-			submitBusyRef.current = false;
+			if (!success) setBusy(false);
 		}
+	} finally {
+		if (!success) submitBusyRef.current = false;
+	}
+};
+
+	/**
+	 * AI suggestions (category / tags / better title) — rendered INSIDE the
+	 * single review card when prePubResult is present, or as a live helper
+	 * panel during draft typing.
+	 */
+	const renderAiSuggestions = (inCard = true) => {
+		if (!aiSuggest?.category) return null;
+		return (
+			<div
+				className={
+					inCard
+						? "mt-3 pt-3 border-t border-border"
+						: "rounded-xl p-3.5 vb-rise mt-3"
+				}
+				style={
+					inCard
+						? undefined
+						: {
+								background: "var(--vb-accent-soft)",
+								border: "1px solid rgba(86,82,214,0.2)",
+							}
+				}
+			>
+				<p className="text-[10px] font-bold uppercase tracking-wider text-accent mb-2 flex items-center gap-1.5">
+					<Sparkles size={12} /> AI suggestions · updating live
+				</p>
+				<div className="flex flex-wrap gap-1.5">
+					{aiSuggest.category !== category ? (
+						<button
+							type="button"
+							className="chip cursor-pointer !bg-surface hover:!border-accent transition-all"
+							onClick={() => {
+								setCategory(aiSuggest.category);
+								toast(`Category → ${aiSuggest.category}`, "ok");
+							}}
+						>
+							{CAT_EMOJI[aiSuggest.category]} {aiSuggest.category} ·{" "}
+							{Math.round((aiSuggest.confidence || 0) * 100)}%{" "}
+							<span className="text-accent font-bold">apply</span>
+						</button>
+					) : (
+						<span
+							className="chip !border-transparent"
+							style={{
+								background: "rgba(22,160,106,0.12)",
+								color: "var(--vb-good)",
+							}}
+						>
+							<CheckCircle2 size={11} /> {CAT_EMOJI[category]} {category}
+						</span>
+					)}
+
+					{(aiSuggest.tags || [])
+						.filter(
+							(t: string) => !tags.toLowerCase().includes(t.toLowerCase()),
+						)
+						.slice(0, 3)
+						.map((t: string) => (
+							<button
+								key={t}
+								type="button"
+								className="chip cursor-pointer !bg-surface hover:!border-accent transition-all"
+								onClick={() => setTags((prev) => (prev ? `${prev}, ${t}` : t))}
+							>
+								#{t} <span className="text-accent font-bold">+</span>
+							</button>
+						))}
+				</div>
+				{aiSuggest.improved_title &&
+					aiSuggest.improved_title.toLowerCase() !== title.toLowerCase() && (
+						<button
+							type="button"
+							className="w-full text-left text-xs mt-2 px-2.5 py-2 rounded-lg bg-surface border border-border hover:border-accent transition-all flex items-center gap-2"
+							onClick={() => setTitle(aiSuggest.improved_title!.slice(0, 120))}
+						>
+							<Pencil size={12} className="text-accent shrink-0" />{" "}
+							Better title: <b>"{aiSuggest.improved_title}"</b>{" "}
+							<span className="text-accent font-bold ml-auto">use</span>
+						</button>
+					)}
+			</div>
+		);
 	};
 
 	/**
@@ -1152,145 +1323,483 @@ export default function Submit() {
 	 * rendered. One definition, called from both branches, so the two can never
 	 * drift apart.
 	 */
-	const renderLiveModerationFeedback = () => (
-		// Stable slot: rows appearing/disappearing here used to shove the
-		// publish button up and down on every keystroke. The height is
-		// reserved while feedback is active (checking or banner rows fit
-		// inside it), so only the copy changes — never the layout. Short
-		// stubs reserve nothing: the slot is either active or absent, and
-		// the gate below is the same one that decides activity.
-		<div
-			data-testid="live-mod-slot"
-			style={feedbackLengthOk || modFlags.length > 0 ? { minHeight: 76 } : undefined}
-		>
-			{/* Advisory: does this read as an actionable school problem? */}
-			<RelevanceNote
-				relevance={relevance}
-				text={liveText}
-				checking={modChecking}
-				hasSafetyFlags={modFlags.length > 0}
-				safetyPending={aiChecking}
-			/>
-			{moderation && modFlags.length > 0 && (
-				<div
-					className={`rounded-xl p-3.5 vb-rise ${isBlockedByServer(moderation) ? "moderation-blocked" : moderation.overallSeverity === "high" ? "moderation-danger" : moderation.overallSeverity === "medium" ? "moderation-warn" : "moderation-info"}`}
-				>
-					<p className="text-[10px] font-bold uppercase tracking-wider mb-2 flex items-center gap-1.5">
-						{isBlockedByServer(moderation) ? (
-							<>
-								<ShieldAlert size={12} /> Content blocked
-							</>
+	const renderLiveModerationFeedback = () => {
+		const liveBlocked = Boolean(moderation && isBlockedByServer(moderation));
+		// A model verdict only counts when the server says the model actually
+		// judged this text (`llm_analyzed`). When every provider lane is down
+		// the endpoint answers from its emergency regex fallback, which cannot
+		// see a threat — that is not an AI pass and must never be painted green.
+		const aiVerified = prePubResult?.analysis?.llm_analyzed === true;
+		const decisionRecognised = ["safe", "revision", "high_risk"].includes(
+			prePubResult?.decision ?? "",
+		);
+
+		/**
+		 * ONE verdict for ONE card.
+		 *
+		 * The deterministic scan (`/api/moderate`) and the pre-publish AI pass are
+		 * two readings of the same draft. Rendered as separate panels they could
+		 * contradict each other — the screenshot that prompted this fix showed
+		 * "Threats are not allowed here" in the content review directly above a
+		 * green "AI review — safe to publish", because the fallback pass scored
+		 * 0/100 without ever looking for threats.
+		 *
+		 * So the panel reports the WORST level either signal supports, and only
+		 * calls a pass "verified" when the model really ran.
+		 */
+		const panelState: "blocked" | "attention" | "verified" | "quick" | "unknown" =
+			liveBlocked || isPrePubBlocked
+				? "blocked"
+				: modFlags.length > 0 || prePubResult?.decision === "revision"
+					? "attention"
+					: prePubResult
+						? decisionRecognised
+							? aiVerified
+								? "verified"
+								: "quick"
+							: "unknown"
+						: aiReview?.aiChecked === true
+							? "verified"
+							: "quick";
+
+		// Circular Gauge SVG helper (sweeps neutral indigo → emerald → amber/red)
+		const renderCircularGauge = (
+			status: "safe" | "warn" | "blocked" | "checking" | "neutral",
+			_score = 100,
+		) => {
+			const radius = 13;
+			const circ = 2 * Math.PI * radius; // ~81.68
+			const pct =
+				status === "blocked"
+					? 100
+					: status === "warn"
+						? 65
+						: status === "safe"
+							? 100
+							: status === "checking"
+								? 40
+								: 15;
+			const strokeOffset = circ - (pct / 100) * circ;
+			const color =
+				status === "blocked"
+					? "var(--vb-bad, #ef4444)"
+					: status === "warn"
+						? "var(--vb-warn, #f59e0b)"
+						: status === "safe"
+							? "var(--vb-good, #10b981)"
+							: "var(--vb-accent, #6366f1)";
+
+			return (
+				<div className="relative w-8 h-8 shrink-0 flex items-center justify-center">
+					<svg className="w-8 h-8 -rotate-90 transform" viewBox="0 0 32 32">
+						<circle
+							cx="16"
+							cy="16"
+							r={radius}
+							className="text-border/30"
+							strokeWidth="3"
+							stroke="currentColor"
+							fill="none"
+						/>
+						<circle
+							cx="16"
+							cy="16"
+							r={radius}
+							stroke={color}
+							strokeWidth="3"
+							strokeDasharray={circ}
+							strokeDashoffset={strokeOffset}
+							strokeLinecap="round"
+							fill="none"
+							className={`transition-all duration-700 ease-out ${status === "checking" ? "animate-pulse" : ""}`}
+						/>
+					</svg>
+					<div className="absolute inset-0 flex items-center justify-center">
+						{status === "blocked" ? (
+							<X size={11} className="text-bad" />
+						) : status === "warn" ? (
+							<AlertTriangle size={11} className="text-warn" />
+						) : status === "safe" ? (
+							<CheckCircle2 size={11} className="text-good" />
+						) : status === "checking" ? (
+							<Sparkles size={10} className="text-accent animate-spin" />
 						) : (
-							<>
-								<ShieldCheck size={12} /> Content review
-							</>
+							<ShieldCheck size={11} className="text-ink3" />
 						)}
-					</p>
-					<div className="space-y-1.5">
-						{modFlags.map((flag, i) => (
-							<div key={i} className="flex items-start gap-2 text-xs">
+					</div>
+				</div>
+			);
+		};
+
+		return (
+			<div
+				data-testid="live-mod-slot"
+				style={feedbackLengthOk || modFlags.length > 0 || prePubResult ? { minHeight: 76 } : undefined}
+			>
+				{/* Advisory: does this read as an actionable school problem? */}
+				<RelevanceNote
+					relevance={relevance}
+					text={liveText}
+					checking={modChecking}
+					hasSafetyFlags={modFlags.length > 0}
+					safetyPending={aiChecking}
+				/>
+
+				{/* 1. If prePubResult is present, render the full pre-publish analysis in this slot */}
+				{prePubResult ? (
+					<div
+						data-testid="unified-review"
+						className={`rounded-xl p-4 vb-rise ${
+							panelState === "blocked"
+								? "moderation-blocked"
+								: panelState === "attention"
+									? "moderation-warn"
+									: "moderation-info"
+						}`}
+					>
+						<div className="flex items-center justify-between mb-3">
+							<div className="flex items-center gap-2.5">
+								{renderCircularGauge(
+									panelState === "blocked"
+										? "blocked"
+										: panelState === "attention"
+											? "warn"
+											: panelState === "verified"
+												? "safe"
+												: "neutral",
+									prePubResult.risk_score,
+								)}
+								<p className="text-[10px] font-bold uppercase tracking-wider flex items-center gap-1.5">
+									{panelState === "blocked" ? (
+										<>
+											<ShieldAlert size={12} /> AI review — blocked
+										</>
+									) : panelState === "attention" ? (
+										<>
+											<AlertTriangle size={12} /> AI review — needs attention
+										</>
+									) : panelState === "verified" ? (
+										<>
+											<ShieldCheck size={12} /> AI review — safe to publish
+										</>
+									) : panelState === "quick" ? (
+										<>
+											<ShieldCheck size={12} /> AI review — quick checks only
+										</>
+									) : (
+										<>
+											<AlertTriangle size={12} /> AI review — could not confirm
+										</>
+									)}
+								</p>
+							</div>
+							{/* Provenance, stated plainly. "Regex fallback analysis" told the
+							    author nothing; what matters is whether a model actually read
+							    the draft or only the deterministic scan ran. */}
+							<span
+								data-testid="review-provenance"
+								className="text-[9px] font-mono px-1.5 py-0.5 rounded"
+								style={{
+									background: aiVerified
+										? "rgba(86,82,214,0.15)"
+										: "rgba(120,130,150,0.15)",
+									color: aiVerified ? "var(--vb-accent)" : "var(--vb-ink3)",
+								}}
+							>
+								{aiVerified
+									? prePubResult.analysis?.estimated_resolution_time
+										? `AI-verified · ~${prePubResult.analysis.estimated_resolution_time}`
+										: "AI-verified"
+									: "deterministic checks only"}
+							</span>
+						</div>
+
+						{/* Risk score bar */}
+						<div className="mb-3">
+							<div className="flex items-center justify-between mb-1">
+								<span className="text-[11px] font-semibold text-ink2">
+									Risk score
+								</span>
 								<span
-									className={`shrink-0 mt-0.5 ${
-										flag.severity === "critical" || flag.severity === "high"
+									className={`text-[11px] font-bold ${
+										panelState === "blocked"
 											? "text-bad"
-											: flag.severity === "medium"
+											: panelState === "attention"
 												? "text-warn"
-												: "text-ink3"
+												: "text-good"
 									}`}
 								>
-									{flag.severity === "critical" ||
-									flag.severity === "high" ? (
-										<X size={12} />
-									) : (
-										<AlertTriangle size={12} />
-									)}
+									{prePubResult.risk_score}/100
 								</span>
-								<span className="text-ink2">{flag.message}</span>
 							</div>
-						))}
-					</div>
-					{isBlockedByServer(moderation) && (
-						<p
-							className="text-[11px] mt-2 font-semibold"
-							style={{ color: "var(--vb-bad)" }}
-						>
-							Please remove the flagged content to continue. Repeated
-							violations may result in a temporary suspension.
+							<div
+								className="w-full h-1.5 rounded-full overflow-hidden"
+								style={{ background: "var(--vb-border)" }}
+							>
+								<div
+									className={`h-full rounded-full transition-all duration-700 ${
+										panelState === "blocked"
+											? "bg-bad"
+											: panelState === "attention"
+												? "bg-warn"
+												: "bg-good"
+									}`}
+									style={{
+										width: `${Math.min(100, prePubResult.risk_score)}%`,
+									}}
+								/>
+							</div>
+						</div>
+
+						{/* Check results grid */}
+						{prePubCheckRows.length > 0 && (
+							<div className="grid grid-cols-2 gap-2 mb-3">
+								{prePubCheckRows.map(({ key, label, check }) => (
+									<div
+										key={key}
+										className="flex items-center gap-1.5 text-[11px]"
+									>
+										{check.pass ? (
+											<span className="text-good">
+												<CheckCircle2 size={11} />
+											</span>
+										) : (
+											<span className="text-bad">
+												<X size={11} />
+											</span>
+										)}
+										<span
+											className={
+												check.pass ? "text-ink3" : "text-ink2 font-semibold"
+											}
+										>
+											{label}
+										</span>
+										{check.issues.length > 0 && (
+											<span className="text-[9px] text-bad font-mono">
+												({check.issues.length})
+											</span>
+										)}
+									</div>
+								))}
+							</div>
+						)}
+
+						{/* What the live content review caught. These flags used to live in a
+						    second card, which is how the page could show a threat and a green
+						    pass at the same time — the same panel must carry both. */}
+						{modFlags.length > 0 && (
+							<ul
+								data-testid="review-flags"
+								className="space-y-1 mb-3"
+							>
+								{modFlags.map((flag, i) => (
+									<li
+										key={`${flag.category ?? "flag"}-${i}`}
+										className="flex items-start gap-2 text-xs"
+									>
+										<span
+											className={`shrink-0 mt-0.5 ${
+												flag.severity === "critical" ||
+												flag.severity === "high"
+													? "text-bad"
+													: "text-warn"
+											}`}
+										>
+											{flag.severity === "critical" ||
+											flag.severity === "high" ? (
+												<X size={12} />
+											) : (
+												<AlertTriangle size={12} />
+											)}
+										</span>
+										<span className="text-ink2">{flag.message}</span>
+									</li>
+								))}
+							</ul>
+						)}
+
+						{/* AI reason */}
+						<p className="text-[11px] text-ink2 leading-relaxed">
+							{prePubResult.reason}
 						</p>
-					)}
-					{!isBlockedByServer(moderation) &&
-						moderation.overallSeverity !== "none" && (
-							<p className="text-[11px] mt-2 text-ink3">
-								Your content will be reviewed before publishing. Please
-								ensure all feedback is constructive and respectful.
+
+						{renderAiSuggestions()}
+
+						{/* Action hint & Dismiss button */}
+						{isPrePubBlocked && (
+							<>
+								<p className="text-[11px] mt-2 font-semibold text-bad">
+									Not submitted — remove personal info and try again.
+									Your draft is preserved above.
+								</p>
+								<button
+									type="button"
+									onClick={() => setPrePubResult(null)}
+									className="mt-2 text-[11px] font-semibold text-ink3 hover:text-accent"
+								>
+									Dismiss
+								</button>
+							</>
+						)}
+						{panelState === "attention" && (
+							<p className="text-[11px] mt-2 text-warn">
+								AI flagged something — you can still submit, but it will be
+								reviewed before going public.
 							</p>
 						)}
-				</div>
-			)}
-			{/* One checking row, never two: the fast and model passes overlap
-				(mainly across tab switches), and stacked spinners read as a
-				glitch. Fast pass wins the copy while it is in flight; the
-				model copy shows once only the model is pending; the stale
-				copy covers the debounce window before either request fires.
-				Suppressed under flags — the flag panel speaks then. */}
-			{(modChecking || aiChecking || stalePending) &&
-				feedbackLengthOk &&
-				modFlags.length === 0 && (
-					<div className="flex items-center gap-2 rounded-lg px-3 py-2 text-xs text-ink3">
-						<Loader2 size={13} className="animate-spin" />
-						<span>
-							{modChecking
-								? "Checking content against the safety policy…"
-								: aiChecking
-									? "The AI is reviewing your draft…"
-									: "Reviewing latest changes…"}
-						</span>
-					</div>
-				)}
-			{/* The green banner is a claim that the MODEL reviewed the draft:
-				it renders ONLY from a verdict carrying `aiChecked:true` for
-				the exact text on screen. A deterministic-only verdict — or a
-				model call that timed out or failed — renders a neutral note
-				instead. Flags always win: any flag list suppresses every
-				banner here and the flag panel above speaks.
-				The banner stays up while the model pass is in flight for the
-				same text: the fast verdict it shows is true, and hiding it
-				for a spinner is a hide/show flash per pause. */}
-			{moderation &&
-				!modChecking &&
-				modFlags.length === 0 &&
-				feedbackLengthOk &&
-				(aiReview?.aiChecked === true ? (
-					<div
-						className="flex items-center gap-2 rounded-lg px-3 py-2 text-xs vb-rise"
-						style={{
-							background: "rgba(22,160,106,0.08)",
-							border: "1px solid rgba(22,160,106,0.2)",
-						}}
-					>
-						<ShieldCheck size={13} style={{ color: "var(--vb-good)" }} />
-						<span style={{ color: "var(--vb-good)" }}>
-							No issues found — the AI reviewed your draft
-						</span>
+						{/* A green "ready to publish" is only allowed when a model actually
+						    verified the draft. The regex fallback scores 0/100 because it
+						    never looks for threats, so its pass is reported as a quick
+						    check — never as an AI clearance. */}
+						{panelState === "verified" && (
+							<p className="text-[11px] mt-2 text-good">
+								All checks passed — ready to publish.
+							</p>
+						)}
+						{panelState === "quick" && (
+							<p className="text-[11px] mt-2 text-ink3">
+								Quick checks passed. The AI review runs when you publish.
+							</p>
+						)}
 					</div>
 				) : (
-					<div
-						className="flex items-center gap-2 rounded-lg px-3 py-2 text-xs text-ink3 vb-rise"
-						style={{
-							background: "rgba(120,130,150,0.08)",
-							border: "1px solid rgba(120,130,150,0.25)",
-						}}
-					>
-						<ShieldCheck size={13} />
-						<span>
-							{aiReview
-								? "The AI check couldn't run — full review still runs when you publish"
-								: "Quick checks passed — final AI review runs when you publish"}
-						</span>
-					</div>
-				))}
-		</div>
-	);
+					/* 2. Live checking / typing mode: unified card */
+					<>
+						{/* Flags render INSIDE the one review card when a full review
+						    exists — this standalone block is only the fast,
+						    gate-only state before that lands. */}
+						{!prePubResult && moderation && modFlags.length > 0 && (
+							<div
+								className={`rounded-xl p-3.5 vb-rise ${isBlockedByServer(moderation) ? "moderation-blocked" : moderation.overallSeverity === "high" ? "moderation-danger" : moderation.overallSeverity === "medium" ? "moderation-warn" : "moderation-info"}`}
+							>
+								<div className="flex items-center gap-2.5 mb-2">
+									{renderCircularGauge(
+										isBlockedByServer(moderation) ? "blocked" : "warn",
+									)}
+									<p className="text-[10px] font-bold uppercase tracking-wider flex items-center gap-1.5">
+										{isBlockedByServer(moderation) ? (
+											<>
+												<ShieldAlert size={12} /> Content blocked
+											</>
+										) : (
+											<>
+												<AlertTriangle size={12} /> AI review — needs attention
+											</>
+										)}
+									</p>
+								</div>
+								<div className="space-y-1.5 pl-10">
+									{modFlags.map((flag, i) => (
+										<div key={i} className="flex items-start gap-2 text-xs">
+											<span
+												className={`shrink-0 mt-0.5 ${
+													flag.severity === "critical" || flag.severity === "high"
+														? "text-bad"
+														: flag.severity === "medium"
+															? "text-warn"
+															: "text-ink3"
+												}`}
+											>
+												{flag.severity === "critical" ||
+												flag.severity === "high" ? (
+													<X size={12} />
+												) : (
+													<AlertTriangle size={12} />
+												)}
+											</span>
+											<span className="text-ink2">{flag.message}</span>
+										</div>
+									))}
+								</div>
+								{isBlockedByServer(moderation) && (
+									<p
+										className="text-[11px] mt-2 font-semibold pl-10"
+										style={{ color: "var(--vb-bad)" }}
+									>
+										Please remove the flagged content to continue. Repeated
+										violations may result in a temporary suspension.
+									</p>
+								)}
+								{!isBlockedByServer(moderation) &&
+									moderation.overallSeverity !== "none" && (
+										<p className="text-[11px] mt-2 text-ink3 pl-10">
+											Your content will be reviewed before publishing. Please
+											ensure all feedback is constructive and respectful.
+										</p>
+									)}
+							</div>
+						)}
+
+						{/* Spinner while checking */}
+						{(modChecking || aiChecking || stalePending) &&
+							feedbackLengthOk &&
+							modFlags.length === 0 && (
+								<div className="flex items-center gap-2.5 rounded-lg px-3 py-2 text-xs text-ink3 vb-rise">
+									{renderCircularGauge("checking")}
+									<span>
+										{modChecking
+											? "Checking content against the safety policy…"
+											: aiChecking
+												? "The AI is reviewing your draft…"
+												: "Reviewing latest changes…"}
+									</span>
+								</div>
+							)}
+
+						{/* Quick-check status line. Suppressed while the merged review
+						    card is on screen, which states the same verdict with the
+						    score and checks attached — two green claims is the
+						    duplication this replaces. */}
+						{!prePubResult &&
+							moderation &&
+							!modChecking &&
+							modFlags.length === 0 &&
+							feedbackLengthOk &&
+							(aiReview?.aiChecked === true ? (
+								<div
+									className="flex items-center gap-2.5 rounded-lg px-3 py-2 text-xs vb-rise"
+									style={{
+										background: "rgba(22,160,106,0.08)",
+										border: "1px solid rgba(22,160,106,0.2)",
+									}}
+								>
+									{renderCircularGauge("safe")}
+									<div className="flex flex-col">
+										<span
+											className="font-semibold text-xs"
+											style={{ color: "var(--vb-good)" }}
+										>
+											AI review — safe to publish
+										</span>
+										<span style={{ color: "var(--vb-good)" }}>
+											No issues found — the AI reviewed your draft
+										</span>
+									</div>
+								</div>
+							) : (
+								<div
+									className="flex items-center gap-2.5 rounded-lg px-3 py-2 text-xs text-ink3 vb-rise"
+									style={{
+										background: "rgba(120,130,150,0.08)",
+										border: "1px solid rgba(120,130,150,0.25)",
+									}}
+								>
+									{renderCircularGauge("neutral")}
+									<span>
+										{aiReview
+											? "The AI check couldn't run — full review still runs when you publish"
+											: "Quick checks passed — final AI review runs when you publish"}
+									</span>
+								</div>
+							))}
+
+						{renderAiSuggestions(false)}
+					</>
+				)}
+			</div>
+		);
+	};
 
 	const TABS = [
 		{ key: "problem", label: "Problem", icon: Megaphone },
@@ -1363,17 +1872,20 @@ export default function Submit() {
 						aria-describedby="f-title-help"
 						aria-invalid={!!titleError}
 					/>
-					{titleError && (
-						<p className="text-[11px] text-bad mt-1 font-medium flex items-center gap-1">
-							<AlertTriangle size={11} /> {titleError}
-						</p>
-					)}
-					<p
-						id="f-title-help"
-						className="text-[10px] text-ink3 mt-1 text-right"
-					>
-						{title.length}/{type === "poll" ? 140 : 120}
-					</p>
+					<div className="flex justify-between items-center mt-1">
+						{titleError ? (
+							<p className="text-[11px] text-bad font-medium flex items-center gap-1">
+								<AlertTriangle size={11} /> {titleError}
+							</p>
+						) : (
+							<span />
+						)}
+						<ProgressDonut
+							id="f-title-help"
+							current={title.length}
+							max={type === "poll" ? 140 : 120}
+						/>
+					</div>
 				</div>
 
 				{type === "poll" ? (
@@ -1612,7 +2124,7 @@ export default function Submit() {
 									aria-invalid={!!descError}
 								/>
 							</div>
-							<div className="flex justify-between mt-1">
+							<div className="flex justify-between items-center mt-1">
 								{descError ? (
 									<p className="text-[11px] text-bad font-medium flex items-center gap-1">
 										<AlertTriangle size={11} /> {descError}
@@ -1620,12 +2132,11 @@ export default function Submit() {
 								) : (
 									<span />
 								)}
-								<p
+								<ProgressDonut
 									id="f-desc-help"
-									className={`text-[10px] ${desc.length > 450 ? "text-warn font-semibold" : "text-ink3"}`}
-								>
-									{desc.length}/500
-								</p>
+									current={desc.length}
+									max={500}
+								/>
 							</div>
 							{(type === "problem" || type === "suggestion") && (
 								<button
@@ -1674,263 +2185,68 @@ export default function Submit() {
 								</p>
 							</div>
 						)}
-						{prePubResult && (
-							<div
-								className={`rounded-xl p-4 vb-rise ${
-									prePubResult.decision === "high_risk"
-										? "moderation-blocked"
-										: prePubResult.decision === "revision"
-											? "moderation-warn"
-											: "moderation-info"
-								}`}
-							>
-								<div className="flex items-center justify-between mb-3">
-									<p className="text-[10px] font-bold uppercase tracking-wider flex items-center gap-1.5">
-										{prePubResult.decision === "high_risk" ? (
-											<>
-												<ShieldAlert size={12} /> AI review — blocked
-											</>
-										) : prePubResult.decision === "revision" ? (
-											<>
-												<AlertTriangle size={12} /> AI review — needs attention
-											</>
-										) : prePubResult.decision === "safe" ? (
-											<>
-												<ShieldCheck size={12} /> AI review — safe to publish
-											</>
-										) : (
-											// Any other value — including a missing one — is a verdict we
-											// cannot read. The old fallthrough crowned it "safe to
-											// publish": a green light nobody issued.
-											<>
-												<AlertTriangle size={12} /> AI review — could not confirm
-											</>
-										)}
-									</p>
-									{prePubResult.analysis?.llm_analyzed && (
-										<span
-											className="text-[9px] font-mono px-1.5 py-0.5 rounded"
-											style={{
-												background: "rgba(86,82,214,0.15)",
-												color: "var(--vb-accent)",
-											}}
-										>
-											{prePubResult.analysis.estimated_resolution_time
-												? `~${prePubResult.analysis.estimated_resolution_time}`
-												: "analyzed"}
-										</span>
-									)}
-								</div>
-
-								{/* Risk score bar */}
-								<div className="mb-3">
-									<div className="flex items-center justify-between mb-1">
-										<span className="text-[11px] font-semibold text-ink2">
-											Risk score
-										</span>
-										<span
-											className={`text-[11px] font-bold ${
-												prePubResult.risk_score >= 70
-													? "text-bad"
-													: prePubResult.risk_score >= 30
-														? "text-warn"
-														: "text-good"
-											}`}
-										>
-											{prePubResult.risk_score}/100
-										</span>
-									</div>
-									<div
-										className="w-full h-1.5 rounded-full overflow-hidden"
-										style={{ background: "var(--vb-border)" }}
-									>
-										<div
-											className={`h-full rounded-full transition-all duration-700 ${
-												prePubResult.risk_score >= 70
-													? "bg-bad"
-													: prePubResult.risk_score >= 30
-														? "bg-warn"
-														: "bg-good"
-											}`}
-											style={{
-												width: `${Math.min(100, prePubResult.risk_score)}%`,
-											}}
-										/>
-									</div>
-								</div>
-
-								{/* Check results grid */}
-								{prePubCheckRows.length > 0 && (
-									<div className="grid grid-cols-2 gap-2 mb-3">
-										{prePubCheckRows.map(({ key, label, check }) => (
-											<div
-												key={key}
-												className="flex items-center gap-1.5 text-[11px]"
-											>
-												{check.pass ? (
-													<span className="text-good">
-														<CheckCircle2 size={11} />
-													</span>
-												) : (
-													<span className="text-bad">
-														<X size={11} />
-													</span>
-												)}
-												<span
-													className={
-														check.pass ? "text-ink3" : "text-ink2 font-semibold"
-													}
-												>
-													{label}
-												</span>
-												{check.issues.length > 0 && (
-													<span className="text-[9px] text-bad font-mono">
-														({check.issues.length})
-													</span>
-												)}
-											</div>
-										))}
-									</div>
-								)}
-
-								{/* AI reason */}
-								<p className="text-[11px] text-ink2 leading-relaxed">
-									{prePubResult.reason}
-								</p>
-
-								{/* Action hint */}
-								{prePubResult.decision === "high_risk" && (
-									<>
-										<p className="text-[11px] mt-2 font-semibold text-bad">
-											Not submitted — remove personal info and try again.
-											Your draft is preserved above.
-										</p>
-										<button
-											type="button"
-											onClick={() => setPrePubResult(null)}
-											className="mt-2 text-[11px] font-semibold text-ink3 hover:text-accent"
-										>
-											Dismiss
-										</button>
-									</>
-								)}
-								{prePubResult.decision === "revision" && (
-									<p className="text-[11px] mt-2 text-warn">
-										AI flagged something — you can still submit, but it will be
-										reviewed before going public.
-									</p>
-								)}
-								{prePubResult.decision === "safe" && (
-									<p className="text-[11px] mt-2 text-good">
-										All checks passed — ready to publish.
-									</p>
-								)}
-							</div>
-						)}
-
-						{/* Live AI suggestions: category, priority, tags, improved title */}
-						{aiSuggest?.category && (
-							<div
-								className="rounded-xl p-3.5 vb-rise"
-								style={{
-									background: "var(--vb-accent-soft)",
-									border: "1px solid rgba(86,82,214,0.2)",
-								}}
-							>
-								<p className="text-[10px] font-bold uppercase tracking-wider text-accent mb-2 flex items-center gap-1.5">
-									<Sparkles size={12} /> AI suggestions · updating live
-								</p>
-								<div className="flex flex-wrap gap-1.5">
-									{aiSuggest.category !== category ? (
-										<button
-											type="button"
-											className="chip cursor-pointer !bg-surface hover:!border-accent transition-all"
-											onClick={() => {
-												setCategory(aiSuggest.category);
-												toast(`Category → ${aiSuggest.category}`, "ok");
-											}}
-										>
-											{CAT_EMOJI[aiSuggest.category]} {aiSuggest.category} ·{" "}
-											{Math.round((aiSuggest.confidence || 0) * 100)}%{" "}
-											<span className="text-accent font-bold">apply</span>
-										</button>
-									) : (
-										<span
-											className="chip !border-transparent"
-											style={{
-												background: "rgba(22,160,106,0.12)",
-												color: "var(--vb-good)",
-											}}
-										>
-											<CheckCircle2 size={11} /> {CAT_EMOJI[category]}{" "}
-											{category}
-										</span>
-									)}
-	
-									{(aiSuggest.tags || [])
-										.filter(
-											(t: string) =>
-												!tags.toLowerCase().includes(t.toLowerCase()),
-										)
-										.slice(0, 3)
-										.map((t: string) => (
-											<button
-												key={t}
-												type="button"
-												className="chip cursor-pointer !bg-surface hover:!border-accent transition-all"
-												onClick={() =>
-													setTags((prev) => (prev ? `${prev}, ${t}` : t))
-												}
-											>
-												#{t} <span className="text-accent font-bold">+</span>
-											</button>
-										))}
-								</div>
-								{aiSuggest.improved_title &&
-									aiSuggest.improved_title.toLowerCase() !==
-										title.toLowerCase() && (
-										<button
-											type="button"
-											className="w-full text-left text-xs mt-2 px-2.5 py-2 rounded-lg bg-surface border border-border hover:border-accent transition-all flex items-center gap-2"
-											onClick={() =>
-												setTitle(aiSuggest.improved_title!.slice(0, 120))
-											}
-										>
-											<Pencil size={12} className="text-accent shrink-0" />{" "}
-											Better title: <b>"{aiSuggest.improved_title}"</b>{" "}
-											<span className="text-accent font-bold ml-auto">use</span>
-										</button>
-									)}
-							</div>
-						)}
-						<div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-							<div>
+						<div className="space-y-2">
+							<div className="flex items-center justify-between">
 								<label
-									className="text-xs font-semibold text-ink2 block mb-1.5"
+									className="text-xs font-semibold text-ink2 block"
 									htmlFor="f-cat"
 								>
 									Category
 								</label>
-								<select
-									id="f-cat"
-									className="input"
-									value={category}
-									onChange={(e) => setCategory(e.target.value)}
-								>
-									{categories.map((c) => (
-										<option key={c} value={c}>
-											{CAT_EMOJI[c]} {c}
-										</option>
-									))}
-								</select>
+								{detectedCategory && (
+									<span className="text-[10px] text-accent flex items-center gap-1 font-medium animate-pulse">
+										<Sparkles size={11} /> Suggested from description
+									</span>
+								)}
 							</div>
+							<div className="flex flex-wrap gap-1.5" role="group" aria-label="Quick category selector">
+								{categories.map((c) => {
+									const isDetected = detectedCategory === c && category !== c;
+									const isSelected = category === c;
+									return (
+										<button
+											key={c}
+											type="button"
+											onClick={() => {
+												setCategory(c);
+												triggerHaptic("light");
+											}}
+											className={`chip !text-xs transition-all flex items-center gap-1 cursor-pointer ${
+												isSelected
+													? "border-accent bg-accent/15 text-accent font-semibold shadow-sm"
+													: isDetected
+														? "border-accent text-accent animate-pulse bg-accent/5 font-semibold"
+														: "border-border hover:border-accent/40"
+											}`}
+										>
+											{CAT_EMOJI[c]} {c}
+											{isDetected && <Sparkles size={10} className="text-accent" />}
+										</button>
+									);
+								})}
+							</div>
+							<select
+								id="f-cat"
+								className="input text-xs"
+								value={category}
+								onChange={(e) => setCategory(e.target.value)}
+							>
+								{categories.map((c) => (
+									<option key={c} value={c}>
+										{CAT_EMOJI[c]} {c}
+									</option>
+								))}
+							</select>
 						</div>
 						{/* Private visibility — admins/moderators + you only */}
 						<button
 							type="button"
 							role="switch"
 							aria-checked={isPrivate}
-							onClick={() => setIsPrivate((v) => !v)}
+							onClick={() => {
+								setIsPrivate((v) => !v);
+								triggerHaptic("medium");
+							}}
 							disabled={supportLock}
 							title={
 								supportLock
@@ -1939,7 +2255,7 @@ export default function Submit() {
 							}
 							className={`w-full flex items-center gap-3 rounded-xl px-3.5 py-3 text-left transition-all border ${
 								isPrivate
-									? "border-accent/40 bg-accent-soft/60"
+									? "border-accent bg-accent/10 shadow-sm"
 									: "border-border bg-surface hover:border-accent/30"
 							}`}
 						>
@@ -1951,14 +2267,22 @@ export default function Submit() {
 									className={`h-4 w-4 rounded-full bg-white shadow transition-transform ${isPrivate ? "translate-x-4" : "translate-x-0.5"}`}
 								/>
 							</span>
-							<span className="min-w-0">
+							<span className="min-w-0 flex-1">
 								<span className="flex items-center gap-1.5 text-xs font-semibold text-ink">
-									<Lock size={12} className={isPrivate ? "text-accent" : "text-ink3"} />
-									Private post
+									<Lock
+										size={13}
+										className={`transition-all duration-300 ${
+											isPrivate
+												? "text-accent scale-110 rotate-0"
+												: "text-ink3 -rotate-12"
+										}`}
+									/>
+									Private post (Direct to Administration)
 								</span>
 								<span className="block text-[10px] text-ink3 mt-0.5">
-									Only you, admins and moderators can read this. Hidden from the
-									public feed.
+									{isPrivate
+										? "🔒 Direct to school administration only — no public listing. Contacts & details allowed."
+										: "Only you, admins and moderators can read this. Hidden from the public feed."}
 								</span>
 								{supportLock && (
 									<span className="block text-[10px] mt-0.5 font-semibold text-accent">
@@ -2178,7 +2502,8 @@ export default function Submit() {
 							</>
 						) : draftState === "saved" ? (
 							<>
-								<Save size={11} /> Draft saved
+								<span className="inline-block w-1.5 h-1.5 rounded-full bg-good animate-ping mr-0.5" />
+								<Save size={11} /> Draft saved <span className="text-[10px] text-ink3 font-normal">(locally)</span>
 							</>
 						) : null}
 					</span>
@@ -2197,31 +2522,39 @@ export default function Submit() {
 						</button>
 					)}
 					<button
-						className={`btn btn-primary ml-auto ${busy ? "btn-loading" : ""}`}
+						className={`btn btn-primary ml-auto transition-all duration-300 ${busy ? "btn-loading" : ""} ${success ? "!bg-good !border-good !text-white" : ""}`}
 						onClick={submit}
 						disabled={
 							busy ||
+							success ||
 							restricted ||
 							prePubBusy ||
-							(moderation ? isBlockedByServer(moderation) : false)
+							(!isPrivate && isPrePubBlocked) ||
+							(!isPrivate && moderation ? isBlockedByServer(moderation) : false)
 						}
 						aria-label={
-							busy
-								? "Publishing your submission"
-								: prePubBusy
-									? "Running AI content check"
-									: moderation && isBlockedByServer(moderation)
-										? "Content has issues that must be fixed first"
-										: "Publish anonymously"
+							success
+								? "Submitted successfully"
+								: busy
+									? "Publishing your submission"
+									: prePubBusy
+										? "Running AI content check"
+										: !isPrivate && moderation && isBlockedByServer(moderation)
+											? "Content has issues that must be fixed first"
+											: "Publish anonymously"
 						}
 					>
-						{prePubBusy ? (
+						{success ? (
+							<>
+								<CheckCircle2 size={15} className="text-white animate-bounce" /> Sent!
+							</>
+						) : prePubBusy ? (
 							<>
 								<Sparkles size={15} /> AI checking…
 							</>
 						) : busy ? (
 							"Publishing…"
-						) : moderation && isBlockedByServer(moderation) ? (
+						) : !isPrivate && moderation && isBlockedByServer(moderation) ? (
 							<>
 								<ShieldAlert size={15} /> Fix issues first
 							</>

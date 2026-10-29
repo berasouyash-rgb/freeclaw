@@ -27,7 +27,7 @@ import { logger } from "./_observability.js";
 import { serverModerate } from "./_moderation.js";
 import { mergeSlang } from "./_slang.js";
 import { evaluateContentDeep } from "./_safety-pipeline.js";
-import { callLLMChain, callNvidiaFast } from "./_providers.js";
+import { callLLMChain, callNvidiaFast, callPublicFrontierLLM } from "./_providers.js";
 import { getNotifyPrefs } from "./_notify-prefs.js";
 import { createTask } from "./_workforce.js";
 import {
@@ -389,6 +389,28 @@ async function generateReply(message, threadState, emotion, adminOnline, threadI
 				engine: `${result.provider}:${result.model}`,
 			};
 		}
+
+		// Lane 3 — Frontier Public LLM failover (zero-auth frontier model)
+		const pub = await withTimeout(
+			callPublicFrontierLLM([
+				{
+					role: "system",
+					content: agentDef.system + emotionContext + crisisNote + historyContext,
+				},
+				{ role: "user", content: userMessage },
+			], 12000),
+			13000,
+		).catch(() => null);
+
+		if (pub?.text && pub.text.length > 10) {
+			return {
+				reply: pub.text.trim(),
+				agent: useEmotional ? "emotional" : "general",
+				handoff: false,
+				escalate: emotion.level === "critical",
+				engine: `${pub.provider}:${pub.model}`,
+			};
+		}
 	} catch (e) {
 		console.error("[inbox] LLM call failed:", e.message);
 	}
@@ -416,7 +438,12 @@ const TRIAGE_EMERGENCY = [
 	/suicid/, /kill (myself|me)\b/, /self.?harm/, /\bhurt(ing)? (myself|me)\b/,
 	/want to die/, /end (my life|it all)/, /can't go on/, /can ?not go on/,
 	/no reason to live/, /bully|bullied|bullying/, /ragging/, /harass/,
-	/threat/, /stalk/, /molest/, /leak/,
+	/threat/, /stalk/, /molest/,
+	// Blackmail / privacy leak / photo leak threats
+	/\b(?:will|gonna|threaten\w*|plans? to|being|are|is)\s+(?:to\s+)?leak\w*\b/,
+	/\bleak(?:ing|ed|s)?\s+(?:my|your|her|his|their)?\s*(?:photos?|nudes?|pics?|videos?|address|number|info|secrets?)\b/,
+	/\b(?:nudes?|photos?|pics?|videos?)\s+.*?\bleak(?:ing|ed|s)?\b/,
+	/\b(data|privacy)\s+leak\b/,
 	/hacked/, /\bemergency\b/, /\burgent\b/, /someone (is |was )?hurt/,
 	/bleeding/, /\bfire\b/, /kidnap/, /beating (me|us|him|her)/,
 	/hit (me|us|him|her)/, /acid/,
@@ -437,15 +464,18 @@ const TRIAGE_PRIVATE = [
 const TRIAGE_PROBLEM = [
 	/i have (a|this|an|some) problem/, /i am facing/, /\bproblem\b/, /\bissue\b/,
 	/not working/, /doesn.?t work/, /does not work/, /broken/, /complain/,
+	/complaint/, /omplain/,
 	/unfair/, /favour/, /\bfavor\b/, /cheat/, /dirty/, /no water/, /smell/,
 	/stink/, /late/, /rude/, /shout/, /beat/, /scared of/, /afraid of/,
-	/plumbing/, /leak/, /mosquito/, /stray dogs?/, /eve.?teas/, /mock/,
+	/plumbing/, /leak/, /leaking/, /leaks/, /mosquito/, /stray dogs?/, /eve.?teas/, /mock/,
 ];
 function triageInboxMessage(text) {
 	const t = String(text || "").toLowerCase();
-	const emergency = TRIAGE_EMERGENCY.some((re) => re.test(t));
+	// Physical leaks (water, tap, roof, pipe, bathroom, hostel, toilet) are facility problems, not emergency threats
+	const isFacilityLeak = /\b(?:water|pipe|roof|tap|toilet|washroom|bathroom|hostel|ceiling|drain|plumb\w*)\b.*?\bleak\w*\b|\bleak\w*\b.*?\b(?:water|pipe|roof|tap|toilet|washroom|bathroom|hostel|ceiling|drain|plumb\w*)\b/i.test(t);
+	const emergency = !isFacilityLeak && TRIAGE_EMERGENCY.some((re) => re.test(t));
 	const isPrivate = emergency || TRIAGE_PRIVATE.some((re) => re.test(t));
-	const isProblem = emergency || TRIAGE_PROBLEM.some((re) => re.test(t));
+	const isProblem = emergency || isFacilityLeak || TRIAGE_PROBLEM.some((re) => re.test(t));
 	return { isProblem, isPrivate, urgency: emergency ? "urgent" : isProblem ? "normal" : "none" };
 }
 
@@ -592,8 +622,10 @@ const POST_INTENT = [
   /\bpost (this|it|that)\b/, /\bpublish( this| it)?\b/, /\bshare (this|it|that)\b/,
   /\bmake .*\bpublic\b/, /\bput .*\bon the board\b/, /\braise (this|it|that) as\b/,
   /\bdraft (this|it|that|a |me )/,
+  /\b(create|make|file|submit|lodge|write|start) (a |the |an )?(complaint|omplain|report|post|ticket|issue)\b/,
+  /\b(complaint|omplain) on\b/,
   /\b(file|submit|lodge|write) (a |the )?(complaint|report)\b/,
-  /\bhelp me (report|file|draft|submit|complain)\b/,
+  /\bhelp me (report|file|draft|submit|complain|create)\b/,
 ];
 const DRAFT_CATEGORIES = [
   "Academics", "Facilities", "Food", "Bullying", "Teachers", "Events",
@@ -616,8 +648,8 @@ function extractDraftFromText(text) {
 			if (sanitized) return sanitized;
 		} catch {}
 	}
-	const subjectMatch = text.match(/\*{0,2}Subject:\*{0,2}\s*([^\n\r*]+)/i);
-	const detailsMatch = text.match(/\*{0,2}Details:\*{0,2}\s*([\s\S]+?)(?:\*{0,2}Requested action:|\n\n---\n|$)/i);
+	const subjectMatch = text.match(/\*{0,2}(?:Subject|Title):\*{0,2}\s*([^\n\r*]+)/i);
+	const detailsMatch = text.match(/\*{0,2}(?:Details|Description|Body|Complaint):\*{0,2}\s*([\s\S]+?)(?:\*{0,2}(?:Requested action|Category|Action):|\n\n---\n|$)/i);
 	if (subjectMatch && detailsMatch) {
 		const title = subjectMatch[1].trim().slice(0, 120);
 		const description = detailsMatch[1].trim().slice(0, 500);
@@ -626,7 +658,7 @@ function extractDraftFromText(text) {
 		else if (/teacher|professor|faculty/i.test(text)) category = "Teachers";
 		else if (/clean|toilet|washroom/i.test(text)) category = "Cleanliness";
 		else if (/transport|bus/i.test(text)) category = "Transport";
-		else if (/facility|lift|ac|fan|light/i.test(text)) category = "Facilities";
+		else if (/facility|lift|ac|fan|light|water|pipe|roof|leak|plumb/i.test(text)) category = "Facilities";
 		return sanitizeDraft({ title, description, category, private: true });
 	}
 	return null;
@@ -760,15 +792,25 @@ async function proposeDraft(threadId, trigger, forceNew = false) {
   // sees no popup rather than a fabricated draft.
   const draftSystem = `You draft an anonymous school-feedback post from a support chat. The reporter stays anonymous: replace any reporter name, class/roll identifiers, phone, email, or address with [Redacted] — keep location details needed to fix the issue (building, floor). Understand Hinglish and school slang but write clear formal English. Return ONLY JSON: {"title":"under 120 chars, specific","description":"10-500 chars, factual","category":"one of Academics, Facilities, Food, Bullying, Teachers, Events, Transport, Sports, Technology, Library, Hostel, Security, Cleanliness, Medical, Other","private":true}. Default private to true unless the student plainly asked for public.`;
   const draftUser = `Conversation:\n${convo.slice(0, 1800)}\n\n${facts}`;
-  const fast = await withTimeout(
+  let result = await withTimeout(
     callNvidiaFast(draftSystem, draftUser, 12000),
     13000,
   ).catch(() => null);
-  const result =
-    fast ??
-    (await withTimeout(callLLMChain(draftSystem, draftUser, [], "high"), 20000).catch(
-      () => null,
-    ));
+  if (!result?.text) {
+    result = await withTimeout(
+      callLLMChain(draftSystem, draftUser, [], "high"),
+      15000,
+    ).catch(() => null);
+  }
+  if (!result?.text) {
+    result = await withTimeout(
+      callPublicFrontierLLM([
+        { role: "system", content: draftSystem },
+        { role: "user", content: draftUser },
+      ], 10000),
+      11000,
+    ).catch(() => null);
+  }
   const rawText = result?.text || "";
   const proposal = sanitizeDraft(rawText ? extractJson(rawText) || extractDraftFromText(rawText) : null);
   if (!proposal) return { proposal: null, reason: "generation_failed" };
@@ -2140,14 +2182,13 @@ export default async function handler(req, res) {
 			(!prefsAll || prefsAll.ai_chat_enabled !== false) &&
 			globalAiAll.enabled;
 
-		// Auto-propose a post draft ONLY on explicit post-intent words from
-		// the student ("post this", "publish"…​) about a real problem — never
-		// inferred. Skipped when AI is off for this user (an LLM draft would
-		// violate their opt-out). Best-effort: never blocks the reply. The
-		// cheap regex runs first so the prefs reads happen only on intent.
+		// Auto-propose a post draft on explicit post/complaint intent words from
+		// the student ("create a complaint", "post this", "publish"…​) or problem
+		// intent. Skipped when AI is off for this user (an LLM draft would
+		// violate their opt-out). Best-effort: never blocks the reply.
 		let draftProposed = false;
 		let draftProposal = null;
-		if (triage.isProblem && postIntent(body)) {
+		if (postIntent(body) || (triage.isProblem && postIntent(body))) {
 			try {
 				if (aiOnAll) {
 					// Destructure INTO the outer draftProposal (no shadowing):

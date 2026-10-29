@@ -5,12 +5,26 @@
 // a full outage). Per-instance, in-memory: no DB, no timers, no leaks —
 // every acquire is paired with exactly one release in index.js finally.
 //
-// MAX_INFLIGHT=200, measured 2026-09-27: at 300 concurrent readers (74 rps)
-// the DB returned zero 5xx with served p95 <2s while the old cap of 100 shed
-// 25.6% as 503s — the cap, not the database, was the binding constraint.
-// Per-instance, in-memory. Re-tune only with measured p95 + shed rate,
-// never by gut. Watch /api/health load.shed_total after any change.
-const MAX_INFLIGHT = 200;
+// MAX_INFLIGHT history (re-tune only with measured p95 + shed rate, never by gut):
+//   100 → 25.6% shed at 300 readers / 74 rps
+//   200 → 0% shed at 500 readers / 194 rps (measured 2026-10-26)
+//   200 → 43.0% shed at 1000 readers      (cap, not the DB, is binding)
+// The routes are I/O-bound on Supabase HTTP round-trips, so the event loop
+// multiplexes far more than 200 sockets. The cap exists to fail fast instead
+// of letting an unbounded queue convert a spike into timeouts — it is a
+// backstop, not a target throughput. Raise it only with a measured p95.
+// Per-instance, in-memory. Watch /api/health load.shed_total after any change.
+// Env-overridable so capacity can be swept without a code change; the default
+// is the last value proven at 0% shed with p95 under 1s.
+const DEFAULT_MAX_INFLIGHT = 200;
+const MAX_INFLIGHT = (() => {
+	const raw = Number.parseInt(process.env.MAX_INFLIGHT || "", 10);
+	return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_MAX_INFLIGHT;
+})();
+
+// Reserve the top slice of the budget for mutations: background polling is
+// shed first so a burst of heartbeats can never starve a user's post/vote.
+const PRIORITY_THRESHOLD = Math.floor(MAX_INFLIGHT * 0.85);
 
 let inflight = 0;
 let shedTotal = 0;
@@ -30,7 +44,7 @@ export function loadGuardAcquire(pathname = "", method = "GET") {
 	}
 
 	// Priority-aware shedding: preserve headroom for mutations
-	if (inflight >= 170 && method === "GET") {
+	if (inflight >= PRIORITY_THRESHOLD && method === "GET") {
 		const isBackground =
 			pathname.includes("heartbeat") ||
 			pathname.endsWith("/me") ||

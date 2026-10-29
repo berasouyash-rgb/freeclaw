@@ -154,6 +154,7 @@ const providers = vi.hoisted(() => ({
 vi.mock("../../api/_providers.js", () => ({
 	callNvidiaFast: providers.fast,
 	callLLMChain: providers.chain,
+	callPublicFrontierLLM: vi.fn().mockResolvedValue(null),
 }));
 
 const classifyFn = vi.hoisted(() => vi.fn());

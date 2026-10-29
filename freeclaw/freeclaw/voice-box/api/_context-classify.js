@@ -216,6 +216,10 @@ const NON_NAME_WORDS = new Set([
 	"would", "should", "must", "might", "get", "got", "go", "going", "come",
 	"came", "make", "made", "take", "took", "give", "gave", "know", "think",
 	"want", "need", "feel", "felt", "look", "looks", "seem", "seems",
+	"while", "lasts", "last", "enjoy", "like", "with", "from", "for", "about",
+	"after", "before", "over", "under", "between", "through", "during", "without",
+	"again", "further", "once", "such", "own", "same", "too", "right", "now",
+	"later", "little", "much", "more", "less", "things", "way", "pretty", "comfortable",
 ]);
 
 /** Peer address words — a real addressee, but not an identifiable person. */
@@ -561,6 +565,8 @@ Judge MEANING AND CONTEXT, not keywords. The same word is not the same act:
 - "i will not leave you [name]" / "tujhe chhodunga nahi" / "dekh lunga" / "watch your back" / "you will pay" → Indian English/Hindi idiom for "I will not spare you" / menacing threat and intimidation. MUST BE CLASSIFIED AS threat or targeted-harassment (high or critical), NEVER positive or neutral.
 - Any targeted menacing, stalking, obsessive warnings, or intimidation directed at a named individual ("I will follow you", "you will pay", "wait and see what I do") → threat / targeted-harassment (high or critical).
 - Hinglish and mixed language are normal: "ye bahut weird hai" is a complaint, not a threat
+- Complaints and feedback about teachers/staff ("Kakuli mam is a horrible teacher", "math sir is rude", "strict teacher") are educational complaints and subjective opinions, NOT harassment, NOT bullying, and NOT threats. Classify as mild or neutral anger/complaint without threats.
+- Veiled intimidation and ominous warnings ("Enjoy It While It Lasts", "You seem pretty comfortable with the way things are right now. I wonder if you'll feel the same way a little later.", "your days are numbered") are intimidation/threats. Classify as threat/intimidation with moderate or high severity.
 - A name is a TARGET, never an unknown word. Do not fail because a name is unfamiliar.
 - A quoted sentence inside quotes is reported speech unless the writer also asserts it outside the quotes.
 - Personal information: this platform is anonymous. Email addresses, phone

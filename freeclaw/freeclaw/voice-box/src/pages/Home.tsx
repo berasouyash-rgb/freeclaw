@@ -27,6 +27,8 @@ import GridPattern from "../components/ui/grid-pattern";
 import ShimmerButton from "../components/ui/shimmer-button";
 import BorderBeam from "../components/ui/border-beam";
 import PostCard from "../components/PostCard";
+import RankDelta from "../components/RankDelta";
+import { useFlipList } from "../hooks/useFlipList";
 import RecapCard from "../components/RecapCard";
 import Trend, { Sparkline } from "../components/Trend";
 import WordCloud from "../components/WordCloud";
@@ -754,7 +756,9 @@ export default function Home() {
 					handleHide(new CustomEvent("vb:post-hidden", { detail: msg.data }));
 				}
 			};
-		} catch {}
+		} catch {
+			// BroadcastChannel unsupported or restricted in this environment
+		}
 		return () => {
 			window.removeEventListener("vb:post-hidden", handleHide);
 			bc?.close();
@@ -925,6 +929,30 @@ export default function Home() {
 		rest.sort(sorter[sort] ?? sorter.newest);
 		return [...pinned, ...rest];
 	}, [posts, cat, feedType, query, sort, statusFilter]);
+
+	// Rank-move chips: when a vote re-sorts the feed, the card glides (FLIP)
+	// and wears "↑ 2 / ↓ 1" for three seconds so the new position is legible
+	// instead of a teleport. Chips never stack: a fresh reorder replaces the
+	// previous set and restarts the timer.
+	const [rankMoves, setRankMoves] = useState<Map<string, number>>(new Map());
+	const rankTimer = useRef<number | null>(null);
+	useEffect(
+		() => () => {
+			if (rankTimer.current !== null) window.clearTimeout(rankTimer.current);
+		},
+		[],
+	);
+	const flipRef = useFlipList({
+		order: filtered.map((p) => p.id),
+		onMoved: (moves) => {
+			setRankMoves(new Map(moves));
+			if (rankTimer.current !== null) window.clearTimeout(rankTimer.current);
+			rankTimer.current = window.setTimeout(
+				() => setRankMoves(new Map()),
+				3000,
+			);
+		},
+	});
 
 	const problemPosts = useMemo(
 		() => posts.filter((p) => p.type === "problem"),
@@ -1432,13 +1460,15 @@ export default function Home() {
 				</div>
 			)}
 
-			<div className="space-y-3 vb-feed-list">
+			<div ref={flipRef} className="space-y-3 vb-feed-list">
 				{filtered.map((p, i) => (
 					<div
 						key={p.id}
-						className={mobileApp ? "vb-feed-item" : undefined}
+						data-flip-id={p.id}
+						className={`relative ${mobileApp ? "vb-feed-item" : ""}`}
 						{...(i === 0 ? { "data-tour": "post-card" } : {})}
 					>
+						{rankMoves.has(p.id) && <RankDelta move={rankMoves.get(p.id) ?? 0} />}
 						<PostCard
 							post={p}
 							myReactions={myReactions[p.id]}

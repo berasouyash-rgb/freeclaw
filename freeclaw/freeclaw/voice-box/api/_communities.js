@@ -18,7 +18,7 @@
 // The value is the full community record (members + posts). Nothing here is
 // faked: every mutation reads the current row, applies the change, and upserts.
 
-import { clean, cors, isAdmin, verifyCallerIdentity } from "./_auth.js";
+import { auditLog, checkUser, clean, cors, isAdmin, rateLimited, rateLimitResponse, verifyCallerIdentity } from "./_auth.js";
 import supabase from "./_db-client.js";
 import { sanitizeError } from "./_error.js";
 import { evaluateContentDeep } from "./_safety-pipeline.js";
@@ -31,6 +31,10 @@ const MAX_COMMENTS_PER_POST = 100;
 const MAX_REACTIONS_PER_POST = 200;
 const MAX_POLL_OPTIONS = 4;
 const POST_COOLDOWN_MS = 15 * 1000;
+// A member counts as "active now" when their presence heartbeat is this fresh.
+// The heartbeat itself is throttled in _me.js, so this window is the truth the
+// UI shows — never a fraction of the member count.
+const PRESENCE_WINDOW_MS = 5 * 60 * 1000;
 const NAME_RE = /^[\p{L}\p{N} _'&-]{2,40}$/u;
 const AVATAR_RE = /^[\p{Extended_Pictographic}\p{Emoji_Presentation}\u{1F000}-\u{1FAFF}\u2600-\u27BF\u2B00-\u2BFF]{1,4}$/u;
 const PHOTO_RE = /^(https?:\/\/|data:image\/)/i;
@@ -103,6 +107,7 @@ function publicPost(p, anonId) {
 		anon_id: p.anon_id,
 		author: p.author || "",
 		text: p.text,
+		image_url: p.image_url || null,
 		created_at: p.created_at,
 		reactions: p.reactions || {},
 		reaction_counts: Object.fromEntries(
@@ -143,6 +148,75 @@ function publicPoll(poll, anonId) {
 
 function rid(prefix) {
 	return `${prefix}_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+}
+
+/** Membership is the write key for every discussion action. */
+function isMember(c, anonId) {
+	return !!anonId && Array.isArray(c?.members) && c.members.includes(anonId);
+}
+
+/**
+ * How many members are actually online right now.
+ *
+ * Reads the real presence heartbeat (`users_meta.last_seen`, written by
+ * _me.js) for this community's members. Returns `null` when the lookup could
+ * not run — the UI then says nothing rather than inventing a number. The old
+ * detail page rendered `Math.max(1, ceil(member_count * 0.4))` as "active
+ * now", which is a fabricated statistic about real students.
+ */
+async function onlineIdSet(ids) {
+	const unique = [...new Set((Array.isArray(ids) ? ids : []).filter(Boolean))].slice(
+		0,
+		2000,
+	);
+	if (unique.length === 0) return new Set();
+	try {
+		const cutoff = new Date(Date.now() - PRESENCE_WINDOW_MS).toISOString();
+		const online = new Set();
+		// PostgREST caps URL length with `.in()`, so read in bounded chunks.
+		for (let i = 0; i < unique.length; i += 100) {
+			const chunk = unique.slice(i, i + 100);
+			const { data, error } = await supabase
+				.from("users_meta")
+				.select("anon_id")
+				.in("anon_id", chunk)
+				.gte("last_seen", cutoff);
+			if (error) return null;
+			for (const row of data || []) if (row?.anon_id) online.add(row.anon_id);
+		}
+		return online;
+	} catch {
+		return null;
+	}
+}
+
+// Presence is re-read by the detail page's 3s live tick. A 15s cache keeps
+// that from turning every open tab into a presence query — the number is
+// still live to a human eye, and the heartbeat that feeds it only updates
+// once a minute anyway.
+const ONLINE_TTL_MS = 15 * 1000;
+const _onlineCache = new Map(); // slug → { at, count }
+
+async function countOnlineMembers(members, slug) {
+	const ids = Array.isArray(members) ? members.slice(0, MAX_MEMBERS) : [];
+	if (ids.length === 0) return 0;
+	const key = String(slug || "");
+	if (key) {
+		const hit = _onlineCache.get(key);
+		if (hit && Date.now() - hit.at < ONLINE_TTL_MS) return hit.count;
+	}
+	const online = await onlineIdSet(ids);
+	if (!online) return null;
+	const count = ids.reduce((n, id) => n + (online.has(id) ? 1 : 0), 0);
+	if (key) {
+		_onlineCache.set(key, { at: Date.now(), count });
+		if (_onlineCache.size > 500) {
+			for (const [k, v] of _onlineCache) {
+				if (Date.now() - v.at > ONLINE_TTL_MS) _onlineCache.delete(k);
+			}
+		}
+	}
+	return count;
 }
 
 function inCooldown(slug, anonId) {
@@ -193,16 +267,31 @@ export default async function handler(req, res) {
 				.select("key,value")
 				.ilike("key", "community:%")
 				.limit(200);
-			const communities = (rows || [])
+			const summaries = (rows || [])
 				.map((r) => {
 					// The KV key is the routing authority: a legacy row whose value
 					// lost its `slug` field must still produce a link that resolves
 					// (otherwise "Open" navigates to /communities/undefined → 404).
 					const v = r.value || {};
 					const keySlug = String(r.key || "").replace(/^community:/, "");
-					return summarize({ ...v, slug: v.slug || keySlug }, admin);
+					const summary = summarize({ ...v, slug: v.slug || keySlug }, admin);
+					return summary
+						? { ...summary, members: Array.isArray(v.members) ? v.members : [] }
+						: null;
 				})
-				.filter((c) => c && !isTestArtifact(c.name))
+				.filter((c) => c && !isTestArtifact(c.name));
+			// One presence lookup for every listed community instead of one per
+			// card: unique member ids → the online set → per-community counts.
+			const online = await onlineIdSet(
+				summaries.flatMap((c) => c.members).slice(0, 2000),
+			);
+			const communities = summaries
+				.map(({ members, ...card }) => ({
+					...card,
+					online_count: online
+						? members.reduce((n, id) => n + (online.has(id) ? 1 : 0), 0)
+						: null,
+				}))
 				.sort((a, b) => b.created_at.localeCompare(a.created_at));
 			// Dynamic list: member/post counts change on every join and new post —
 			// match the other list endpoints (`private, no-cache`) so nothing serves
@@ -221,9 +310,13 @@ export default async function handler(req, res) {
 				return res.status(404).json({ error: "Community not found" });
 			// The requested key slug is canonical for routing.
 			c.slug = slug;
+			const memberList = Array.isArray(c.members) ? c.members.slice(0, MAX_MEMBERS) : [];
 			return res.status(200).json({
 				...summarize(c, admin),
-				members: Array.isArray(c.members) ? c.members.slice(0, MAX_MEMBERS) : [],
+				members: memberList,
+				// Real presence (see countOnlineMembers) — null means "unknown",
+				// never a made-up number.
+				online_count: await countOnlineMembers(memberList, slug),
 				is_member: anonId ? (c.members || []).includes(anonId) : false,
 				is_creator: anonId ? c.created_by === anonId : false,
 				posts: cleanPosts(c.posts)
@@ -390,11 +483,18 @@ export default async function handler(req, res) {
 
 			const posts = Array.isArray(c.posts) ? c.posts.slice() : [];
 			if (posts.length >= MAX_POSTS) posts.shift();
+			// Only a stored https URL is accepted — `data:` payloads would bypass
+			// /api/upload (and therefore the image safety review) entirely.
+			const imageUrl =
+				typeof b.image_url === "string" && b.image_url.startsWith("https://")
+					? clean(b.image_url, 1000)
+					: null;
 			posts.push({
 				id: rid("cp"),
 				anon_id: anonId,
 				author: clean(b.author, 24).trim(),
 				text,
+				image_url: imageUrl,
 				created_at: new Date().toISOString(),
 				reactions: {},
 				comments: [],
@@ -432,6 +532,15 @@ export default async function handler(req, res) {
 			}
 			const c = await getCommunity(slug);
 			if (!c || c.hidden) return res.status(404).json({ error: "Community not found" });
+			// Reactions and comments are member-only on the WRITE path too. The
+			// buttons were already hidden for non-members, but a client gate is
+			// not an authorization boundary: without this, any browser could
+			// comment or react on a community it never joined.
+			if (!isMember(c, anonId))
+				return res.status(403).json({
+					error: "Join the community to comment",
+					code: "NOT_MEMBER",
+				});
 			const posts = (c.posts || []).slice();
 			const post = posts.find((p) => p.id === postId);
 			if (!post) return res.status(404).json({ error: "Post not found" });
@@ -460,6 +569,11 @@ export default async function handler(req, res) {
 			if (!kind) return res.status(400).json({ error: "kind required" });
 			const c = await getCommunity(slug);
 			if (!c || c.hidden) return res.status(404).json({ error: "Community not found" });
+			if (!isMember(c, anonId))
+				return res.status(403).json({
+					error: "Join the community to react",
+					code: "NOT_MEMBER",
+				});
 			const posts = (c.posts || []).slice();
 			const post = posts.find((p) => p.id === postId);
 			if (!post) return res.status(404).json({ error: "Post not found" });
@@ -494,6 +608,11 @@ export default async function handler(req, res) {
 			if (!optionId) return res.status(400).json({ error: "option_id required" });
 			const c = await getCommunity(slug);
 			if (!c || c.hidden) return res.status(404).json({ error: "Community not found" });
+			if (!isMember(c, anonId))
+				return res.status(403).json({
+					error: "Join the community to vote",
+					code: "NOT_MEMBER",
+				});
 			const posts = (c.posts || []).slice();
 			const post = posts.find((p) => p.id === postId);
 			if (!post?.poll) return res.status(404).json({ error: "Poll not found" });
@@ -559,18 +678,79 @@ export default async function handler(req, res) {
 			const reason = clean(b.reason, 200).trim() || "Community content";
 			const postId = clean(b.post_id, 24);
 			if (!anonId) return res.status(400).json({ error: "anon_id required" });
+			// Session binding already ran at the top of this handler for every
+			// non-read action (including report) — re-verifying here repeated the
+			// same session lookup on every report. Only the ban/suspension gate
+			// is new at this point.
+			const gate = await checkUser(anonId);
+			if (!gate.ok) return res.status(403).json({ error: gate.error });
+			if (await rateLimited("communities_report", anonId, 300, 10)) {
+				return rateLimitResponse(res, 300, "Slow down — max 10 reports per 5 minutes.");
+			}
 			const c = await getCommunity(slug);
 			if (!c || c.hidden) return res.status(404).json({ error: "Community not found" });
+			const posts = Array.isArray(c.posts) ? c.posts : [];
+			if (postId && !posts.some((p) => p?.id === postId))
+				return res.status(404).json({ error: "Post not found" });
+			// Community reports carry their own target_type so admins can tell
+			// them apart from feed posts. Older deployments still enforce a
+			// CHECK constraint allowing only post|comment|poll — if that fires,
+			// retry once as a `post` row with a `community:`-prefixed target_id
+			// so the report still reaches the queue instead of a 500.
 			const targetId = postId ? `${slug}::${postId}` : slug;
-			const { error } = await supabase.from("reports").insert({
-				target_type: "community_post",
+			const targetType = postId ? "community_post" : "community";
+
+			// A report is a durable claim about a target. Reporting the same
+			// target twice in a day used to create a second identical row (and a
+			// second strike), so a double-tap or an impatient user inflated the
+			// queue. Return the existing row instead.
+			const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+			const { data: existing } = await supabase
+				.from("reports")
+				.select("id")
+				.eq("target_id", targetId)
+				.eq("author_id", anonId)
+				.gte("created_at", since)
+				.limit(1);
+			if (Array.isArray(existing) && existing.length > 0) {
+				return res.status(200).json({ ok: true, duplicate: true });
+			}
+
+			const first = await supabase.from("reports").insert({
+				target_type: targetType,
 				target_id: targetId,
 				reason,
 				author_id: anonId,
 				status: "pending",
 			});
-			if (error) throw error;
-			return res.status(201).json({ ok: true });
+			let inserted = !first.error;
+			if (first.error) {
+				const retry = await supabase.from("reports").insert({
+					target_type: "post",
+					target_id: `community:${targetId}`,
+					reason,
+					author_id: anonId,
+					status: "pending",
+				});
+				inserted = !retry.error;
+				if (!inserted) {
+					console.error(
+						"[communities] report insert failed both ways:",
+						first.error.message || first.error,
+						retry.error?.message || retry.error,
+					);
+					// Never answer 201 for a report that is not in the queue: the
+					// user must know it did not reach a moderator.
+					return res.status(503).json({
+						error: "Couldn't file the report right now — please try again in a moment.",
+						code: "REPORT_UNAVAILABLE",
+					});
+				}
+			}
+			if (typeof auditLog === "function") {
+				await auditLog(anonId, "community_report", `${targetType} ${targetId}: ${reason}`).catch(() => {});
+			}
+			return res.status(201).json({ ok: true, duplicate: false });
 		}
 
 		// ── ADMIN (hide / unhide / delete) ─────────────────────

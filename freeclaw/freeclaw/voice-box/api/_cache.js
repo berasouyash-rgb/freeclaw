@@ -188,6 +188,13 @@ export function staleWhileRevalidate(fn, options = {}) {
 	// additional requests must reuse the SAME background fetch instead of
 	// firing one DB query per request (thundering herd during the stale window).
 	const _inflightRevalidate = new Map(); // cacheKey → Promise<fresh>
+	// In-flight COLD-MISS dedup: a cold key (first request after boot, or after
+	// the stale window lapsed) is the worst case for a herd — every concurrent
+	// request sees no entry and would fire its own identical DB query. Measured
+	// at 1000 readers: 84 x `/api/polls` 500s at 28.8s because the bare feed
+	// key was cold and ~1000 callers each opened a query. Coalescing turns that
+	// herd into exactly one fetch that every caller awaits.
+	const _inflightFetch = new Map(); // cacheKey → Promise<fresh>
 
 	async function swrFn(...args) {
 		const cacheKey = `${keyPrefix}:${JSON.stringify(args).slice(0, 200)}`;
@@ -231,15 +238,29 @@ export function staleWhileRevalidate(fn, options = {}) {
 			return entry.value;
 		}
 
-		// Cache miss or fully expired — must fetch
-		const result = await fn(...args);
-		_swrCache.set(cacheKey, {
-			value: result,
-			expiresAt: now + ttl,
-			staleExpiresAt: now + staleTtl,
-		});
+		// Cache miss or fully expired — must fetch. Coalesce the herd: only the
+		// first caller runs `fn`; every concurrent caller for the same key awaits
+		// that same promise. A rejection is shared (all callers see the real
+		// error) and the entry is cleared so the next request retries cleanly.
+		const existingFetch = _inflightFetch.get(cacheKey);
+		if (existingFetch) return existingFetch;
 
-		return result;
+		const fetchPromise = fn(...args)
+			.then((result) => {
+				const settledAt = Date.now();
+				_swrCache.set(cacheKey, {
+					value: result,
+					expiresAt: settledAt + ttl,
+					staleExpiresAt: settledAt + staleTtl,
+				});
+				return result;
+			})
+			.finally(() => {
+				_inflightFetch.delete(cacheKey);
+			});
+
+		_inflightFetch.set(cacheKey, fetchPromise);
+		return fetchPromise;
 	}
 
 	// Invalidate every entry this wrapper holds. Write paths must call this so
@@ -250,6 +271,7 @@ export function staleWhileRevalidate(fn, options = {}) {
 	swrFn.invalidate = () => {
 		_swrCache.clear();
 		_inflightRevalidate.clear();
+		_inflightFetch.clear();
 	};
 
 	return swrFn;

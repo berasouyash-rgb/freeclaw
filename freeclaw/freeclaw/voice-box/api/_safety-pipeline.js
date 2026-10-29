@@ -84,6 +84,21 @@ const POLICY = [
 		postMessage: null, // queued surface holds for human review instead
 		code: "CONTENT_BLOCKED",
 	},
+	// Review-grade hostile wording that is NOT a report of abuse. This row
+	// exists so mild/moderate contextual hostility ("you're going to regret
+	// that", garden-variety name-calling the keyword gates miss) has an honest
+	// home. Before it, those signals were relabelled `threat_report`, which
+	// told the student their message "reads as a report of abuse" — a
+	// contradiction they could not act on. Posts QUARANTINE; comments/polls
+	// BLOCK, matching every other review-grade row.
+	{
+		id: "conduct-review",
+		flagTypes: ["conduct_weak"],
+		action: { queued: "QUARANTINE", direct: "BLOCK_ACTION" },
+		message: "This wording may be hostile, so a moderator must review it first.",
+		postMessage: null, // queued surface holds for human review instead
+		code: "CONTENT_BLOCKED",
+	},
 	// Appended LAST on purpose: `romantic_weak` is a brand-new flag type, so
 	// first-match precedence for every existing row is unchanged. Posts
 	// (queued) QUARANTINE to pending_review; comments/polls (direct) BLOCK —

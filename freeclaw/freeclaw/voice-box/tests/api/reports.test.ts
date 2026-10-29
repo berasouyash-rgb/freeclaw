@@ -74,6 +74,7 @@ function response() {
 
 interface Chain {
 	op: string;
+	wasInsert?: boolean;
 	col?: unknown;
 	row?: unknown;
 	select: (col?: unknown, opts?: unknown) => Chain;
@@ -119,6 +120,10 @@ function chainFor(table: string): Chain {
 			return this;
 		},
 		single() {
+			// Remember whether this was an INSERT ... select().single(), so a
+			// pending one-shot insert error can be delivered here instead of a
+			// row (PostgREST returns the constraint failure from the insert).
+			this.wasInsert = this.op === "insert";
 			this.op = "single";
 			this.row =
 				state[`${table}:lastInsert`] ?? state[`${table}:singleRow`] ?? null;
@@ -140,6 +145,8 @@ function chainFor(table: string): Chain {
 		insert(row: unknown) {
 			this.op = "insert";
 			state[`${table}:lastInsert`] = row;
+			state[`${table}:insertCount`] =
+				(Number(state[`${table}:insertCount`]) || 0) + 1;
 			return this;
 		},
 		upsert(row: unknown) {
@@ -161,6 +168,14 @@ function chainFor(table: string): Chain {
 				return;
 			}
 			if (this.op === "single") {
+				// One-shot insert failure (e.g. a CHECK constraint rejecting
+				// target_type), consumed so a retry can succeed.
+				const pending = state[`${table}:insertErrorOnce`];
+				if (this.wasInsert && pending) {
+					delete state[`${table}:insertErrorOnce`];
+					fn({ data: null, error: pending });
+					return;
+				}
 				fn({ data: this.row, error: null });
 				return;
 			}
@@ -308,7 +323,62 @@ describe("POST /api/reports", () => {
 		expect(res.body.target_type).toBe("post");
 	});
 
-	it("does NOT strike when the target author is not a real anon account", async () => {
+	it("stores a community post report via the constraint-safe fallback instead of 500ing", async () => {
+		// Reproduces the reported bug: an older database only allows
+		// post/comment/poll, so inserting target_type=community_post raised a
+		// CHECK violation and the raw PostgREST error became HTTP 500.
+		state["reports:insertErrorOnce"] = {
+			code: "23514",
+			message:
+				'new row for relation "reports" violates check constraint "reports_target_type_check"',
+			details: "Failing row contains (... community_post ...).",
+		};
+		const res = response();
+		await handler(
+			{
+				method: "POST",
+				body: {
+					...REPORT,
+					target_type: "community_post",
+					target_id: "community:school-42::p9",
+				},
+				headers: { "x-anon-id": "anon_reporter" },
+			},
+			res,
+		);
+
+		expect(res.statusCode).toBe(201);
+		// Retried in the form the resolver already understands, not dropped.
+		expect(state["reports:insertCount"]).toBe(2);
+		expect(state["reports:lastInsert"]).toMatchObject({
+			target_type: "post",
+			target_id: "community:school-42::p9",
+		});
+		// The response describes what was actually stored.
+		expect(res.body.target_type).toBe("post");
+	});
+
+	it("does not truncate long community target ids", async () => {
+		// `community:<slug>::<postId>` easily exceeds the 60-char cap used for
+		// opaque post ids; truncating it lost the post id and made the queue
+		// name the whole community as the reported subject.
+		const longId = `community:${"a".repeat(48)}::${"b".repeat(24)}`;
+		expect(longId.length).toBeGreaterThan(60);
+		const res = response();
+		await handler(
+			{
+				method: "POST",
+				body: { ...REPORT, target_type: "community_post", target_id: longId },
+				headers: { "x-anon-id": "anon_reporter" },
+			},
+			res,
+		);
+
+		expect(res.statusCode).toBe(201);
+		expect(state["reports:lastInsert"]).toMatchObject({ target_id: longId });
+	});
+
+	it("does not strike when the target author is not a real anon account", async () => {
 		// pre-publish fallback id ('anonymous') and admin are not strikable
 		state["posts:singleRow"] = { id: "p1", author_id: "anonymous", title: "x" };
 		const res = response();

@@ -75,7 +75,7 @@ export default async function handler(req, res) {
 			}
 			// Banned/suspended IDs get no presence: refuse BEFORE the throttle
 			// (a refusal must not poison the throttle slot) and write nothing.
-			const gate = await checkUser(anonId);
+			const gate = await checkUser(anonId, "presence");
 			if (!gate.ok) return res.status(403).json({ error: gate.error, heartbeat: "refused" });
 			const nowMs = Date.now();
 			const last = heartbeatAt.get(anonId) || 0;

@@ -12,6 +12,7 @@ import {
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { useApp } from "../contexts/AppContext";
 import { api, hasAdminSession } from "../lib/api";
+import { triggerHaptic } from "../lib/haptics";
 import { errorText } from "../lib/utils";
 import type { PollData } from "../types";
 import { ConfirmDialog } from "./ui";
@@ -84,6 +85,9 @@ const PollCard = memo(function PollCard({
 	const [local, setLocal] = useState<PollData | null>(null);
 	const [busy, setBusy] = useState(false);
 	const [showDelete, setShowDelete] = useState(false);
+	// One 620ms light sweep on the result bars after a vote lands — the width
+	// itself eases via CSS (.vb-poll-fill), so the sweep just marks the moment.
+	const [freshFill, setFreshFill] = useState(false);
 	// Which copy is on screen: newer `updated_at` wins (see pickNewerPoll).
 	// `local || poll` here froze the counts at the vote response forever.
 	const p = pickNewerPoll(local, poll);
@@ -201,6 +205,7 @@ const PollCard = memo(function PollCard({
 		// this guard is unreachable through the UI — kept as defense-in-depth.
 		/* v8 ignore next -- @preserve */
 		if (closed && !changingVote) return;
+		triggerHaptic("light");
 		if (p.ptype === "multi")
 			setSelected((s) =>
 				s.includes(i) ? s.filter((x) => x !== i) : [...s, i],
@@ -234,6 +239,8 @@ const PollCard = memo(function PollCard({
 			setLocal(res);
 			setVoted(true);
 			setChangingVote(false);
+			setFreshFill(true);
+			triggerHaptic("medium");
 			onVoted?.(res);
 			toast(
 				voted
@@ -248,10 +255,16 @@ const PollCard = memo(function PollCard({
 		voteBusyRef.current = false;
 	};
 
+	// The sweep is one-shot: clearing the flag lets the next vote fire it again.
+	useEffect(() => {
+		if (!freshFill) return;
+		const timer = window.setTimeout(() => setFreshFill(false), 700);
+		return () => window.clearTimeout(timer);
+	}, [freshFill]);
+
 	const startChangeVote = () => {
 		setChangingVote(true);
 	};
-
 	const cancelChangeVote = () => {
 		setChangingVote(false);
 		setSelected(myVote || []);
@@ -312,8 +325,9 @@ const PollCard = memo(function PollCard({
 						>
 							{showResults && !changingVote && (
 								<span
-									className="absolute inset-y-0 left-0 bg-accent-soft vb-bar-anim"
+									className="bg-accent-soft vb-poll-fill"
 									style={{ width: `${pct}%` }}
+									data-fresh={freshFill ? "true" : undefined}
 									aria-hidden
 								/>
 							)}

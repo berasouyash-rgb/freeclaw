@@ -197,7 +197,7 @@ export default async function handler(req, res) {
 				if (!caller.ok) return res.status(caller.status || 403).json({ error: caller.error, code: caller.code });
 			}
 			if (!is_admin_msg) {
-				const gate = await checkUser(author_id);
+				const gate = await checkUser(author_id, "comment_write");
 				if (!gate.ok) return res.status(403).json({ error: gate.error });
 				if (await rateLimited("comments", author_id, 30, 5)) {
 					return rateLimitResponse(

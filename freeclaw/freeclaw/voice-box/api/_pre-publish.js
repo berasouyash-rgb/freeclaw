@@ -33,6 +33,37 @@ function parseJsonSafe(text) {
 	return null;
 }
 
+// ─── Pre-publish verdict cache ────────────────────────────────────
+// The live review panel and the publish gate often submit the same text within
+// seconds of each other. Re-running three provider lanes for an identical
+// string is pure latency; caching the parsed verdict for a short window makes
+// the second call instant and guarantees the panel and the gate agree.
+const LLM_CACHE_TTL_MS = 90_000;
+const LLM_CACHE_MAX = 400;
+const llmCache = new Map();
+
+function cacheGet(key) {
+	const hit = llmCache.get(key);
+	if (!hit) return undefined;
+	if (Date.now() - hit.at > LLM_CACHE_TTL_MS) {
+		llmCache.delete(key);
+		return undefined;
+	}
+	// Refresh LRU position.
+	llmCache.delete(key);
+	llmCache.set(key, hit);
+	return hit.value;
+}
+
+function cacheSet(key, value) {
+	if (!key || !value) return;
+	llmCache.set(key, { at: Date.now(), value });
+	while (llmCache.size > LLM_CACHE_MAX) {
+		const oldest = llmCache.keys().next().value;
+		llmCache.delete(oldest);
+	}
+}
+
 async function callNvidiaLLM(systemPrompt, userPrompt, maxTokens = 2000) {
 	// ── Outbound PII redaction (defense-in-depth) ────────────────────────
 	// The moderation model must never receive raw phone/email/address, but it
@@ -47,34 +78,49 @@ async function callNvidiaLLM(systemPrompt, userPrompt, maxTokens = 2000) {
 		? `${maskedPrompt}\n\n[SYSTEM NOTE: [EMAIL], [PHONE], [ADDRESS], and [PINCODE] placeholders above replace personal information found in this submission. Flag it: set personal_info_detected: true, risk_score: 80, decision: "high_risk", and list it in privacy_issues.]`
 		: maskedPrompt;
 
+	const cacheKey = `${systemPrompt.length}:${safeUserPrompt}`;
+	const cached = cacheGet(cacheKey);
+	if (cached) return cached;
+
 	// Lane 1: Fast Hedged Lane (sub-second NVIDIA Nemotron + Groq)
 	try {
-		const res = await callNvidiaFast(systemPrompt, safeUserPrompt, 8000);
+		const res = await callNvidiaFast(systemPrompt, safeUserPrompt, 6000);
 		const parsed = parseJsonSafe(res?.text);
-		if (parsed) return parsed;
+		if (parsed) {
+			cacheSet(cacheKey, parsed);
+			return parsed;
+		}
 	} catch (err) {
-		console.warn("Pre-publish AI fast lane failed:", err.message);
+		console.warn("Pre-publish AI fast lane failed:", err?.message);
 	}
 
 	// Lane 2: Full Provider Chain
 	try {
 		const res = await callLLMChain(systemPrompt, safeUserPrompt, [], "high");
 		const parsed = parseJsonSafe(res?.text);
-		if (parsed) return parsed;
+		if (parsed) {
+			cacheSet(cacheKey, parsed);
+			return parsed;
+		}
 	} catch (err) {
-		console.warn("Pre-publish AI chain failed:", err.message);
+		console.warn("Pre-publish AI chain failed:", err?.message);
 	}
 
-	// Lane 3: Frontier Public Fallback (OpenAI GPT-4o / Mistral)
 	try {
-		const res = await callPublicFrontierLLM([
-			{ role: "system", content: systemPrompt },
-			{ role: "user", content: safeUserPrompt },
-		], 8000);
+		const res = await callPublicFrontierLLM(
+			[
+				{ role: "system", content: systemPrompt },
+				{ role: "user", content: safeUserPrompt },
+			],
+			6000,
+		);
 		const parsed = parseJsonSafe(res?.text);
-		if (parsed) return parsed;
+		if (parsed) {
+			cacheSet(cacheKey, parsed);
+			return parsed;
+		}
 	} catch (err) {
-		console.warn("Pre-publish AI public frontier failed:", err.message);
+		console.warn("Pre-publish AI public frontier failed:", err?.message);
 	}
 
 	return null;
@@ -217,8 +263,12 @@ SCORING RULES:
 
 REPORTING is not a violation. A post saying "someone bullied me" or "a student uses profanity" is a REPORT and should be marked SAFE. Slang like "no cap", "bruh", "sus", "mid", "slay" is NOT abuse.`;
 
-// ─── DB Spam Check (5s timeout) ─────────────────────────────────
+// ─── DB Spam Check (2.5s timeout) ───────────────────────────────
+// Anonymous authors have no history to compare against, so the two round
+// trips are pure latency. Short-circuit them: the integrity checks that still
+// matter for anonymous traffic are all local (length, duplication in text).
 async function checkSpamDB(text, authorId) {
+	if (!authorId || authorId === "anonymous") return { pass: true, issues: [] };
 	return Promise.race([
 		(async () => {
 			const issues = [];
@@ -259,12 +309,12 @@ async function checkSpamDB(text, authorId) {
 			return { pass: issues.length === 0, issues };
 		})(),
 		new Promise((resolve) =>
-			setTimeout(() => resolve({ pass: true, issues: [] }), 5000),
+			setTimeout(() => resolve({ pass: true, issues: [] }), 2500),
 		),
 	]);
 }
 
-// ─── Duplicate Detection (5s timeout) ─────────────────────────────
+// ─── Duplicate Detection (2.5s timeout) ───────────────────────────
 async function detectDuplicates(title, description) {
 	return Promise.race([
 		(async () => {
@@ -300,7 +350,7 @@ async function detectDuplicates(title, description) {
 			}
 			return similar.sort((a, b) => b.similarity - a.similarity).slice(0, 5);
 		})(),
-		new Promise((resolve) => setTimeout(() => resolve([]), 5000)),
+		new Promise((resolve) => setTimeout(() => resolve([]), 2500)),
 	]);
 }
 
@@ -361,6 +411,127 @@ export function detectVeiledIntimidation(text) {
 	return veiledIntimidation(text);
 }
 
+// ─── Shared contextual reconciliation ────────────────────────────
+// The contextual layer can emit several kinds of flag, and the two call sites
+// below (LLM-down and LLM-up) used to duplicate the same list of types and
+// both word the hold as "This reads as a report of abuse". That duplication is
+// how "Kakuli mam is a horrible teacher" was shown an abuse-report message even
+// though nothing in the sentence reports abuse. These helpers are now the ONE
+// place that decides what a contextual flag means and what the author is told.
+
+/** Flag types that genuinely describe reported abuse. */
+const GENUINE_REPORT_FLAGS = ["threat_report", "reported-abuse"];
+
+/**
+ * Review-grade flags: they hold content for a human. They must never on their
+ * own force `high_risk` — the score floor for them is the "revision" band.
+ */
+const REVIEW_HELD_FLAGS = new Set([
+	"threat_report",
+	"reported-abuse",
+	"conduct_weak",
+]);
+
+const ABUSE_REPORT_MESSAGE =
+	"This reads as a report of abuse — held for a human to review.";
+const CONDUCT_REVIEW_MESSAGE =
+	"This wording may be hostile, so a moderator must review it first.";
+
+/** Author is describing/relaying someone else's behaviour, not doing it. */
+function looksLikeReport(text) {
+	return (
+		/\b(reports?|reported|complains?|complained|describes?|described|mentions?|mentioned|tells?|told|says?|said|claims?|claimed|witnessed?|saw|noticed?|observed?|experienced?|dealing with|facing|problem with|issue with|incident|occurred|happened|keeps?|always|every day|every time|daily|regularly|habitually|pattern of)\b/i.test(
+			text,
+		) ||
+		/\b(student|teacher|staff|person|someone|they|he|she|bully|bullying|abusive|abuse|profanity|swearing|threats?|threatening|harassment|harassing)\b/i.test(
+			text,
+		)
+	);
+}
+
+/**
+ * Second-person abuse the author is committing, not reporting: an insult
+ * aimed at "you" or a first-person threat aimed at "you".
+ *
+ * The insult arm keeps the original shape. The threat arm exists because the
+ * reporting heuristic is deliberately loose (any mention of "teacher" or
+ * "threat" reads as a report), so "I will hurt you, teacher" used to be
+ * exempted as a report and slipped past the contextual hold. The deterministic
+ * gate still catches it, but the contextual layer must not contradict it.
+ */
+function looksLikeDirectAbuse(text) {
+	if (
+		/\b(you\s+are|you're|you\s+will|you\s+should|you\s+deserve)\s+(a\s+)?(idiot|stupid|loser|ugly|fat|disgusting|pathetic|worthless|trash|moron|dumb|terrible|horrible|worst)/i.test(
+			text,
+		)
+	) {
+		return true;
+	}
+	return /\b(?:i(?:'ll| will| am going to|'m going to| gonna)|we(?:'ll| will| are going to))\s+(?:hurt|hit|beat|kill|punch|slap|stab|shoot|find|destroy|end)\s+(?:you|u|ya)\b/i.test(
+		text,
+	) || /\b(?:watch\s+your\s+back|you(?:'re| are)\s+(?:dead|finished|done for|going to regret))\b/i.test(
+		text,
+	);
+}
+
+/**
+ * Turn contextual flags into ONE hold decision.
+ *
+ * @returns {null | {mode: "private"} | {mode: "review", message: string}}
+ *   `null` means "the contextual layer has nothing to add". `private` means the
+ *   submission goes straight to the administration, so no moderator queue
+ *   applies. `review` means hold for a human — never auto-block.
+ */
+function reconcileContextual({
+	flags,
+	visibility = "public",
+	isReporting = false,
+	isDirectAbuse = false,
+}) {
+	const types = new Set(
+		(Array.isArray(flags) ? flags : [])
+			.map((f) => f?.type)
+			.filter(Boolean),
+	);
+	if (!types.size) return null;
+	if (visibility === "private") return { mode: "private" };
+
+	const genuine = GENUINE_REPORT_FLAGS.some((t) => types.has(t));
+	// Describing someone else's behaviour is a report, not the author's own
+	// conduct — the contextual layer adds no hold, even for a genuine report
+	// ("a kid told me to kill myself" is a victim speaking, not a threat).
+	// The deterministic gate still runs and always wins on direct threats, so
+	// this exemption can only ever remove a contextual hold, never a block.
+	if (isReporting && !isDirectAbuse) return null;
+
+	return {
+		mode: "review",
+		message: genuine ? ABUSE_REPORT_MESSAGE : CONDUCT_REVIEW_MESSAGE,
+	};
+}
+
+/** Normalise an issue string for de-duplication (emoji/prefix/space-insensitive). */
+function issueKey(value) {
+	return String(value || "")
+		.toLowerCase()
+		.replace(/^[^a-z0-9]+/, "")
+		.replace(/[^a-z0-9]+/g, " ")
+		.trim();
+}
+
+/** Drop duplicate issue strings while preserving order and first wording. */
+function dedupeIssues(list) {
+	const seen = new Set();
+	const out = [];
+	for (const item of Array.isArray(list) ? list : []) {
+		const key = issueKey(item);
+		if (!key || seen.has(key)) continue;
+		seen.add(key);
+		out.push(item);
+	}
+	return out;
+}
+
 // ─── Emergency Regex Fallback (when NVIDIA API is down) ───────────
 async function emergencyRegex(text, visibility = "public") {
 	const lower = String(text || "")
@@ -373,13 +544,7 @@ async function emergencyRegex(text, visibility = "public") {
 
 	// CRITICAL: Check if this is a REPORT/COMPLAINT about abuse (not actual abuse)
 	// If the post is describing someone else's behavior, it's likely a report
-	const isReporting =
-		/\b(reports?|reported|complains?|complained|describes?|described|mentions?|mentioned|tells?|told|says?|said|claims?|claimed| witnessed?|saw| noticed?|observed?|experienced?|dealing with|facing|problem with|issue with|incident|occurred|happened|keeps?|always|every day|every time|daily|regularly|habitually|pattern of)\b/i.test(
-			text,
-		) ||
-		/\b(student|teacher|staff|person|someone|they|he|she|bully|bullying|abusive|abuse|profanity|swearing|threats?|threatening|harassment|harassing)\b/i.test(
-			text,
-		);
+	const isReporting = looksLikeReport(text);
 
 	// If it's a report about abuse BY someone else, reduce risk significantly
 	// Reports use phrases like "uses profanity", "is abusive", "threatens students"
@@ -390,10 +555,7 @@ async function emergencyRegex(text, visibility = "public") {
 
 	// Only flag if the post ITSELF contains actual abuse directed at someone
 	// "you are X" = actual abuse; "student is X" = report about someone else
-	const isDirectAbuse =
-		/\b(you\s+are|you're|you\s+will|you\s+should|you\s+ deserve)\s+(a\s+)?(idiot|stupid|loser|ugly|fat|disgusting|pathetic|worthless|trash|moron|dumb|terrible|horrible|worst)/i.test(
-			text,
-		);
+	const isDirectAbuse = looksLikeDirectAbuse(text);
 
 	// Casual slang that is NOT abuse (when used as opinions)
 	const isCasualSlang =
@@ -609,28 +771,22 @@ async function emergencyRegex(text, visibility = "public") {
 	try {
 		ctxMod = await contextualModeration(text);
 	} catch {}
-	const hasAbuseReport = ctxMod && ctxMod.flags && ctxMod.flags.some((f) => 
-		f.type === "threat_report" || 
-		f.type === "reported-abuse" || 
-		f.type === "violence" || 
-		f.type === "bullying" ||
-		f.type === "coercion" ||
-		f.type === "privacy" ||
-		f.type === "privacy_weak"
-	);
-	if (hasAbuseReport && (!isReporting || isDirectAbuse)) {
-		if (visibility === "private") {
-			decision = "safe";
-			riskScore = 0;
-		} else {
-			if (decision !== "high_risk") {
-				decision = "revision";
-				riskScore = Math.max(riskScore, 40);
-				if (!safetyIssues.some((s) => s.includes("report of abuse") || s.includes("held for a human"))) {
-					safetyIssues.unshift("This reads as a report of abuse — held for a human to review.");
-				}
-			}
-		}
+	const hold = reconcileContextual({
+		flags: ctxMod?.flags,
+		text,
+		visibility,
+		isReporting,
+		isDirectAbuse,
+	});
+	if (hold?.mode === "private") {
+		// Private reports go straight to the administration — no queue, and no
+		// threat wording left over from the keyword scan.
+		decision = "safe";
+		riskScore = 0;
+	} else if (hold?.mode === "review" && decision !== "high_risk") {
+		decision = "revision";
+		riskScore = Math.max(riskScore, 40);
+		safetyIssues.unshift(hold.message);
 	}
 
 	return {
@@ -686,8 +842,8 @@ async function runChecks(
 	startTime,
 	visibility = "public",
 ) {
-	// ── Call NVIDIA Nemotron + DB checks in parallel ─────────────
-	const [aiResult, spamDB, duplicates] = await Promise.all([
+	// ── Call NVIDIA Nemotron + DB checks + contextual scan in parallel ──
+	const [aiResult, spamDB, duplicates, ctxMod] = await Promise.all([
 		callNvidiaLLM(
 			MODERATION_SYSTEM_PROMPT,
 			`Analyze this ${contentType}:\n\n"${combinedText}"`,
@@ -696,6 +852,9 @@ async function runChecks(
 		contentType === "post"
 			? detectDuplicates(title, description)
 			: Promise.resolve([]),
+		// Deterministic (~4ms, no network) and independent of the LLM lanes —
+		// running it here removes it from the serial critical path.
+		contextualModeration(combinedText).catch(() => null),
 	]);
 
 	// ── If NVIDIA API failed, use emergency regex ────────────────
@@ -818,54 +977,47 @@ async function runChecks(
 	}
 
 	// ── Unified reconciliation with Contextual Content Review ──
-	let ctxMod = null;
-	try {
-		ctxMod = await contextualModeration(combinedText);
-	} catch {}
-	const hasAbuseReport = ctxMod && ctxMod.flags && ctxMod.flags.some((f) => 
-		f.type === "threat_report" || 
-		f.type === "reported-abuse" || 
-		f.type === "violence" || 
-		f.type === "bullying" ||
-		f.type === "coercion" ||
-		f.type === "privacy" ||
-		f.type === "privacy_weak"
-	);
-	if (hasAbuseReport && aiResult?.decision !== "safe") {
-		if (visibility === "private") {
-			// In private posts between student and admin, no moderator review is needed
-			decision = "safe";
-			riskScore = 0;
-			allSafety = allSafety.filter((s) => !/abuse|threat/i.test(s));
-		} else {
-			// In public posts, reports of abuse must be held for human review before going public
-			if (decision !== "high_risk") {
-				decision = "revision";
-				riskScore = Math.max(riskScore, 40);
-				if (!allSafety.some((s) => s.includes("report of abuse") || s.includes("held for a human"))) {
-					allSafety.unshift("This reads as a report of abuse — held for a human to review.");
-				}
-			}
-		}
+	const hold = reconcileContextual({
+		flags: ctxMod?.flags,
+		text: combinedText,
+		visibility,
+		isReporting: looksLikeReport(combinedText),
+		isDirectAbuse: looksLikeDirectAbuse(combinedText),
+	});
+	if (hold?.mode === "private") {
+		// Private posts go straight to the administration: no moderator queue,
+		// and no leftover threat wording from the other checks.
+		decision = "safe";
+		riskScore = 0;
+		allSafety = allSafety.filter((s) => !/abuse|threat/i.test(s));
+	} else if (hold?.mode === "review" && decision !== "high_risk") {
+		decision = "revision";
+		riskScore = Math.max(riskScore, 40);
+		allSafety.unshift(hold.message);
 	}
 
+	const safetyIssues = dedupeIssues(allSafety);
+	const privacyIssues = dedupeIssues(allPrivacy);
+	const spamIssues = dedupeIssues(allSpam);
+	const qualityIssues = dedupeIssues(allQuality);
+
 	const reason =
-		(allSafety.length
-			? allSafety.join("; ")
-			: allPrivacy.length
-				? allPrivacy.join("; ")
+		(safetyIssues.length
+			? safetyIssues.join("; ")
+			: privacyIssues.length
+				? privacyIssues.join("; ")
 				: visibility === "private"
 					? "Private report — submitted directly to school administration."
 					: aiResult.reason || "Content passed all checks");
 
 	const checks = {
 		privacy: {
-			pass: visibility === "private" ? true : allPrivacy.length === 0,
-			issues: allPrivacy,
+			pass: visibility === "private" ? true : privacyIssues.length === 0,
+			issues: privacyIssues,
 		},
-		safety: { pass: allSafety.length === 0, issues: allSafety },
-		spam: { pass: allSpam.length === 0, issues: allSpam },
-		quality: { pass: allQuality.length === 0, issues: allQuality },
+		safety: { pass: safetyIssues.length === 0, issues: safetyIssues },
+		spam: { pass: spamIssues.length === 0, issues: spamIssues },
+		quality: { pass: qualityIssues.length === 0, issues: qualityIssues },
 		duplicates: { count: duplicates.length, items: duplicates },
 	};
 
@@ -931,7 +1083,11 @@ const SEVERITY_SCORE = { none: 0, low: 20, medium: 45, high: 75, critical: 100 }
 function gateScore(flags) {
 	return (Array.isArray(flags) ? flags : []).reduce(
 		(max, f) => {
-			if (f?.type === "threat_report" || f?.type === "reported-abuse") return max;
+			// Review-grade flags hold the content; they are not severity signals.
+			// Scoring `conduct_weak` at "high" here would escalate ordinary
+			// hostility to high_risk, which is the over-blocking we removed from
+			// the contextual layer in the first place.
+			if (REVIEW_HELD_FLAGS.has(f?.type)) return max;
 			return Math.max(max, SEVERITY_SCORE[f?.severity] ?? 0);
 		},
 		0,

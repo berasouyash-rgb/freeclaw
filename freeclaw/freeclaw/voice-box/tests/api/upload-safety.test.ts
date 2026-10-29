@@ -12,6 +12,19 @@ vi.mock("../../api/_auth.js", () => ({
 	auditLog: vi.fn().mockResolvedValue(undefined),
 }));
 
+// Vision screening is mocked FILE-WIDE: vitest loads the repo .env (a real
+// NVIDIA key), so an unmocked call would hit the network on every upload
+// test. Individual tests override the verdict to prove the block path.
+const screenImageMock = vi.hoisted(() =>
+	vi.fn(async () => ({
+		safe: true as boolean | null,
+		categories: [] as string[],
+		reason: "",
+		engine: "test",
+	})),
+);
+vi.mock("../../api/_image-safety.js", () => ({ screenImage: screenImageMock }));
+
 vi.mock("../../api/_db-client.js", () => ({
 	default: {
 		storage: {
@@ -111,7 +124,53 @@ describe("Upload Safety & Inappropriate Content Protection", () => {
 		expect(getJson().error).toMatch(/violates school safety policy/);
 	});
 
+	it("refuses an image the vision review marks unsafe, without storing it", async () => {
+		screenImageMock.mockResolvedValueOnce({
+			safe: false,
+			categories: ["sexual"],
+			reason: "nudity detected",
+			engine: "test",
+		});
+		const cleanPng = Buffer.from([
+			0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d,
+			0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+			0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4, 0x89,
+		]);
+		const { req, res, getStatus, getJson } = createMockReqRes({
+			author_id: "anon-test",
+			contentType: "image/png",
+			fileBase64: cleanPng.toString("base64"),
+		});
+		await handler(req as any, res as any);
+		expect(getStatus()).toBe(400);
+		expect(getJson().code).toBe("INAPPROPRIATE_IMAGE");
+		expect(getJson().error).toMatch(/nudity detected/);
+	});
+
+	it("fails closed when the vision review cannot run", async () => {
+		screenImageMock.mockResolvedValueOnce({
+			safe: null,
+			categories: [],
+			reason: "Image review failed: timeout",
+			engine: "unavailable",
+		});
+		const cleanPng = Buffer.from([
+			0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d,
+			0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+			0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4, 0x89,
+		]);
+		const { req, res, getStatus, getJson } = createMockReqRes({
+			author_id: "anon-test",
+			contentType: "image/png",
+			fileBase64: cleanPng.toString("base64"),
+		});
+		await handler(req as any, res as any);
+		expect(getStatus()).toBe(503);
+		expect(getJson().code).toBe("IMAGE_REVIEW_UNAVAILABLE");
+	});
+
 	it("permits clean valid PNG images", async () => {
+		screenImageMock.mockResolvedValue({ safe: true, categories: [], reason: "", engine: "test" });
 		const cleanPng = Buffer.from([
 			0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d,
 			0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,

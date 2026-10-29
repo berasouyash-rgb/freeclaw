@@ -8,6 +8,7 @@ import { initVitals } from "./lib/vitals";
 import { initErrorCapture } from "./lib/errors";
 import { hydrateStore } from "./lib/storage";
 import { preloadCoreRoutes } from "./lib/routeChunks";
+import { registerNotifyServiceWorker } from "./lib/browserNotify";
 
 // Initialize Sentry error tracking AFTER first paint — the SDK (~100KB+)
 // must never sit in the boot chunk parsed before first paint. Idle-deferred
@@ -107,6 +108,11 @@ function showFatal(message: string) {
  * one microtask there).
  */
 async function boot(): Promise<void> {
+	// Register the notification worker BEFORE the first render: Android
+	// Chrome/WebView can only show notifications through a worker
+	// registration, and `navigator.serviceWorker.ready` never resolves
+	// until one exists.
+	registerNotifyServiceWorker();
 	await hydrateStore();
 	createRoot(document.getElementById("root")!).render(
 		<StrictMode>

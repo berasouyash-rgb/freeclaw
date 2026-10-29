@@ -4,6 +4,7 @@
 import { auditLog, checkUser, clean, cors, isAdmin, rateLimited, rateLimitResponse, verifyCallerIdentity } from "./_auth.js";
 import supabase from "./_db-client.js";
 import { sanitizeError } from "./_error.js";
+import { screenImage } from "./_image-safety.js";
 
 export const config = { api: { bodyParser: { sizeLimit: "4mb" } } };
 
@@ -180,6 +181,36 @@ export default async function handler(req, res) {
 			return res.status(400).json({
 				error: "Image rejected: Content or metadata violates school safety policy. Only appropriate school-related images are permitted.",
 				code: "INAPPROPRIATE_IMAGE",
+			});
+		}
+
+		// PIXEL-level safety: metadata and magic bytes cannot see what the image
+		// shows. The vision classifier runs BEFORE storage, so a refused image
+		// is never uploaded at all (and therefore can never be linked from a
+		// post, community message, or chat).
+		const vision = await screenImage(buffer, contentType);
+		if (vision.safe === false) {
+			try {
+				await auditLog(
+					"moderation",
+					"image_policy_blocked",
+					`${clean(author_id, 40)}: ${vision.categories.join(",") || "policy"} — ${vision.reason}`,
+				);
+			} catch {
+				/* best effort audit */
+			}
+			return res.status(400).json({
+				error: `Image rejected: ${vision.reason || "it appears to break the school safety policy"}. Only school-appropriate images can be posted.`,
+				code: "INAPPROPRIATE_IMAGE",
+				categories: vision.categories,
+			});
+		}
+		if (vision.safe !== true) {
+			// Fail closed: an unreviewed image must not become public content.
+			console.error("[upload] image review unavailable:", vision.reason);
+			return res.status(503).json({
+				error: "Image safety review is temporarily unavailable — please try again in a moment. Your image was not posted.",
+				code: "IMAGE_REVIEW_UNAVAILABLE",
 			});
 		}
 

@@ -4,9 +4,11 @@
 // link to track it under My activity. Filing never publishes anything.
 import { useState } from "react";
 import { Link } from "react-router";
+import { CheckCircle2 } from "lucide-react";
 import { api } from "../lib/api";
 import { maskContactPreview } from "../lib/utils";
 import { useApp } from "../contexts/AppContext";
+import { triggerHaptic } from "../lib/haptics";
 
 export type AppealSurface = "post" | "comment" | "poll";
 
@@ -35,9 +37,19 @@ export default function AppealPanel({ surface, title, body, context, onFiled }: 
 
 	if (filedId) {
 		return (
-			<div role="status" data-testid="appeal-confirmation">
-				<p>Appeal filed — a moderator will review it.</p>
-				<Link to="/activity">Track it under My activity</Link>
+			<div role="status" data-testid="appeal-confirmation" className="rounded-2xl border border-good/30 bg-good/5 p-4 sm:p-5 vb-rise space-y-2">
+				<p className="font-semibold text-good flex items-center gap-2">
+					<CheckCircle2 size={16} /> Appeal filed — a moderator will review it.
+				</p>
+				<p className="text-xs text-ink2">
+					Status: <span className="font-mono text-accent">Pending review</span> · Reference: <span className="font-mono text-ink3">{filedId}</span>
+				</p>
+				<p className="text-[11px] text-ink3">
+					Human moderation decisions are typically processed within 24 hours. If overturned, your submission publishes automatically.
+				</p>
+				<Link to="/activity" className="inline-flex items-center gap-1 text-xs font-semibold text-accent hover:underline pt-1">
+					Track it under My activity →
+				</Link>
 			</div>
 		);
 	}
@@ -55,6 +67,7 @@ export default function AppealPanel({ surface, title, body, context, onFiled }: 
 				...(context || {}),
 			});
 			setFiledId(r.id);
+			triggerHaptic("medium");
 			onFiled?.(r.id);
 			toast(r.deduped ? "You already have an open appeal for this — showing it." : "Appeal filed", "ok");
 		} catch (e: unknown) {

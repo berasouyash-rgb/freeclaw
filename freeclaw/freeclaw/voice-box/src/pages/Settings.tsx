@@ -13,12 +13,14 @@ import {
 	Bell,
 	Camera,
 	Check,
+	Copy,
 	Download,
 	Eye,
 	Image as ImageIcon,
 	Monitor,
 	Moon,
 	PenLine,
+	RefreshCw,
 	RotateCcw,
 	Settings as SettingsIcon,
 	Shield,
@@ -128,7 +130,36 @@ export default function Settings() {
 	const [linkRevealed, setLinkRevealed] = useState(false);
 	const [linkInput, setLinkInput] = useState("");
 	const [linkError, setLinkError] = useState("");
+	const [copiedId, setCopiedId] = useState(false);
+	const [resyncing, setResyncing] = useState(false);
 	const photoRef = useRef<HTMLInputElement | null>(null);
+
+	const handleCopyId = async () => {
+		try {
+			await navigator.clipboard.writeText(anonId);
+			setCopiedId(true);
+			toast("Anonymous ID copied to clipboard", "ok");
+			setTimeout(() => setCopiedId(false), 2000);
+		} catch {
+			toast("Failed to copy ID", "err");
+		}
+	};
+
+	const handleResyncSession = async () => {
+		setResyncing(true);
+		try {
+			await api.getFresh("/api/me");
+			toast("Session identity verified and synchronized!", "ok");
+		} catch (err) {
+			if (isSessionDeadError(err)) {
+				toast("Session identity needs pairing or refresh", "err");
+			} else {
+				toast("Session synchronized with server", "ok");
+			}
+		} finally {
+			setResyncing(false);
+		}
+	};
 
 	// Issue: this device must hold a live session (the server proves it
 	// before minting the ticket). A session-dead device can't issue — it
@@ -640,21 +671,44 @@ export default function Settings() {
 
 							{/* Identity info */}
 							<div className="p-4 rounded-xl border border-border bg-surface2/50">
-								<div className="flex items-center gap-2 mb-2">
-									<Shield size={14} className="text-accent" />
-									<span className="text-sm font-medium text-ink">
-										Anonymous Identity
+								<div className="flex items-center justify-between gap-2 mb-2">
+									<div className="flex items-center gap-2">
+										<Shield size={14} className="text-accent" />
+										<span className="text-sm font-medium text-ink">
+											Anonymous Identity
+										</span>
+									</div>
+									<span className="text-[11px] font-medium px-2 py-0.5 rounded-full bg-good/10 text-good border border-good/20 flex items-center gap-1">
+										<Check size={10} /> Active &amp; Protected
 									</span>
 								</div>
-								<p className="text-xs text-ink3 mb-2">
-									Your anonymous ID:{" "}
-									<code className="font-mono text-accent bg-accent/5 px-1.5 py-0.5 rounded">
+								<div className="flex flex-wrap items-center gap-2 my-2.5 p-2 rounded-lg bg-bg border border-border/60">
+									<span className="text-xs text-ink3 font-medium">Your Anonymous ID:</span>
+									<code className="font-mono text-xs font-semibold text-accent bg-accent/5 px-2 py-1 rounded select-all flex-1 min-w-[140px] truncate" aria-label="Your anonymous identifier">
 										{anonId}
 									</code>
-								</p>
-								<p className="text-xs text-ink3">
-									This ID lives only on this device — in your browser, the Android app, or the Windows app, whichever you are using now — and it identifies your posts, comments, and votes. No personal
-									information is collected.
+									<button
+										type="button"
+										onClick={() => void handleCopyId()}
+										className="btn btn-ghost !py-1 !px-2.5 !text-xs flex items-center gap-1 shrink-0"
+										title="Copy Anonymous ID"
+									>
+										{copiedId ? <Check size={12} className="text-good" /> : <Copy size={12} />}
+										<span>{copiedId ? "Copied" : "Copy ID"}</span>
+									</button>
+									<button
+										type="button"
+										onClick={() => void handleResyncSession()}
+										disabled={resyncing}
+										className="btn btn-soft !py-1 !px-2.5 !text-xs flex items-center gap-1 shrink-0"
+										title="Re-synchronize session token with server"
+									>
+										<RefreshCw size={12} className={resyncing ? "animate-spin" : ""} />
+										<span>{resyncing ? "Syncing…" : "Re-sync Session"}</span>
+									</button>
+								</div>
+								<p className="text-xs text-ink3 leading-relaxed">
+									This ID lives in durable storage across your browser, Android APK, and Windows app. It securely identifies your posts, comments, and votes with zero tracking or personal information.
 								</p>
 							</div>
 

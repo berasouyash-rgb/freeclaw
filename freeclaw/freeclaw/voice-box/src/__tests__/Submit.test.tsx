@@ -13,6 +13,7 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { MemoryRouter } from "react-router";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import Submit from "../pages/Submit";
+import { clearAllLocalData } from "../lib/identity";
 
 const mocks = vi.hoisted(() => ({
 	toast: vi.fn(),
@@ -122,6 +123,7 @@ beforeEach(() => {
 		return Promise.resolve([]);
 	});
 	localStorage.clear();
+	clearAllLocalData();
 });
 
 describe("Submit — publish payload integrity", () => {
@@ -2256,16 +2258,18 @@ describe("Submit — uncovered user paths", () => {
 			},
 			{ timeout: 10000 },
 		);
-		fireEvent.click(screen.getByRole("button", { name: /publish anonymously/i }));
-		await waitFor(
-			() => {
-				expect(mocks.toast).toHaveBeenCalledWith(
-					expect.stringContaining("Cooldown active"),
-					"err",
-				);
-			},
+		// The publish control locks into its success state once the post is
+		// created, so a second rapid click cannot even reach the submit path.
+		// (It used to stay clickable and answer with a cooldown toast; the
+		// guard is now visible instead of reactive.) Either way: one post.
+		const sent = await screen.findByRole(
+			"button",
+			{ name: /submitted successfully/i },
 			{ timeout: 10000 },
 		);
+		expect(sent).toBeDisabled();
+		fireEvent.click(sent);
+		await new Promise((r) => setTimeout(r, 100));
 		expect(postsCalls).toBe(1);
 	});
 

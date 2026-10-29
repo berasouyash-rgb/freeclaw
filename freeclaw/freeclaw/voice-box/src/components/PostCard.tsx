@@ -18,6 +18,7 @@ import { Link } from "react-router";
 import { useApp } from "../contexts/AppContext";
 import { api, hasAdminSession } from "../lib/api";
 import { prefetchRouteChunk } from "../lib/routeChunks";
+import { triggerHaptic } from "../lib/haptics";
 import PostCardAdminBar from "./PostCardAdminBar";
 import {
 	CAT_EMOJI,
@@ -95,6 +96,7 @@ export function ReactionButton({
 		[],
 	);
 	const click = () => {
+		triggerHaptic("light");
 		if (!active) {
 			setBurst((b) => b + 1);
 			if (timer.current !== null) window.clearTimeout(timer.current);

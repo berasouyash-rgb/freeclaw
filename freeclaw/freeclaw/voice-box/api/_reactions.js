@@ -84,7 +84,7 @@ export default async function handler(req, res) {
 				: "post";
 			if (!kind || !target_id)
 				return res.status(400).json({ error: "Invalid reaction" });
-			const gate = await checkUser(author_id);
+			const gate = await checkUser(author_id, "reaction_write");
 			if (!gate.ok) return res.status(403).json({ error: gate.error });
 			// Toggle floods (scripted tapping) each cost a delete + insert +
 			// counts + a parent touch that fans out to realtime badges on every

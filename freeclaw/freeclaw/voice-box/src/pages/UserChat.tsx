@@ -1,13 +1,17 @@
 import {
 	Bot,
 	BotOff,
+	CheckCheck,
+	Clock,
 	Heart,
 	ImagePlus,
 	Loader2,
 	MessageSquare,
 	Send,
 	ShieldCheck,
+	Sparkles,
 	Trash2,
+	UserCheck,
 	Volume2,
 	VolumeX,
 } from "lucide-react";
@@ -24,6 +28,7 @@ import UpdateNotice from "../components/admin/UpdateNotice";
 import { useApp } from "../contexts/AppContext";
 import { useUpdateSignal } from "../hooks/useUpdateSignal";
 import { api } from "../lib/api";
+import { triggerHaptic } from "../lib/haptics";
 import { useRealtime } from "../lib/useRealtime";
 import { fmtDate, sanitize } from "../lib/utils";
 import { lsGet, lsSet } from "../lib/identity";
@@ -478,6 +483,7 @@ export default function UserChat() {
 		const body = sanitize(text, 2000);
 		if (!body && !attachment_url) return;
 		if (sendingRef.current) return;
+		triggerHaptic("medium");
 		sendingRef.current = true;
 		setBusy(true);
 		setTyping(true);
@@ -721,6 +727,15 @@ export default function UserChat() {
 				</div>
 			)}
 
+			{/* Human counselor takeover banner */}
+			{messages.some((m) => m.sender === "admin") && (
+				<div className="flex items-center gap-2 px-3 py-2 rounded-xl bg-good/10 border border-good/30 text-xs text-good mb-3 animate-in fade-in">
+					<UserCheck size={14} className="shrink-0" />
+					<span className="font-semibold">Campus Counselor Active</span>
+					<span className="text-[11px] text-ink3 ml-auto">Direct human support</span>
+				</div>
+			)}
+
 			<UpdateNotice
 				count={updatesAvailable}
 				onViewUpdates={() => void handleThreadUpdate()}
@@ -832,11 +847,22 @@ export default function UserChat() {
 									{readingId === m.id ? "Stop" : "Listen"}
 								</button>
 							)}
-							<p
-								className={`text-[9px] mt-1 ${m.sender === "user" ? "text-white/60" : "text-ink3"}`}
+							<div
+								className={`text-[9px] mt-1 flex items-center gap-1 ${m.sender === "user" ? "text-white/70" : "text-ink3"}`}
 							>
-								{fmtDate(m.created_at ?? "")}
-							</p>
+								<span>{fmtDate(m.created_at ?? "")}</span>
+								{m.sender === "user" && (
+									typeof m.id === "string" && m.id.startsWith("user-") ? (
+										<span title="Sending to server…" className="inline-flex items-center gap-0.5 opacity-80">
+											<Clock size={9} className="animate-spin" />
+										</span>
+									) : (
+										<span title="Delivered and saved" className="inline-flex items-center">
+											<CheckCheck size={11} className="text-white" />
+										</span>
+									)
+								)}
+							</div>
 						</div>
 					</div>
 					);
@@ -910,6 +936,29 @@ export default function UserChat() {
 					</div>
 				</div>
 			)}
+
+			{/* Quick-Reply Carousel */}
+			<div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar py-1 mt-2.5" role="group" aria-label="Quick replies">
+				{[
+					{ label: "Status of my reports", fill: "What is the status of my recent complaints?" },
+					{ label: "Report a facility issue", fill: "I want to report a broken facility on campus: " },
+					{ label: "Speak with counselor", fill: "I would like to request confidential guidance from a counselor." },
+					{ label: "Hostel / mess complaint", fill: "I have an issue regarding hostel facilities: " },
+				].map((chip) => (
+					<button
+						key={chip.label}
+						type="button"
+						onClick={() => {
+							setText(chip.fill);
+							triggerHaptic("light");
+						}}
+						className="shrink-0 text-[11px] px-2.5 py-1 rounded-full border border-border bg-surface hover:border-accent/50 hover:bg-surface2 text-ink2 transition-all flex items-center gap-1 cursor-pointer"
+					>
+						<Sparkles size={10} className="text-accent" />
+						{chip.label}
+					</button>
+				))}
+			</div>
 
 	<div className="flex gap-2 mt-3">
 				<button

@@ -64,11 +64,16 @@ const NAV_CORE = [
 		icon: UserCircle2,
 		tour: "nav-activity",
 	},
+	{
+		to: "/settings",
+		label: "Settings",
+		icon: SettingsIcon,
+		tour: "nav-settings",
+	},
 ];
 /** Low-traffic pages stay reachable but leave the primary nav: every extra
  *  item costs scan time on every page view for zero school-day value. */
 const NAV_MORE = [
-	{ to: "/settings", label: "Settings", icon: SettingsIcon, tour: "nav-settings" },
 	{ to: "/insights", label: "Insights", icon: Activity, tour: "" },
 	{ to: "/suggestions", label: "Suggestions", icon: Lightbulb, tour: "" },
 	{
@@ -154,6 +159,7 @@ export default function Layout() {
 		profile,
 		chatUnread,
 		accountStatus,
+		toast,
 	} = useApp();
 	const [notifOpen, setNotifOpen] = useState(false);
 	const [mobileOpen, setMobileOpen] = useState(false);
@@ -202,6 +208,22 @@ export default function Layout() {
 			clearInterval(iv);
 		};
 	}, []);
+
+	// Admin live popup — useAdminStream dispatches this for every coalesced
+	// admin event. A toast (not a page reload) is the "mobile notification"
+	// equivalent inside the console; the device notification fires from the
+	// stream hook itself so it also reaches a backgrounded tab.
+	useEffect(() => {
+		const onAdminActivity = (e: Event) => {
+			const detail = (e as CustomEvent).detail as
+				| { title?: string; url?: string }
+				| undefined;
+			const title = detail?.title || "New admin activity";
+			toast(title, "info");
+		};
+		window.addEventListener("vb:admin-activity", onAdminActivity);
+		return () => window.removeEventListener("vb:admin-activity", onAdminActivity);
+	}, [toast]);
 
 	// Native-shell app update: ask /api/version at most daily (the checker
 	// enforces web-exclusion, daily cache, and snooze itself). Deferred a
@@ -540,6 +562,14 @@ export default function Layout() {
 									</span>
 								)}
 							</button>
+							<Link
+								to="/settings"
+								className="btn btn-ghost !p-2.5"
+								aria-label="Settings"
+								title="Settings"
+							>
+								<SettingsIcon size={17} />
+							</Link>
 							<button
 								className="btn btn-ghost !p-2.5"
 								onClick={toggleTheme}
