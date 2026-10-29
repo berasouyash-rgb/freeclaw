@@ -30,6 +30,26 @@ interface EscalatedUser {
 	suspended_until?: string | null;
 	banned?: boolean;
 	last_seen?: string;
+	/** Slang escalation awaiting a scope decision (settings KV). */
+	escalation?: {
+		violations?: number;
+		terms?: string[];
+		status?: string;
+		last_at?: string;
+		at?: string;
+	} | null;
+	/** Live restriction row, if one is already applied. */
+	restriction?: {
+		scope?: string;
+		active?: boolean;
+		reason?: string;
+		created_at?: string;
+	} | null;
+}
+
+interface ScopeOption {
+	value: string;
+	label: string;
 }
 
 interface AccountabilityLog {
@@ -63,6 +83,11 @@ export default function AdminDailyBriefing({
 	const [selectedUserToSuspend, setSelectedUserToSuspend] = useState<EscalatedUser | null>(null);
 	const [suspendDays, setSuspendDays] = useState<number>(7);
 	const [actionBusy, setActionBusy] = useState<string | null>(null);
+	// Slang escalation scope decision: the admin picks the scope per user,
+	// nothing is applied automatically.
+	const [scopeOptions, setScopeOptions] = useState<ScopeOption[]>([]);
+	const [scopeChoice, setScopeChoice] = useState<Record<string, string>>({});
+	const [pendingEscalations, setPendingEscalations] = useState(0);
 
 	// Persisted local checkboxes for the to-do list
 	const [checkedTasks, setCheckedTasks] = useState<Record<string, boolean>>(() => {
@@ -107,10 +132,28 @@ export default function AdminDailyBriefing({
 	// Load 3-strike escalated users
 	const fetchEscalatedUsers = useCallback(async () => {
 		try {
-			const res = await api.post<{ users: EscalatedUser[] }>("/api/admin", {
+			const res = await api.post<{
+				users?: EscalatedUser[];
+				pending_escalations?: unknown[];
+				scopes?: ScopeOption[];
+			}>("/api/admin", {
 				action: "escalated_users",
 			});
-			setEscalatedUsers(res?.users || []);
+			const users = res?.users || [];
+			setEscalatedUsers(users);
+			setPendingEscalations(Array.isArray(res?.pending_escalations) ? res.pending_escalations.length : 0);
+			if (Array.isArray(res?.scopes) && res.scopes.length > 0) setScopeOptions(res.scopes);
+			// Seed a default scope per awaiting user (first option = full block),
+			// preserving any choice already made in this session.
+			setScopeChoice((prev) => {
+				const next = { ...prev };
+				for (const u of users) {
+					if (u.escalation && !next[u.anon_id]) {
+						next[u.anon_id] = res?.scopes?.[0]?.value ?? "full_block";
+					}
+				}
+				return next;
+			});
 		} catch {
 			/* best effort */
 		}
@@ -156,6 +199,55 @@ export default function AdminDailyBriefing({
 			void fetchAccountability(period);
 		} catch (err: unknown) {
 			toast(err instanceof Error ? err.message : "Suspension action failed", "err");
+		} finally {
+			setActionBusy(null);
+		}
+	};
+
+	// Slang escalation decision: apply a scope restriction, or dismiss it.
+	// Nothing is ever auto-applied — the scope is an explicit admin choice.
+	const handleResolve = async (user: EscalatedUser, decision: "apply" | "dismiss") => {
+		const scope = scopeChoice[user.anon_id] || "full_block";
+		setActionBusy(`resolve:${user.anon_id}`);
+		try {
+			await api.post("/api/admin", {
+				action: "resolve_escalation",
+				anon_id: user.anon_id,
+				decision,
+				scope: decision === "apply" ? scope : undefined,
+				reason:
+					decision === "apply"
+						? `Repeated slang violations (${user.escalation?.violations ?? 0}); scope chosen by admin`
+						: "Dismissed by admin after review",
+			});
+			toast(
+				decision === "apply"
+					? `Restricted ${user.anon_id.slice(0, 10)}… (${scope}).`
+					: `Escalation for ${user.anon_id.slice(0, 10)}… dismissed.`,
+				"ok",
+			);
+			void fetchEscalatedUsers();
+			void fetchAccountability(period);
+		} catch (err: unknown) {
+			toast(err instanceof Error ? err.message : "Escalation decision failed", "err");
+		} finally {
+			setActionBusy(null);
+		}
+	};
+
+	// Lift an existing restriction (and resolve any open escalation with it).
+	const handleClearRestriction = async (user: EscalatedUser) => {
+		setActionBusy(`lift:${user.anon_id}`);
+		try {
+			await api.post("/api/admin", {
+				action: "clear_restriction",
+				anon_id: user.anon_id,
+			});
+			toast(`Lifted restriction on ${user.anon_id.slice(0, 10)}…`, "ok");
+			void fetchEscalatedUsers();
+			void fetchAccountability(period);
+		} catch (err: unknown) {
+			toast(err instanceof Error ? err.message : "Could not lift restriction", "err");
 		} finally {
 			setActionBusy(null);
 		}
@@ -218,6 +310,11 @@ export default function AdminDailyBriefing({
 									<span className="text-[10px] bg-bad text-white px-2 py-0.5 rounded-full font-bold">
 										{escalatedUsers.length} Repeat Violator(s)
 									</span>
+									{pendingEscalations > 0 && (
+										<span className="text-[10px] bg-warn text-white px-2 py-0.5 rounded-full font-bold animate-pulse">
+											{pendingEscalations} awaiting scope decision
+										</span>
+									)}
 								</h2>
 								<p className="text-xs text-ink3 mt-0.5">
 									Students who accumulated 3 or more warnings, threats, or heavy slang violations. Action required.
@@ -231,25 +328,47 @@ export default function AdminDailyBriefing({
 							const isSuspended =
 								user.suspended_until &&
 								new Date(user.suspended_until).getTime() > Date.now();
+							const awaiting = !!user.escalation && user.escalation.status !== "resolved";
+							const restricted = !!user.restriction && user.restriction.active !== false;
+							const busy = actionBusy === `resolve:${user.anon_id}` || actionBusy === `lift:${user.anon_id}`;
 							return (
 								<div
 									key={user.anon_id}
 									className="p-3.5 flex flex-wrap items-center justify-between gap-3 text-xs"
 								>
-									<div>
-										<div className="flex items-center gap-2">
+									<div className="min-w-0">
+										<div className="flex flex-wrap items-center gap-2">
 											<span className="font-mono font-bold text-ink">
 												{user.anon_id.slice(0, 16)}…
 											</span>
 											<span className="px-1.5 py-0.5 rounded-full bg-warn/15 text-warn text-[10px] font-bold">
 												{user.strikes} strikes
 											</span>
+											{user.escalation?.violations ? (
+												<span className="px-1.5 py-0.5 rounded-full bg-bad/15 text-bad text-[10px] font-bold">
+													{user.escalation.violations} slang violation{user.escalation.violations > 1 ? "s" : ""}
+												</span>
+											) : null}
 											{isSuspended && (
 												<span className="px-1.5 py-0.5 rounded-full bg-bad/15 text-bad text-[10px] font-bold">
 													Suspended until {new Date(user.suspended_until!).toLocaleDateString()}
 												</span>
 											)}
+											{restricted && (
+												<span className="px-1.5 py-0.5 rounded-full bg-accent/15 text-accent text-[10px] font-bold">
+													Restricted: {user.restriction?.scope || "full_block"}
+												</span>
+											)}
 										</div>
+										{user.escalation?.terms && user.escalation.terms.length > 0 && (
+											<p className="text-[11px] text-ink3 mt-1">
+												Terms:{" "}
+												<span className="font-mono text-bad">
+													{user.escalation.terms.slice(0, 8).join(", ")}
+												</span>
+												{user.escalation.terms.length > 8 ? " …" : ""}
+											</p>
+										)}
 										{user.warnings && user.warnings.length > 0 && user.warnings[user.warnings.length - 1] && (
 											<p className="text-[11px] text-ink3 mt-1 italic">
 												Latest violation: &ldquo;{user.warnings[user.warnings.length - 1]!.text}&rdquo; ({timeAgo(user.warnings[user.warnings.length - 1]!.at)})
@@ -257,14 +376,63 @@ export default function AdminDailyBriefing({
 										)}
 									</div>
 
-									<div className="flex items-center gap-2">
-										<button
-											type="button"
-											onClick={() => setSelectedUserToSuspend(user)}
-											className="btn btn-soft !text-xs !py-1 !px-2.5 flex items-center gap-1.5 text-bad hover:bg-bad/10"
-										>
-											<UserX size={13} /> Decide Suspension
-										</button>
+									<div className="flex flex-wrap items-center gap-2">
+										{awaiting ? (
+											<>
+												<label className="sr-only" htmlFor={`scope-${user.anon_id}`}>
+													Restriction scope
+												</label>
+												<select
+													id={`scope-${user.anon_id}`}
+													value={scopeChoice[user.anon_id] || "full_block"}
+													onChange={(e) =>
+														setScopeChoice((prev) => ({ ...prev, [user.anon_id]: e.target.value }))
+													}
+													disabled={busy}
+													className="text-[11px] font-bold rounded-lg border border-border bg-surface px-2 py-1.5 text-ink focus:border-accent focus:outline-none"
+												>
+													{scopeOptions.map((s) => (
+														<option key={s.value} value={s.value}>
+															{s.label}
+														</option>
+													))}
+												</select>
+												<button
+													type="button"
+													disabled={busy}
+													onClick={() => void handleResolve(user, "apply")}
+													className="btn btn-primary !text-xs !py-1 !px-2.5 flex items-center gap-1.5"
+												>
+													<Shield size={13} /> Apply
+												</button>
+												<button
+													type="button"
+													disabled={busy}
+													onClick={() => void handleResolve(user, "dismiss")}
+													className="btn btn-soft !text-xs !py-1 !px-2.5 flex items-center gap-1.5"
+												>
+													<CheckCircle2 size={13} /> Dismiss
+												</button>
+											</>
+										) : (
+											<button
+												type="button"
+												onClick={() => setSelectedUserToSuspend(user)}
+												className="btn btn-soft !text-xs !py-1 !px-2.5 flex items-center gap-1.5 text-bad hover:bg-bad/10"
+											>
+												<UserX size={13} /> Decide Suspension
+											</button>
+										)}
+										{restricted && (
+											<button
+												type="button"
+												disabled={busy}
+												onClick={() => void handleClearRestriction(user)}
+												className="btn btn-soft !text-xs !py-1 !px-2.5 flex items-center gap-1.5 text-good hover:bg-good/10"
+											>
+												<RefreshCcw size={13} /> Lift
+											</button>
+										)}
 									</div>
 								</div>
 							);

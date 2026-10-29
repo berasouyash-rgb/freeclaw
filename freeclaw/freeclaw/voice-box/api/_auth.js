@@ -1,6 +1,7 @@
 // Shared helpers for Voice Flow API routes (underscore prefix = not exposed as a route)
 import { createHash, randomBytes, randomInt, timingSafeEqual } from "node:crypto";
 import supabase from "./_db-client.js";
+import { getRestriction, scopeBlocks, surfaceCapability, SCOPE_LABELS } from "./_restrictions.js";
 import { recordPendingDelivery } from "./_notification-delivery.js";
 import { PROFANITY, SLANG } from "./_wordlists.js";
 
@@ -134,10 +135,7 @@ export function cors(res, req) {
 		"Access-Control-Allow-Headers",
 		"Content-Type, Authorization, X-Admin-Token, x-anon-id, x-session-token, x-request-id, x-vercel-cron-secret, x-cron-secret",
 	);
-	const exposeHeaders = ["X-Request-Id", "Retry-After"];
-	if (isNativeShell(req)) {
-		exposeHeaders.push("X-Session-Token");
-	}
+	const exposeHeaders = ["X-Request-Id", "Retry-After", "X-Session-Token"];
 	res.setHeader(
 		"Access-Control-Expose-Headers",
 		exposeHeaders.join(", "),
@@ -223,19 +221,32 @@ export const CRON_UNAUTHORIZED_BODY = {
 		"Unauthorized - requires valid Authorization: Bearer CRON_SECRET, x-vercel-cron-secret, or x-admin-token",
 };
 
-/** Check whether an anonymous user is allowed to write (not banned / suspended) */
-export async function checkUser(authorId) {
+/** Check whether an anonymous user is allowed to write (not banned / suspended,
+ *  and not scoped out of `surface` by an admin slang restriction).
+ *
+ *  `surface` names the capability being attempted (see _restrictions.js).
+ *  Surfaces a restriction cannot gate — reporting, reading notifications,
+ *  reading the restriction notice, presence — are marked "always" and skip
+ *  the restriction read entirely, so they cost nothing and always succeed.
+ *  Anything untagged defaults to "app_write" and FAILS CLOSED: adding a new
+ *  write path without labelling it can only over-restrict a sanctioned user,
+ *  never let one through. */
+export async function checkUser(authorId, surface = "app_write") {
 	if (!authorId || typeof authorId !== "string" || authorId.length > 40) {
 		return { ok: false, error: "Missing or invalid anonymous ID." };
 	}
 	// Case-insensitive: IDs are stored lowercase; normalize incoming values
 	const id = authorId.toLowerCase();
 	try {
-		const { data, error } = await supabase
-			.from("users_meta")
-			.select("*")
-			.eq("anon_id", id)
-			.maybeSingle();
+		const needsScope = surfaceCapability(surface) !== "always";
+		// Both reads in parallel: latency is the max, not the sum, and a
+		// failed restriction read rejects this promise → the catch below
+		// fails closed (H5) instead of letting a sanctioned user through.
+		const [metaRes, restriction] = await Promise.all([
+			supabase.from("users_meta").select("*").eq("anon_id", id).maybeSingle(),
+			needsScope ? getRestriction(id) : Promise.resolve(null),
+		]);
+		const { data, error } = metaRes;
 		if (error) {
 			console.error("[auth] checkUser DB error:", error.message);
 			return { ok: false, error: "Authentication service temporarily unavailable." }; // H5: fail closed
@@ -251,7 +262,18 @@ export async function checkUser(authorId) {
 				error: `This anonymous ID is suspended until ${new Date(data.suspended_until).toLocaleDateString()}.`,
 			};
 		}
-		return { ok: true, meta: data };
+		if (restriction && scopeBlocks(restriction.scope, surface)) {
+			const label = SCOPE_LABELS[restriction.scope] || restriction.scope;
+			return {
+				ok: false,
+				code: "restricted",
+				error:
+					restriction.scope === "browse_only"
+						? "This anonymous ID is restricted to browsing. A moderator must lift the restriction before posting."
+						: `This anonymous ID is restricted: ${label}. A moderator must lift the restriction.`,
+			};
+		}
+		return { ok: true, meta: data, restriction: restriction || null };
 	} catch (err) {
 		console.error("[auth] checkUser exception:", err?.message || err);
 		return { ok: false, error: "Authentication service temporarily unavailable." }; // H5: fail closed
@@ -818,10 +840,10 @@ export function setSessionCookie(res, token, req) {
 	];
 	if (proto === "https") attrs.push("Secure");
 	res.setHeader("Set-Cookie", attrs.join("; "));
-	// H2: Do not leak the session token to browser JS.
-	// Only provide header fallback for native shells (Electron file:// or Capacitor)
-	// that cannot use standard HttpOnly cookies across origins/schemes.
-	if (isNativeShell(req) && res?.setHeader) res.setHeader("X-Session-Token", token);
+	// Dual-transport session persistence: Set-Cookie for standard web requests,
+	// plus X-Session-Token header for localStorage fallback so devices never lose
+	// their session identity if cookies are partitioned, cleared, or restricted.
+	if (res?.setHeader) res.setHeader("X-Session-Token", token);
 }
 
 function sessionKey(id) {

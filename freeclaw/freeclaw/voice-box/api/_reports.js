@@ -18,6 +18,7 @@ import { sanitizeError } from "./_error.js";
 import { EVENT_TYPES, emitEventAndBridge } from "./_events.js";
 import { recordSafetyRepost, serverModerate } from "./_moderation.js";
 import { scanSlang } from "./_slang.js";
+import { recordSlangViolation } from "./_escalation.js";
 
 // ─── Auto-moderation on report ───────────────────────────────────────
 // Every validated report now does REAL work, not just queue a row:
@@ -31,10 +32,80 @@ const STRIKE_DEDUPE_MS = 24 * 60 * 60 * 1000; // one auto-strike per target per 
 const STRIKE_SUSPEND_AT = 3; // 3 auto-strikes in 7 days → auto-suspend 7 days
 const STRIKE_BAN_AT = 6; // 6 → auto-ban
 
+// ─── Community targets ──────────────────────────────────────────────
+// Community posts are NOT rows in `posts` — they live inside a JSON record in
+// the `settings` KV store (key `community:<slug>`). A report on one therefore
+// resolves here, not by querying the posts table (which would always miss and
+// let the queue report "target already removed" — a fabricated verdict).
+const COMMUNITY_TYPES = new Set(["community_post", "community"]);
+
+/** True when a report targets a community, in either the dedicated
+ *  target_type form or the `community:`-prefixed post fallback form. */
+function isCommunityTarget(targetType, targetId) {
+	if (COMMUNITY_TYPES.has(String(targetType || ""))) return true;
+	// Fallback rows written when the DB check constraint rejected
+	// target_type=community_post: target_id becomes `community:<slug>[::id]`.
+	return String(targetType || "") === "post" && String(targetId || "").startsWith("community:");
+}
+
+/**
+ * True when an insert failed because the `reports.target_type` CHECK
+ * constraint rejected the value. Older databases only allow
+ * post/comment/poll; posting `community_post` failed the whole request and
+ * surfaced as HTTP 500 ("internal server error") to the reporter. PostgREST
+ * reports this as 23514, but some deployments answer 400 with the constraint
+ * named only in the message, so both shapes are accepted.
+ */
+function isTargetTypeConstraintError(error) {
+	if (!error) return false;
+	const code = String(error.code || "");
+	const text = `${error.message || ""} ${error.details || ""} ${error.hint || ""}`;
+	if (code !== "23514" && !/check constraint/i.test(text)) return false;
+	return /target_type/i.test(text) || code === "23514";
+}
+
+/** Parse `<slug>` or `<slug>::<postId>` (optionally with a `community:` prefix)
+ *  into `{ slug, postId }`. Returns null when it isn't a community target. */
+function parseCommunityTarget(targetId) {
+	let raw = String(targetId || "");
+	if (raw.startsWith("community:")) raw = raw.slice("community:".length);
+	if (!raw) return null;
+	const [slug, postId] = raw.split("::");
+	if (!slug) return null;
+	return { slug: slug.slice(0, 80), postId: postId ? postId.slice(0, 24) : null };
+}
+
+/** Load the full community record from the KV store. */
+async function getCommunityRecord(slug) {
+	const { data } = await supabase
+		.from("settings")
+		.select("value")
+		.eq("key", `community:${slug}`)
+		.maybeSingle();
+	return data?.value ?? null;
+}
+
 /** Resolve the author of a reported target. Returns { author_id, title } or null. */
 async function resolveTargetAuthor(targetType, targetId) {
 	if (!targetId) return null;
 	try {
+		// Community post / community — lives in the settings KV store.
+		if (isCommunityTarget(targetType, targetId)) {
+			const parsed = parseCommunityTarget(targetId);
+			if (!parsed) return null;
+			const c = await getCommunityRecord(parsed.slug);
+			if (!c) return null;
+			if (!parsed.postId) {
+				// The whole community was reported.
+				return c.created_by
+					? { author_id: c.created_by, title: String(c.name || parsed.slug).slice(0, 60) }
+					: null;
+			}
+			const post = (Array.isArray(c.posts) ? c.posts : []).find((p) => p?.id === parsed.postId);
+			return post?.anon_id
+				? { author_id: post.anon_id, title: String(post?.text || "").slice(0, 60) }
+				: null;
+		}
 		if (targetType === "comment") {
 			const { data } = await supabase
 				.from("comments")
@@ -95,6 +166,37 @@ async function verifyReportResolution(report) {
 		detail,
 	});
 	try {
+		// Community post / community — verify against the KV record, and hide
+		// the offending post (or the whole community) when it still violates.
+		if (isCommunityTarget(target_type, target_id)) {
+			const parsed = parseCommunityTarget(target_id);
+			if (!parsed) return fail("Malformed community target id.");
+			const c = await getCommunityRecord(parsed.slug);
+			if (!c) return { verified: true, target_state: "gone", action_taken: "none", detail: "Community already removed." };
+			if (!parsed.postId) {
+				if (c.hidden)
+					return { verified: true, target_state: "hidden", action_taken: "none", detail: "Community already hidden." };
+				await supabase
+					.from("settings")
+					.update({ value: { ...c, hidden: true } })
+					.eq("key", `community:${parsed.slug}`);
+				await auditLog("moderation", "report_resolve_enforced", `community ${parsed.slug} hidden on resolve`);
+				return { verified: true, target_state: "hidden", action_taken: "hidden", detail: "Community hidden pending review." };
+			}
+			const posts = Array.isArray(c.posts) ? c.posts : [];
+			const post = posts.find((p) => p?.id === parsed.postId);
+			if (!post) return { verified: true, target_state: "gone", action_taken: "none", detail: "Target already removed." };
+			const mod = serverModerate("", String(post.text || ""));
+			if (mod.blocked) {
+				const flagTypes = mod.flags.map((f) => f.type).join(",");
+				const next = { ...c, posts: posts.filter((p) => p?.id !== parsed.postId) };
+				await supabase.from("settings").update({ value: next }).eq("key", `community:${parsed.slug}`);
+				await recordSafetyRepost(supabase, String(post.text || "").slice(0, 300), (mod.flags[0] || {}).type || "policy");
+				await auditLog("moderation", "report_resolve_enforced", `community post ${parsed.slug}::${parsed.postId} removed on resolve [${flagTypes}]`);
+				return { verified: true, target_state: "hidden", action_taken: "hidden", detail: `Violating community post removed automatically (${flagTypes}).` };
+			}
+			return { verified: true, target_state: "live", action_taken: "none", detail: "Reviewed: no live violation on target." };
+		}
 		if (target_type === "comment") {
 			const { data, error } = await supabase
 				.from("comments")
@@ -163,8 +265,11 @@ async function verifyReportResolution(report) {
 /** Enrich admin report rows with target_author_id (batched, bounded). */
 async function enrichAdminRows(rows) {
 	if (!rows || !rows.length) return rows;
+	// Community reports resolve against the settings KV store, not the
+	// posts/comments tables — keep them out of the SQL batches below.
+	const isCommunityRow = (r) => isCommunityTarget(r.target_type, r.target_id);
 	const posts = rows
-		.filter((r) => r.target_type === "post")
+		.filter((r) => r.target_type === "post" && !isCommunityRow(r))
 		.map((r) => r.target_id);
 	const comments = rows
 		.filter((r) => r.target_type === "comment")
@@ -196,6 +301,44 @@ async function enrichAdminRows(rows) {
 	[...(pd || []), ...(cd || []), ...(pld || [])].forEach((row) => {
 		map[row.id] = row.author_id;
 	});
+	// Community targets: fetch each distinct community once from the KV
+	// store and resolve the reported post's author (or the community owner).
+	const communityRows = rows.filter(isCommunityRow);
+	if (communityRows.length) {
+		const slugs = [
+			...new Set(
+				communityRows
+					.map((r) => parseCommunityTarget(r.target_id)?.slug)
+					.filter(Boolean),
+			),
+		].slice(0, 50);
+		const records = {};
+		if (slugs.length) {
+			const { data: kvRows } = await supabase
+				.from("settings")
+				.select("key, value")
+				.in(
+					"key",
+					slugs.map((s) => `community:${s}`),
+				);
+			for (const kv of kvRows || []) {
+				records[kv.key.slice("community:".length)] = kv.value;
+			}
+		}
+		for (const r of communityRows) {
+			const parsed = parseCommunityTarget(r.target_id);
+			const c = parsed ? records[parsed.slug] : null;
+			if (!c) continue;
+			if (!parsed.postId) {
+				if (c.created_by) map[r.target_id] = c.created_by;
+				continue;
+			}
+			const post = (Array.isArray(c.posts) ? c.posts : []).find(
+				(p) => p?.id === parsed.postId,
+			);
+			if (post?.anon_id) map[r.target_id] = post.anon_id;
+		}
+	}
 	return rows.map((r) => ({
 		...r,
 		target_author_id: map[r.target_id] || null,
@@ -406,63 +549,38 @@ async function enforceStrike(
 	return outcome;
 }
 
-// ── Slang auto-strike ──────────────────────────────────────────
+// ── Slang escalation ───────────────────────────────────────────
 // School zero-tolerance already 403s ANY slang content at write time.
-// This adds the author-level consequence the content block alone lacks:
-// 4+ UNIQUE slang terms in a single blocked submission strikes the author
-// (progressive ladder shared with report strikes: 3/week → 7-day suspend,
-// 6 → ban; all reversible by admin). One strike per author per 24h.
+// This adds the author-level consequence the content block alone lacks,
+// WITHOUT auto-punishing anyone:
+//   * every UNIQUE slang term in a blocked submission counts 1 violation
+//     (repeating the same term in one post does not farm extra counts —
+//     the caller de-duplicates with a Set);
+//   * the counter is SEPARATE from `users_meta.strikes`, which is owned by
+//     the human report ladder (STRIKE_SUSPEND_AT / STRIKE_BAN_AT). Reusing
+//     that column would let automated slang hits suspend or ban an account
+//     with no moderator in the loop;
+//   * at ESCALATE_AT violations an admin is notified and decides the scope
+//     (full block / browse only / feed only) or dismisses it — see
+//     _escalation.js resolveEscalation().
 // Best-effort: never throws, never delays the caller's 403.
-const SLANG_STRIKE_TERMS = 4;
+const SLANG_VIOLATION_TERMS = 1;
 export async function strikeSlangAbuse(authorId, targetType, text) {
-	const outcome = { strike_applied: false, strikes: 0, suspended: false, banned: false, already_struck: false };
+	const outcome = { strike_applied: false, violations: 0, escalated: false, already_escalated: false };
 	try {
 		if (!authorId || !/^anon_/i.test(authorId) || authorId === "ADMIN") return outcome;
+		// Unique terms only: one term = one violation, however often it repeats
+		// inside this submission.
 		const terms = new Set(scanSlang(String(text || "")).map((h) => h.term));
-		if (terms.size < SLANG_STRIKE_TERMS) return outcome;
-		const since = new Date(Date.now() - STRIKE_DEDUPE_MS).toISOString();
-		const { data: metaPre } = await supabase.from("users_meta").select("warnings").eq("anon_id", authorId).maybeSingle();
-		const already = (metaPre?.warnings || []).some((w) => w.source === "auto_slang" && w.at && new Date(w.at) >= new Date(since));
-		if (already) { outcome.already_struck = true; return outcome; }
-		const { data: meta } = await supabase.from("users_meta").select("*").eq("anon_id", authorId).maybeSingle();
-		const warnings = Array.isArray(meta?.warnings) ? meta.warnings : [];
-		const strikes = meta?.strikes || 0;
-		const next = strikes + 1;
-		warnings.push({
-			text: `Blocked for heavy slang (${terms.size} terms) in a ${targetType}`,
-			at: new Date().toISOString(),
-			source: "auto_slang",
-			terms: [...terms].slice(0, 10),
+		if (terms.size < SLANG_VIOLATION_TERMS) return outcome;
+		const rec = await recordSlangViolation(authorId, terms.size, {
+			targetType,
+			terms: [...terms].slice(0, 20),
 		});
-		const patch = { strikes: next, warnings, last_seen: new Date().toISOString() };
-		const lastWeek = new Date(Date.now() - 7 * 86400000).toISOString();
-		const weekStrikes = warnings.filter((w) => w.at && new Date(w.at) >= new Date(lastWeek)).length;
-		if (next >= STRIKE_BAN_AT) {
-			patch.banned = true;
-			outcome.banned = true;
-		} else if (weekStrikes >= STRIKE_SUSPEND_AT) {
-			patch.suspended_until = new Date(Date.now() + 7 * 86400000).toISOString();
-			outcome.suspended = true;
-		}
-		const { error: updErr } = meta
-			? await supabase.from("users_meta").update(patch).eq("anon_id", authorId)
-			: await supabase
-					.from("users_meta")
-					.insert({ anon_id: authorId, warnings: [], strikes: 0, last_seen: new Date().toISOString(), ...patch });
-		if (updErr) {
-			console.error("strikeSlangAbuse update failed:", updErr.message);
-			return outcome;
-		}
-		outcome.strike_applied = true;
-		outcome.strikes = next;
-		if (outcome.banned) {
-			await notifyUser(authorId, "warning", "Account permanently banned", "This anonymous ID has been permanently banned after repeated slang violations.");
-		} else if (outcome.suspended) {
-			await notifyUser(authorId, "warning", "Account temporarily suspended", "Your anonymous ID is suspended for 7 days after repeated slang violations.");
-		} else {
-			await notifyUser(authorId, "warning", `Strike ${next} issued`, `Blocked for heavy slang use — keep it clean to avoid suspension.`);
-		}
-		await auditLog("moderation", "slang_strike", `${authorId} [${targetType}] terms=${terms.size} strikes=${next}`);
+		outcome.strike_applied = rec.violations > 0;
+		outcome.violations = rec.violations;
+		outcome.escalated = rec.escalated;
+		outcome.already_escalated = rec.already_escalated;
 	} catch (e) {
 		console.error("strikeSlangAbuse error:", e.message);
 	}
@@ -513,7 +631,7 @@ export default async function handler(req, res) {
 				const caller = await verifyCallerIdentity(req, res, author_id);
 				if (!caller.ok) return res.status(caller.status || 403).json({ error: caller.error, code: caller.code });
 			}
-			const gate = await checkUser(author_id);
+			const gate = await checkUser(author_id, "report_create");
 			if (!gate.ok) return res.status(403).json({ error: gate.error });
 			if (await rateLimited("reports", author_id, 300, 10)) {
 				return rateLimitResponse(
@@ -522,28 +640,65 @@ export default async function handler(req, res) {
 					"Slow down — max 10 reports per 5 minutes.",
 				);
 			}
-			const target_type = ["post", "comment", "poll"].includes(b.target_type)
+			const target_type = [
+				"post",
+				"comment",
+				"poll",
+				"community_post",
+				"community",
+			].includes(b.target_type)
 				? b.target_type
 				: "post";
+			// A community target is `community:<slug>::<postId>` — the 60-char cap
+			// used for opaque post ids truncated it, so parseCommunityTarget()
+			// lost the post id and the queue named the whole community as the
+			// subject. Community ids get room; everything else keeps the tight cap.
+			const idLimit = isCommunityTarget(target_type, b.target_id) ? 160 : 60;
 			const row = {
-				target_id: clean(b.target_id, 60),
+				target_id: clean(b.target_id, idLimit),
 				target_type,
 				reason: clean(b.reason, 300) || "No reason given",
 				author_id,
 			};
 			if (!row.target_id)
 				return res.status(400).json({ error: "Missing target" });
-			const { data, error } = await supabase
+			let { data, error } = await supabase
 				.from("reports")
 				.insert(row)
 				.select()
 				.single();
+			// Constraint-safe fallback: when the database still only allows
+			// post/comment/poll, store the community report in the equivalent
+			// form the resolver already understands (target_type=post plus a
+			// `community:` id) instead of failing the reporter with a 500.
+			if (isTargetTypeConstraintError(error)) {
+				const fallback = {
+					...row,
+					target_type: "post",
+					target_id: row.target_id.startsWith("community:")
+						? row.target_id
+						: `community:${row.target_id}`,
+				};
+				const retry = await supabase
+					.from("reports")
+					.insert(fallback)
+					.select()
+					.single();
+				if (!retry.error) {
+					data = retry.data;
+					error = null;
+					// Keep every downstream step (author resolution, strike
+					// attribution, audit trail) pointed at what was stored.
+					row.target_type = fallback.target_type;
+					row.target_id = fallback.target_id;
+				}
+			}
 			if (error) throw error;
 
 			// ── Real moderation work happens HERE, right after the report lands ──
 			// Ensure the reporter has a users_meta row (heartbeat normally does it).
 			await ensureUser(author_id);
-			const target = await resolveTargetAuthor(target_type, row.target_id);
+			const target = await resolveTargetAuthor(row.target_type, row.target_id);
 			const enforcement = target
 				? await enforceStrike(
 						author_id,

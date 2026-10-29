@@ -1,8 +1,12 @@
-// Slang auto-strike + leaders — regression tests.
-// Rule: 4+ UNIQUE slang terms in one blocked submission strikes the author
-// (progressive ladder shared with report strikes: 3/week → 7-day suspend,
-// 6 → ban; all reversible). One strike per author per 24h. Leaders page
-// aggregates the same scanSlang finder the gates use — never drifts.
+// Slang escalation + leaders — regression tests.
+// Rule: EVERY unique school-slang term in one blocked submission counts as
+// one violation (repeating the same term inside a submission does not farm
+// extra counts). The counter is SEPARATE from `users_meta.strikes`, which is
+// owned by the human report ladder — slang NEVER auto-suspends or auto-bans.
+// At ESCALATE_AT=3 violations the user is escalated for an admin scope
+// decision (full block / browse only / feed only) or dismissal; nothing is
+// blocked automatically. Leaders page aggregates the same scanSlang finder
+// the gates use — never drifts.
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const state = vi.hoisted(() => ({
@@ -139,30 +143,54 @@ beforeEach(() => {
 // Four distinct school slangs (all in the shared lexicon).
 const HEAVY = "sucks dumb bewakoof bakwas";
 
-describe("strikeSlangAbuse", () => {
-	it("strikes on 4+ unique slang terms and audits", async () => {
+describe("strikeSlangAbuse (slang escalation)", () => {
+	it("counts ONE violation per unique term — a single term already counts", async () => {
 		const { strikeSlangAbuse } = await import("../../api/_reports.js");
-		const out = await strikeSlangAbuse("anon_1", "post", HEAVY);
-		expect(out).toMatchObject({ strike_applied: true, strikes: 1 });
-		expect(state.users["anon_1"]?.strikes).toBe(1);
+		const out = await strikeSlangAbuse("anon_1", "comment", "dumb dumb dumb menu dumb");
+		// "dumb" is the only unique slang term; repetition does not farm counts.
+		expect(out).toMatchObject({ strike_applied: true, violations: 1, escalated: false });
 		expect(authMocks.auditLog).toHaveBeenCalledWith(
 			"moderation",
-			"slang_strike",
+			"slang_violation",
 			expect.stringContaining("anon_1"),
 		);
 		expect(authMocks.notifyUser).toHaveBeenCalledWith(
 			"anon_1",
 			"warning",
-			expect.stringContaining("Strike 1"),
+			expect.stringContaining("1/3"),
 			expect.any(String),
 		);
 	});
 
-	it("ignores fewer than 4 unique terms (repetition does not farm strikes)", async () => {
+	it("escalates in one submission once unique terms reach ESCALATE_AT", async () => {
 		const { strikeSlangAbuse } = await import("../../api/_reports.js");
-		const out = await strikeSlangAbuse("anon_1", "comment", "dumb dumb dumb menu dumb");
-		expect(out.strike_applied).toBe(false);
-		expect(authMocks.auditLog).not.toHaveBeenCalled();
+		// HEAVY = 4 unique terms → 4 violations ≥ 3 → escalate immediately.
+		const out = await strikeSlangAbuse("anon_1", "post", HEAVY);
+		expect(out).toMatchObject({ strike_applied: true, violations: 4, escalated: true });
+		expect(authMocks.auditLog).toHaveBeenCalledWith(
+			"moderation",
+			"slang_escalated",
+			expect.stringContaining("anon_1"),
+		);
+		expect(authMocks.notifyUser).toHaveBeenCalledWith(
+			"anon_1",
+			"warning",
+			expect.stringContaining("moderator is reviewing"),
+			expect.any(String),
+		);
+	});
+
+	it("NEVER auto-suspends, auto-bans, or touches users_meta.strikes", async () => {
+		// Seed a real row so the assertions are meaningful (not just
+		// "undefined because no row exists").
+		state.users["anon_1"] = { anon_id: "anon_1", strikes: 0, warnings: [] };
+		const { strikeSlangAbuse } = await import("../../api/_reports.js");
+		await strikeSlangAbuse("anon_1", "post", HEAVY);
+		// The report ladder owns users_meta.strikes (STRIKE_SUSPEND_AT /
+		// STRIKE_BAN_AT); slang must not write it or escalate on its own.
+		expect(state.users["anon_1"]?.strikes).toBe(0);
+		expect(state.users["anon_1"]?.suspended_until).toBeFalsy();
+		expect(state.users["anon_1"]?.banned).toBeFalsy();
 	});
 
 	it("exempts ADMIN and non-anon ids", async () => {
@@ -174,42 +202,11 @@ describe("strikeSlangAbuse", () => {
 		expect(authMocks.auditLog).not.toHaveBeenCalled();
 	});
 
-	it("dedupes to one strike per author per 24h", async () => {
-		state.users["anon_1"] = {
-			anon_id: "anon_1",
-			strikes: 1,
-			warnings: [{ source: "auto_slang", at: new Date().toISOString() }],
-		};
+	it("records nothing when the text has no slang at all", async () => {
 		const { strikeSlangAbuse } = await import("../../api/_reports.js");
-		const out = await strikeSlangAbuse("anon_1", "post", HEAVY);
-		expect(out).toMatchObject({ strike_applied: false, already_struck: true });
-		expect(state.users["anon_1"]?.strikes).toBe(1);
-	});
-
-	it("suspends 7 days on the 3rd strike within a week", async () => {
-		// Two prior strikes: older than the 24h dedupe window but inside the
-		// 7-day suspension window — exactly the "3rd strike this week" case.
-		const threeDaysAgo = new Date(Date.now() - 3 * 86400000).toISOString();
-		state.users["anon_1"] = {
-			anon_id: "anon_1",
-			strikes: 2,
-			warnings: [
-				{ source: "auto_slang", at: threeDaysAgo },
-				{ source: "auto_slang", at: threeDaysAgo },
-			],
-		};
-		const { strikeSlangAbuse } = await import("../../api/_reports.js");
-		const out = await strikeSlangAbuse("anon_1", "comment", HEAVY);
-		expect(out).toMatchObject({ strike_applied: true, suspended: true });
-		expect(state.users["anon_1"]?.suspended_until).toBeTruthy();
-	});
-
-	it("bans on the 6th strike", async () => {
-		state.users["anon_1"] = { anon_id: "anon_1", strikes: 5, warnings: [] };
-		const { strikeSlangAbuse } = await import("../../api/_reports.js");
-		const out = await strikeSlangAbuse("anon_1", "post", HEAVY);
-		expect(out).toMatchObject({ strike_applied: true, banned: true });
-		expect(state.users["anon_1"]?.banned).toBe(true);
+		const out = await strikeSlangAbuse("anon_1", "post", "just a perfectly normal sentence");
+		expect(out).toMatchObject({ strike_applied: false, violations: 0, escalated: false });
+		expect(authMocks.auditLog).not.toHaveBeenCalled();
 	});
 });
 

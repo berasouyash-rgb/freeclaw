@@ -16,6 +16,8 @@ import { sanitizeError } from "./_error.js";
 import { getSpamConfig, normalizeSpamConfig } from "./_moderation.js";
 import { scanSlang } from "./_slang.js";
 import { callLLMChain } from "./_providers.js";
+import { getEscalation, getPendingEscalations, resolveEscalation } from "./_escalation.js";
+import { getRestriction, listActiveRestrictions, RESTRICTION_SCOPES, SCOPE_LABELS, setRestriction, clearRestriction } from "./_restrictions.js";
 
 const SESSION_MS = 60 * 60 * 1000; // 60 minute session timeout
 
@@ -481,7 +483,82 @@ export default async function handler(req, res) {
 				.order("strikes", { ascending: false })
 				.limit(50);
 			if (error) throw error;
-			return res.status(200).json({ users: data || [] });
+			// Slang escalations live in the settings KV (users_meta cannot be
+			// ALTERed), so merge them with the report-ladder list. Report strikes
+			// and slang violations use SEPARATE counters on purpose — slang never
+			// auto-suspends or auto-bans; it always lands here for a human call.
+			const [pending, restrictions] = await Promise.all([
+				getPendingEscalations(),
+				listActiveRestrictions(),
+			]);
+			const restrictionBy = new Map(restrictions.map((r) => [r.anon_id, r]));
+			const escIds = new Set(pending.map((p) => p.anon_id));
+			const rows = (data || []).map((u) => ({
+				...u,
+				restriction: restrictionBy.get(u.anon_id) || null,
+				escalation: escIds.has(u.anon_id) ? pending.find((p) => p.anon_id === u.anon_id) : null,
+			}));
+			// Surface slang-only escalations that have no users_meta.strikes row.
+			const slangOnly = pending
+				.filter((p) => !rows.some((r) => r.anon_id === p.anon_id))
+				.map((p) => ({
+					anon_id: p.anon_id,
+					strikes: 0,
+					warnings: [],
+					suspended_until: null,
+					banned: false,
+					last_seen: p.last_at || p.at || null,
+					restriction: restrictionBy.get(p.anon_id) || null,
+					escalation: p,
+				}));
+			return res.status(200).json({
+				users: [...rows, ...slangOnly],
+				pending_escalations: pending,
+				restrictions,
+				scopes: RESTRICTION_SCOPES.map((s) => ({ value: s, label: SCOPE_LABELS[s] })),
+			});
+		}
+
+		if (action === "resolve_escalation") {
+			const { anon_id: anonId, decision, scope, reason, expires_at } = b || {};
+			if (!anonId || typeof anonId !== "string")
+				return res.status(400).json({ error: "anon_id required" });
+			if (!["apply", "dismiss"].includes(decision))
+				return res.status(400).json({ error: "decision must be apply or dismiss" });
+			if (decision === "apply" && !RESTRICTION_SCOPES.includes(scope))
+				return res.status(400).json({ error: `scope must be one of ${RESTRICTION_SCOPES.join(", ")}` });
+			const out = await resolveEscalation(anonId, decision, {
+				scope,
+				reason,
+				expires_at,
+				by: "admin",
+			});
+			if (!out.ok) return res.status(400).json({ error: out.error });
+			return res.status(200).json({ ok: true, ...out });
+		}
+
+		if (action === "set_restriction") {
+			const { anon_id: anonId, scope, reason, expires_at } = b || {};
+			if (!anonId || typeof anonId !== "string")
+				return res.status(400).json({ error: "anon_id required" });
+			if (!RESTRICTION_SCOPES.includes(scope))
+				return res.status(400).json({ error: `scope must be one of ${RESTRICTION_SCOPES.join(", ")}` });
+			const row = await setRestriction(anonId, scope, { reason, by: "admin", expires_at });
+			await auditLog("moderation", "restriction_set", `${row.anon_id} restricted to ${scope}`);
+			return res.status(200).json({ ok: true, restriction: row });
+		}
+
+		if (action === "clear_restriction") {
+			const { anon_id: anonId } = b || {};
+			if (!anonId || typeof anonId !== "string")
+				return res.status(400).json({ error: "anon_id required" });
+			const removed = await clearRestriction(anonId);
+			if (removed) await auditLog("moderation", "restriction_cleared", `${String(anonId).toLowerCase()} restriction lifted`);
+			const esc = await getEscalation(anonId);
+			if (esc) {
+				await resolveEscalation(anonId, "dismiss", { by: "admin" });
+			}
+			return res.status(200).json({ ok: true, removed });
 		}
 
 		if (action === "admin_accountability") {
@@ -546,7 +623,7 @@ export default async function handler(req, res) {
 				const res = await callLLMChain(systemPrompt, userPrompt);
 				if (res && res.text) {
 					try {
-						const cleaned = res.text.replace(/^```jsons*/i, "").replace(/```s*$/, "").trim();
+						const cleaned = res.text.replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/i, "").trim();
 						aiResult = JSON.parse(cleaned);
 					} catch {
 						aiResult = {
