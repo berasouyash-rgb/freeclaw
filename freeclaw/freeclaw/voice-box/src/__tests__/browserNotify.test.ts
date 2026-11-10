@@ -115,4 +115,40 @@ describe("showBrowserNotification", () => {
 		vi.stubGlobal("Notification", Ctor);
 		expect(showBrowserNotification({ title: "hi" })).toBe(false);
 	});
+
+	it("routes through Desktop native IPC bridge when running in Electron", async () => {
+		const mockShow = vi.fn().mockResolvedValue(true);
+		vi.stubGlobal("vbDesktop", true);
+		vi.stubGlobal("vbNotify", { show: mockShow, isSupported: () => true });
+
+		expect(browserNotifySupported()).toBe(true);
+		expect(browserNotifyPermission()).toBe("granted");
+		await expect(requestBrowserNotifyPermission()).resolves.toBe("granted");
+
+		const ok = showBrowserNotification({
+			title: "Desktop Alert",
+			body: "Testing desktop native toast",
+			url: "/complaints",
+		});
+		expect(ok).toBe(true);
+		expect(mockShow).toHaveBeenCalledWith(
+			expect.objectContaining({
+				title: "Desktop Alert",
+				body: "Testing desktop native toast",
+				url: "/complaints",
+			}),
+		);
+	});
+
+	it("routes through Capacitor LocalNotifications when running in mobile app", async () => {
+		vi.stubGlobal("Capacitor", { isNativePlatform: () => true });
+
+		expect(browserNotifySupported()).toBe(true);
+		const ok = showBrowserNotification({
+			title: "Mobile Alert",
+			body: "Testing mobile heads-up notification",
+			url: "/suggestions",
+		});
+		expect(ok).toBe(true);
+	});
 });

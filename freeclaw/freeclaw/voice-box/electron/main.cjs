@@ -10,7 +10,7 @@
  * (see electron/preload.cjs and src/lib/storage.ts). No Node access in the
  * renderer, no secrets here.
  */
-const { app, BrowserWindow, ipcMain, shell } = require("electron");
+const { app, BrowserWindow, ipcMain, shell, session, Notification } = require("electron");
 const {
 	existsSync,
 	readFileSync,
@@ -31,6 +31,15 @@ try {
 	app.disableHardwareAcceleration();
 } catch {
 	/* older Electron — ignore */
+}
+
+// Windows Action Center notifications require Application User Model ID (AUMID)
+if (process.platform === "win32") {
+	try {
+		app.setAppUserModelId("app.voicebox");
+	} catch {
+		/* older Electron — ignore */
+	}
 }
 
 // ── device store ───────────────────────────────────────────────────
@@ -136,6 +145,43 @@ ipcMain.handle("vb-store:keys", () =>
 	Object.keys(loadStore()).filter((key) => key.startsWith("vb:")),
 );
 
+// ── native notifications ───────────────────────────────────────────
+
+let mainWin = null;
+
+ipcMain.handle("vb-notify:show", (_event, ping) => {
+	try {
+		if (!Notification || !Notification.isSupported()) return false;
+		const title = (ping && ping.title) ? String(ping.title).slice(0, 80) : "Voice Flow";
+		const body = (ping && ping.body) ? String(ping.body).slice(0, 160) : "";
+		const n = new Notification({
+			title,
+			body,
+			icon: iconPath(),
+			silent: false,
+		});
+		n.on("click", () => {
+			if (mainWin) {
+				if (mainWin.isMinimized()) mainWin.restore();
+				mainWin.focus();
+			}
+		});
+		n.show();
+		return true;
+	} catch (err) {
+		console.error("[notify] native notification error:", err);
+		return false;
+	}
+});
+
+ipcMain.handle("vb-notify:isSupported", () => {
+	try {
+		return Boolean(Notification && Notification.isSupported());
+	} catch {
+		return false;
+	}
+});
+
 // ── window ─────────────────────────────────────────────────────────
 
 function appVersion() {
@@ -200,7 +246,7 @@ const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
 	app.quit();
 } else {
-	let mainWin = null;
+	mainWin = null;
 	app.on("second-instance", () => {
 		if (mainWin) {
 			if (mainWin.isMinimized()) mainWin.restore();
@@ -208,6 +254,16 @@ if (!gotLock) {
 		}
 	});
 	app.whenReady().then(() => {
+		if (session && session.defaultSession) {
+			session.defaultSession.webRequest.onBeforeSendHeaders((details, callback) => {
+				const requestHeaders = { ...details.requestHeaders };
+				if (!requestHeaders["Origin"] || requestHeaders["Origin"] === "null") {
+					requestHeaders["Origin"] = "file://";
+				}
+				requestHeaders["x-voiceflow-client"] = "desktop";
+				callback({ requestHeaders });
+			});
+		}
 		mainWin = createWindow();
 		app.setAboutPanelOptions({
 			applicationName: "Voice Flow",

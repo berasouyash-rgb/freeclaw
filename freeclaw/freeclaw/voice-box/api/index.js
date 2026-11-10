@@ -26,7 +26,7 @@ import resolutionEvidence from "./_resolution-evidence.js";
 import announcement from "./_announcement.js";
 import assist from "./_assist.js";
 import auditTrail from "./_audit-trail.js";
-import { cors as corsFn, isAllowedOrigin } from "./_auth.js";
+import { cors as corsFn, isAllowedOrigin, isNativeShell } from "./_auth.js";
 import { verifyRouteAccess } from "./_auth-matrix.js";
 import badges from "./_badges.js";
 import { cleanupCache } from "./_cache.js";
@@ -379,7 +379,8 @@ export default async function handler(req, res) {
 		// script still has to name an allowed origin.
 		const secFetchSite = req.headers["sec-fetch-site"];
 		const origin = req.headers["origin"];
-		const originAllowed = origin ? isAllowedOrigin(origin, req) : false;
+		const nativeShell = isNativeShell(req);
+		const originAllowed = nativeShell || (origin ? isAllowedOrigin(origin, req) : false);
 		if (secFetchSite === "cross-site" && !originAllowed) {
 			corsFn(res, req);
 			return res.status(403).json({ error: "Cross-site request blocked", requestId });

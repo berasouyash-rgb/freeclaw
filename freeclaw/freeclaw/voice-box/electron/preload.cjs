@@ -30,3 +30,8 @@ contextBridge.exposeInMainWorld("vbStore", {
 	remove: (key) => ipcRenderer.invoke("vb-store:remove", key),
 	keys: () => ipcRenderer.invoke("vb-store:keys"),
 });
+
+contextBridge.exposeInMainWorld("vbNotify", {
+	show: (ping) => ipcRenderer.invoke("vb-notify:show", ping),
+	isSupported: () => ipcRenderer.invoke("vb-notify:isSupported"),
+});

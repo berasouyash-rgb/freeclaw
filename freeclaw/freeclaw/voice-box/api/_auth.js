@@ -105,6 +105,7 @@ export function isAllowedOrigin(origin, req) {
 export function isNativeShell(req) {
 	const origin = req?.headers?.origin || "";
 	const ua = req?.headers?.["user-agent"] || "";
+	const client = req?.headers?.["x-voiceflow-client"] || "";
 	return (
 		origin === "null" ||
 		origin === "file://" ||
@@ -113,7 +114,10 @@ export function isNativeShell(req) {
 		origin.startsWith("https://localhost") ||
 		origin.startsWith("http://localhost") ||
 		ua.includes("Electron") ||
-		ua.includes("Capacitor")
+		ua.includes("Capacitor") ||
+		ua.includes("wv") ||
+		client === "desktop" ||
+		client === "mobile"
 	);
 }
 
@@ -132,7 +136,7 @@ export function cors(res, req) {
 	);
 	res.setHeader(
 		"Access-Control-Allow-Headers",
-		"Content-Type, Authorization, X-Admin-Token, x-anon-id, x-session-token, x-request-id, x-vercel-cron-secret, x-cron-secret",
+		"Content-Type, Authorization, X-Admin-Token, x-anon-id, x-session-token, x-request-id, x-vercel-cron-secret, x-cron-secret, x-voiceflow-client",
 	);
 	const exposeHeaders = ["X-Request-Id", "Retry-After", "X-Session-Token"];
 	res.setHeader(
@@ -897,7 +901,8 @@ export function setSessionCookie(res, token, req) {
 		origin === "file://" ||
 		origin === "https://localhost" ||
 		origin.startsWith("capacitor://") ||
-		origin.startsWith("ionic://");
+		origin.startsWith("ionic://") ||
+		isNativeShell(req);
 	const useNone = isNative && proto === "https";
 	const attrs = [
 		`${SESSION_COOKIE}=${token}`,
