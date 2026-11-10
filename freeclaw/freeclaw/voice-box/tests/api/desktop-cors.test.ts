@@ -87,6 +87,14 @@ describe("cors — desktop/mobile shells", () => {
 		);
 	});
 
+	it("refuses unauthorized third-party vercel deployments without exact match", () => {
+		const r = res();
+		cors(r as never, reqWith("https://voice-box-attacker.vercel.app") as never);
+		expect(r.headers["Access-Control-Allow-Origin"] ?? "").not.toContain(
+			"voice-box-attacker",
+		);
+	});
+
 	it("permits the x-anon-id identity header in preflights", () => {
 		const r = res();
 		cors(r as never, reqWith("null") as never);
@@ -131,5 +139,12 @@ describe("setSessionCookie — native cross-site shells", () => {
 		const c = cookieFor("capacitor://localhost", "https");
 		expect(c).toContain("SameSite=None");
 		expect(c).toContain("Secure");
+	});
+
+	it("keeps web origins on SameSite=Lax over https for CSRF protection", () => {
+		const c = cookieFor("https://voice-box-psi.vercel.app", "https");
+		expect(c).toContain("SameSite=Lax");
+		expect(c).toContain("Secure");
+		expect(c).not.toContain("SameSite=None");
 	});
 });

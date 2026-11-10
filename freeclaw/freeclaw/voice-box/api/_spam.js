@@ -2,7 +2,14 @@
 // Exposes real spam detection data to the admin dashboard.
 // GET /api/spam — returns recent spam detections, scores, and signals.
 // POST /api/spam — manually analyze a text sample (admin testing).
+//
+// Both verbs are admin-only. The GET response carries quarantined posts
+// including `author_id`, and VoiceFlow is an anonymous platform — leaking
+// that pairing to a non-admin deanonymizes users, so the check is not
+// optional. This route is also listed as ADMIN_ONLY in _auth-matrix.js so
+// the gate runs before the handler as well.
 import { securityCheck } from "./_security.js";
+import { isAdmin } from "./_auth.js";
 import { spamAnalyze, cleanupSpamData } from "./_moderation.js";
 import supabase from "./_db-client.js";
 
@@ -23,6 +30,12 @@ export default async function handler(req, res) {
 	if (!sec.ok) {
 		if (sec.retryAfter) res.setHeader("Retry-After", String(sec.retryAfter));
 		return res.status(sec.status || 429).json({ error: sec.error || "rate limited" });
+	}
+
+	// Admin-only. GET returns quarantined posts with author_id plus audit
+	// entries; POST is a manual analyzer used for admin testing. Fail closed.
+	if (!(await isAdmin(req))) {
+		return res.status(403).json({ error: "forbidden" });
 	}
 
 	// ── GET /api/spam — admin reads spam data ────────────────────

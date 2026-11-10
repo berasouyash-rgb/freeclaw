@@ -27,13 +27,14 @@ import announcement from "./_announcement.js";
 import assist from "./_assist.js";
 import auditTrail from "./_audit-trail.js";
 import { cors as corsFn, isAllowedOrigin } from "./_auth.js";
+import { verifyRouteAccess } from "./_auth-matrix.js";
 import badges from "./_badges.js";
 import { cleanupCache } from "./_cache.js";
 import categories from "./_categories.js";
 import chat from "./_chat.js";
 import communities from "./_communities.js";
-import { cleanupHandler, triggerAutoCleanup } from "./_cleanup.js";
-import maintenance from "./_maintenance.js";
+import { cleanupHandler } from "./_cleanup.js";
+import maintenance, { runScheduledMaintenance } from "./_maintenance.js";
 import commandCenter from "./_command-center.js";
 import dbStats from "./_db-stats.js";
 import comments from "./_comments.js";
@@ -90,6 +91,8 @@ import { protect } from "./_production-error.js";
 import providers from "./_providers.js";
 import ragApi from "./_rag-api.js";
 import reactions from "./_reactions.js";
+import reliabilityRoute from "./_reliability-route.js";
+import replicationCron from "./_replication-cron.js";
 import reports from "./_reports.js";
 import routing from "./_routing.js";
 import saved from "./_saved.js";
@@ -134,13 +137,51 @@ import v3Verify from "./v3/_verify.js";
 
 // Body parsing is handled by the bounded parser in _request-body.js.
 
-// Auto-cleanup on cold start (7-day retention, runs once per instance)
+// Scheduled upkeep: janitor passes + closed-post retention (5 days after the
+// last activity, see api/_retention.js).
+//
+// Three triggers, all calling the SAME runScheduledMaintenance():
+//   1. Vercel Cron  GET /api/maintenance          (vercel.json, daily)
+//   2. Cold start   below                         (every new function instance)
+//   3. Local/long-lived host: an unref'd interval (api/index.js is imported by
+//      scripts/api-server.mjs and Electron, where no cron exists)
+//
+// The cold-start call replaces the old cleanup-only cold start: cleanup alone
+// never ran the closed-post sweep, so "auto-delete when solved" could only
+// fire via an admin clicking the button. Env gates keep tests and soaks
+// deterministic: MAINTENANCE_INTERVAL_MS=0 disables the interval entirely.
+const MAINTENANCE_INTERVAL_MS = Number.parseInt(
+	process.env.MAINTENANCE_INTERVAL_MS || "",
+	10,
+);
+const maintenanceDisabled = process.env.MAINTENANCE_INTERVAL_MS === "0";
+
 if (!process.env.VITEST && (process.env.VITE_SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL)) {
 	try {
-		triggerAutoCleanup();
+		runScheduledMaintenance().catch((e) => {
+			console.warn("[maintenance] Cold-start run failed:", e?.message);
+		});
 	} catch (e) {
-		console.warn("[cleanup] Auto-cleanup skipped on cold start:", e?.message);
+		console.warn("[maintenance] Cold-start run skipped:", e?.message);
 	}
+}
+
+// Long-lived hosts only: Vercel functions are frozen between requests, so an
+// interval there would be dead weight. unref() keeps the process exit-able.
+if (
+	!process.env.VITEST &&
+	!process.env.VERCEL &&
+	!maintenanceDisabled &&
+	process.env.VITE_SUPABASE_URL &&
+	Number.isFinite(MAINTENANCE_INTERVAL_MS) &&
+	MAINTENANCE_INTERVAL_MS > 0
+) {
+	const timer = setInterval(() => {
+		runScheduledMaintenance().catch((e) => {
+			console.warn("[maintenance] Interval run failed:", e?.message);
+		});
+	}, MAINTENANCE_INTERVAL_MS);
+	if (typeof timer.unref === "function") timer.unref();
 }
 
 // Periodic cleanup of observability metrics and cache
@@ -252,6 +293,16 @@ const routes = {
 	badges: protect(badges, "badges"),
 	cleanup: protect(cleanupHandler, "cleanup"),
 	maintenance: protect(maintenance, "maintenance"),
+	// Primary → standby convergence. Reached by an external scheduler because
+	// the Hobby plan allows only two Vercel cron jobs; the daily maintenance
+	// cron also folds a tick in, so redundancy degrades gracefully rather than
+	// stopping when no external scheduler is configured.
+	"replication-cron": protect(replicationCron, "replication-cron"),
+	// Operator control surface for the failover/replication stack. Classified
+	// ADMIN_ONLY in api/_auth-matrix.js; the handler re-checks as defense in
+	// depth. Unknown routes default to PUBLIC there, so that entry is what
+	// actually protects this endpoint.
+	reliability: protect(reliabilityRoute, "reliability"),
 	db_stats: protect(dbStats, "db_stats"),
 	// V3 Enterprise routes
 	"v3/stream": protect(v3Stream, "v3-stream"),
@@ -316,13 +367,24 @@ export default async function handler(req, res) {
 	// C1: Origin allowlist on state-changing routes (kills CSRF)
 	const isMutating = req.method === "POST" || req.method === "PUT" || req.method === "PATCH" || req.method === "DELETE";
 	if (isMutating) {
+		// Sec-Fetch-Site alone cannot decide this. The packaged apps ARE
+		// cross-site by definition: the EXE loads over file:// (Origin: null)
+		// and the APK runs on https://localhost, so every fetch they make to
+		// the deployed API carries `Sec-Fetch-Site: cross-site`. Rejecting on
+		// that header first 403'd every APK/EXE POST (post, vote, AI assist)
+		// with "Cross-site request blocked" while web worked fine — the user
+		// saw it as "AI is busy". The header is now only a signal that the
+		// Origin MUST be present and allowlisted: a real browser always sends
+		// Origin on a cross-site POST, and a forged header from a same-site
+		// script still has to name an allowed origin.
 		const secFetchSite = req.headers["sec-fetch-site"];
-		if (secFetchSite === "cross-site") {
+		const origin = req.headers["origin"];
+		const originAllowed = origin ? isAllowedOrigin(origin, req) : false;
+		if (secFetchSite === "cross-site" && !originAllowed) {
 			corsFn(res, req);
 			return res.status(403).json({ error: "Cross-site request blocked", requestId });
 		}
-		const origin = req.headers["origin"];
-		if (origin && !isAllowedOrigin(origin, req)) {
+		if (origin && !originAllowed) {
 			corsFn(res, req);
 			return res.status(403).json({ error: "Invalid origin / CSRF blocked", requestId });
 		}
@@ -432,6 +494,18 @@ export default async function handler(req, res) {
 		corsFn(res, req);
 		recordRequest(0, 404, pathname);
 		return res.status(404).json({ error: "Not found" });
+	}
+
+	// Route-Level Authorization Matrix enforcement (Finding #2)
+	const authCheck = await verifyRouteAccess(endpoint, req);
+	if (!authCheck.authorized) {
+		corsFn(res, req);
+		recordRequest(0, authCheck.status, pathname);
+		return res.status(authCheck.status).json({
+			error: authCheck.error,
+			code: authCheck.code,
+			requestId,
+		});
 	}
 
 	// Wrap response to capture status code for monitoring + structured logging

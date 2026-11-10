@@ -117,4 +117,17 @@ describe("GET /api/spam — audit trail", () => {
 		expect(res.statusCode).toBe(200);
 		expect((res.body as { audit_entries: unknown[] }).audit_entries).toHaveLength(1);
 	});
+
+	// The response pairs quarantined posts with author_id. On an anonymous
+	// platform that is deanonymizing, so a non-admin must never see it.
+	it("403s a non-admin before reading anything", async () => {
+		db.admin = false;
+		db.activity.push(
+			{ id: 1, actor: "spam", action: "post_quarantined", detail: "p9", created_at: new Date().toISOString() },
+		);
+		const res = response();
+		await spamHandler({ method: "GET", query: {}, body: {}, headers: {} }, res);
+		expect(res.statusCode).toBe(403);
+		expect(res.body).toEqual({ error: "forbidden" });
+	});
 });

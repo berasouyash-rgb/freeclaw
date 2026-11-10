@@ -57,7 +57,11 @@ describe("Security Audit Fixes Verification", () => {
 	describe("C1: Origin Allowlist on State-Changing Routes (CSRF Defense)", () => {
 		it("isAllowedOrigin permits production domains and local dev", () => {
 			expect(isAllowedOrigin("https://voice-box.vercel.app")).toBe(true);
-			expect(isAllowedOrigin("https://voice-box-preview-123.vercel.app")).toBe(true);
+			// Preview deployments are NOT trusted by prefix: any Vercel user can
+			// register a project named "voice-box-<x>", so the wildcard handed
+			// attackers a credentialed origin. Previews must be configured
+			// explicitly through ALLOWED_ORIGINS.
+			expect(isAllowedOrigin("https://voice-box-preview-123.vercel.app")).toBe(false);
 			expect(isAllowedOrigin("http://localhost:5173")).toBe(true);
 			expect(isAllowedOrigin("http://localhost:5174")).toBe(true);
 			expect(isAllowedOrigin("http://127.0.0.1:8080")).toBe(true);
@@ -88,12 +92,12 @@ describe("Security Audit Fixes Verification", () => {
 			expect(getJson().error).toMatch(/Invalid origin \/ CSRF blocked/);
 		});
 
-		it("handler blocks state-changing requests with sec-fetch-site: cross-site", async () => {
+		it("handler blocks a cross-site state-changing request from a disallowed origin", async () => {
 			const { req, res, getStatus, getJson } = createMockReqRes({
 				url: "/api/posts",
 				method: "POST",
 				headers: {
-					origin: "https://voice-box.vercel.app",
+					origin: "https://evil-attacker.com",
 					"sec-fetch-site": "cross-site",
 				},
 				body: { title: "Cross-site attack" },
@@ -102,6 +106,54 @@ describe("Security Audit Fixes Verification", () => {
 			await handler(req as any, res as any);
 			expect(getStatus()).toBe(403);
 			expect(getJson().error).toMatch(/Cross-site request blocked/);
+		});
+
+		// REGRESSION GUARD (shipped bug): the packaged apps are cross-site by
+		// construction — the EXE loads over file:// (Origin: null) and the APK
+		// runs on https://localhost — so EVERY native POST carries
+		// `Sec-Fetch-Site: cross-site`. Treating that header as a block reason
+		// 403'd post/vote/AI-assist on both shells while the web build kept
+		// working. The header may only force the Origin to be *present and
+		// allowlisted*; it must never block an allowlisted native origin.
+		const nativeShells = [
+			["Electron file:// (Origin: null)", "null"],
+			["Electron explicit file://", "file://"],
+			["Capacitor 7 Android (androidScheme=https)", "https://localhost"],
+			["Capacitor legacy scheme", "capacitor://localhost"],
+			["Ionic legacy scheme", "ionic://localhost"],
+		] as const;
+
+		for (const [label, origin] of nativeShells) {
+			it(`does NOT cross-site-block the native shell: ${label}`, async () => {
+				const { req, res, getStatus, getJson } = createMockReqRes({
+					url: "/api/__probe_nonexistent_route",
+					method: "POST",
+					headers: { origin, "sec-fetch-site": "cross-site" },
+					body: {},
+				});
+
+				await handler(req as any, res as any);
+				// Reaching the route lookup (404) proves the CSRF gate let it
+				// through; anything in the 4xx gate range is the bug returning.
+				expect(getStatus()).toBe(404);
+				expect(getJson().error).toBe("Not found");
+			});
+		}
+
+		it("still blocks a hostile origin that also claims a native user-agent", async () => {
+			const { req, res, getStatus } = createMockReqRes({
+				url: "/api/__probe_nonexistent_route",
+				method: "POST",
+				headers: {
+					origin: "https://evil-attacker.com",
+					"sec-fetch-site": "cross-site",
+					"user-agent": "Mozilla/5.0 (Windows NT 10.0) Electron/36.9.5",
+				},
+				body: {},
+			});
+
+			await handler(req as any, res as any);
+			expect(getStatus()).toBe(403);
 		});
 	});
 
