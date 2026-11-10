@@ -6,6 +6,7 @@ import { auditLog, cors, isAdmin } from "./_auth.js";
 import supabase from "./_db-client.js";
 import { getJanitorConfig } from "./_cleanup.js";
 import { sanitizeError } from "./_error.js";
+import { CLOSED_RETENTION_DAYS, CLOSED_STATUSES } from "./_retention.js";
 
 const CRITICAL_TABLES = [
 	"posts", "comments", "reactions", "polls", "poll_votes",
@@ -109,10 +110,11 @@ async function getStaleData() {
 
 // ─── Dry run: what the janitor would delete ─────────────────────
 // Mirrors api/_cleanup.js predicate-for-predicate (user-deleted posts by
-// updated_at + retention_config hours with the enable toggle; 30-day age
-// outs for comments/reactions/chat_messages/activity_logs/
-// agent_conversations; archived polls). If _cleanup.js changes a predicate,
-// this block must change with it — the two are tested side by side.
+// updated_at + retention_config hours with the enable toggle; closed posts
+// 5 days past their last activity; 30-day age outs for comments/reactions/
+// chat_messages/activity_logs/agent_conversations; archived polls). If
+// _cleanup.js changes a predicate, this block must change with it — the two
+// are tested side by side.
 const DAY_MS = 86400000;
 
 async function countWhere(table, apply) {
@@ -138,6 +140,7 @@ async function getDryRun(now = Date.now()) {
 	const { retentionHours: hours, autoDelete, classes } = await getJanitorConfig();
 	const postCutoff = new Date(now - hours * 3600 * 1000).toISOString();
 	const day30 = new Date(now - 30 * DAY_MS).toISOString();
+	const closedCutoff = new Date(now - CLOSED_RETENTION_DAYS * DAY_MS).toISOString();
 	const dry = {};
 	dry.retention_hours = hours;
 	dry.auto_delete_skipped = !autoDelete;
@@ -147,6 +150,14 @@ async function getDryRun(now = Date.now()) {
 				q.eq("deleted", true).lte("updated_at", postCutoff),
 			)
 		: 0;
+	// Closed-post mirror: _cleanup.js parses status_history for the exact close
+	// moment, which SQL cannot do — a row whose close stamp is newer than
+	// updated_at may already be due. This counts only the provable subset
+	// (updated_at at or before the cutoff), so it under-counts and never
+	// over-counts. Same window as the sweep: one rule, no solved/archived split.
+	dry.solved_posts = await countIf(classes, "solved_posts", "posts", (q) =>
+		q.in("status", CLOSED_STATUSES).eq("deleted", false).lte("updated_at", closedCutoff),
+	);
 	dry.old_comments = await countIf(classes, "comments", "comments", (q) =>
 		q.lte("created_at", day30),
 	);
@@ -181,6 +192,7 @@ async function getDryRun(now = Date.now()) {
 	// bar per key; flags and totals would render as phantom bars).
 	dry.counts = {
 		user_deleted_posts: dry.user_deleted_posts,
+		solved_posts: dry.solved_posts,
 		old_comments: dry.old_comments,
 		old_reactions: dry.old_reactions,
 		old_chat_messages: dry.old_chat_messages,

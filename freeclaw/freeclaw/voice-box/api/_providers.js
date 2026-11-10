@@ -719,7 +719,9 @@ export async function hasUsableLLM() {
 		return _llmStatusCache.usable;
 	try {
 		const chain = await buildChain();
-		const nimUsable = getNimFallbackChain().some((p) => p.key && p.baseUrl);
+		const nimUsable = getNimFallbackChain().some(
+			(p) => p.key && p.baseUrl && isApprovedFreeModel(p.id, p.model),
+		);
 		// Also check self-hosted providers via env vars (ollama, lmstudio)
 		const ollamaUsable = !!process.env.OLLAMA_HOST;
 		const lmstudioUsable = !!process.env.LMSTUDIO_HOST;
@@ -773,6 +775,52 @@ let _chainExpiry = 0;
 const CHAIN_TTL_MS = 60_000;
 export function invalidateChainCache() { _chainCache = null; _chainExpiry = 0; }
 
+// ─── Free-model-only policy ──────────────────────────────────────
+// VoiceFlow is not allowed to spend money at an LLM provider. The chain
+// therefore excludes every provider without a documented free tier and
+// refuses paid model variants of free-tier providers (OpenRouter's ":free"
+// suffix is the only free family there). Administrators can approve another
+// genuinely free provider without a code change via AI_FREE_PROVIDERS, but
+// there is deliberately no switch that re-enables paid providers.
+export const FREE_PROVIDER_IDS = new Set([
+	"gemini",
+	"groq",
+	"cerebras",
+	"mistral",
+	"nvidia",
+	"cloudflare_ai",
+	"ollama",
+	"lmstudio",
+	"openrouter",
+]);
+const EXTRA_FREE_PROVIDERS = new Set(
+	(process.env.AI_FREE_PROVIDERS || "")
+		.split(",")
+		.map((s) => s.trim().toLowerCase())
+		.filter(Boolean),
+);
+
+export const FREE_POLICY = Object.freeze({
+	freeOnly: true,
+	providers: [...new Set([...FREE_PROVIDER_IDS, ...EXTRA_FREE_PROVIDERS])],
+});
+
+export function isApprovedFreeProvider(id) {
+	const key = String(id || "").toLowerCase();
+	if (!key) return false;
+	if (FREE_PROVIDER_IDS.has(key) || EXTRA_FREE_PROVIDERS.has(key)) return true;
+	// NIM fallback ids are "<vendor>-<model>" (e.g. groq-gpt-oss).
+	return /^(groq|nvidia|cerebras|gemini|mistral)-/.test(key);
+}
+
+export function isApprovedFreeModel(id, model) {
+	if (!isApprovedFreeProvider(id)) return false;
+	const m = String(model || "").toLowerCase();
+	// OpenRouter serves both paid and :free variants from one endpoint.
+	if (String(id).toLowerCase() === "openrouter") return m.includes(":free");
+	return true;
+}
+
 // ─── Build failover chain ─────────────────────────────────────────
 export async function buildChain() {
 	const now = Date.now();
@@ -782,12 +830,18 @@ export async function buildChain() {
 	let defaultId = null;
 	for (const [id, cfg] of Object.entries(db)) {
 		if (cfg.is_default && cfg.enabled && cfg.key) {
+			if (!isApprovedFreeModel(id, cfg.model || PROVIDER_DEFS[id]?.defaultModel)) continue;
 			defaultId = id;
 			break;
 		}
 	}
 	const dbEntries = Object.entries(db)
-		.filter(([id, cfg]) => cfg.enabled && cfg.key)
+		.filter(
+			([id, cfg]) =>
+				cfg.enabled &&
+				cfg.key &&
+				isApprovedFreeModel(id, cfg.model || PROVIDER_DEFS[id]?.defaultModel),
+		)
 		.sort((a, b) => (a[1].priority || 99) - (b[1].priority || 99));
 	if (defaultId && PROVIDER_DEFS[defaultId]) {
 		const cfg = db[defaultId];
@@ -814,7 +868,8 @@ export async function buildChain() {
 	for (const [id, def] of Object.entries(PROVIDER_DEFS)) {
 		if (dbIds.has(id)) continue;
 		const key = process.env[def.envKey];
-		if (key) chain.push({ id, ...def, key, model: def.defaultModel });
+		if (key && isApprovedFreeModel(id, def.defaultModel))
+			chain.push({ id, ...def, key, model: def.defaultModel });
 	}
 	_chainCache = chain;
 	_chainExpiry = Date.now() + CHAIN_TTL_MS;
@@ -864,7 +919,15 @@ function isNimProvider(provider) {
 	);
 }
 const NIM_QUEUE_WAIT_MS = 20000; // max time a call may park waiting for a slot
-function acquireNimSlot(priority = "low") {
+/**
+ * @param {"low"|"high"} priority
+ * @param {number} [waitMs] Caller's remaining wall budget. A request-path
+ *   caller must never park longer than it is willing to wait: an abandoned
+ *   lane that keeps its queue entry after the HTTP handler has already
+ *   timed out will take the single NIM slot and stall the *next* user's
+ *   write behind a call nobody is waiting for. Clamped to NIM_QUEUE_WAIT_MS.
+ */
+function acquireNimSlot(priority = "low", waitMs = NIM_QUEUE_WAIT_MS) {
 	if (nimActive < NIM_MAX_CONCURRENCY) {
 		nimActive++;
 		return Promise.resolve(true);
@@ -890,12 +953,17 @@ function acquireNimSlot(priority = "low") {
 		};
 		// A queued call must never wait forever (e.g. a streaming chat holding
 		// the single slot while a patrol needs it) — bail out after a bounded
-		// wait so the caller's failover chain can move on.
+		// wait so the caller's failover chain can move on. The bound is the
+		// caller's own budget when it passed one.
+		const parkMs = Math.max(
+			150,
+			Math.min(Number.isFinite(waitMs) ? waitMs : NIM_QUEUE_WAIT_MS, NIM_QUEUE_WAIT_MS),
+		);
 		const timer = setTimeout(() => {
 			const i = nimQueue.indexOf(entry);
 			if (i >= 0) nimQueue.splice(i, 1);
 			finish(false);
-		}, NIM_QUEUE_WAIT_MS);
+		}, parkMs);
 		const entry = () => {
 			clearTimeout(timer);
 			finish(true);
@@ -914,10 +982,10 @@ function releaseNimSlot() {
 	}
 }
 
-async function callProvider(provider, messages, timeoutMs, priority = "low") {
+async function callProvider(provider, messages, timeoutMs, priority = "low", queueWaitMs = 0) {
 	const nimSlot = isNimProvider(provider);
 	if (nimSlot) {
-		const ok = await acquireNimSlot(priority);
+		const ok = await acquireNimSlot(priority, queueWaitMs || NIM_QUEUE_WAIT_MS);
 		if (!ok)
 			return {
 				ok: false,
@@ -1188,83 +1256,218 @@ function nvidiaFastOnce(key, model, system, user, timeoutMs) {
 		.finally(() => clearTimeout(timer));
 }
 
+// ─── Fast-lane concurrency guard ─────────────────────────────────
+// One free-tier key saturates after a handful of simultaneous calls: the
+// provider answers the first few and 429s the rest. Previously every 429'd
+// caller re-tried the lane, so a burst burned the full budget before
+// degrading. Cap the in-flight count and let extra callers degrade
+// straight to the deterministic floor instead of queueing behind 429s.
+const FAST_MAX_INFLIGHT = 6;
+// A saturated queue is not worth blocking a user's write for: waiting 2s
+// behind a wall of 429s then degrading anyway is the worst of both worlds.
+// A short wait smooths micro-bursts; beyond that, degrade now.
+const FAST_QUEUE_WAIT_MS = 400;
+const FAST_COOLDOWN_MS = 5000;
+let _fastInFlight = 0;
+const _fastWaiters = [];
+
+function _acquireFastSlot(waitMs) {
+	if (_fastInFlight < FAST_MAX_INFLIGHT) {
+		_fastInFlight++;
+		return Promise.resolve(true);
+	}
+	return new Promise((resolve) => {
+		const entry = { done: false, timer: null, resolve };
+		entry.timer = setTimeout(() => {
+			if (entry.done) return;
+			entry.done = true;
+			const i = _fastWaiters.indexOf(entry);
+			if (i >= 0) _fastWaiters.splice(i, 1);
+			resolve(false);
+		}, waitMs);
+		_fastWaiters.push(entry);
+	});
+}
+
+function _releaseFastSlot() {
+	if (_fastInFlight > 0) _fastInFlight--;
+	while (_fastWaiters.length) {
+		const next = _fastWaiters.shift();
+		if (next.done) continue;
+		next.done = true;
+		clearTimeout(next.timer);
+		_fastInFlight++;
+		next.resolve(true);
+		return;
+	}
+}
+
+// ─── Public frontier liveness ────────────────────────────────────
+// The zero-auth frontier endpoint is unreliable on this network: it has
+// answered 402 (quota) and, later, stalled until the abort fired. It is a
+// best-effort last resort, NOT something a user's write should block on, so
+// it gets a short budget and a three-strike breaker rather than a retry on
+// every single request.
+const FRONTIER_DEAD_MS = 10 * 60_000;
+const FRONTIER_TRANSIENT_MS = 60_000;
+const FRONTIER_BUDGET_MS = 1200;
+// A frontier attempt below this is a guaranteed miss (connect + first token
+// already costs more), so spending the caller's last few hundred ms buys
+// nothing but a held socket. Skip it instead and degrade immediately.
+const FRONTIER_MIN_BUDGET_MS = 400;
+const FRONTIER_MAX_FAIL_STREAK = 3;
+let _frontierDeadUntil = 0;
+let _frontierFailStreak = 0;
+
+function frontierKnownDead() {
+	return _frontierDeadUntil > Date.now();
+}
+
+function _recordFrontierFailure(hard) {
+	_frontierFailStreak++;
+	if (hard || _frontierFailStreak >= FRONTIER_MAX_FAIL_STREAK) {
+		_frontierDeadUntil = Date.now() + FRONTIER_DEAD_MS;
+		_frontierFailStreak = 0;
+	} else {
+		_frontierDeadUntil = Date.now() + FRONTIER_TRANSIENT_MS;
+	}
+}
+
+/** Racing the live tiers; each starting a little later. Resolves null on total failure.
+ *
+ *  The caller's budget is a CONTRACT, not a hint. analyzeContext hands this
+ *  lane as little as 800ms while it races a 3s floor, and pre-publish caps it
+ *  at 5s — so the old `Math.max(3500, …)` floor here (and the 2500ms per-slice
+ *  floor below) made this function block for up to 4s no matter what it was
+ *  asked for. The caller had already given up while these sockets were still
+ *  open and the fast slot was still held. Budget below is spent, never
+ *  exceeded; attempts that cannot fit a meaningful slice are skipped outright.
+ */
+async function _raceFastLane({ groqKey, nvidiaKey, system, user, timeoutMs }) {
+	const asked = Number(timeoutMs);
+	// 300ms is the smallest slice worth opening a socket for; 14000 matches
+	// the largest caller (12s) plus headroom.
+	const budget = Math.min(Math.max(300, Number.isFinite(asked) ? Math.round(asked) : 3500), 14000);
+	const attempts = [];
+
+	if (groqKey) {
+		attempts.push(
+			groqFastOnce(groqKey, "openai/gpt-oss-120b", system, user, budget).then(
+				(text) => ({ provider: "groq", model: "openai/gpt-oss-120b", text }),
+				() => null,
+			),
+		);
+	}
+
+	if (nvidiaKey) {
+		const stagger = [0, 600, 1500];
+		const models = [NVIDIA_FAST_MODELS[0], NVIDIA_FAST_MODELS[1]].filter(Boolean);
+		models.forEach((model, i) => {
+			const delay = stagger[i] ?? i * 900;
+			// No room for this tier inside the caller's wall — starting it would
+			// only leave a socket open past the deadline.
+			if (delay + 300 > budget) return;
+			const start = () => {
+				const slice = budget - delay;
+				return nvidiaFastOnce(nvidiaKey, model, system, user, slice).then(
+					(text) => ({ provider: "nvidia", model, text }),
+					() => null,
+				);
+			};
+			attempts.push(
+				new Promise((resolve) => {
+					if (delay === 0) resolve(start());
+					else setTimeout(() => resolve(start()), delay);
+				}),
+			);
+		});
+	}
+
+	if (!attempts.length) return null;
+
+	return new Promise((resolve) => {
+		let settled = false;
+		let done = 0;
+		// Every attempt is told to abort by `budget`, so a small grace is all
+		// that is needed for rejections to propagate. Overshooting here is what
+		// used to push a 3s caller past 4s.
+		const timer = setTimeout(() => {
+			if (settled) return;
+			settled = true;
+			resolve(null);
+		}, budget + 250);
+		for (const p of attempts) {
+			p.then((r) => {
+				done++;
+				if (settled) return;
+				if (r && r.text && r.text.length > 5) {
+					settled = true;
+					clearTimeout(timer);
+					resolve(r);
+				} else if (done === attempts.length) {
+					settled = true;
+					clearTimeout(timer);
+					resolve(null);
+				}
+			});
+		}
+	});
+}
+
 /**
  * Fast hedging lane (Groq + NVIDIA + Public Frontier fallback).
  * Starts the fastest model immediately and hedges against alternatives.
- * NEVER throws — always returns an answer even if keys fail.
+ * NEVER throws — returns null when no model answered, so the caller can
+ * degrade to its deterministic floor without misreporting model usage.
  */
 export async function callNvidiaFast(system, user, timeoutMs = 12000) {
 	const groqKey = (process.env.GROQ_API_KEY || "").replace(/["']/g, "").trim();
 	const nvidiaKey = (process.env.NVIDIA_API_KEY || "").replace(/["']/g, "").trim();
 	const lane = "fast-lane";
 
+	// One deadline for everything below: the slot wait, the race, and the
+	// frontier fallback. Previously the race floored itself at 3.5s and the
+	// frontier then opened a FRESH 1.2s call, so a caller that asked for 3s
+	// could be held ~5.2s while it had already degraded — pinning a saturated
+	// tier for a request nobody was listening to any more.
+	const asked = Number(timeoutMs);
+	const deadline = Date.now() + (Number.isFinite(asked) ? Math.max(0, asked) : 12000);
+	const left = () => deadline - Date.now();
+	const remaining = () => Math.max(0, left());
+
 	let winner = null;
-	if ((groqKey || nvidiaKey) && !isOnCooldown(lane)) {
-		const budget = Math.max(3500, Math.min(timeoutMs, 14000));
-		const attempts = [];
+	const hasKeys = !!(groqKey || nvidiaKey);
 
-		if (groqKey) {
-			attempts.push(
-				groqFastOnce(groqKey, "openai/gpt-oss-120b", system, user, budget).then(
-					(text) => ({ provider: "groq", model: "openai/gpt-oss-120b", text }),
-					() => null,
-				),
-			);
-		}
-
-		if (nvidiaKey) {
-			const stagger = [0, 600, 1500];
-			const models = [NVIDIA_FAST_MODELS[0], NVIDIA_FAST_MODELS[1]].filter(Boolean);
-			models.forEach((model, i) => {
-				const start = () => {
-					const slice = Math.max(2500, budget - stagger[i]);
-					return nvidiaFastOnce(nvidiaKey, model, system, user, slice).then(
-						(text) => ({ provider: "nvidia", model, text }),
-						() => null,
-					);
-				};
-				attempts.push(
-					new Promise((resolve) => {
-						if (stagger[i] === 0) resolve(start());
-						else setTimeout(() => resolve(start()), stagger[i]);
-					}),
-				);
-			});
-		}
-
-		winner = await new Promise((resolve) => {
-			let settled = false;
-			let done = 0;
-			const timer = setTimeout(() => {
-				if (settled) return;
-				settled = true;
-				resolve(null);
-			}, budget + 500);
-			for (const p of attempts) {
-				p.then((r) => {
-					done++;
-					if (settled) return;
-					if (r && r.text && r.text.length > 5) {
-						settled = true;
-						clearTimeout(timer);
-						resolve(r);
-					} else if (done === attempts.length) {
-						settled = true;
-						clearTimeout(timer);
-						resolve(null);
-					}
-				});
+	if (hasKeys && !isOnCooldown(lane)) {
+		const gotSlot = await _acquireFastSlot(Math.min(FAST_QUEUE_WAIT_MS, remaining()));
+		if (gotSlot) {
+			try {
+				// Recompute: the wait just spent part of the caller's wall.
+				winner = remaining() > 0
+					? await _raceFastLane({ groqKey, nvidiaKey, system, user, timeoutMs: remaining() })
+					: null;
+			} finally {
+				_releaseFastSlot();
 			}
-		});
-
-		if (!winner) markCooldown(lane, 15000);
+			if (!winner) markCooldown(lane, FAST_COOLDOWN_MS);
+		} else {
+			// Saturated. Do not queue behind a wall of 429s — degrade now.
+			markCooldown(lane, FAST_COOLDOWN_MS);
+		}
 	}
 
-	if (!winner) {
-		const pub = await callPublicFrontierLLM([
-			{ role: "system", content: system },
-			{ role: "user", content: user },
-		], Math.min(timeoutMs, 8000));
+	// Last resort gets whatever is actually left, never a fresh budget. Below
+	// the floor a request cannot produce an answer, so skip it rather than
+	// burn the tail of the deadline for certain nothing.
+	const frontierBudget = Math.min(FRONTIER_BUDGET_MS, remaining());
+	if (!winner && frontierBudget >= FRONTIER_MIN_BUDGET_MS && !frontierKnownDead()) {
+		const pub = await callPublicFrontierLLM(
+			[
+				{ role: "system", content: system },
+				{ role: "user", content: user },
+			],
+			frontierBudget,
+		);
 		if (pub?.text) {
 			return { provider: pub.provider, model: pub.model, text: pub.text };
 		}
@@ -1281,6 +1484,7 @@ export async function callNvidiaFast(system, user, timeoutMs = 12000) {
  * cooling down, or absent. Ensures 5000+ users never experience interrupted AI.
  */
 export async function callPublicFrontierLLM(messages, timeoutMs = 12000) {
+	if (frontierKnownDead()) return null;
 	try {
 		const controller = new AbortController();
 		const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -1298,9 +1502,15 @@ export async function callPublicFrontierLLM(messages, timeoutMs = 12000) {
 			signal: controller.signal,
 		});
 		clearTimeout(timer);
-		if (!res.ok) throw new Error(`HTTP ${res.status}`);
+		if (!res.ok) {
+			// 402/401/403 means the endpoint is unusable, not merely busy.
+			const hard = res.status === 402 || res.status === 401 || res.status === 403;
+			_recordFrontierFailure(hard);
+			throw new Error(`HTTP ${res.status}`);
+		}
 		const text = await res.text();
 		if (text && text.trim().length > 0) {
+			_frontierFailStreak = 0;
 			return {
 				ok: true,
 				provider: "frontier-public",
@@ -1308,7 +1518,9 @@ export async function callPublicFrontierLLM(messages, timeoutMs = 12000) {
 				text: text.trim(),
 			};
 		}
+		_recordFrontierFailure(false);
 	} catch (err) {
+		_recordFrontierFailure(false);
 		console.warn("[LLM] Public frontier model call failed:", err.message);
 	}
 	return null;
@@ -1319,6 +1531,7 @@ export async function callLLMChain(
 	user,
 	extraMessages = [],
 	priority = "low",
+	budgetMs = 0,
 ) {
 	const messages = [
 		{ role: "system", content: system },
@@ -1336,6 +1549,29 @@ export async function callLLMChain(
 		};
 	}
 
+	// A caller on a request path passes a wall budget. Without one this walks
+	// every provider serially, so one saturated free tier burns the caller's
+	// whole timeout budget before the deterministic floor is reached. With a
+	// budget the walk stops as soon as the wall is hit and reports "no answer"
+	// honestly instead of a timeout.
+	const deadline = budgetMs > 0 ? Date.now() + budgetMs : 0;
+	const timeLeft = () => (deadline ? deadline - Date.now() : Number.POSITIVE_INFINITY);
+	const withinBudget = () => timeLeft() > 0;
+	// A NIM slot park is charged to the caller's budget, not to the process:
+	// queueing 20s behind a single-slot worker to then be abandoned by the
+	// HTTP wall is how one slow review used to stall the next user's write.
+	const nimQueueWait = () =>
+		deadline ? Math.min(NIM_QUEUE_WAIT_MS, Math.max(0, timeLeft())) : NIM_QUEUE_WAIT_MS;
+	const bounded = (promise) => {
+		if (!deadline) return promise.catch(() => null);
+		const left = timeLeft();
+		if (left <= 0) return Promise.resolve(null);
+		return Promise.race([
+			promise.catch(() => null),
+			new Promise((resolve) => setTimeout(() => resolve(null), left)),
+		]);
+	};
+
 	// 1. Try DB-configured providers first.
 	//    ONLY fresh (not-cooling-down) providers are attempted. The old
 	//    `freshChain.length > 0 ? freshChain : chain` fallback re-walked the
@@ -1348,7 +1584,11 @@ export async function callLLMChain(
 	const chain = await buildChain();
 	const freshChain = chain.filter((p) => !isOnCooldown(p.id));
 	for (const provider of freshChain) {
-		const result = await callProvider(provider, messages, undefined, priority);
+		if (!withinBudget()) break;
+		const result = await bounded(
+			callProvider(provider, messages, undefined, priority, nimQueueWait()),
+		);
+		if (!result) break;
 		if (result.ok) {
 			clearCooldown(provider.id);
 			return {
@@ -1365,9 +1605,15 @@ export async function callLLMChain(
 	if (chain.length === 0) {
 		logger.info("llm", "No DB providers configured — using NIM fallback chain");
 	}
-	const freshNim = getNimFallbackChain().filter((p) => !isOnCooldown(p.id));
+	const freshNim = getNimFallbackChain().filter(
+		(p) => !isOnCooldown(p.id) && isApprovedFreeModel(p.id, p.model),
+	);
 	for (const provider of freshNim) {
-		const result = await callProvider(provider, messages, undefined, priority);
+		if (!withinBudget()) break;
+		const result = await bounded(
+			callProvider(provider, messages, undefined, priority, nimQueueWait()),
+		);
+		if (!result) break;
 		if (result.ok) {
 			clearCooldown(provider.id);
 			logger.info("llm", `NIM fallback succeeded`, { provider: provider.id, model: provider.model });
@@ -1386,7 +1632,14 @@ export async function callLLMChain(
 	// from "we actually tried every fresh provider and all of them failed".
 	// 3. Frontier Public Failover (OpenAI / Mistral zero-auth public model)
 	// Guarantees continuous, high-intelligence availability for 5,000+ concurrent users
-	const frontierRes = await callPublicFrontierLLM(messages);
+	const frontierRes = withinBudget()
+		? await callPublicFrontierLLM(
+				messages,
+				deadline
+					? Math.max(300, Math.min(timeLeft(), FRONTIER_BUDGET_MS))
+					: 12000,
+			)
+		: null;
 	if (frontierRes && frontierRes.ok && frontierRes.text) {
 		logger.info("llm", "Frontier public failover succeeded", { model: frontierRes.model });
 		return {
@@ -1435,7 +1688,9 @@ export async function callProviderStream(
 		// Build chain: DB providers first, then NIM fallback
 		const dbChain = await buildChain();
 		for (const p of dbChain) providers.push(p);
-		for (const p of getNimFallbackChain()) providers.push(p);
+		for (const p of getNimFallbackChain()) {
+			if (isApprovedFreeModel(p.id, p.model)) providers.push(p);
+		}
 
 		// Skip recently-failed providers so we don't re-hang on them
 		const candidates = providers.filter((p) => !isOnCooldown(p.id));

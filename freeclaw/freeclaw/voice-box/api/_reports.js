@@ -278,17 +278,20 @@ async function enrichAdminRows(rows) {
 		.filter((r) => r.target_type === "poll")
 		.map((r) => r.target_id);
 	const map = {};
+	// Availability snapshot: a soft-deleted / hidden target must leave the
+	// pending queue while its report row is preserved (spec §3.2 case C).
+	const stateMap = {};
 	const [{ data: pd }, { data: cd }, { data: pld }] = await Promise.all([
 		posts.length
 			? supabase
 					.from("posts")
-					.select("id, author_id")
+					.select("id, author_id, deleted, hidden")
 					.in("id", posts.slice(0, 100))
 			: Promise.resolve({ data: [] }),
 		comments.length
 			? supabase
 					.from("comments")
-					.select("id, author_id")
+					.select("id, author_id, deleted, hidden")
 					.in("id", comments.slice(0, 100))
 			: Promise.resolve({ data: [] }),
 		polls.length
@@ -298,8 +301,17 @@ async function enrichAdminRows(rows) {
 					.in("id", polls.slice(0, 100))
 			: Promise.resolve({ data: [] }),
 	]);
-	[...(pd || []), ...(cd || []), ...(pld || [])].forEach((row) => {
+	[...(pd || []), ...(cd || [])].forEach((row) => {
 		map[row.id] = row.author_id;
+		stateMap[row.id] = row.deleted
+			? "deleted"
+			: row.hidden
+				? "hidden"
+				: "available";
+	});
+	(pld || []).forEach((row) => {
+		map[row.id] = row.author_id;
+		stateMap[row.id] = "available";
 	});
 	// Community targets: fetch each distinct community once from the KV
 	// store and resolve the reported post's author (or the community owner).
@@ -339,10 +351,20 @@ async function enrichAdminRows(rows) {
 			if (post?.anon_id) map[r.target_id] = post.anon_id;
 		}
 	}
-	return rows.map((r) => ({
-		...r,
-		target_author_id: map[r.target_id] || null,
-	}));
+	return rows.map((r) => {
+		// Community targets resolve through the KV store; a post no longer
+		// present there was deleted. Unknown types are left as "unknown"
+		// rather than guessed.
+		let targetState = stateMap[r.target_id] || null;
+		if (!targetState && isCommunityRow(r)) {
+			targetState = map[r.target_id] ? "available" : "deleted";
+		}
+		return {
+			...r,
+			target_author_id: map[r.target_id] || null,
+			target_state: targetState || "unknown",
+		};
+	});
 }
 
 /**
@@ -745,6 +767,53 @@ export default async function handler(req, res) {
 			if (!(await isAdmin(req)))
 				return res.status(403).json({ error: "Admin only" });
 			const b = req.body || {};
+
+			// Bulk: clear reports whose target no longer exists (soft-deleted
+			// or removed). Preserves every report row and records one audit
+			// entry — the queue stops showing dead reports (spec §3.2 case C).
+			if (b.action === "dismiss_unavailable") {
+				const ids = Array.isArray(b.ids)
+					? b.ids.map((id) => clean(id, 60)).filter(Boolean).slice(0, 100)
+					: [];
+				if (!ids.length)
+					return res.status(400).json({ error: "ids must be a non-empty array" });
+				const { data: rows, error: readErr } = await supabase
+					.from("reports")
+					.select("id, target_type, target_id, reason, status")
+					.in("id", ids);
+				if (readErr) throw readErr;
+				const enriched = await enrichAdminRows(rows || []);
+				const stale = enriched.filter(
+					(r) =>
+						r.status !== "dismissed" &&
+						r.status !== "resolved" &&
+						(r.target_state === "deleted" || r.target_state === "hidden"),
+				);
+				const staleIds = stale.map((r) => r.id);
+				if (staleIds.length) {
+					const { error } = await supabase
+						.from("reports")
+						.update({ status: "dismissed" })
+						.in("id", staleIds);
+					if (error) throw error;
+					await auditLog(
+						"admin",
+						"dismiss_unavailable_reports",
+						JSON.stringify({
+							count: staleIds.length,
+							ids: staleIds,
+							reason: "content_unavailable",
+						}),
+					);
+				}
+				return res.status(200).json({
+					ok: true,
+					dismissed: staleIds.length,
+					skipped: ids.length - staleIds.length,
+					ids: staleIds,
+				});
+			}
+
 			// Read the row first: resolution is verified against the live
 			// target (spec §23), never just a status flip.
 			const { data: existing, error: readErr } = await supabase
@@ -754,30 +823,65 @@ export default async function handler(req, res) {
 				.maybeSingle();
 			if (readErr) throw readErr;
 			if (!existing) return res.status(404).json({ error: "Report not found" });
+			// Validated state machine: unknown values are rejected instead of
+			// being written verbatim (which silently created unqueryable rows).
+			const nextStatus = clean(b.status, 20) || "resolved";
+			const allowedStatuses = [
+				"open",
+				"pending",
+				"under_review",
+				"resolved",
+				"dismissed",
+			];
+			if (!allowedStatuses.includes(nextStatus))
+				return res.status(400).json({
+					error: `status must be one of ${allowedStatuses.join(", ")}`,
+				});
 			const { data, error } = await supabase
 				.from("reports")
-				.update({ status: clean(b.status, 20) || "resolved" })
+				.update({ status: nextStatus })
 				.eq("id", b.id)
 				.select()
 				.single();
 			if (error) throw error;
+			const previousStatus = existing.status || "open";
+			const auditAction =
+				nextStatus === "resolved"
+					? "resolve_report"
+					: nextStatus === "dismissed"
+						? "dismiss_report"
+						: nextStatus === "pending" || nextStatus === "open"
+							? "reopen_report"
+							: "review_report";
+			const note = clean(b.reason, 200);
 			let verification = {
 				verified: true,
 				target_state: "unknown",
 				action_taken: "none",
 				detail: "Status updated.",
 			};
-			if ((data?.status || "resolved") === "resolved") {
+			if (nextStatus === "resolved") {
 				verification = await verifyReportResolution(existing);
-				await auditLog(
-					"admin",
-					"resolve_report",
-					`${b.id} verified=${verification.verified} target=${verification.target_state} action=${verification.action_taken}`,
-				);
-			} else {
-				await auditLog("admin", "resolve_report", String(b.id));
 			}
-			return res.status(200).json({ ...data, verification });
+			await auditLog(
+				"admin",
+				auditAction,
+				JSON.stringify({
+					report: b.id,
+					from: previousStatus,
+					to: nextStatus,
+					target: `${existing.target_type}:${existing.target_id}`,
+					verified: verification.verified,
+					target_state: verification.target_state,
+					action_taken: verification.action_taken,
+					...(note ? { note } : {}),
+				}),
+			);
+			return res.status(200).json({
+				...data,
+				previous_status: previousStatus,
+				verification,
+			});
 		}
 
 		return res.status(405).json({ error: "Method not allowed" });

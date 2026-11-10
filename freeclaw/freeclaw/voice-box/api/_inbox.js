@@ -1998,10 +1998,15 @@ export default async function handler(req, res) {
 				if (!caller.ok) return res.status(caller.status || 403).json({ error: caller.error, code: caller.code });
 				const gate = await checkUser(threadId);
 				if (!gate.ok) return res.status(403).json({ error: gate.error });
-				if (await rateLimited("chat_messages", threadId, 60, 10)) {
+				const messageWait = await rateLimited("chat_messages", threadId, 60, 10);
+				if (messageWait) {
+					// Forward the real remaining time. The client renders
+					// "try again in Ns", and a flat 60 told a student who had been
+					// chatting for 55 seconds to wait a full minute for a window
+					// that was about to clear.
 					return rateLimitResponse(
 						res,
-						60,
+						messageWait,
 						"Slow down — max 10 messages per minute.",
 					);
 				}

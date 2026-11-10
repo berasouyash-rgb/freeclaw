@@ -28,6 +28,49 @@ import supabase from "./_db-client.js";
 
 export const RESTRICTION_SCOPES = ["full_block", "browse_only", "feed_only"];
 
+/** Canonical account restriction levels (spec §8).
+ *  `none` is expressed by clearing the restriction — a stored row is never
+ *  created for it. Legacy scopes remain readable/enforceable for rows written
+ *  before levels existed, so no migration is required. */
+export const RESTRICTION_LEVELS = ["none", "feed_blocked", "read_only", "full_ban"];
+
+export const LEVEL_LABELS = {
+	none: "No restriction",
+	feed_blocked: "Level 1 — main feed blocked",
+	read_only: "Level 2 — read only (no posting)",
+	full_ban: "Level 3 — full ban",
+};
+
+/** Legacy scope stored alongside a level so older admin surfaces keep
+ *  rendering something meaningful. Read enforcement uses `level`, not this. */
+const LEVEL_TO_SCOPE = {
+	feed_blocked: "feed_only",
+	read_only: "browse_only",
+	full_ban: "full_block",
+};
+
+/** Resolve the level a stored row represents (level first, legacy scope second). */
+export function restrictionLevelOf(restriction) {
+	if (!restriction) return "none";
+	if (RESTRICTION_LEVELS.includes(restriction.level)) return restriction.level;
+	if (restriction.scope === "full_block") return "full_ban";
+	if (restriction.scope === "browse_only") return "read_only";
+	if (restriction.scope === "feed_only") return "feed_blocked";
+	return "none";
+}
+
+/** Read-side gate. Only explicit levels block reads: legacy scope rows keep
+ *  their original write-only semantics so an in-flight restriction is never
+ *  silently escalated to a read ban by a deploy. */
+export function restrictionBlocksRead(restriction, surface = "feed_read") {
+	if (!restriction) return false;
+	if (restriction.level === "full_ban") return true;
+	if (restriction.level === "feed_blocked") {
+		return surface === "feed_read" || surface === "feed_list";
+	}
+	return false;
+}
+
 /** Surfaces that stay available to a restricted user, whatever the scope.
  *  `presence` is a liveness heartbeat, not content: gating it would only
  *  produce client retry noise (and hide a browse-only user from the roster)
@@ -46,6 +89,10 @@ const FEED_ALLOWED = new Set(["post_write", "comment_write", "reaction_write"]);
 /** Capabilities a surface maps to, for scope resolution. */
 export function surfaceCapability(surface) {
 	if (ALWAYS_ALLOWED.has(surface)) return "always";
+	// Legacy scopes never gated reads, and they still must not: only explicit
+	// canonical levels do (see restrictionBlocksRead).
+	if (surface === "feed_read" || surface === "feed_list" || surface === "post_read" || surface === "search_read")
+		return "read";
 	if (FEED_ALLOWED.has(surface)) return "feed";
 	return "app";
 }
@@ -57,7 +104,7 @@ export function surfaceCapability(surface) {
  */
 export function scopeBlocks(scope, surface) {
 	const cap = surfaceCapability(surface);
-	if (cap === "always") return false;
+	if (cap === "always" || cap === "read") return false;
 	if (!RESTRICTION_SCOPES.includes(scope)) return true; // unknown scope → block
 	if (scope === "feed_only") return cap !== "feed";
 	return true; // full_block / browse_only block every non-always surface
@@ -110,22 +157,47 @@ export async function getRestriction(anonId) {
 	if (!/^anon_/.test(id)) return null;
 	const row = await readSetting(`restriction:${id}`);
 	if (!row || row.active !== true) return null;
-	if (row.expires_at && new Date(row.expires_at) <= new Date()) return null;
+	if (row.expires_at) {
+		const expiresAt = Date.parse(row.expires_at);
+		// Unparseable legacy values stay active (fail closed); a valid past
+		// timestamp lifts the restriction.
+		if (Number.isFinite(expiresAt) && expiresAt <= Date.now()) return null;
+	}
 	return row;
 }
 
-/** Apply (or re-apply) a scope. Returns the stored row. */
-export async function setRestriction(anonId, scope, meta = {}) {
+/** Apply (or re-apply) a restriction. Accepts either a canonical level
+ *  (`feed_blocked` | `read_only` | `full_ban`) or a legacy scope. Applying
+ *  `none` clears the restriction. Returns the stored row, or null for `none`. */
+export async function setRestriction(anonId, requested, meta = {}) {
 	const id = String(anonId || "").toLowerCase();
-	const clean = RESTRICTION_SCOPES.includes(scope) ? scope : "full_block";
+	const requestedValue = String(requested || "");
+	if (requestedValue === "none") {
+		await clearRestriction(id);
+		return null;
+	}
+	const level = RESTRICTION_LEVELS.includes(requestedValue) ? requestedValue : null;
+	const clean = level
+		? LEVEL_TO_SCOPE[level]
+		: RESTRICTION_SCOPES.includes(requestedValue)
+			? requestedValue
+			: "full_block";
+	let expiresAt = null;
+	if (meta.expires_at) {
+		const parsed = Date.parse(meta.expires_at);
+		if (!Number.isFinite(parsed)) throw new Error("Invalid expires_at date");
+		if (parsed <= Date.now()) throw new Error("expires_at must be in the future");
+		expiresAt = new Date(parsed).toISOString();
+	}
 	const row = {
 		anon_id: id,
+		level,
 		scope: clean,
 		violations: Number(meta.violations) || 0,
 		reason: String(meta.reason || "Repeated slang violations").slice(0, 300),
 		by: String(meta.by || "system").slice(0, 60),
 		created_at: new Date().toISOString(),
-		expires_at: meta.expires_at || null,
+		expires_at: expiresAt,
 		active: true,
 	};
 	await writeSetting(`restriction:${id}`, row);
@@ -134,7 +206,7 @@ export async function setRestriction(anonId, scope, meta = {}) {
 	try {
 		const idx = (await readSetting(ACTIVE_INDEX_KEY)) || { items: {} };
 		idx.items = idx.items && typeof idx.items === "object" ? idx.items : {};
-		idx.items[id] = { anon_id: id, scope: clean, at: row.created_at, by: row.by };
+		idx.items[id] = { anon_id: id, scope: clean, level, at: row.created_at, by: row.by };
 		await writeSetting(ACTIVE_INDEX_KEY, { items: idx.items, updated_at: new Date().toISOString() });
 	} catch (e) {
 		console.error("[restrictions] index update failed:", e?.message);

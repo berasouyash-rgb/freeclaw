@@ -10,14 +10,28 @@ import {
 	isAdmin,
 	notifyUser,
 	rateLimitResponse,
+	revokeUserSessions,
 } from "./_auth.js";
 import supabase from "./_db-client.js";
 import { sanitizeError } from "./_error.js";
 import { getSpamConfig, normalizeSpamConfig } from "./_moderation.js";
 import { scanSlang } from "./_slang.js";
+import { applyAuditFilters, parseAuditFilters } from "./_audit-query.js";
 import { callLLMChain } from "./_providers.js";
 import { getEscalation, getPendingEscalations, resolveEscalation } from "./_escalation.js";
-import { getRestriction, listActiveRestrictions, RESTRICTION_SCOPES, SCOPE_LABELS, setRestriction, clearRestriction } from "./_restrictions.js";
+import { JANITOR_CLASS_KEYS } from "./_cleanup.js";
+import { solvedAtMs } from "./_retention.js";
+import {
+	clearRestriction,
+	getRestriction,
+	LEVEL_LABELS,
+	listActiveRestrictions,
+	RESTRICTION_LEVELS,
+	RESTRICTION_SCOPES,
+	SCOPE_LABELS,
+	restrictionLevelOf,
+	setRestriction,
+} from "./_restrictions.js";
 
 const SESSION_MS = 60 * 60 * 1000; // 60 minute session timeout
 
@@ -293,7 +307,7 @@ export default async function handler(req, res) {
 			const hours = normalizeRetentionHours(v?.user_delete_hours);
 			const autoDelete = v?.auto_delete_enabled !== false;
 			const classes = {};
-			for (const k of ["comments","reactions","chat_messages","activity_logs","agent_conversations","archived_polls","agent_history"]) classes[k] = v?.classes?.[k] !== false;
+			for (const k of JANITOR_CLASS_KEYS) classes[k] = v?.classes?.[k] !== false;
 			return res.status(200).json({ user_delete_hours: hours ?? 5, auto_delete_enabled: autoDelete, classes });
 		}
 
@@ -312,7 +326,7 @@ export default async function handler(req, res) {
 					return res.status(400).json({ error: "classes must be an object of class-name to boolean." });
 				}
 				classes = {};
-				for (const k of ["comments","reactions","chat_messages","activity_logs","agent_conversations","archived_polls","agent_history"]) {
+				for (const k of JANITOR_CLASS_KEYS) {
 					if (b.classes[k] === undefined) continue;
 					if (typeof b.classes[k] !== "boolean") {
 						return res.status(400).json({ error: `classes.${k} must be true or false.` });
@@ -329,7 +343,7 @@ export default async function handler(req, res) {
 			const merged = classes === undefined ? prevFullClasses : { ...prevFullClasses, ...classes };
 			// Normalized full map (same shape get returns): absent key = on.
 			const storedClasses = {};
-			for (const k of ["comments","reactions","chat_messages","activity_logs","agent_conversations","archived_polls","agent_history"]) storedClasses[k] = merged[k] !== false;
+			for (const k of JANITOR_CLASS_KEYS) storedClasses[k] = merged[k] !== false;
 			await setSetting("retention_config", { user_delete_hours: hours, auto_delete_enabled: autoDelete, classes: storedClasses });
 			await auditLog("admin", "retention_config", `user_delete_hours=${hours} auto_delete=${autoDelete}`);
 			return res.status(200).json({ user_delete_hours: hours, auto_delete_enabled: autoDelete, classes: storedClasses });
@@ -443,11 +457,12 @@ export default async function handler(req, res) {
 			const { cursor, limit: limitParam, paginate } = req.query;
 			const isPaginated = paginate === "1" || paginate === "true";
 			const PAGE_LIMIT = Math.max(1, Math.min(parseInt(limitParam) || 30, 100));
+			const filters = parseAuditFilters(req.query);
 
-			let q = supabase
-				.from("activity_logs")
-				.select("*")
-				.order("created_at", { ascending: false });
+			let q = applyAuditFilters(
+				supabase.from("activity_logs").select("*"),
+				filters,
+			).order("created_at", { ascending: false });
 			if (isPaginated) {
 				if (cursor) q = q.lt("created_at", cursor);
 				q = q.limit(PAGE_LIMIT + 1);
@@ -464,9 +479,14 @@ export default async function handler(req, res) {
 				const nextCursor = hasMore
 					? sliced[sliced.length - 1]?.created_at
 					: null;
-				const { count } = await supabase
-					.from("activity_logs")
-					.select("id", { count: "exact", head: true });
+				// Count the SAME filtered set, not the whole table — the old
+				// unfiltered count made a narrowed view claim "2,431 events".
+				const { count } = await applyAuditFilters(
+					supabase
+						.from("activity_logs")
+						.select("id", { count: "exact", head: true }),
+					filters,
+				);
 				return res
 					.status(200)
 					.json({ data: sliced, nextCursor, total: count || 0 });
@@ -538,22 +558,103 @@ export default async function handler(req, res) {
 		}
 
 		if (action === "set_restriction") {
-			const { anon_id: anonId, scope, reason, expires_at } = b || {};
+			// Accepts a canonical level (feed_blocked/read_only/full_ban/none)
+			// or a legacy scope; `none` clears. Every change is audited with the
+			// previous and new state, and a full ban revokes live sessions.
+			const { anon_id: anonId, level, scope, reason, expires_at } = b || {};
 			if (!anonId || typeof anonId !== "string")
 				return res.status(400).json({ error: "anon_id required" });
-			if (!RESTRICTION_SCOPES.includes(scope))
-				return res.status(400).json({ error: `scope must be one of ${RESTRICTION_SCOPES.join(", ")}` });
-			const row = await setRestriction(anonId, scope, { reason, by: "admin", expires_at });
-			await auditLog("moderation", "restriction_set", `${row.anon_id} restricted to ${scope}`);
-			return res.status(200).json({ ok: true, restriction: row });
+			const requested = String(level ?? scope ?? "");
+			const allowed = [...RESTRICTION_LEVELS, ...RESTRICTION_SCOPES];
+			if (!allowed.includes(requested))
+				return res.status(400).json({
+					error: `level must be one of ${RESTRICTION_LEVELS.join(", ")} (legacy scopes: ${RESTRICTION_SCOPES.join(", ")})`,
+				});
+			if (expires_at) {
+				const parsed = Date.parse(expires_at);
+				if (!Number.isFinite(parsed))
+					return res.status(400).json({ error: "expires_at must be a valid ISO date" });
+				if (parsed <= Date.now())
+					return res.status(400).json({ error: "expires_at must be in the future" });
+			}
+			const before = await getRestriction(anonId);
+			let row;
+			try {
+				row = await setRestriction(anonId, requested, {
+					reason,
+					by: "admin",
+					expires_at,
+				});
+			} catch (e) {
+				return res.status(400).json({ error: e?.message || "Could not apply restriction" });
+			}
+			// Level 3: kill outstanding device sessions so the ban holds on
+			// every surface, not just in the API gate.
+			let sessions_revoked = false;
+			if (requested === "full_ban") {
+				try {
+					sessions_revoked = await revokeUserSessions(anonId);
+				} catch (e) {
+					console.error("[admin] session revoke failed:", e?.message);
+				}
+			}
+			const previousLevel = restrictionLevelOf(before);
+			await auditLog(
+				"admin",
+				"restriction_set",
+				JSON.stringify({
+					target: String(anonId).toLowerCase(),
+					from: previousLevel,
+					to: requested,
+					reason: String(reason || "").slice(0, 200),
+					expires_at: expires_at || null,
+					sessions_revoked,
+				}),
+			);
+			if (requested !== "none" && row) {
+				await notifyUser(
+					anonId,
+					"moderation",
+					"Account restriction updated",
+					reason
+						? `A moderator applied ${LEVEL_LABELS[row.level] || row.level}. Reason: ${reason}`
+						: `A moderator applied ${LEVEL_LABELS[row.level] || row.level}.`,
+					{ link: "/chat" },
+				);
+			}
+			return res.status(200).json({
+				ok: true,
+				restriction: row,
+				level: row ? restrictionLevelOf(row) : "none",
+				levels: RESTRICTION_LEVELS.map((value) => ({ value, label: LEVEL_LABELS[value] })),
+				sessions_revoked,
+			});
 		}
 
 		if (action === "clear_restriction") {
 			const { anon_id: anonId } = b || {};
 			if (!anonId || typeof anonId !== "string")
 				return res.status(400).json({ error: "anon_id required" });
+			const before = await getRestriction(anonId);
 			const removed = await clearRestriction(anonId);
-			if (removed) await auditLog("moderation", "restriction_cleared", `${String(anonId).toLowerCase()} restriction lifted`);
+			if (removed) {
+				await auditLog(
+					"admin",
+					"restriction_cleared",
+					JSON.stringify({
+						target: String(anonId).toLowerCase(),
+						from: restrictionLevelOf(before),
+						to: "none",
+					}),
+				);
+				await notifyUser(
+					anonId,
+					"moderation",
+					"Restriction lifted",
+					"Your account restriction has been lifted. Welcome back.",
+					{ link: "/chat" },
+				);
+			}
 			const esc = await getEscalation(anonId);
 			if (esc) {
 				await resolveEscalation(anonId, "dismiss", { by: "admin" });
@@ -562,17 +663,99 @@ export default async function handler(req, res) {
 		}
 
 		if (action === "admin_accountability") {
-			const { period = "month" } = b || {};
+			const {
+				period = "month",
+				limit: limitParam,
+				actor: actorParam,
+				admin: adminParam,
+				action: actionParam,
+				q,
+				from,
+				to,
+			} = b || {};
 			const days = period === "today" ? 1 : period === "3days" ? 3 : period === "week" ? 7 : 30;
-			const since = new Date(Date.now() - days * 86400000).toISOString();
-			const { data, error } = await supabase
-				.from("activity_logs")
-				.select("*")
-				.gte("created_at", since)
-				.order("created_at", { ascending: false })
-				.limit(100);
+			const parseIso = (v) => {
+				const t = Date.parse(String(v || ""));
+				return Number.isFinite(t) ? new Date(t).toISOString() : null;
+			};
+			// A custom range overrides the period only when the caller sent a
+			// parseable bound; garbage falls back to the period instead of
+			// silently returning an empty window.
+			const fromIso = parseIso(from);
+			const toIso = parseIso(to);
+			const since = fromIso || new Date(Date.now() - days * 86400000).toISOString();
+			const actorFilter = clean(actorParam ?? adminParam, 80);
+			const actionFilter = clean(actionParam, 80);
+			// PostgREST `or` syntax treats commas/parens as separators; strip them
+			// from the keyword so a search can never rewrite the filter grammar.
+			const keyword = clean(q, 120).replace(/[%,()*]/g, "");
+			// The accountability report reads deeper than the briefing widget, so
+			// the depth is caller-selectable — but always bounded, never unbounded.
+			const MAX_ROWS = 1000;
+			const rows = Math.max(
+				1,
+				Math.min(parseInt(limitParam, 10) || 100, MAX_ROWS),
+			);
+			const applyFilters = (query) => {
+				let next = query.gte("created_at", since);
+				if (toIso) next = next.lte("created_at", toIso);
+				if (actorFilter) next = next.eq("actor", actorFilter);
+				if (actionFilter) next = next.eq("action", actionFilter);
+				if (keyword)
+					next = next.or(
+						`detail.ilike.%${keyword}%,action.ilike.%${keyword}%,actor.ilike.%${keyword}%`,
+					);
+				return next;
+			};
+			const [{ data, error }, countRes] = await Promise.all([
+				applyFilters(supabase.from("activity_logs").select("*"))
+					.order("created_at", { ascending: false })
+					.limit(rows),
+				applyFilters(
+					supabase.from("activity_logs").select("id", { count: "exact", head: true }),
+				),
+			]);
 			if (error) throw error;
-			return res.status(200).json({ logs: data || [], period, since });
+			const logs = data || [];
+			const total = Number.isFinite(countRes?.count) ? countRes.count : logs.length;
+			return res.status(200).json({
+				logs,
+				period,
+				since,
+				to: toIso,
+				total,
+				returned: logs.length,
+				filters: {
+					actor: actorFilter || null,
+					action: actionFilter || null,
+					q: keyword || null,
+					from: fromIso,
+					to: toIso,
+				},
+				// True when the window held more rows than were returned, so the
+				// UI can say "first N of the period" instead of implying totality.
+				truncated: logs.length >= rows && total > logs.length,
+				limit: rows,
+			});
+		}
+
+		// Exports are reads of sensitive moderation data, so who exported what
+		// window stays reviewable (spec §17). Kept separate from
+		// admin_accountability so auditing never re-runs the report query.
+		if (action === "log_report_export") {
+			const rows = Math.max(0, Math.min(parseInt(b?.rows, 10) || 0, 1000000));
+			const filters = b?.filters && typeof b.filters === "object" ? b.filters : {};
+			await auditLog(
+				"admin",
+				"export_report",
+				JSON.stringify({
+					report: clean(b?.report, 40) || "activity_log",
+					kind: clean(b?.kind, 20) || "csv",
+					rows,
+					filters,
+				}),
+			);
+			return res.status(200).json({ ok: true });
 		}
 
 		if (action === "ai_executive_summary") {
@@ -581,11 +764,16 @@ export default async function handler(req, res) {
 			const since = new Date(Date.now() - days * 86400000).toISOString();
 
 			// Fetch recent activity data to ground the AI summary in factual evidence
-			const [postsRes, reportsRes, logsRes, usersRes] = await Promise.all([
+			const [postsRes, reportsRes, logsRes, usersRes, solvesRes] = await Promise.all([
 				supabase.from("posts").select("id, title, category, status, created_at, hidden, author_id").gte("created_at", since).limit(100),
 				supabase.from("reports").select("id, target_type, reason, status, created_at").gte("created_at", since).limit(100),
 				supabase.from("activity_logs").select("id, action, detail, created_at").gte("created_at", since).limit(100),
-				supabase.from("users_meta").select("anon_id, strikes, suspended_until, banned").gte("strikes", 3).limit(20)
+				supabase.from("users_meta").select("anon_id, strikes, suspended_until, banned").gte("strikes", 3).limit(20),
+				// Solves are counted by WHEN they happened, so the window filters on
+				// update time, not creation. A post is only ever reached by this query
+				// when it is still solved and was written inside the period; the exact
+				// stamp is then read from status_history below.
+				supabase.from("posts").select("id, status, created_at, updated_at, status_history").eq("status", "solved").gte("updated_at", since).limit(500)
 			]);
 
 			const recentPosts = postsRes.data || [];
@@ -600,7 +788,14 @@ export default async function handler(req, res) {
 
 			const suspensions = recentLogs.filter(l => l.action === "update_user" && String(l.detail || "").includes("suspended"));
 			const hiddenPosts = recentPosts.filter(p => p.hidden);
-			const solvedPosts = recentPosts.filter(p => p.status === "solved");
+			// Solved-issue count answers "what did we resolve this period" — NOT
+			// "how many posts created this period happen to be solved now". The
+			// created_at-only set reported zero for every week-old complaint
+			// resolved today, which is the case admins actually ask about.
+			const solvedSinceMs = Date.parse(since);
+			const solvedPosts = (solvesRes?.data || []).filter(
+				(p) => p.status === "solved" && (solvedAtMs(p) ?? 0) >= solvedSinceMs,
+			);
 
 			const facts = {
 				period,
@@ -794,6 +989,7 @@ export default async function handler(req, res) {
 				{ data: comments },
 				{ data: reactions },
 				{ data: reports },
+				restriction,
 			] = await Promise.all([
 				supabase.from("users_meta").select("*").eq("anon_id", id).maybeSingle(),
 				supabase
@@ -808,11 +1004,18 @@ export default async function handler(req, res) {
 					.order("created_at", { ascending: false }),
 				supabase.from("reactions").select("*").eq("author_id", id),
 				supabase.from("reports").select("*").eq("author_id", id),
+				getRestriction(id).catch(() => null),
 			]);
 			return res
 				.status(200)
 				.json({
 					meta,
+					restriction,
+					restriction_level: restrictionLevelOf(restriction),
+					restriction_levels: RESTRICTION_LEVELS.map((value) => ({
+						value,
+						label: LEVEL_LABELS[value],
+					})),
 					posts: posts || [],
 					comments: comments || [],
 					reactions: reactions || [],
@@ -877,6 +1080,7 @@ export default async function handler(req, res) {
 					"warning",
 					"Official warning issued",
 					clean(b.warn, 300),
+					{ link: "/chat" },
 				);
 			if (b.suspend_days !== undefined && b.suspend_days > 0)
 				await notifyUser(
@@ -884,6 +1088,7 @@ export default async function handler(req, res) {
 					"suspension",
 					"Account temporarily suspended",
 					`Your anonymous ID is suspended for ${b.suspend_days} day(s).`,
+					{ link: "/chat" },
 				);
 			if (b.suspend_days === 0 && existing?.suspended_until)
 				await notifyUser(
@@ -891,6 +1096,7 @@ export default async function handler(req, res) {
 					"suspension_lifted",
 					"Suspension lifted",
 					"Your account is active again.",
+					{ link: "/chat" },
 				);
 			if (b.banned === true && !existing?.banned)
 				await notifyUser(
@@ -898,6 +1104,7 @@ export default async function handler(req, res) {
 					"ban",
 					"Account permanently banned",
 					"This anonymous ID has been permanently banned from posting.",
+					{ link: "/chat" },
 				);
 			if (b.banned === false && existing?.banned)
 				await notifyUser(
@@ -905,6 +1112,7 @@ export default async function handler(req, res) {
 					"unban",
 					"Ban lifted",
 					"Your anonymous ID is active again.",
+					{ link: "/chat" },
 				);
 			return res.status(200).json(data);
 		}

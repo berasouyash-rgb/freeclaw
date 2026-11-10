@@ -246,7 +246,7 @@ export async function evaluateContentAsync(text, surfaceKind = "direct", learned
  * - If layers 1+2 already block, the model is SKIPPED: the verdict cannot
  *   get stricter than BLOCK, so a model call would burn money and seconds
  *   for zero decision value. `model_used: false`, `model_skipped` says why.
- * - Otherwise the model runs under `timeoutMs` (default 10s). On timeout,
+ * - Otherwise the model runs under `timeoutMs` (default 5s). On timeout,
  *   outage, missing keys, or unparsable output, the deterministic verdict
  *   stands and `model_used: false` is reported — never a fake "AI cleared".
  * - Only message TEXT reaches the provider. No identity, thread id, or
@@ -256,7 +256,7 @@ export async function evaluateContentDeep(
 	text,
 	surfaceKind = "direct",
 	learned = null,
-	{ timeoutMs = 10000, taskKey = "moderation.deep" } = {},
+	{ timeoutMs = 5000, taskKey = "moderation.deep", priority = "high" } = {},
 ) {
 	const base = await evaluateContentAsync(text, surfaceKind, learned);
 	if (base.blocked) {
@@ -264,7 +264,7 @@ export async function evaluateContentDeep(
 	}
 	let deep;
 	try {
-		deep = await contextualModerationDeep(text, { timeoutMs, taskKey });
+		deep = await contextualModerationDeep(text, { timeoutMs, taskKey, priority });
 	} catch {
 		return { ...base, model_used: false, timedOut: false };
 	}

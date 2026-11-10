@@ -692,6 +692,12 @@ export async function analyzeContext(rawText, options = {}) {
 		lexicon = {},
 		useModel = true,
 		taskKey = "inbox.emotion",
+		budgetMs = 5000,
+		// Queue class for the serial provider chain. The publish gate runs at
+		// "high" because a student is waiting to commit; an advisory preview
+		// passes "low" so it can never jump a real write for the single NIM
+		// worker slot. Both still get an answer — only the order changes.
+		priority = "high",
 	} = options;
 
 	const signals = extractSignals(rawText);
@@ -702,12 +708,33 @@ export async function analyzeContext(rawText, options = {}) {
 
 	if (useModel && needsModel(deterministic, signals)) {
 		const lane = { used: null, startedAt: Date.now() };
+		// One wall budget for both lanes. The fast lane (Groq + NVIDIA racing)
+		// gets most of it; the serial DB/NIM chain only gets a slice when the
+		// fast lane came back empty, and only if there is real time left. This
+		// is what stops a saturated free tier from turning every deep check
+		// into a full minute-scale provider sweep on the write path.
+		const deadline = Date.now() + Math.max(800, budgetMs);
+		const remaining = () => deadline - Date.now();
 		let result = null;
 		try {
-			result = await withTimeout(callNvidiaFast(SYSTEM_PROMPT, refinePrompt(signals, deterministic), 10000), 11000).catch(() => null);
+			const fastBudget = Math.min(3000, Math.max(800, remaining()));
+			result = await withTimeout(
+				callNvidiaFast(SYSTEM_PROMPT, refinePrompt(signals, deterministic), fastBudget),
+				fastBudget + 500,
+			).catch(() => null);
 			lane.used = "nvidia-fast";
-			if (!result?.text) {
-				result = await withTimeout(callLLMChain(SYSTEM_PROMPT, refinePrompt(signals, deterministic), [], "high"), 20000).catch(() => null);
+			if (!result?.text && remaining() > 700) {
+				const chainBudget = remaining();
+				result = await withTimeout(
+					callLLMChain(
+						SYSTEM_PROMPT,
+						refinePrompt(signals, deterministic),
+						[],
+						priority,
+						chainBudget,
+					),
+					chainBudget + 250,
+				).catch(() => null);
 				lane.used = "chain";
 			}
 			const parsed = result?.text ? parseModelDecision(result.text, deterministic) : null;

@@ -11,6 +11,7 @@ import {
 } from "./_auth.js";
 import supabase from "./_db-client.js";
 import { sanitizeError } from "./_error.js";
+import { getRestriction, restrictionLevelOf } from "./_restrictions.js";
 
 /* ── IP-based rate limiting (prevent enumeration) ────────── */
 const hits = new Map();
@@ -116,12 +117,18 @@ export default async function handler(req, res) {
 			.maybeSingle();
 		const suspended =
 			data?.suspended_until && new Date(data.suspended_until) > new Date();
+		// Self-only restriction state so the client can explain the exact level
+		// instead of guessing from a 403 on the feed.
+		const restriction = await getRestriction(anonId).catch(() => null);
 		return res.status(200).json({
 			banned: !!data?.banned,
 			suspended: !!suspended,
 			suspended_until: suspended ? data.suspended_until : null,
 			strikes: data?.strikes || 0,
 			warnings: data?.warnings || [],
+			restriction_level: restrictionLevelOf(restriction),
+			restriction_reason: restriction?.reason || null,
+			restriction_expires_at: restriction?.expires_at || null,
 		});
 	} catch (err) {
 		return sanitizeError(res, err, "me");

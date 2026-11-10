@@ -19,7 +19,10 @@ import {
 import supabase from "./_db-client.js";
 import { maskPII } from "./_moderation.js";
 import { callLLMChain, callNvidiaFast, callPublicFrontierLLM } from "./_providers.js";
-import { contextualModeration } from "./_context-moderation.js";
+import {
+	contextualModeration,
+	isStaffComplaint,
+} from "./_context-moderation.js";
 import { evaluateContentDeep } from "./_safety-pipeline.js";
 
 function parseJsonSafe(text) {
@@ -41,6 +44,8 @@ function parseJsonSafe(text) {
 const LLM_CACHE_TTL_MS = 90_000;
 const LLM_CACHE_MAX = 400;
 const llmCache = new Map();
+/** cacheKey → in-flight promise, so concurrent identical checks share one call. */
+const llmInflight = new Map();
 
 function cacheGet(key) {
 	const hit = llmCache.get(key);
@@ -64,7 +69,27 @@ function cacheSet(key, value) {
 	}
 }
 
-async function callNvidiaLLM(systemPrompt, userPrompt, maxTokens = 2000) {
+async function callNvidiaLLM(
+	systemPrompt,
+	userPrompt,
+	maxTokens = 2000,
+	budgetMs = 9000,
+	// Advisory previews pass "low". The publish gate re-runs its own deep
+	// check at "high" and re-decides there, so a preview may yield the single
+	// NIM worker slot to a real commit without any verdict changing hands.
+	priority = "low",
+) {
+	// The handler abandons this review after 10s and answers with the
+	// deterministic regex floor. Any lane still running at that point is
+	// ghost work: it keeps the shared fast-lane semaphore and the single NIM
+	// worker slot busy, so the NEXT student's write queues behind a verdict
+	// nobody will ever read. Every lane below is therefore charged to one
+	// wall budget that finishes inside the handler's, and the chain lane is
+	// handed the remaining time so its provider walk (and its NIM slot park)
+	// cannot outlive the request.
+	const deadline = Date.now() + Math.max(1500, budgetMs);
+	const left = () => deadline - Date.now();
+
 	// ── Outbound PII redaction (defense-in-depth) ────────────────────────
 	// The moderation model must never receive raw phone/email/address, but it
 	// must still be able to flag PII. maskPII swaps the values for placeholders
@@ -82,48 +107,80 @@ async function callNvidiaLLM(systemPrompt, userPrompt, maxTokens = 2000) {
 	const cached = cacheGet(cacheKey);
 	if (cached) return cached;
 
-	// Lane 1: Fast Hedged Lane (sub-second NVIDIA Nemotron + Groq)
-	try {
-		const res = await callNvidiaFast(systemPrompt, safeUserPrompt, 6000);
-		const parsed = parseJsonSafe(res?.text);
-		if (parsed) {
-			cacheSet(cacheKey, parsed);
-			return parsed;
-		}
-	} catch (err) {
-		console.warn("Pre-publish AI fast lane failed:", err?.message);
-	}
+	// In-flight de-duplication. The live preview (1200ms settle) and the
+	// publish gate routinely ask for the SAME verdict within seconds of each
+	// other. The TTL cache above only helps after a lane has already
+	// answered, so both requests used to pay for — and wait on — the same
+	// provider round trip. Joining the pending promise makes the second
+	// caller instant and guarantees both see an identical verdict.
+	const pending = llmInflight.get(cacheKey);
+	if (pending) return pending;
 
-	// Lane 2: Full Provider Chain
-	try {
-		const res = await callLLMChain(systemPrompt, safeUserPrompt, [], "high");
-		const parsed = parseJsonSafe(res?.text);
-		if (parsed) {
-			cacheSet(cacheKey, parsed);
-			return parsed;
+	const run = (async () => {
+		// Lane 1: Fast Hedged Lane (sub-second NVIDIA Nemotron + Groq)
+		try {
+			const res = await callNvidiaFast(
+				systemPrompt,
+				safeUserPrompt,
+				Math.max(1500, Math.min(5000, left())),
+			);
+			const parsed = parseJsonSafe(res?.text);
+			if (parsed) {
+				cacheSet(cacheKey, parsed);
+				return parsed;
+			}
+		} catch (err) {
+			console.warn("Pre-publish AI fast lane failed:", err?.message);
 		}
-	} catch (err) {
-		console.warn("Pre-publish AI chain failed:", err?.message);
-	}
 
-	try {
-		const res = await callPublicFrontierLLM(
-			[
-				{ role: "system", content: systemPrompt },
-				{ role: "user", content: safeUserPrompt },
-			],
-			6000,
-		);
-		const parsed = parseJsonSafe(res?.text);
-		if (parsed) {
-			cacheSet(cacheKey, parsed);
-			return parsed;
+		// Lane 2: Full Provider Chain — only with time left to use an answer.
+		// Passing the remaining budget is what bounds the serial provider walk
+		// and, with it, the NIM slot park inside callLLMChain.
+		if (left() > 700) {
+			try {
+				const res = await callLLMChain(
+					systemPrompt,
+					safeUserPrompt,
+					[],
+					priority,
+					left(),
+				);
+				const parsed = parseJsonSafe(res?.text);
+				if (parsed) {
+					cacheSet(cacheKey, parsed);
+					return parsed;
+				}
+			} catch (err) {
+				console.warn("Pre-publish AI chain failed:", err?.message);
+			}
 		}
-	} catch (err) {
-		console.warn("Pre-publish AI public frontier failed:", err?.message);
-	}
 
-	return null;
+		if (left() > 800) {
+			try {
+				const res = await callPublicFrontierLLM(
+					[
+						{ role: "system", content: systemPrompt },
+						{ role: "user", content: safeUserPrompt },
+					],
+					Math.max(300, Math.min(3000, left())),
+				);
+				const parsed = parseJsonSafe(res?.text);
+				if (parsed) {
+					cacheSet(cacheKey, parsed);
+					return parsed;
+				}
+			} catch (err) {
+				console.warn("Pre-publish AI public frontier failed:", err?.message);
+			}
+		}
+
+		return null;
+	})().finally(() => {
+		llmInflight.delete(cacheKey);
+	});
+
+	llmInflight.set(cacheKey, run);
+	return run;
 }
 
 // ─── AI Content Moderation Prompt ────────────────────────────────
@@ -149,6 +206,7 @@ REPORTS ARE SAFE (the user is describing what someone else did):
 - "The test was mid" → SLANG/OPINION. SAFE.
 - "That teacher is lowkey scary" → SLANG/OPINION. SAFE.
 - "The principal is sus" → SLANG/OPINION. SAFE.
+- "Kakuli mam is a horrible teacher" / "Mr Sharma is rude and mean" / "The science teacher is unfair and shouts a lot" → OPINION COMPLAINT ABOUT STAFF CONDUCT. SAFE. risk 0, decision "safe", suggested_category "Teachers". Do NOT set bullying_detected, spam_detected, or any quality_issue for these — the student is criticising how a staff member behaves, which is exactly what this platform is for.
 
 ACTUAL VIOLATIONS (the POST AUTHOR is doing it):
 - "i will not leave you [name]" / "tujhe chhodunga nahi" / "dekh lunga" / "watch your back" / "you will pay" → INTIMIDATION / TARGETED THREAT / HARASSMENT. UNSAFE (risk 90+, decision: "high_risk", threats_detected: true, bullying_detected: true).
@@ -249,6 +307,7 @@ Return ONLY this JSON (no other text, no markdown fences):
 
 SCORING RULES:
 - Clean legitimate complaint/report → risk = 0, decision = "safe"
+- Opinion complaint about a named teacher/staff member's conduct (horrible, rude, mean, unfair, lazy, biased, shouts) with NO described act of physical harm → risk = 0, decision = "safe", suggested_category = "Teachers", and leave spam_issues / quality_issues / bullying_detected EMPTY. Criticism of staff is educational feedback, not abuse.
 - Phone/email/address/name/student ID found in POST → risk >= 50, personal_info_detected = true
 - POST AUTHOR makes threats/violence → risk >= 80, threats_detected = true, decision = "high_risk"
 - POST AUTHOR bullies/harasses → risk >= 65, bullying_detected = true, decision = "high_risk"
@@ -307,7 +366,7 @@ async function checkSpamDB(text, authorId) {
 				}
 			}
 			return { pass: issues.length === 0, issues };
-		})(),
+		})().catch(() => ({ pass: true, issues: [] })),
 		new Promise((resolve) =>
 			setTimeout(() => resolve({ pass: true, issues: [] }), 2500),
 		),
@@ -349,7 +408,7 @@ async function detectDuplicates(title, description) {
 				}
 			}
 			return similar.sort((a, b) => b.similarity - a.similarity).slice(0, 5);
-		})(),
+		})().catch(() => []),
 		new Promise((resolve) => setTimeout(() => resolve([]), 2500)),
 	]);
 }
@@ -920,11 +979,11 @@ async function runChecks(
 	if (aiResult.explicit_detected) allSafety.push("⚠️ EXPLICIT CONTENT DETECTED");
 	if (aiResult.self_harm_detected) allSafety.push("⚠️ SELF-HARM DETECTED");
 
-	const allSpam = [...(aiResult.spam_issues || [])];
+	let allSpam = [...(aiResult.spam_issues || [])];
 	if (aiResult.spam_detected) allSpam.push("Spam detected by AI");
 	if (!spamDB.pass) allSpam.push(...spamDB.issues);
 
-	const allQuality = [...(aiResult.quality_issues || [])];
+	let allQuality = [...(aiResult.quality_issues || [])];
 
 	let riskScore = aiResult.risk_score || 0;
 	if (!spamDB.pass) riskScore = Math.max(riskScore, 45);
@@ -994,6 +1053,62 @@ async function runChecks(
 		decision = "revision";
 		riskScore = Math.max(riskScore, 40);
 		allSafety.unshift(hold.message);
+	}
+
+	// ── Opinion-complaint reconciliation ──────────────────────────────
+	// A student criticising a staff member's conduct ("Kakuli mam is a
+	// horrible teacher") is educational feedback — the exact thing this
+	// platform exists for. The model used to return a self-contradicting
+	// verdict here: its own summary read "opinion/complaint about teaching
+	// quality, not a direct threat or violation", while its numeric fields
+	// still carried risk 45 plus a spam issue and a quality issue. The author
+	// was then told "AI flagged this" about a submission the AI had just
+	// cleared in prose, and it was silently queued for human review.
+	//
+	// `isStaffComplaint` is the deterministic guard the contextual layer
+	// already trusts (staff noun + opinion adjective, no harm verb, no
+	// second-person menace). When it agrees AND nothing severe or identifying
+	// exists, the advisory buckets are cleared and the verdict is "safe".
+	//
+	// Safety of this downgrade — it can only fire when ALL of:
+	//   * the model reported no threat / hate / doxxing / blackmail /
+	//     self-harm / explicit content;
+	//   * the deterministic PII scan (which floors risk at 80) found nothing;
+	//   * the text is not direct second-person abuse ("you are a horrible
+	//     teacher" stays on the normal path);
+	//   * nothing already forced high_risk.
+	// Genuine findings, direct abuse and leaked personal data all survive.
+	const severeFinding =
+		aiResult.threats_detected ||
+		aiResult.hate_speech_detected ||
+		aiResult.doxxing_detected ||
+		aiResult.blackmail_detected ||
+		aiResult.self_harm_detected ||
+		aiResult.explicit_detected;
+	if (
+		decision !== "high_risk" &&
+		!severeFinding &&
+		allPrivacy.length === 0 &&
+		hold?.mode !== "review" &&
+		!looksLikeDirectAbuse(combinedText) &&
+		isStaffComplaint(combinedText)
+	) {
+		// Everything in these buckets is advisory at this point: no severe
+		// category fired, no PII leaked, and the text is a staff opinion. The
+		// model's free-text `safety_issues` are exactly the noise this fixes
+		// ("Possible hostility" on "Kakuli mam is a horrible teacher"), so the
+		// buckets are cleared rather than string-matched. The one hold that
+		// must survive is veiled intimidation — it is a contextual signal the
+		// model is known to under-call, and the author may have mixed it into
+		// an otherwise ordinary complaint.
+		const veiledHold = issueKey(VEILED_INTIMIDATION_ISSUE);
+		allSafety = allSafety.filter((s) => issueKey(s) === veiledHold);
+		allSpam = [];
+		allQuality = [];
+		if (allSafety.length === 0) {
+			riskScore = 0;
+			decision = "safe";
+		}
 	}
 
 	const safetyIssues = dedupeIssues(allSafety);
@@ -1080,14 +1195,35 @@ const GATE_CHECKS = {
 
 const SEVERITY_SCORE = { none: 0, low: 20, medium: 45, high: 75, critical: 100 };
 
+/**
+ * Report signals, not author conduct. A post describing abuse the author
+ * SUFFERED ("a kid told me to kill myself") is held so a human can help, but
+ * it must never carry risk — scoring it would punish the victim for
+ * reporting. These stay in the flag list (so the hold still happens) and are
+ * deliberately excluded from the score.
+ */
+const REPORT_HELD_FLAGS = new Set(["threat_report", "reported-abuse"]);
+
+/**
+ * Score floor for a review-grade ("hold for a human") flag.
+ *
+ * These flags deliberately do NOT inherit their `high` severity — scoring
+ * `conduct_weak` at 75 would escalate ordinary hostility to high_risk, which
+ * is the over-blocking the contextual layer exists to prevent. But returning
+ * 0 (the previous behaviour) produced the opposite contradiction: the panel
+ * showed "Risk score 0/100" next to "needs a moderator to review it" and a
+ * non-empty Safety check. A held submission genuinely sits in the revision
+ * band, and `reconcileContextual` already floors those cases at 40 — the
+ * merged verdict must not disagree with it. One number, one meaning.
+ */
+const REVIEW_HELD_SCORE = 40;
+
 function gateScore(flags) {
 	return (Array.isArray(flags) ? flags : []).reduce(
 		(max, f) => {
-			// Review-grade flags hold the content; they are not severity signals.
-			// Scoring `conduct_weak` at "high" here would escalate ordinary
-			// hostility to high_risk, which is the over-blocking we removed from
-			// the contextual layer in the first place.
-			if (REVIEW_HELD_FLAGS.has(f?.type)) return max;
+			if (REPORT_HELD_FLAGS.has(f?.type)) return max;
+			if (REVIEW_HELD_FLAGS.has(f?.type))
+				return Math.max(max, REVIEW_HELD_SCORE);
 			return Math.max(max, SEVERITY_SCORE[f?.severity] ?? 0);
 		},
 		0,
@@ -1142,6 +1278,10 @@ export async function unifiedReview(opts = {}) {
 		evaluateContentDeep(combined, surface, null, {
 			timeoutMs: 8000,
 			taskKey: "review.unified",
+			// `unifiedReview` is only ever the ADVISORY preview (the publish
+			// gate is the write path's own `evaluateContentDeep`), so it queues
+			// behind real commits instead of competing with them.
+			priority: "low",
 		}),
 		runChecks(
 			combined,

@@ -507,10 +507,16 @@ export default async function handler(req, res) {
 			// chain (35s-class), and the shared admin token is a single
 			// bearer — an unthrottled loop would spend provider quota
 			// without bound.
-			if (await rateLimited("ai_narrate", clientIp(req), 60000, 10))
+			// 10 per MINUTE. The window used to be passed as `60000`, i.e.
+			// 60,000 SECONDS — the argument is seconds, not milliseconds — so
+			// the real budget was 10 narrations per 16.6 hours while the 429
+			// told the admin to wait 60 seconds. Every other limiter here
+			// passes seconds; this one silently held a nearly day-long window.
+			const narrateWait = await rateLimited("ai_narrate", clientIp(req), 60, 10);
+			if (narrateWait)
 				return rateLimitResponse(
 					res,
-					60,
+					narrateWait,
 					"Too many narration requests — slow down.",
 				);
 			// The brief is identity-free aggregates (the deck spec) — never

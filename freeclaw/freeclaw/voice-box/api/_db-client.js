@@ -1,5 +1,21 @@
 import { createClient } from "@supabase/supabase-js";
 import { triggerRestore } from "./_db-wake.js";
+import { observePrimaryWrite } from "./_mirror.js";
+import { shouldFallbackRead, standbyResponse } from "./_standby-read.js";
+
+/**
+ * Answer a failed primary read from the standby copy.
+ *
+ * Never throws: a standby problem must not replace the primary's error with a
+ * less informative one, and it must never turn into a 200 with no data.
+ */
+async function readFromStandby(url, options) {
+	try {
+		return await standbyResponse(url, options);
+	} catch {
+		return null;
+	}
+}
 
 // Connection pooling: reuse client across warm invocations (Vercel keeps instances alive)
 let _client = null;
@@ -113,6 +129,17 @@ function getClient() {
 							signal: controller.signal,
 						});
 						clearTimeout(timeout);
+						// Standby mirror. Every Supabase call in the app passes through
+						// this one fetch, so observing committed writes HERE means a new
+						// endpoint cannot forget to replicate. Fire-and-forget: a mirror
+						// failure never fails the write Supabase already accepted.
+						if (res.ok) {
+							try {
+								observePrimaryWrite(url, options, res);
+							} catch {
+								/* replication must never affect the request it observes */
+							}
+						}
 						if (!res.ok && res.status >= 500) {
 							triggerRestore();
 							const ct = res.headers.get("content-type") || "";
@@ -131,6 +158,20 @@ function getClient() {
 										signal: retryController.signal,
 									});
 									clearTimeout(retryTimeout);
+									if (retryRes.ok) {
+										try {
+											observePrimaryWrite(url, options, retryRes);
+										} catch {
+											/* ignore */
+										}
+									}
+									if (
+										!retryRes.ok &&
+										shouldFallbackRead(options?.method, retryRes.status)
+									) {
+										const standby = await readFromStandby(url, options);
+										if (standby) return standby;
+									}
 									return retryRes;
 								} catch (retryErr) {
 									clearTimeout(retryTimeout);
@@ -138,10 +179,22 @@ function getClient() {
 								}
 							}
 						}
+						// Automatic switch: the primary failed for an infrastructure or
+						// quota reason (internal error, egress limit, rate limit) and this
+						// read targets a mirrored table, so answer from the Firebase
+						// standby instead of surfacing an outage the copy can cover.
+						if (!res.ok && shouldFallbackRead(options?.method, res.status)) {
+							const standby = await readFromStandby(url, options);
+							if (standby) return standby;
+						}
 						return res;
 					} catch (err) {
 						clearTimeout(timeout);
 						if (err.name === "AbortError") triggerRestore();
+						// Transport failure (timeout, reset, DNS) is precisely the case
+						// the standby exists for: try it before failing the read.
+						const standby = await readFromStandby(url, options);
+						if (standby) return standby;
 						throw err;
 					}
 				} finally {

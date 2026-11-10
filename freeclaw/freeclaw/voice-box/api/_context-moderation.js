@@ -122,7 +122,7 @@ const OPINION_ADJ =
  * present the message is no longer a mere opinion — "the teacher hits
  * students" must stay on the review path.
  */
-const HARM_VERB =
+export const HARM_VERB =
 	/\b(?:hit|hits|hitting|slap|slaps|slapped|beat|beats|beating|kick|kicks|kicked|punch|punches|punched|pinch|pinches|pinched|touch(?:es|ed)?|grope[sd]?|groping|molest(?:s|ed)?|abuse[sd]?|abusing|assault(?:s|ed)?|rape[sd]?|raping|threat(?:ens|ened)?|harass(?:es|ed)?|bully(?:ing|ies|ied)?|blackmail(?:s|ed)?|force[sd]?|forcing|stalk(?:s|ed|ing)?|kill(?:s|ed)?|murder(?:s|ed)?|hurt(?:s|ing)?|harm(?:s|ed)?|choking|strangl(?:e|es|ed)|die|dies|died|dead|death)\b/i;
 
 /** Explicit second-person menace — never a mere opinion, whatever else appears. */
@@ -248,6 +248,12 @@ export function mergeFlags(baseFlags, extraFlags) {
  * - `timeoutMs` (default 10s): the write path cannot wait out a provider
  *   stall. On timeout the deterministic verdict stands and `timedOut: true`
  *   is reported — never a fake "model cleared this".
+ * - `timeoutMs` is a CONTRACT, not a hint: the internal provider budget and
+ *   the outer race both use the caller's number verbatim. A caller with 900 ms
+ *   of wall left gets a 900 ms call, never a re-inflated 1 s one.
+ * - Below `MIN_MODEL_SLICE_MS` the call is skipped outright (`skipped:
+ *   "budget"`) because it cannot produce an answer; the deterministic floor
+ *   stands.
  * - Skip-short: trivially short text carries no model-detectable signal
  *   beyond what the deterministic pass already found.
  * - Cache: identical text re-checked within 5 minutes (double-submit,
@@ -261,10 +267,17 @@ export function mergeFlags(baseFlags, extraFlags) {
 const deepCache = new Map();
 const DEEP_CACHE_TTL_MS = 5 * 60 * 1000;
 const DEEP_CACHE_MAX = 200;
+// A model slice below this is a guaranteed miss: provider connect + first
+// token already costs more, so spending the caller's last few hundred ms only
+// holds a socket open and returns a timeout anyway. Callers that own a wall
+// deadline (the write handlers) shrink this slice as they spend their budget;
+// when it gets too small we degrade to the deterministic floor instead of
+// silently re-inflating the slice back to a full second.
+export const MIN_MODEL_SLICE_MS = 600;
 
 export async function contextualModerationDeep(
 	text,
-	{ timeoutMs = 10000, taskKey = "moderation.deep" } = {},
+	{ timeoutMs = 10000, taskKey = "moderation.deep", priority = "high" } = {},
 ) {
 	const content = String(text || "").trim();
 	if (content.length < 3) return { flags: [], context: null, model_used: false, timedOut: false };
@@ -272,15 +285,36 @@ export async function contextualModerationDeep(
 	const hit = deepCache.get(cacheKey);
 	if (hit && Date.now() - hit.at < DEEP_CACHE_TTL_MS) return hit.result;
 
+	// Budget honesty: a caller that has already spent its wall must not be
+	// handed a fresh model call. `timedOut: false` here is deliberate — no
+	// timeout happened, the model simply was not affordable any more, so the
+	// caller reports "model added nothing" rather than inventing a timeout.
+	const askedMs = Number(timeoutMs);
+	if (!Number.isFinite(askedMs) || askedMs < MIN_MODEL_SLICE_MS) {
+		return {
+			flags: [],
+			context: null,
+			model_used: false,
+			timedOut: false,
+			skipped: "budget",
+		};
+	}
+
 	let result = null;
 	let timedOut = false;
 	try {
+		// Never let the internal provider budget exceed the outer wall: a race
+		// that abandons a still-running call wastes capacity and reports a
+		// timeout the chain was never given a chance to respect. Both numbers
+		// are the caller's, not a re-inflated floor — a request that has 900 ms
+		// left must return in 900 ms, not in 1 s.
+		const budgetMs = Math.min(askedMs, 5000);
 		const raced = await Promise.race([
-			classifyContextual(content, { useModel: true, taskKey }).then(
+			classifyContextual(content, { useModel: true, taskKey, budgetMs, priority }).then(
 				(r) => ({ r, timedOut: false }),
 			),
 			new Promise((resolve) =>
-				setTimeout(() => resolve({ r: null, timedOut: true }), Math.max(1000, timeoutMs)),
+				setTimeout(() => resolve({ r: null, timedOut: true }), askedMs),
 			),
 		]);
 		result = raced.r;

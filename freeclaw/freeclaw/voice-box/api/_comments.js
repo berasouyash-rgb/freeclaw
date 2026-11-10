@@ -184,6 +184,14 @@ export default async function handler(req, res) {
 
 		if (req.method === "POST") {
 			const b = req.body || {};
+			// ── Comment write wall (always on) ───────────────────────
+			// Same arithmetic as POST /posts: identity + reads + a full model
+			// cap + insert must not sum past the 6000 ms llm-write gate, so the
+			// moderation call gets whatever this request has left.
+			const COMMENT_WALL_MS = 5400;
+			const commentWallStart = performance.now();
+			const commentRemainingMs = () =>
+				Math.max(0, COMMENT_WALL_MS - (performance.now() - commentWallStart));
 			// P0 SECURITY FIX: Derive author_id from x-anon-id header, NOT from client body
 			const headerId = clean(req.headers["x-anon-id"] || "", 40);
 			const is_admin_msg = b.is_admin === true && (await isAdmin(req));
@@ -199,10 +207,11 @@ export default async function handler(req, res) {
 			if (!is_admin_msg) {
 				const gate = await checkUser(author_id, "comment_write");
 				if (!gate.ok) return res.status(403).json({ error: gate.error });
-				if (await rateLimited("comments", author_id, 30, 5)) {
+				const commentWait = await rateLimited("comments", author_id, 30, 5);
+				if (commentWait) {
 					return rateLimitResponse(
 						res,
-						30,
+						commentWait,
 						"Too many comments — please wait a moment.",
 					);
 				}
@@ -235,6 +244,7 @@ export default async function handler(req, res) {
 			if (!is_admin_msg) {
 				const decision = await evaluateContentDeep(rawBody, "direct", null, {
 					taskKey: "comments.write",
+					timeoutMs: commentRemainingMs(),
 				});
 				if (decision.blocked) {
 					const isPII = decision.flags.some(
@@ -423,6 +433,12 @@ export default async function handler(req, res) {
 
 		if (req.method === "PUT") {
 			const b = req.body || {};
+			// PUT /comments is gated as interactive (2500 ms), so the edit
+			// re-moderation must fit in what this request has left.
+			const COMMENT_EDIT_WALL_MS = 2200;
+			const commentEditStart = performance.now();
+			const commentEditRemainingMs = () =>
+				Math.max(0, COMMENT_EDIT_WALL_MS - (performance.now() - commentEditStart));
 			const { data: cmt } = await supabase
 				.from("comments")
 				.select("*")
@@ -456,6 +472,7 @@ export default async function handler(req, res) {
 			if (patch.rawBody !== undefined) {
 				const decision = await evaluateContentDeep(patch.rawBody, "direct", null, {
 					taskKey: "comments.edit",
+					timeoutMs: commentEditRemainingMs(),
 				});
 				if (decision.blocked) {
 					const isPII = decision.flags.some(

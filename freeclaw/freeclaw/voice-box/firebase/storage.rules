@@ -1,0 +1,43 @@
+rules_version = '2';
+
+// ─── VoiceFlow standby object storage rules ───────────────────────
+//
+// Supabase side (verified in api/_upload.js:12 and api/_storage.js:16):
+//   buckets: chat-media, voicebox-media
+//   writes:  server-side only, after fail-closed image-safety screening
+//   reads:   public object URLs (getPublicUrl)
+//
+// Mirroring that posture here means:
+//   • get   — allowed, because the Supabase equivalent is a public URL: anyone
+//             who knows the exact object path can fetch it.
+//   • list  — DENIED. Supabase public buckets are not listable through a public
+//             URL either; opening list would hand out an enumeration surface
+//             the primary does not have.
+//   • write — DENIED. Only the replicator (Admin SDK, bypasses rules) writes.
+//
+// This is deliberately narrower than `allow read: if true`, which would grant
+// listing. Never widen it to `read` — that is what makes a standby a leak.
+//
+// Storage replication is not yet implemented (blocked on Firebase Admin
+// credentials), so these rules currently protect empty buckets. They are
+// committed now so the posture is fixed BEFORE bytes land.
+
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    match /chat-media/{allPaths=**} {
+      allow get: if true;
+      allow list, write: if false;
+    }
+
+    match /voicebox-media/{allPaths=**} {
+      allow get: if true;
+      allow list, write: if false;
+    }
+
+    // Default deny for every other bucket/path.
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

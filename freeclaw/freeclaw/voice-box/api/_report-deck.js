@@ -12,6 +12,7 @@ import supabase from "./_db-client.js";
 import { sanitizeError } from "./_error.js";
 import { isTestArtifact } from "./_artifact-filter.js";
 import { fetchPaged } from "./_counts.js";
+import { solvedAtMs } from "./_retention.js";
 
 export const DECK_VERSION = 1;
 // Bounded admin scan (same ceiling as the admin feed reads).
@@ -157,7 +158,7 @@ export default async function handler(req, res) {
 			await Promise.all([
 				supabase
 					.from("posts")
-					.select("id,title,category,status,created_at,updated_at,deleted,hidden")
+					.select("id,title,category,status,created_at,updated_at,status_history,deleted,hidden")
 					.order("created_at", { ascending: false })
 					.limit(POST_WINDOW),
 				supabase.from("reports").select("id,status").limit(REPORT_WINDOW),
@@ -248,9 +249,15 @@ export default async function handler(req, res) {
 			.slice(0, 5);
 		const quietPolls = polls.filter((p) => p.total === 0).length;
 
+		// Bucket by the SOLVE moment (status_history), never by updated_at:
+		// a comment on a solved post moves updated_at, which used to refile a
+		// resolution under the week it was last touched — or push it out of
+		// the 8-week window altogether.
 		const weekMap = {};
 		for (const p of solved) {
-			const k = weekKey(p.updated_at || p.created_at);
+			const t = solvedAtMs(p);
+			if (t === null) continue;
+			const k = weekKey(new Date(t).toISOString());
 			if (k) weekMap[k] = (weekMap[k] || 0) + 1;
 		}
 		const solved_by_week = Object.entries(weekMap)

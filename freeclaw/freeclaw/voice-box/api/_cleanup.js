@@ -1,5 +1,8 @@
 // Auto-Cleanup Middleware
-// User-deleted posts auto-purge 5h after deletion (updated_at marks delete time), comments after 30d, activity logs after 30d.
+// User-deleted posts auto-purge 5h after deletion (updated_at marks delete time);
+// closed posts (solved AND archived) hard-delete 5 days after their last
+// activity — one shared rule from _retention.js, comments/reactions reset it.
+// Comments and activity logs age out after 30d.
 // Runs on API cold start (once per function instance) and via POST /api/cleanup (admin only).
 // NEVER auto-unbans — bans are admin-only decisions.
 // Designed for limited-memory Supabase instances — deletes in small batches to avoid timeouts.
@@ -7,8 +10,15 @@
 import { auditLog, cors, isAdmin } from "./_auth.js";
 import supabase from "./_db-client.js";
 import { sanitizeError } from "./_error.js";
+import {
+	CLOSED_RETENTION_DAYS,
+	CLOSED_STATUSES,
+	isClosedRetentionDue,
+	parseRetentionHours,
+} from "./_retention.js";
 
 const USER_DELETE_RETENTION_HOURS = 5; // user-deleted posts (updated_at = deletion time)
+const SOLVED_SCAN_LIMIT = 500; // closed rows examined per run — drains across runs
 const COMMENT_RETENTION_DAYS = 30; // comments
 const LOG_RETENTION_DAYS = 30; // activity logs, chat messages
 const BATCH_SIZE = 50;
@@ -23,8 +33,14 @@ export const JANITOR_CLASSES = [
 	{ key: "agent_conversations", label: "Old agent conversations", desc: "Agent conversations older than 30 days" },
 	{ key: "archived_polls", label: "Archived polls", desc: "Archived polls older than 30 days" },
 	{ key: "agent_history", label: "Agent runtime history", desc: "Executions + insights older than 90 days" },
+	{ key: "solved_posts", label: "Solved & archived posts", desc: "5 days after last activity — a comment or reaction resets the countdown" },
 ];
-const JANITOR_CLASS_KEYS = new Set(JANITOR_CLASSES.map((c) => c.key));
+/** Canonical janitor class keys, in declaration order. Any endpoint that
+ *  reads or writes the per-class flags MUST iterate this list instead of
+ *  repeating the names: a duplicated literal is how `solved_posts` was
+ *  dropped from get/set_retention_config, which silently erased a stored
+ *  `false` on the next save and re-enabled closed-post auto-delete. */
+export const JANITOR_CLASS_KEYS = JANITOR_CLASSES.map((c) => c.key);
 
 /** Shared janitor config: retention hours + master toggle + per-class flags.
  *  Unknown keys are dropped, non-booleans fall back to true (fail-open for
@@ -37,8 +53,8 @@ export async function getJanitorConfig() {
 	for (const c of JANITOR_CLASSES) classes[c.key] = true;
 	try {
 		const { data: rs } = await supabase.from("settings").select("value").eq("key", "retention_config").maybeSingle();
-		const n = Number(rs?.value?.user_delete_hours);
-		if (Number.isInteger(n) && n >= 1 && n <= 168) retentionHours = n;
+		const n = parseRetentionHours(rs?.value?.user_delete_hours);
+		if (n !== null) retentionHours = n;
 		if (rs?.value?.auto_delete_enabled === false) autoDelete = false;
 		const raw = rs?.value?.classes;
 		if (raw && typeof raw === "object") {
@@ -62,6 +78,9 @@ function daysAgo(days) {
 	d.setDate(d.getDate() - days);
 	return d.toISOString();
 }
+
+// Solve moment for a post is owned by _retention.js (status_history stamp,
+// floored by updated_at / created_at). Two sweeps must never disagree on it.
 
 async function deleteBatch(
 	table,
@@ -139,9 +158,11 @@ export async function runCleanup() {
 	// janitorClasses is function-scoped: every age-based pass below reads it.
 	let janitorClasses = {};
 	for (const c of JANITOR_CLASSES) janitorClasses[c.key] = true;
+	let autoDeleteMaster = true;
 	try {
 		const { retentionHours, autoDelete, classes } = await getJanitorConfig();
 		janitorClasses = classes;
+		autoDeleteMaster = autoDelete;
 		if (!autoDelete) { results.auto_delete_skipped = true; }
 		else {
 		const cutoff = new Date(Date.now() - retentionHours * 60 * 60 * 1000).toISOString();
@@ -177,6 +198,47 @@ export async function runCleanup() {
 		}
 	} catch (e) {
 		console.error("[cleanup] posts sweep failed:", e.message);
+	}
+
+	// 1b. Solved + archived posts (suggestions live in the same table), hard
+	// deleted once the shared retention deadline passes: newest activity + 5
+	// days for EVERY closed status (see _retention.js — there is no
+	// solved-specific window).
+	// Cascade mirrors DELETE /api/posts:
+	// linked polls survive (post_id nulled out), comments + reactions go with
+	// the row.
+	try {
+		if (janitorClasses.solved_posts === false) {
+			results.solved_posts_skipped = true;
+		} else if (autoDeleteMaster) {
+			const { data: closedRows, error: solvedErr } = await supabase
+				.from("posts")
+				.select("id,status,status_history,updated_at,created_at")
+				.in("status", CLOSED_STATUSES)
+				.neq("deleted", true)
+				.order("updated_at", { ascending: true })
+				.limit(SOLVED_SCAN_LIMIT);
+			if (solvedErr) throw solvedErr;
+			// Oldest updated_at drains first: the shared deadline is
+			// max(close stamp, updated_at, created_at) + retention window.
+			const due = (closedRows || []).filter((p) => isClosedRetentionDue(p));
+			let deletedSolved = 0;
+			for (let i = 0; i < due.length; i += BATCH_SIZE) {
+				const ids = due.slice(i, i + BATCH_SIZE).map((p) => p.id);
+				const [r1, r2, r3, r4] = await Promise.all([
+					supabase.from("polls").update({ post_id: null }).in("post_id", ids),
+					supabase.from("posts").delete().in("id", ids),
+					supabase.from("comments").delete().in("post_id", ids),
+					supabase.from("reactions").delete().in("target_id", ids),
+				]);
+				const cascadeErr = r1.error || r2.error || r3.error || r4.error;
+				if (cascadeErr) throw cascadeErr;
+				deletedSolved += ids.length;
+			}
+			if (deletedSolved > 0) results.deleted_solved_posts = deletedSolved;
+		}
+	} catch (e) {
+		console.error("[cleanup] solved posts sweep failed:", e.message);
 	}
 
 	// 2. Comments older than 30 days
@@ -575,24 +637,14 @@ export async function runCleanup() {
 		details: results,
 		retention: {
 			user_deleted_posts_hours: USER_DELETE_RETENTION_HOURS,
+			// Both keys are kept for response compatibility, but there is a
+			// single closed-post rule now, so they must never diverge again.
+			solved_posts_days: CLOSED_RETENTION_DAYS,
+			archived_posts_days: CLOSED_RETENTION_DAYS,
 			comments: COMMENT_RETENTION_DAYS,
 			logs: LOG_RETENTION_DAYS,
 		},
 	};
-}
-
-// Auto-run on cold start (non-blocking)
-let cleanupStarted = false;
-function triggerAutoCleanup() {
-	if (cleanupStarted) return;
-	cleanupStarted = true;
-	runCleanup()
-		.catch((err) =>
-			console.error("[cleanup] Auto-cleanup failed:", err.message),
-		)
-		.finally(() => {
-			cleanupStarted = false;
-		});
 }
 
 // HTTP handler for manual trigger
@@ -619,5 +671,3 @@ export async function cleanupHandler(req, res) {
 		return sanitizeError(res, err, "cleanup");
 	}
 }
-
-export { triggerAutoCleanup };

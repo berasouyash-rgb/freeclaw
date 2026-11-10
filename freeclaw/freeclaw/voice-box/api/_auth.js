@@ -49,7 +49,6 @@ const _rateLimitState = new Map();
 const ALLOWED_ORIGINS = [
 	"https://voice-box.vercel.app",
 	"https://voice-box-psi.vercel.app",
-	"https://voice-box-ballyvisiontutorial-hues-projects.vercel.app",
 	"http://localhost:5173",
 	"http://localhost:4173",
 	"http://localhost:3000",
@@ -74,9 +73,6 @@ export function isAllowedOrigin(origin, req) {
 	if (!origin) return false;
 	if (ALLOWED_ORIGINS.includes(origin)) return true;
 	if (isNativeOrigin(origin)) return true;
-	// Voice Box Vercel deployment preview or alias: strictly anchored to voice-box prefix
-	if (/^https:\/\/voice-box(-[a-z0-9-]+)?\.vercel\.app$/i.test(origin)) return true;
-	if (/^https:\/\/voice-box-[a-z0-9]+-[a-z0-9-]+\.vercel\.app$/i.test(origin)) return true;
 	// Non-production only: local dev loopback, Android emulator, and LAN testing
 	if (process.env.NODE_ENV !== "production") {
 		// Any localhost or loopback port (dev servers, test runners, mobile forwarders)
@@ -91,8 +87,11 @@ export function isAllowedOrigin(origin, req) {
 		const extras = process.env.ALLOWED_ORIGINS.split(",").map((s) => s.trim());
 		if (extras.includes(origin)) return true;
 	}
-	// Same-origin check: Host or X-Forwarded-Host matches origin host
-	const rawHost = req?.headers?.["x-forwarded-host"] || req?.headers?.host;
+	// Same-origin check uses only the platform-set Host header. Reading
+	// x-forwarded-host let a caller send Origin: https://evil.com together
+	// with a matching forged X-Forwarded-Host and mint a credentialed
+	// Access-Control-Allow-Origin for that origin.
+	const rawHost = req?.headers?.host;
 	if (rawHost) {
 		try {
 			const host = String(rawHost).split(",")[0].trim();
@@ -215,6 +214,25 @@ export async function isCronAuthorized(req) {
 	return authorized;
 }
 
+/**
+ * Verify the dedicated `MAINTENANCE_SECRET` header.
+ *
+ * Exists so an external scheduler (not Vercel Cron) can trigger maintenance
+ * without being handed the cron secret or an admin session. Lives here — not
+ * in `_maintenance.js` — because the route matrix must apply the exact same
+ * rule BEFORE dispatch; two copies of a secret check is how they drift.
+ *
+ * Fails closed when the env var is unset, and compares constant-time.
+ */
+export function hasMaintenanceSecret(req) {
+	const expected = process.env.MAINTENANCE_SECRET;
+	const presented = req?.headers?.["x-maintenance-secret"];
+	if (!expected || typeof presented !== "string") return false;
+	const a = Buffer.from(presented);
+	const b = Buffer.from(expected);
+	return a.length === b.length && timingSafeEqual(a, b);
+}
+
 /** Standard 401 body for a cron route that failed {@link isCronAuthorized}. */
 export const CRON_UNAUTHORIZED_BODY = {
 	error:
@@ -256,22 +274,52 @@ export async function checkUser(authorId, surface = "app_write") {
 				ok: false,
 				error: "This anonymous ID has been permanently banned.",
 			};
-		if (data?.suspended_until && new Date(data.suspended_until) > new Date()) {
+		// Suspensions gate participation only; reads stay available (a suspended
+		// student can still browse), matching the pre-levels behaviour.
+		if (
+			surfaceCapability(surface) !== "read" &&
+			data?.suspended_until &&
+			new Date(data.suspended_until) > new Date()
+		) {
 			return {
 				ok: false,
 				error: `This anonymous ID is suspended until ${new Date(data.suspended_until).toLocaleDateString()}.`,
 			};
 		}
-		if (restriction && scopeBlocks(restriction.scope, surface)) {
-			const label = SCOPE_LABELS[restriction.scope] || restriction.scope;
-			return {
-				ok: false,
-				code: "restricted",
-				error:
-					restriction.scope === "browse_only"
-						? "This anonymous ID is restricted to browsing. A moderator must lift the restriction before posting."
-						: `This anonymous ID is restricted: ${label}. A moderator must lift the restriction.`,
-			};
+		if (restriction) {
+			const cap = surfaceCapability(surface);
+			const isRead = cap === "read";
+			const level = restriction.level;
+			// Canonical levels take precedence over the legacy scope they were
+			// stored with. Legacy rows (no level) keep the original write-only
+			// scope semantics below.
+			const blockedByLevel =
+				level === "full_ban"
+					? true
+					: level === "read_only"
+						? !isRead
+						: level === "feed_blocked"
+							? surface === "feed_read" || surface === "feed_list"
+							: false;
+			if (blockedByLevel || (!level && scopeBlocks(restriction.scope, surface))) {
+				const label =
+					restriction.level === "full_ban"
+						? "full ban"
+						: restriction.level === "read_only"
+							? "read-only access"
+							: restriction.level === "feed_blocked"
+								? "feed access blocked"
+								: SCOPE_LABELS[restriction.scope] || restriction.scope;
+				return {
+					ok: false,
+					code: "restricted",
+					error:
+						level === "read_only" ||
+						(!level && restriction.scope === "browse_only")
+							? "This anonymous ID is restricted to browsing. A moderator must lift the restriction before posting."
+							: `This anonymous ID is restricted: ${label}. A moderator must lift the restriction.`,
+				};
+			}
 		}
 		return { ok: true, meta: data, restriction: restriction || null };
 	} catch (err) {
@@ -306,11 +354,18 @@ export async function ensureUser(authorId) {
  *  Used by the report auto-strike path, admin user actions, and pre-publish review
  *  so warnings/ban/strike popups reach the user immediately, not on the next
  *  heartbeat. Single canonical copy — do not re-implement per-file.
- *  Returns true on success, false when the notification could not be stored. */
+ *  `opts.postId` / `opts.link` attach a deep link so the notice can be tapped
+ *  straight through to the affected post or inbox. Only same-origin paths are
+ *  accepted (`/...`, never `//host`), so a stored notice can't become an open
+ *  redirect. Returns true on success, false when the notification could not be
+ *  stored. */
 export let notifyFailedCount = 0;
-export async function notifyUser(anonId, type, title, body) {
+export async function notifyUser(anonId, type, title, body, opts) {
 	if (!anonId || anonId === "anonymous" || anonId === "ADMIN") return true;
 	const key = `notifications:${anonId}`;
+	const rawLink = typeof opts?.link === "string" ? opts.link.trim().slice(0, 120) : "";
+	const safeLink = rawLink.startsWith("/") && !rawLink.startsWith("//") ? rawLink : null;
+	const postId = typeof opts?.postId === "string" ? opts.postId.trim().slice(0, 40) : "";
 	const entry = {
 		id: `notif_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
 		type,
@@ -318,6 +373,8 @@ export async function notifyUser(anonId, type, title, body) {
 		body,
 		read: false,
 		created_at: new Date().toISOString(),
+		...(postId ? { post_id: postId } : {}),
+		...(safeLink ? { link: safeLink } : {}),
 	};
 	async function storeOnce() {
 		const { data } = await supabase
@@ -677,16 +734,29 @@ function pruneRateLimitState(now, windowMs) {
 	}
 }
 
-/** Persistent rate limit: max `limit` writes by author in table within `seconds` (survives warm invocations) */
+/**
+ * Persistent rate limit: max `limit` writes by author in table within `seconds`
+ * (survives warm invocations).
+ *
+ * Returns 0 when the caller may proceed, or the number of SECONDS until the
+ * window frees up when the limit is hit. Returning the remaining time (instead
+ * of `true`) is what lets a caller answer honestly: every 429 used to hand the
+ * client a flat "60" even when the window had 4 seconds left, so a student was
+ * told to wait a minute for a limit that was about to clear. Truthiness is
+ * unchanged, so `if (await rateLimited(...))` still reads correctly at the
+ * call sites that do not forward the wait.
+ */
 export async function rateLimited(table, authorId, seconds, limit) {
 	const key = `${table}:${authorId}`;
 	const now = Date.now();
 	const windowMs = seconds * 1000;
+	const remainingSeconds = (windowStart) =>
+		Math.max(1, Math.ceil((windowMs - (now - windowStart)) / 1000));
 	const state = _rateLimitState.get(key);
 	if (state && now - state.windowStart < windowMs) {
-		if (state.count >= limit) return true;
+		if (state.count >= limit) return remainingSeconds(state.windowStart);
 		state.count++;
-		return false;
+		return 0;
 	}
 
 	const col = DB_TABLE_COLUMNS[table];
@@ -694,7 +764,7 @@ export async function rateLimited(table, authorId, seconds, limit) {
 	if (!col) {
 		_rateLimitState.set(key, { count: 1, windowStart: now });
 		pruneRateLimitState(now, windowMs);
-		return false;
+		return 0;
 	}
 
 	// New window — do a real DB count and seed the in-memory counter
@@ -709,17 +779,21 @@ export async function rateLimited(table, authorId, seconds, limit) {
 			console.warn("[auth] rateLimited DB check failed, falling back to memory:", error.message);
 			_rateLimitState.set(key, { count: 1, windowStart: now });
 			pruneRateLimitState(now, windowMs);
-			return false;
+			return 0;
 		}
 		const currentCount = count || 0;
 		_rateLimitState.set(key, { count: currentCount + 1, windowStart: now });
 		pruneRateLimitState(now, windowMs);
-		return currentCount >= limit;
+		// Already at or over the limit in the trailing window, but this path
+		// only knows the COUNT, not when the oldest write landed — so the
+		// honest answer is the whole window (it can clear any time inside it,
+		// never later). Under-promising here would be the 60-second lie again.
+		return currentCount >= limit ? seconds : 0;
 	} catch (e) {
 		console.warn("[auth] rateLimited DB exception, falling back to memory:", e?.message);
 		_rateLimitState.set(key, { count: 1, windowStart: now });
 		pruneRateLimitState(now, windowMs);
-		return false;
+		return 0;
 	}
 }
 
@@ -814,23 +888,17 @@ export function setSessionCookie(res, token, req) {
 	const maxAge = SESSION_COOKIE_MAX_AGE_S;
 	const proto = String(req?.headers?.["x-forwarded-proto"] || "").toLowerCase();
 	const origin = String(req?.headers?.origin || "");
-	const isLocalhost =
-		origin.startsWith("http://localhost") ||
-		origin.startsWith("https://localhost") ||
-		origin.startsWith("http://127.0.0.1") ||
-		origin.startsWith("https://127.0.0.1");
-	const crossSite =
-		!origin ||
+	// Hybrid native webview environments (e.g. Capacitor on Android where origin
+	// is https://localhost, or Electron file:// where origin is null/file://)
+	// run in a sandboxed shell over https. For all normal web browser traffic,
+	// keep SameSite=Lax to maintain standard CSRF defense.
+	const isNative =
 		origin === "null" ||
 		origin === "file://" ||
-		isLocalhost ||
+		origin === "https://localhost" ||
 		origin.startsWith("capacitor://") ||
-		origin.startsWith("ionic://") ||
-		(typeof req?.headers?.host === "string" && !origin.includes(req.headers.host));
-	// SameSite=None requires Secure, and Secure cookies are rejected over
-	// plain http — so None is only used when the request actually arrived
-	// over https (Vercel prod). Localhost http keeps Lax (dev only).
-	const useNone = crossSite && proto === "https";
+		origin.startsWith("ionic://");
+	const useNone = isNative && proto === "https";
 	const attrs = [
 		`${SESSION_COOKIE}=${token}`,
 		"HttpOnly",
@@ -865,6 +933,21 @@ async function saveSessionRecord(id, record) {
 		.from("settings")
 		.upsert({ key: sessionKey(id), value: record }, { onConflict: "key" });
 	if (error) throw new Error(error.message || "session write failed");
+}
+
+/** Revoke every outstanding anonymous session for an id (Level 3 full ban).
+ *  Deleting the record means any presented cookie no longer matches and a
+ *  fresh claim cannot re-mint over it — the ban holds on the device too.
+ *  Returns true when the delete succeeded. */
+export async function revokeUserSessions(anonId) {
+	const id = String(anonId || "").toLowerCase();
+	if (!/^anon_/.test(id)) return false;
+	const { error } = await supabase
+		.from("settings")
+		.delete()
+		.eq("key", sessionKey(id));
+	if (error) throw new Error(error.message || "session revoke failed");
+	return true;
 }
 
 /** Merge one displaced hash into a bounded token list (deduped, oldest

@@ -3,6 +3,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const authMocks = vi.hoisted(() => ({
 	cors: vi.fn(),
 	isAdmin: vi.fn(),
+	isCronAuthorized: vi.fn(),
+	hasMaintenanceSecret: vi.fn(),
 	auditLog: vi.fn(),
 }));
 
@@ -71,6 +73,8 @@ async function call(
 beforeEach(() => {
 	vi.clearAllMocks();
 	authMocks.isAdmin.mockResolvedValue(true);
+	authMocks.isCronAuthorized.mockResolvedValue(false);
+	authMocks.hasMaintenanceSecret.mockReturnValue(false);
 	maintenanceMocks.runCleanup.mockResolvedValue({
 		cleaned: 0,
 		details: {},
@@ -82,77 +86,148 @@ beforeEach(() => {
 	delete process.env.MAINTENANCE_SECRET;
 });
 
-describe("authenticated maintenance boundary", () => {
-	it("rejects an unauthenticated invocation before running work", async () => {
-		authMocks.isAdmin.mockResolvedValue(false);
+describe("scheduled maintenance boundary", () => {
+	describe("GET — cron / external scheduler", () => {
+		it("runs the sweep for a cron-authorized GET", async () => {
+			authMocks.isCronAuthorized.mockResolvedValue(true);
 
-		const result = await call({ method: "POST" });
+			const result = await call({ method: "GET" });
 
-		expect(result.statusCode).toBe(403);
-		expect(maintenanceMocks.runCleanup).not.toHaveBeenCalled();
-		expect(maintenanceMocks.purgeExpired).not.toHaveBeenCalled();
-	});
-
-	it("accepts the configured maintenance secret without an admin session", async () => {
-		process.env.MAINTENANCE_SECRET = "test-maintenance-secret";
-		authMocks.isAdmin.mockResolvedValue(false);
-
-		const result = await call({
-			method: "POST",
-			headers: { "x-maintenance-secret": "test-maintenance-secret" },
+			expect(result.statusCode).toBe(200);
+			expect(result.body).toMatchObject({ success: true });
+			expect(maintenanceMocks.runCleanup).toHaveBeenCalledTimes(1);
+			expect(maintenanceMocks.purgeExpired).toHaveBeenCalledTimes(1);
+			expect(authMocks.auditLog).toHaveBeenCalledWith(
+				"cron",
+				"maintenance",
+				expect.any(String),
+			);
 		});
 
-		expect(result.statusCode).toBe(200);
-		expect(result.body).toMatchObject({ success: true });
-	});
+		it("accepts a shared maintenance secret on GET", async () => {
+			authMocks.hasMaintenanceSecret.mockReturnValue(true);
 
-	it("returns explicit proven-work results for an authenticated run", async () => {
-		maintenanceMocks.runCleanup.mockResolvedValue({
-			cleaned: 2,
-			details: { deleted_comments: 2 },
-		});
-		maintenanceMocks.purgeExpired.mockResolvedValue({
-			purged: 1,
-			skipped: false,
+			const result = await call({
+				method: "GET",
+				headers: { "x-maintenance-secret": "test-maintenance-secret" },
+			});
+
+			expect(result.statusCode).toBe(200);
+			expect(maintenanceMocks.runCleanup).toHaveBeenCalledTimes(1);
 		});
 
-		const result = await call({ method: "POST" });
+		it("rejects an unauthorized GET with 401 and runs no work", async () => {
+			const result = await call({ method: "GET" });
 
-		expect(result.statusCode).toBe(200);
-		expect(result.body).toMatchObject({
-			success: true,
-			skipped: false,
-			cleanup: { cleaned: 2, details: { deleted_comments: 2 } },
-			post_purge: { purged: 1, skipped: false },
+			expect(result.statusCode).toBe(401);
+			expect(maintenanceMocks.runCleanup).not.toHaveBeenCalled();
+			expect(maintenanceMocks.purgeExpired).not.toHaveBeenCalled();
+			expect(authMocks.auditLog).not.toHaveBeenCalled();
 		});
 	});
 
-	it("reports a cooldown as skipped rather than a successful empty run", async () => {
-		maintenanceMocks.runCleanup.mockResolvedValue(null);
-		maintenanceMocks.purgeExpired.mockResolvedValue({
-			purged: 0,
-			skipped: true,
+	describe("POST — manual admin run", () => {
+		it("runs the sweep for an authenticated admin", async () => {
+			const result = await call({ method: "POST" });
+
+			expect(result.statusCode).toBe(200);
+			expect(result.body).toMatchObject({ success: true });
+			expect(maintenanceMocks.runCleanup).toHaveBeenCalledTimes(1);
+			expect(authMocks.auditLog).toHaveBeenCalledWith(
+				"admin",
+				"maintenance",
+				expect.any(String),
+			);
 		});
 
-		const result = await call({ method: "POST" });
+		it("rejects an unauthenticated POST with 403 and runs no work", async () => {
+			authMocks.isAdmin.mockResolvedValue(false);
 
-		expect(result.statusCode).toBe(200);
-		expect(result.body).toMatchObject({ success: true, skipped: true });
+			const result = await call({ method: "POST" });
+
+			expect(result.statusCode).toBe(403);
+			expect(maintenanceMocks.runCleanup).not.toHaveBeenCalled();
+			expect(maintenanceMocks.purgeExpired).not.toHaveBeenCalled();
+		});
+
+		it("accepts the configured maintenance secret without an admin session", async () => {
+			authMocks.isAdmin.mockResolvedValue(false);
+			authMocks.hasMaintenanceSecret.mockReturnValue(true);
+
+			const result = await call({
+				method: "POST",
+				headers: { "x-maintenance-secret": "test-maintenance-secret" },
+			});
+
+			expect(result.statusCode).toBe(200);
+			expect(result.body).toMatchObject({ success: true });
+		});
+
+		it("returns explicit proven-work results for an authenticated run", async () => {
+			maintenanceMocks.runCleanup.mockResolvedValue({
+				cleaned: 2,
+				details: { deleted_comments: 2 },
+			});
+			maintenanceMocks.purgeExpired.mockResolvedValue({
+				purged: 1,
+				skipped: false,
+			});
+
+			const result = await call({ method: "POST" });
+
+			expect(result.statusCode).toBe(200);
+			expect(result.body).toMatchObject({
+				success: true,
+				skipped: false,
+				cleanup: { cleaned: 2, details: { deleted_comments: 2 } },
+				post_purge: { purged: 1, skipped: false },
+			});
+		});
+
+		it("reports a cooldown as skipped rather than a successful empty run", async () => {
+			maintenanceMocks.runCleanup.mockResolvedValue(null);
+			maintenanceMocks.purgeExpired.mockResolvedValue({
+				purged: 0,
+				skipped: true,
+			});
+
+			const result = await call({ method: "POST" });
+
+			expect(result.statusCode).toBe(200);
+			expect(result.body).toMatchObject({ success: true, skipped: true });
+		});
+
+		it("does not return success when a maintenance write fails", async () => {
+			maintenanceMocks.purgeExpired.mockRejectedValue(new Error("purge failed"));
+
+			const result = await call({ method: "POST" });
+
+			expect(result.statusCode).toBe(500);
+			expect(result.body).not.toMatchObject({ success: true });
+		});
 	});
 
-	it("does not return success when a maintenance write fails", async () => {
-		maintenanceMocks.purgeExpired.mockRejectedValue(new Error("purge failed"));
+	describe("method guard", () => {
+		it.each(["PUT", "DELETE", "PATCH"])(
+			"rejects %s with 405 and runs no work",
+			async (method) => {
+				authMocks.isAdmin.mockResolvedValue(true);
+				authMocks.isCronAuthorized.mockResolvedValue(true);
 
-		const result = await call({ method: "POST" });
+				const result = await call({ method });
 
-		expect(result.statusCode).toBe(500);
-		expect(result.body).not.toMatchObject({ success: true });
-	});
+				expect(result.statusCode).toBe(405);
+				expect(result.body).toMatchObject({ allow: "GET, POST" });
+				expect(maintenanceMocks.runCleanup).not.toHaveBeenCalled();
+				expect(maintenanceMocks.purgeExpired).not.toHaveBeenCalled();
+			},
+		);
 
-	it("rejects non-POST methods", async () => {
-		const result = await call({ method: "GET" });
+		it("answers CORS preflight without doing work", async () => {
+			const result = await call({ method: "OPTIONS" });
 
-		expect(result.statusCode).toBe(405);
-		expect(maintenanceMocks.runCleanup).not.toHaveBeenCalled();
+			expect(result.statusCode).toBe(204);
+			expect(maintenanceMocks.runCleanup).not.toHaveBeenCalled();
+		});
 	});
 });
