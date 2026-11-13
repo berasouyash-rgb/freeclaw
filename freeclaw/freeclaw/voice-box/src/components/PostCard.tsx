@@ -9,14 +9,16 @@ import {
 	Lock,
 	MessageCircle,
 	Pin,
+	ShieldCheck,
 	Sparkles,
 	ThumbsUp,
 } from "lucide-react";
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { ComponentType, CSSProperties } from "react";
 import { Link } from "react-router";
 import { useApp } from "../contexts/AppContext";
-import { api, hasAdminSession } from "../lib/api";
+import { api } from "../lib/api";
+import { hasAdminSession, subscribeAdminSession } from "../lib/adminSession";
 import { prefetchRouteChunk } from "../lib/routeChunks";
 import { triggerHaptic } from "../lib/haptics";
 import PostCardAdminBar from "./PostCardAdminBar";
@@ -30,6 +32,9 @@ import {
 import type { PollData, PostData, ReactionMeta } from "../types";
 import PollCard from "./PollCard";
 import { ReportDialog } from "./ui";
+import { UserProfileDialog, type UserProfileMeta } from "./UserProfileDialog";
+import { resolveAuthorProfile } from "../lib/identity";
+import { validateSchoolProblem } from "../lib/schoolIssueAI";
 
 // Support-only voting: problems get thumbs-up Support, suggestions get
 // arrow Upvote. There is deliberately no negative feedback UI — no Against,
@@ -182,9 +187,45 @@ interface PostCardProps {
 }
 
 function PostCardInner({ post, myReactions, onReacted, pollData, myPollVote, onPollVoted }: PostCardProps) {
-	const { anonId, bookmarks, toggleBookmark, toast } = useApp();
+	const { anonId, bookmarks, toggleBookmark, toast, profile, displayName } = useApp();
+	// Reactive admin state: a login in another tab (or an expired credential)
+	// must add/remove moderation controls on already-mounted cards.
+	const isAdminSession = useSyncExternalStore(
+		subscribeAdminSession,
+		hasAdminSession,
+		() => false,
+	);
 	const [busy, setBusy] = useState<string | null>(null);
 	const [reportOpen, setReportOpen] = useState(false);
+	const [selectedProfile, setSelectedProfile] = useState<UserProfileMeta | null>(null);
+	const resolvedAuthor = useMemo(() => {
+		if (typeof resolveAuthorProfile === "function") {
+			try {
+				return resolveAuthorProfile({
+					authorId: post.author_id,
+					myAnonId: anonId,
+					myProfile: profile,
+					myDisplayName: displayName,
+					postAuthorName: post.author_name,
+				});
+			} catch {
+				// fallback below
+			}
+		}
+		const isMe = !!(anonId && post.author_id === anonId);
+		return {
+			name: post.author_name || (isMe ? (displayName || "You") : "Student"),
+			avatar: isMe ? (profile?.avatar || "👤") : "👤",
+			photo: isMe ? profile?.photo : undefined,
+			isCustom: !!(isMe && (profile?.photo || profile?.avatar)),
+			handle: post.author_id ? `@${post.author_id.slice(0, 10)}` : "@anon",
+			styleClass: "bg-surface3 border-border",
+		};
+	}, [post.author_id, post.author_name, anonId, profile, displayName]);
+	const aiValidation = useMemo(
+		() => validateSchoolProblem(post.title, post.description),
+		[post.title, post.description],
+	);
 	// confirmAction, replyOpen, and replyText are handled by PostCardAdminBar
 	const [localCounts, setLocalCounts] = useState<Record<string, number> | null>(
 		null,
@@ -400,6 +441,14 @@ function PostCardInner({ post, myReactions, onReacted, pollData, myPollVote, onP
 								{" "}{priorityMeta.label}
 							</span>
 						)}
+						{aiValidation.isRealProblem && (
+							<span
+								className={`chip !font-medium ${aiValidation.badge.colorClass} ${aiValidation.badge.borderClass} ${aiValidation.badge.bgClass}`}
+								title={aiValidation.summary}
+							>
+								{aiValidation.badge.emoji} {aiValidation.badge.text}
+							</span>
+						)}
 					</div>
 					<Link
 						to={`/post/${post.id}`}
@@ -422,6 +471,22 @@ function PostCardInner({ post, myReactions, onReacted, pollData, myPollVote, onP
 									<Sparkles size={11} className="shrink-0" />
 									<span className="line-clamp-1">{post.ai_summary}</span>
 								</p>
+							)}
+							{/* Official Administration Response (Prominent in Feed) */}
+							{post.admin_reply && (
+								<div className="mt-2.5 p-3 rounded-xl bg-emerald-500/10 dark:bg-emerald-950/30 border border-emerald-500/30 text-left">
+									<p className="text-[10px] font-bold uppercase tracking-wider text-emerald-600 dark:text-emerald-400 mb-1 flex items-center gap-1.5">
+										<ShieldCheck size={12} /> Official Administration Response
+									</p>
+									<p className="text-xs text-ink2 leading-relaxed">
+										{post.admin_reply}
+									</p>
+								</div>
+							)}
+							{post.status === "solved" && !post.admin_reply && (
+								<div className="mt-2 px-2.5 py-1 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-xs text-emerald-700 dark:text-emerald-400 flex items-center gap-1.5 font-medium">
+									<CheckCircle2 size={12} /> Resolved by School Administration
+								</div>
 							)}
 					</Link>
 					{post.tags && post.tags.length > 0 && (
@@ -507,9 +572,47 @@ function PostCardInner({ post, myReactions, onReacted, pollData, myPollVote, onP
 						>
 							<Flag size={13} className="transition-transform duration-200" />
 						</button>
-						<span className="ml-auto text-[11px] text-ink3">
-							{timeAgo(post.created_at)}
-						</span>
+						<div className="ml-auto flex items-center gap-1.5">
+							{post.author_id && (
+								<button
+									type="button"
+									onClick={(e) => {
+										e.preventDefault();
+										e.stopPropagation();
+										setSelectedProfile({
+											authorId: post.author_id,
+											isMine: post.author_id === anonId || Boolean(post.is_mine),
+											isOp: true,
+											createdAt: post.created_at,
+											authorName: resolvedAuthor.name,
+											authorPhoto: resolvedAuthor.photo,
+											authorAvatar: resolvedAuthor.avatar,
+										});
+									}}
+									className="inline-flex items-center gap-1.5 text-[11px] text-ink3 hover:text-accent transition-colors py-0.5 px-1.5 rounded hover:bg-surface-raised cursor-pointer"
+									title={`View author profile (${resolvedAuthor.name})`}
+									aria-label={`View author profile ${resolvedAuthor.name}`}
+								>
+									{resolvedAuthor.photo ? (
+										<img
+											src={resolvedAuthor.photo}
+											alt={resolvedAuthor.name}
+											className="w-4 h-4 rounded-full object-cover border border-border"
+										/>
+									) : (
+										<span className={`w-4 h-4 rounded-full inline-flex items-center justify-center text-[10px] ${resolvedAuthor.styleClass} shadow-2xs`}>
+											{resolvedAuthor.avatar || "👤"}
+										</span>
+									)}
+									<span className="text-[11px] font-medium opacity-90 truncate max-w-[90px]">
+										{resolvedAuthor.name}
+									</span>
+								</button>
+							)}
+							<span className="text-[11px] text-ink3">
+								{timeAgo(post.created_at)}
+							</span>
+						</div>
 					</div>
 				</div>
 			</div>
@@ -527,7 +630,7 @@ function PostCardInner({ post, myReactions, onReacted, pollData, myPollVote, onP
 				</div>
 			)}			{/* ── Admin-only moderation — extracted to PostCardAdminBar for clean
 			    separation and memoization */}
-			{hasAdminSession() && <PostCardAdminBar post={post} />}
+			{isAdminSession && <PostCardAdminBar post={post} />}
 
 			{/* Report from the feed — same flow as the detail page: sends author_id
           (the API rejects reports without it), surfaces failures honestly,
@@ -553,6 +656,13 @@ function PostCardInner({ post, myReactions, onReacted, pollData, myPollVote, onP
 						);
 					}
 				}}
+			/>
+
+			<UserProfileDialog
+				profileMeta={selectedProfile}
+				localProfile={profile}
+				displayName={displayName}
+				onClose={() => setSelectedProfile(null)}
 			/>
 		</article>
 	);

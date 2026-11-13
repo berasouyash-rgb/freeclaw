@@ -48,6 +48,7 @@ const UserManager = retryLazy(() => import("./admin/UserManager"));
 const Categories = retryLazy(() => import("./admin/Categories"));
 const PollManager = retryLazy(() => import("./admin/PollManager"));
 const SlangLeaders = retryLazy(() => import("./admin/SlangLeaders"));
+const Strikes = retryLazy(() => import("./admin/Strikes"));
 const Communities = retryLazy(() => import("./admin/Communities"));
 // Communication
 const UnifiedInbox = retryLazy(() => import("./admin/UnifiedInbox"));
@@ -55,6 +56,7 @@ const EmailTemplates = retryLazy(() => import("./admin/EmailTemplates"));
 // Operations
 const ErrorTracking = retryLazy(() => import("./admin/ErrorTracking"));
 const Logs = retryLazy(() => import("./admin/Logs"));
+const ActivityReport = retryLazy(() => import("./admin/ActivityReport"));
 // Config
 const AdminSettings = retryLazy(() => import("./admin/AdminSettings"));
 const AiSystems = retryLazy(() => import("./admin/AiSystems"));
@@ -593,6 +595,11 @@ export default function Admin() {
 								<SlangLeaders />
 							</ErrorBoundary>
 						)}
+						{tab === "strikes" && (
+							<ErrorBoundary key="strikes">
+								<Strikes />
+							</ErrorBoundary>
+						)}
 						{tab === "communities" && (
 							<ErrorBoundary key="communities">
 								<Communities />
@@ -611,6 +618,11 @@ export default function Admin() {
 						{tab === "logs" && (
 							<ErrorBoundary key="logs">
 								<Logs />
+							</ErrorBoundary>
+						)}
+						{tab === "activity-report" && (
+							<ErrorBoundary key="activity-report">
+								<ActivityReport />
 							</ErrorBoundary>
 						)}
 						{tab === "email-templates" && (

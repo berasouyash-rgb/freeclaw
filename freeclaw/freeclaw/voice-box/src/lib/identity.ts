@@ -12,6 +12,7 @@
 
 import { storeClear, storeGet, storeRemove, storeSet } from "./storage";
 import { storageBackend, storageReady } from "./storage";
+import { backupToVault } from "./identityVault";
 
 const ID_KEY = "vb:anonId";
 const CREATED_KEY = "vb:anonCreated";
@@ -75,20 +76,57 @@ function deleteCookie(key: string) {
 	}
 }
 
-/** Read with cookie fallback — identity-critical keys only. */
+function lsDirectRead(key: string): string | null {
+	try {
+		if (typeof window !== "undefined" && window.localStorage) {
+			return window.localStorage.getItem(key);
+		}
+	} catch {
+		/* ignore */
+	}
+	return null;
+}
+
+function lsDirectWrite(key: string, value: string): void {
+	try {
+		if (typeof window !== "undefined" && window.localStorage) {
+			window.localStorage.setItem(key, value);
+		}
+	} catch {
+		/* ignore */
+	}
+}
+
+/** Read with multi-tier fallback (Device Store -> Cookie -> localStorage direct -> Memory) */
 function readItem(key: string): string | null {
 	const stored = storeGet(key);
-	if (stored !== null) return stored;
+	if (stored !== null && stored.trim() !== "") return stored;
 	const c = readCookie(key);
-	if (c !== null) return c;
+	if (c !== null && c.trim() !== "") {
+		// Found in cookie! Self-heal into primary storage & localStorage
+		storeSet(key, c);
+		lsDirectWrite(key, c);
+		mem.set(key, c);
+		return c;
+	}
+	const ls = lsDirectRead(key);
+	if (ls !== null && ls.trim() !== "") {
+		// Found directly in window.localStorage! Self-heal into store and cookie
+		storeSet(key, ls);
+		writeCookie(key, ls);
+		mem.set(key, ls);
+		return ls;
+	}
 	return mem.get(key) ?? null;
 }
 
-/** Write with cookie fallback — identity-critical keys only. */
+/** Write with quad-tier durable replication — identity-critical keys only. */
 function writeItem(key: string, value: string) {
-	if (storeSet(key, value)) return;
+	storeSet(key, value);
 	writeCookie(key, value);
+	lsDirectWrite(key, value);
 	mem.set(key, value);
+	void backupToVault(key, value);
 }
 
 function removeItem(key: string) {
@@ -505,9 +543,11 @@ export interface LocalProfile {
 	avatar?: string;
 	bio?: string;
 	photo?: string;
+	displayName?: string;
+	featuredBadge?: string;
 }
 
-const EMPTY_PROFILE: LocalProfile = { avatar: "", bio: "", photo: "" };
+const EMPTY_PROFILE: LocalProfile = { avatar: "", bio: "", photo: "", displayName: "", featuredBadge: "" };
 
 export function getProfile(): LocalProfile {
 	try {
@@ -519,6 +559,8 @@ export function getProfile(): LocalProfile {
 				typeof p?.photo === "string" && PHOTO_RE.test(p.photo)
 					? p.photo.slice(0, PHOTO_MAX_CHARS)
 					: "",
+			displayName: typeof p?.displayName === "string" ? p.displayName.trim().slice(0, 32) : "",
+			featuredBadge: typeof p?.featuredBadge === "string" ? p.featuredBadge.trim().slice(0, 32) : "",
 		};
 	} catch {
 		return EMPTY_PROFILE;
@@ -541,13 +583,93 @@ export function setProfile(p: LocalProfile): LocalProfile {
 				: typeof p?.photo === "string" && PHOTO_RE.test(p.photo)
 					? p.photo.slice(0, PHOTO_MAX_CHARS)
 					: prev.photo || "",
+		displayName: typeof p?.displayName === "string" ? p.displayName.trim().slice(0, 32) : prev.displayName || "",
+		featuredBadge: typeof p?.featuredBadge === "string" ? p.featuredBadge.trim().slice(0, 32) : prev.featuredBadge || "",
 	};
 	try {
 		lsSet(PROFILE_KEY, clean);
+		lsDirectWrite(PROFILE_KEY, JSON.stringify(clean));
+		void backupToVault(PROFILE_KEY, JSON.stringify(clean));
 	} catch {
 		/* storage blocked — ignore */
 	}
 	return clean;
+}
+
+export interface ResolvedAuthorProfile {
+	name: string;
+	avatar: string;
+	photo: string;
+	isMine: boolean;
+	isAdmin: boolean;
+	featuredBadge?: string;
+	styleClass: string;
+}
+
+/**
+ * Resolves the genuine chosen author profile rather than falling back to
+ * arbitrary random animals. Ensures student's selected avatar/photo is honored.
+ */
+export function resolveAuthorProfile({
+	authorId,
+	myAnonId,
+	myProfile,
+	myDisplayName,
+	postAuthorName,
+	postAuthorPhoto,
+	postAuthorAvatar,
+}: {
+	authorId?: string | null;
+	myAnonId?: string | null;
+	myProfile?: LocalProfile | null;
+	myDisplayName?: string | null;
+	postAuthorName?: string | null;
+	postAuthorPhoto?: string | null;
+	postAuthorAvatar?: string | null;
+}): ResolvedAuthorProfile {
+	const raw = (authorId || "anon").trim();
+	const isAdmin = raw.toUpperCase() === "ADMIN";
+	const isMine = Boolean(myAnonId && raw.toLowerCase() === myAnonId.toLowerCase());
+
+	if (isAdmin) {
+		return {
+			name: "Official Administrator",
+			avatar: "🛡️",
+			photo: "",
+			isMine: false,
+			isAdmin: true,
+			featuredBadge: "campus_pillar",
+			styleClass: "bg-accent/15 text-accent border-accent/40",
+		};
+	}
+
+	if (isMine) {
+		const name = (myDisplayName?.trim() || myProfile?.displayName?.trim()) || "You";
+		const photo = myProfile?.photo?.trim() || "";
+		const avatar = photo ? "" : (myProfile?.avatar?.trim() || "👤");
+		return {
+			name,
+			avatar,
+			photo,
+			isMine: true,
+			isAdmin: false,
+			featuredBadge: myProfile?.featuredBadge,
+			styleClass: "bg-surface3 border-border text-ink",
+		};
+	}
+
+	// Another author
+	const name = postAuthorName?.trim() || (raw.startsWith("anon_") ? `@${raw.slice(0, 10)}` : raw.slice(0, 8));
+	const photo = postAuthorPhoto?.trim() || "";
+	const avatar = photo ? "" : (postAuthorAvatar?.trim() || "👤");
+	return {
+		name,
+		avatar,
+		photo,
+		isMine: false,
+		isAdmin: false,
+		styleClass: "bg-surface2 border-border text-ink2",
+	};
 }
 
 export function profileInitial(name: string): string {
@@ -555,6 +677,60 @@ export function profileInitial(name: string): string {
 	if (!base) return "•";
 	const first = Array.from(base)[0] ?? "•";
 	return first.toUpperCase();
+}
+
+// ---------- anonymous deterministic profile generator ----------
+const ANONYMOUS_AVATARS = [
+	"🦊", "🐱", "🐼", "🦉", "🐸", "🦄", "🐙", "🦁",
+	"🐨", "🐯", "🐬", "🦋", "🐝", "🐺", "🦅", "🦔",
+	"🐻", "🐰", "🦝", "🐲", "🐢", "🐧", "🦦", "🐿️",
+];
+
+const ANONYMOUS_STYLES = [
+	{ bg: "bg-blue-500/10 dark:bg-blue-500/20", text: "text-blue-600 dark:text-blue-400", border: "border-blue-500/30" },
+	{ bg: "bg-purple-500/10 dark:bg-purple-500/20", text: "text-purple-600 dark:text-purple-400", border: "border-purple-500/30" },
+	{ bg: "bg-emerald-500/10 dark:bg-emerald-500/20", text: "text-emerald-600 dark:text-emerald-400", border: "border-emerald-500/30" },
+	{ bg: "bg-amber-500/10 dark:bg-amber-500/20", text: "text-amber-600 dark:text-amber-400", border: "border-amber-500/30" },
+	{ bg: "bg-rose-500/10 dark:bg-rose-500/20", text: "text-rose-600 dark:text-rose-400", border: "border-rose-500/30" },
+	{ bg: "bg-indigo-500/10 dark:bg-indigo-500/20", text: "text-indigo-600 dark:text-indigo-400", border: "border-indigo-500/30" },
+	{ bg: "bg-teal-500/10 dark:bg-teal-500/20", text: "text-teal-600 dark:text-teal-400", border: "border-teal-500/30" },
+	{ bg: "bg-fuchsia-500/10 dark:bg-fuchsia-500/20", text: "text-fuchsia-600 dark:text-fuchsia-400", border: "border-fuchsia-500/30" },
+];
+
+export function getAnonymousProfile(authorId?: string | null): {
+	emoji: string;
+	bg: string;
+	text: string;
+	border: string;
+	className: string;
+	handle: string;
+} {
+	const raw = (authorId || "anon").trim();
+	if (raw.toUpperCase() === "ADMIN") {
+		return {
+			emoji: "🛡️",
+			bg: "bg-accent/15",
+			text: "text-accent",
+			border: "border-accent/40",
+			className: "bg-accent/15 text-accent border-accent/40",
+			handle: "Admin",
+		};
+	}
+	let hash = 0;
+	for (let i = 0; i < raw.length; i++) {
+		hash = (hash * 31 + raw.charCodeAt(i)) >>> 0;
+	}
+	const emoji = ANONYMOUS_AVATARS[hash % ANONYMOUS_AVATARS.length] || "👤";
+	const style = ANONYMOUS_STYLES[(hash >> 3) % ANONYMOUS_STYLES.length] || ANONYMOUS_STYLES[0]!;
+	const handle = raw.startsWith("anon_") ? raw.slice(0, 10) : raw.slice(0, 8);
+	return {
+		emoji,
+		bg: style.bg,
+		text: style.text,
+		border: style.border,
+		className: `${style.bg} ${style.text} ${style.border}`,
+		handle,
+	};
 }
 
 // ---------- cooldown / flood prevention (client side) ----------

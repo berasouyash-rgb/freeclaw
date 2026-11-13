@@ -9,7 +9,7 @@ import {
 } from "../lib/adminTabs";
 
 describe("admin tab registry", () => {
-	it("keeps the complete 15-tab product surface in canonical order", () => {
+	it("keeps the complete 17-tab product surface in canonical order", () => {
 		expect(ADMIN_TAB_KEYS).toEqual([
 			"dashboard",
 			"presentation",
@@ -19,15 +19,17 @@ describe("admin tab registry", () => {
 			"categories",
 			"polls",
 			"slang",
+			"strikes",
 			"communities",
 			"inbox",
 			"errors",
 			"logs",
+			"activity-report",
 			"email-templates",
 			"ai-systems",
 			"settings",
 		]);
-		expect(ADMIN_TABS).toHaveLength(15);
+		expect(ADMIN_TABS).toHaveLength(17);
 		expect(ADMIN_TAB_GROUPS.map((group) => group.title)).toEqual([
 			"Overview",
 			"Content",

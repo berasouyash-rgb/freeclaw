@@ -7,6 +7,7 @@ import { initSentry } from "./lib/sentry";
 import { initVitals } from "./lib/vitals";
 import { initErrorCapture } from "./lib/errors";
 import { hydrateStore } from "./lib/storage";
+import { syncIdentityVault } from "./lib/identityVault";
 import { preloadCoreRoutes } from "./lib/routeChunks";
 import { registerNotifyServiceWorker } from "./lib/browserNotify";
 
@@ -113,6 +114,7 @@ async function boot(): Promise<void> {
 	// registration, and `navigator.serviceWorker.ready` never resolves
 	// until one exists.
 	registerNotifyServiceWorker();
+	await syncIdentityVault();
 	await hydrateStore();
 	createRoot(document.getElementById("root")!).render(
 		<StrictMode>

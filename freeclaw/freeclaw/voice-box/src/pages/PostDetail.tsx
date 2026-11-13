@@ -18,13 +18,16 @@ import {
 	Volume2,
 	VolumeX,
 } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router";
 import Comments from "../components/Comments";
 import PollCard from "../components/PollCard";
 import { ReactionButton, getReactionMeta } from "../components/PostCard";
 import StatusTimeline from "../components/StatusTimeline";
 import { ConfirmDialog, ReportDialog } from "../components/ui";
+import { UserProfileDialog } from "../components/UserProfileDialog";
+import { resolveAuthorProfile } from "../lib/identity";
+import { validateSchoolProblem } from "../lib/schoolIssueAI";
 import { useApp } from "../contexts/AppContext";
 import UpdateNotice from "../components/admin/UpdateNotice";
 import { useUpdateSignal } from "../hooks/useUpdateSignal";
@@ -205,7 +208,7 @@ function AdminStatusCircles({	status,
 export default function PostDetail() {
 	const { id } = useParams<{ id: string }>();
 	const nav = useNavigate();
-	const { anonId, toast, bookmarks, toggleBookmark, retireNotifsForLink, addRecentlyViewed } =
+	const { anonId, toast, bookmarks, toggleBookmark, retireNotifsForLink, addRecentlyViewed, profile, displayName } =
 		useApp();
 
 	const [p, setPost] = useState<PostData | null>(null);
@@ -218,6 +221,7 @@ export default function PostDetail() {
 	const [busy, setBusy] = useState<string | null>(null);
 	const [reportOpen, setReportOpen] = useState(false);
 	const [deleteOpen, setDeleteOpen] = useState(false);
+	const [authorProfileOpen, setAuthorProfileOpen] = useState(false);
 	const [reading, setReading] = useState(false);
 	const [copied, setCopied] = useState(false);
 	// Case export ("the invoice") in-flight flag — prevents double-clicks
@@ -245,6 +249,39 @@ export default function PostDetail() {
 	const postId = id || "";
 	const isBookmarked = bookmarks.includes(postId);
 	const isFollowing = follows.includes(postId);
+
+	const resolvedAuthor = useMemo(() => {
+		if (!p) return null;
+		if (typeof resolveAuthorProfile === "function") {
+			try {
+				return resolveAuthorProfile({
+					authorId: p.author_id,
+					myAnonId: anonId,
+					myProfile: profile,
+					myDisplayName: displayName,
+					postAuthorName: p.author_name,
+					postAuthorPhoto: p.author_photo,
+					postAuthorAvatar: p.author_avatar,
+				});
+			} catch {
+				// fallback below
+			}
+		}
+		const isMe = !!(anonId && p.author_id === anonId);
+		return {
+			name: p.author_name || (isMe ? (displayName || "You") : "Student"),
+			avatar: isMe ? (profile?.avatar || "👤") : "👤",
+			photo: isMe ? profile?.photo : undefined,
+			isCustom: !!(isMe && (profile?.photo || profile?.avatar)),
+			handle: p.author_id ? `@${p.author_id.slice(0, 10)}` : "@anon",
+			styleClass: "bg-surface3 border-border",
+		};
+	}, [p, anonId, profile, displayName]);
+
+	const aiValidation = useMemo(
+		() => (p ? validateSchoolProblem(p.title, p.description) : null),
+		[p?.title, p?.description],
+	);
 
 	const fetchPost = useCallback(async () => {
 		try {
@@ -798,13 +835,53 @@ export default function PostDetail() {
 							<Lock size={11} className="inline" /> Private � admins only
 						</span>
 					)}
-					<span className="ml-auto text-xs text-ink3">
-						{timeAgo(p.created_at)} � by{" "}
-						<code className="font-mono">
-							{p.is_mine ? "You" : (p.author_id?.slice(0, 10) ?? "anon")}
-						</code>
+					<span className="ml-auto text-xs text-ink3 flex items-center gap-1.5">
+						<span>{timeAgo(p.created_at)} · by</span>
+						<button
+							type="button"
+							onClick={() => setAuthorProfileOpen(true)}
+							className="inline-flex items-center gap-1.5 font-mono hover:text-accent transition-colors group text-left"
+							aria-label={`View profile of ${p.is_mine ? "You" : (resolvedAuthor?.name ?? "anon")}`}
+						>
+							<span
+								className={`w-6 h-6 rounded-lg inline-flex items-center justify-center text-xs border shrink-0 overflow-hidden ${
+									p.is_mine
+										? "bg-surface3 border-border text-ink"
+										: (resolvedAuthor?.styleClass || "bg-surface3 border-border")
+								} vb-avatar`}
+							>
+								{resolvedAuthor?.photo ? (
+									<img
+										src={resolvedAuthor.photo}
+										className="w-full h-full object-cover rounded-lg"
+										alt={resolvedAuthor.name}
+									/>
+								) : (
+									resolvedAuthor?.avatar || "👤"
+								)}
+							</span>
+							<span className="font-mono font-medium text-ink group-hover:underline">
+								{p.is_mine ? (displayName ? `${displayName} (You)` : "You") : (resolvedAuthor?.name ?? "anon")}
+							</span>
+						</button>
 					</span>
 				</div>
+
+				{aiValidation && (
+					<div
+						className={`mt-3 inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium border ${
+							aiValidation.isRealProblem
+								? "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 border-emerald-500/30"
+								: "bg-amber-500/10 text-amber-700 dark:text-amber-300 border-amber-500/30"
+						}`}
+					>
+						<span>{aiValidation.isRealProblem ? "✅" : "ℹ️"}</span>
+						<span className="font-semibold">{aiValidation.badge.text}</span>
+						<span className="text-[10px] opacity-80 font-mono">
+							({aiValidation.actionabilityScore}% actionable)
+						</span>
+					</div>
+				)}
 
 				<h1 className="font-display font-bold text-xl sm:text-2xl leading-tight tracking-tight">
 					{p.title}
@@ -1168,7 +1245,7 @@ export default function PostDetail() {
 
 			{/* Comments */}
 			<div className="mt-6">
-				<Comments postId={postId} locked={!!p.locked} />
+				<Comments postId={postId} locked={!!p.locked} postAuthorId={p?.author_id} />
 			</div>
 
 			{/* Report dialog — sends author_id (the API rejects reports without it) and
@@ -1205,6 +1282,27 @@ export default function PostDetail() {
 				message="The post will be removed from public view. This cannot be undone from here — message the team via inbox if removed by mistake."
 				confirmLabel="Delete"
 				danger
+			/>
+
+			{/* Post author profile modal */}
+			<UserProfileDialog
+				profileMeta={
+					authorProfileOpen && p
+						? {
+								authorId: p.author_id,
+								isAdmin: false,
+								isMine: !!p.is_mine,
+								isOp: true,
+								createdAt: p.created_at,
+								authorName: p.author_name,
+								authorPhoto: p.author_photo,
+								authorAvatar: p.author_avatar,
+						  }
+						: null
+				}
+				localProfile={profile}
+				displayName={displayName}
+				onClose={() => setAuthorProfileOpen(false)}
 			/>
 		</div>
 	);

@@ -2,8 +2,10 @@ import {
 	AlertTriangle,
 	Bot,
 	Bug,
+	ClipboardList,
 	Command,
 	Flag,
+	Gavel,
 	Inbox,
 	LayoutDashboard,
 	Mail,
@@ -25,10 +27,12 @@ export type AdminTabKey =
 	| "categories"
 	| "polls"
 	| "slang"
+	| "strikes"
 	| "communities"
 	| "inbox"
 	| "errors"
 	| "logs"
+	| "activity-report"
 	| "email-templates"
 	| "ai-systems"
 	| "settings";
@@ -70,6 +74,7 @@ export const ADMIN_TAB_GROUPS: AdminTabGroup[] = [
 			{ key: "categories", label: "Categories", icon: Tag },
 			{ key: "polls", label: "Polls", icon: Command },
 			{ key: "slang", label: "Slang", icon: AlertTriangle },
+			{ key: "strikes", label: "Strikes", icon: Gavel },
 			{ key: "communities", label: "Communities", icon: UsersRound },
 		],
 	},
@@ -79,6 +84,7 @@ export const ADMIN_TAB_GROUPS: AdminTabGroup[] = [
 			{ key: "inbox", label: "Inbox", icon: Inbox },
 			{ key: "errors", label: "Errors", icon: Bug },
 			{ key: "logs", label: "Logs", icon: Mail },
+			{ key: "activity-report", label: "Activity", icon: ClipboardList },
 			{ key: "email-templates", label: "Email", icon: Mail },
 			{ key: "ai-systems", label: "AI Systems", icon: Bot },
 		],

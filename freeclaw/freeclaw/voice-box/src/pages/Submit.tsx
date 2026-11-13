@@ -24,8 +24,10 @@ import AppealPanel, { type AppealSurface } from "../components/AppealPanel";
 import { useApp } from "../contexts/AppContext";
 import { useCategories } from "../hooks/useCategories";
 import { api } from "../lib/api";
+import { tablistKeyDown } from "../lib/tablist";
 import { downscaleImage } from "../lib/image";
 import { checkCooldown, lsGet, lsSet, stampCooldown } from "../lib/identity";
+import { checkContentSlang, validateSchoolProblem } from "../lib/schoolIssueAI";
 import { triggerHaptic } from "../lib/haptics";
 import {
 	isBlockedByServer,
@@ -121,7 +123,7 @@ function ProgressDonut({ current, max, id }: { current: number; max: number; id?
  */
 
 export default function Submit() {
-	const { anonId, toast, pushNotif, accountStatus } = useApp();
+	const { anonId, toast, pushNotif, accountStatus, displayName, profile } = useApp();
 	const restricted = !!(accountStatus?.banned || accountStatus?.suspended);
 	const nav = useNavigate();
 	const [params] = useSearchParams();
@@ -867,6 +869,12 @@ export default function Submit() {
 		}
 	}, [initialType, toast]);
 
+	const [draftSlangAlert, setDraftSlangAlert] = useState<string | null>(null);
+	const problemValidation = useMemo(
+		() => validateSchoolProblem(title, desc),
+		[title, desc],
+	);
+
 	// autosave draft (debounced)
 	const draftNoteTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 	useEffect(
@@ -878,6 +886,12 @@ export default function Submit() {
 	useEffect(() => {
 		const t = setTimeout(() => {
 			if (title || desc) {
+				const slangCheck = checkContentSlang(`${title} ${desc}`, true);
+				if (slangCheck.hasSlang) {
+					setDraftSlangAlert(slangCheck.message || "Slang detected in draft.");
+				} else {
+					setDraftSlangAlert(null);
+				}
 				const durable = lsSet(DRAFT_KEY, {
 					title,
 					desc,
@@ -892,6 +906,8 @@ export default function Submit() {
 					() => setDraftState("idle"),
 					durable ? 1600 : 6000,
 				);
+			} else {
+				setDraftSlangAlert(null);
 			}
 		}, 900);
 		return () => clearTimeout(t);
@@ -1140,7 +1156,11 @@ export default function Submit() {
 					type,
 					title: sanitize(title, 120),
 					description: sanitize(desc, 500),
-					category,						author_id: anonId,
+					category,
+					author_id: anonId,
+					author_name: displayName ? displayName.trim() : undefined,
+					author_photo: profile?.photo || undefined,
+					author_avatar: profile?.avatar || undefined,
 					image_url,
 					tags: tags
 						.split(",")
@@ -1831,6 +1851,7 @@ export default function Submit() {
 			<div
 				className="flex gap-2 mb-5"
 				role="tablist"
+				onKeyDown={tablistKeyDown}
 				aria-label="Content type selection"
 			>
 				{TABS.map(({ key, label, icon: Icon }) => (
@@ -1887,6 +1908,42 @@ export default function Submit() {
 						/>
 					</div>
 				</div>
+
+				{/* ── Draft Slang Warning ── */}
+				{draftSlangAlert && (
+					<div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-700 dark:text-amber-400 text-xs flex items-start gap-2 vb-pop">
+						<AlertTriangle size={15} className="shrink-0 mt-0.5" />
+						<div>
+							<p className="font-bold">Draft Respect Policy Notice</p>
+							<p className="mt-0.5 text-[11px] leading-relaxed">{draftSlangAlert}</p>
+						</div>
+					</div>
+				)}
+
+				{/* ── Real School Problem Validation Badge & Guidance ── */}
+				{title.trim().length >= 5 && (
+					<div className={`p-3 rounded-xl border text-xs flex items-start gap-2.5 transition-all duration-200 ${problemValidation.badge.bgClass} ${problemValidation.badge.borderClass}`}>
+						<span className="text-base shrink-0">{problemValidation.badge.emoji}</span>
+						<div className="min-w-0 flex-1">
+							<div className="flex items-center gap-1.5 flex-wrap">
+								<span className={`font-bold ${problemValidation.badge.colorClass}`}>
+									{problemValidation.badge.text}
+								</span>
+								<span className="text-[10px] font-mono px-1.5 py-0.2 rounded-full bg-surface3 border border-border text-ink3">
+									AI Context Check
+								</span>
+							</div>
+							<p className="text-[11px] text-ink2 mt-1 leading-relaxed">
+								{problemValidation.summary}
+							</p>
+							{problemValidation.guidance && (
+								<p className="text-[11px] text-accent mt-1 leading-relaxed bg-accent/5 p-2 rounded-lg">
+									💡 {problemValidation.guidance}
+								</p>
+							)}
+						</div>
+					</div>
+				)}
 
 				{type === "poll" ? (
 					<>

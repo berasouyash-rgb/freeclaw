@@ -9,6 +9,7 @@ import {
 	MessageSquare,
 	PlusCircle,
 	Search,
+	ShieldCheck,
 	SlidersHorizontal,
 	Sparkles,
 	Target,
@@ -34,7 +35,8 @@ import Trend, { Sparkline } from "../components/Trend";
 import WordCloud from "../components/WordCloud";
 import { useApp } from "../contexts/AppContext";
 import { useCategories } from "../hooks/useCategories";
-import { api } from "../lib/api";
+import { api, isSessionDeadMessage } from "../lib/api";
+import { tablistKeyDown } from "../lib/tablist";
 import { resetAnonId } from "../lib/identity";
 import {
 	applyServerMine,
@@ -1327,6 +1329,7 @@ export default function Home() {
 					<div
 						className="inline-flex rounded-xl bg-surface2 p-1 gap-0.5 overflow-x-auto"
 						role="tablist"
+						onKeyDown={tablistKeyDown}
 						aria-label="Sort feed"
 					>
 						{SORTS.map(({ key, label, icon: Icon }) => (
@@ -1344,6 +1347,7 @@ export default function Home() {
 					<div
 						className="inline-flex rounded-xl bg-surface2 p-1 gap-0.5 ml-auto"
 						role="tablist"
+						onKeyDown={tablistKeyDown}
 						aria-label="Filter by status"
 					>
 						{(["all", "solved"] as const).map((s) => (
@@ -1360,6 +1364,37 @@ export default function Home() {
 					</div>
 				</div>
 			</div>
+
+			{/* Live Administration Activity Pulse */}
+			{statusFilter === "all" && (
+				<div
+					onClick={() => setStatusFilter("solved")}
+					className="card p-3 mb-4 bg-emerald-500/10 dark:bg-emerald-950/25 border border-emerald-500/25 hover:border-emerald-500/40 transition-all duration-200 cursor-pointer flex items-center justify-between gap-3 group select-none shadow-xs"
+					role="button"
+					tabIndex={0}
+					title="Click to view solved school issues"
+				>
+					<div className="flex items-center gap-2.5 min-w-0">
+						<div className="w-8 h-8 rounded-xl bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 flex items-center justify-center shrink-0 group-hover:scale-105 transition-transform">
+							<ShieldCheck size={17} />
+						</div>
+						<div className="min-w-0">
+							<h3 className="text-xs font-bold text-ink flex items-center gap-1.5 truncate">
+								<span>Administration Activity Pulse</span>
+								<span className="chip !bg-emerald-500/15 !text-emerald-700 dark:!text-emerald-300 !border-transparent !text-[10px] !py-0.2">
+									Live School Responses
+								</span>
+							</h3>
+							<p className="text-[11px] text-ink3 truncate mt-0.5">
+								Official staff updates, facilities repairs, and verified resolutions in the feed.
+							</p>
+						</div>
+					</div>
+					<span className="text-[11px] font-semibold text-emerald-600 dark:text-emerald-400 shrink-0 group-hover:translate-x-0.5 transition-transform">
+						View Solved →
+					</span>
+				</div>
+			)}
 
 			{/* You Said → We Did Banner */}
 			{statusFilter === "solved" && (
@@ -1393,7 +1428,7 @@ export default function Home() {
 							App is trying: {apiBase() || "(no API address set — rebuild with VITE_API_BASE)"}
 						</p>
 					)}
-					{error.toLowerCase().includes("session") && (error.toLowerCase().includes("not recognized") || error.toLowerCase().includes("lost") || error.toLowerCase().includes("cleared")) ? (
+					{isSessionDeadMessage(error) ? (
 						<div className="flex flex-wrap items-center justify-center gap-3 mt-4">
 							<button
 								type="button"
@@ -1497,86 +1532,9 @@ export default function Home() {
 					</div>
 				))}
 			</div>
-
-		{/* Sitewide footer - about, anonymity explainer, real links. */}
-		<SiteFooter />
 		</div>
 	);
 }
 
-/** Home-page footer — about, how anonymity works, and real internal links.
- * Gives logged-out visitors (and crawlers) the context the homepage lacked:
- * what Voice Flow is, what data it does NOT collect, and where to go next. */
-function SiteFooter() {
-	const link = "text-ink3 hover:text-ink transition-colors";
-	return (
-		<footer
-			className="mt-8 pt-6 border-t border-border"
-			data-testid="site-footer"
-		>
-			<div className="grid gap-6 sm:grid-cols-2 mb-6 text-left">
-				<div>
-					<p className="font-display font-bold text-sm mb-1">Voice Flow</p>
-					<p className="text-xs text-ink3 leading-relaxed">
-						Voice Flow is an anonymous school feedback platform. Students
-						report problems, share ideas, and vote in polls — with no names,
-						no emails, and no tracking. Every report moves through a visible
-						pipeline from Reported to Solved, so the whole school can see what
-						was raised and what actually changed. School staff moderate and
-						resolve each issue; students stay untraceable.
-					</p>
-				</div>
-				<div>
-					<p className="font-display font-bold text-sm mb-1">
-						How anonymity works
-					</p>
-					<ul className="text-xs text-ink3 leading-relaxed list-disc pl-4 space-y-1">
-						<li>
-							Your only identifier is a random ID generated in your own
-							browser.
-						</li>
-						<li>We never ask for a name, email, or phone number.</li>
-						<li>Moderators see the random ID — never a real identity.</li>
-						<li>You can delete your own posts, with a 30-second undo.</li>
-					</ul>
-				</div>
-			</div>
-			<nav
-				aria-label="Site links"
-				className="flex flex-wrap gap-x-4 gap-y-1 text-xs mb-3"
-			>
-				<Link to="/about" className={link}>
-					About
-				</Link>
-				<Link to="/faq" className={link}>
-					FAQ
-				</Link>
-				<Link to="/contact" className={link}>
-					Contact
-				</Link>
-				<Link to="/terms" className={link}>
-					Terms
-				</Link>
-				<Link to="/privacy" className={link}>
-					Privacy
-				</Link>
-				<Link to="/accessibility" className={link}>
-					Accessibility
-				</Link>
-				<Link to="/status" className={link}>
-					Status
-				</Link>
-				<Link to="/changelog" className={link}>
-					Changelog
-				</Link>
-				<Link to="/download" className={link}>
-					Download
-				</Link>
-			</nav>
-			<p className="text-[11px] text-ink3">
-				© 2026 Voice Flow · Speak up. Stay invisible. Get things fixed.
-			</p>
-		</footer>
-	);
-}
+export { SiteFooter } from "../components/SiteFooter";
 

@@ -29,6 +29,26 @@ import { useRealtime } from "../lib/useRealtime";
 import { sanitize, timeAgo } from "../lib/utils";
 import type { CommentData } from "../types";
 import { ReportDialog } from "./ui";
+import { UserProfileDialog, getAnonymousProfile, type UserProfileMeta } from "./UserProfileDialog";
+
+function safeGetAnonymousProfile(authorId?: string | null) {
+	if (typeof getAnonymousProfile === "function") {
+		try {
+			const res = getAnonymousProfile(authorId);
+			if (res && res.emoji) return res;
+		} catch {
+			// fallback
+		}
+	}
+	return {
+		emoji: "👤",
+		name: "Student",
+		handle: authorId ? `@${authorId.slice(0, 10)}` : "@anon",
+		bg: "bg-surface3",
+		border: "border-border",
+		text: "text-ink",
+	};
+}
 
 // ─── @mention helpers ────────────────────────────────────────────────
 // Matches @handle tokens like @anon_1a2b3c or @you. Renders them as
@@ -93,11 +113,13 @@ function buildTree(rows: CommentData[]): CommentNode[] {
 export default memo(function Comments({
 	postId,
 	locked,
+	postAuthorId,
 }: {
 	postId: string;
 	locked?: boolean;
+	postAuthorId?: string;
 }) {
-	const { anonId, toast, accountStatus, pushNotif } = useApp();
+	const { anonId, toast, accountStatus, pushNotif, profile, displayName } = useApp();
 	const restricted = !!(accountStatus?.banned || accountStatus?.suspended);
 	const [comments, setComments] = useState<CommentData[]>([]);
 	const [loading, setLoading] = useState(true);
@@ -108,6 +130,7 @@ export default memo(function Comments({
 	const [editText, setEditText] = useState("");
 	const [busy, setBusy] = useState(false);
 	const [reportTarget, setReportTarget] = useState<string | null>(null);
+	const [activeProfile, setActiveProfile] = useState<UserProfileMeta | null>(null);
 	// Per-comment admin moderation flight (hide/unhide) — one at a time.
 	const [modBusy, setModBusy] = useState<string | null>(null);
 	const [asAdmin, setAsAdmin] = useState(false);
@@ -427,7 +450,10 @@ export default memo(function Comments({
 		}
 	};
 
-	const renderNode = (c: CommentNode, depth: number) => (
+	const renderNode = (c: CommentNode, depth: number) => {
+		const anon = safeGetAnonymousProfile(c.author_id);
+		const isOp = !!postAuthorId && c.author_id === postAuthorId && !c.is_admin;
+		return (
 		<div
 			key={c.id}
 			className={
@@ -445,14 +471,64 @@ export default memo(function Comments({
 							<RefreshCw size={11} className="animate-spin" aria-hidden />
 							Sending…
 						</span>
-					) : c.is_admin ? (
-						<span className="chip !bg-accent !text-white !border-transparent">
-							<ShieldCheck size={11} /> Admin
-						</span>
 					) : (
-						<span className="font-mono text-ink3">
-							{c.is_mine ? "You" : (c.author_id?.slice(0, 10) ?? "anon")}
-						</span>
+						<button
+							type="button"
+							onClick={() =>
+								setActiveProfile({
+									authorId: c.author_id,
+									isAdmin: !!c.is_admin,
+									isMine: !!c.is_mine,
+									isOp,
+									createdAt: c.created_at,
+								})
+							}
+							className="inline-flex items-center gap-1.5 group text-left focus:outline-none focus-visible:ring-1 focus-visible:ring-accent rounded-md py-0.5"
+							aria-label={`View profile of ${c.is_mine ? "You" : c.is_admin ? "Admin" : anon.handle}`}
+						>
+							<span
+								className={`w-5 h-5 rounded-lg flex items-center justify-center text-[11px] shrink-0 border transition-transform group-hover:scale-105 overflow-hidden ${
+									c.is_admin
+										? "bg-accent text-white border-transparent"
+										: c.is_mine
+											? "bg-surface3 border-border text-ink"
+											: `${anon.bg} ${anon.border} ${anon.text}`
+								} vb-avatar`}
+							>
+								{c.is_admin ? (
+									<ShieldCheck size={12} className="text-white" />
+								) : c.is_mine ? (
+									profile?.photo ? (
+										<img
+											src={profile.photo}
+											alt="You"
+											className="w-full h-full object-cover"
+										/>
+									) : (
+										profile?.avatar || "👤"
+									)
+								) : (
+									anon.emoji
+								)}
+							</span>
+							{c.is_admin ? (
+								<span className="chip !bg-accent !text-white !border-transparent">
+									<ShieldCheck size={11} /> Admin
+								</span>
+							) : (
+								<span className="font-mono text-ink font-medium group-hover:text-accent transition-colors">
+									{c.is_mine ? (displayName ? `${displayName} (You)` : "You") : (c.author_id?.slice(0, 10) ?? "anon")}
+								</span>
+							)}
+							{isOp && (
+								<span
+									className="chip !text-[9px] !py-0.2 !px-1.5 !bg-accent/15 !text-accent !border-accent/30 font-bold"
+									title="Original Post Author"
+								>
+									OP
+								</span>
+							)}
+						</button>
 					)}
 					<span className="text-ink3">
 						{timeAgo(c.created_at)}
@@ -569,6 +645,7 @@ export default memo(function Comments({
 			{c.children.map((ch) => renderNode(ch, depth + 1))}
 		</div>
 	);
+	};
 
 	const tree = useMemo(() => buildTree(comments), [comments]);
 
@@ -619,6 +696,21 @@ export default memo(function Comments({
 				</p>
 			) : (
 				<div className="card p-3">
+					<div className="flex items-center gap-2 mb-2 px-1 text-xs text-ink3">
+						<div className="w-5 h-5 rounded-lg bg-surface3 flex items-center justify-center text-[11px] overflow-hidden border border-border vb-avatar shrink-0">
+							{profile?.photo ? (
+								<img src={profile.photo} alt="You" className="w-full h-full object-cover" />
+							) : (
+								profile?.avatar || "👤"
+							)}
+						</div>
+						<span>
+							Commenting as{" "}
+							<span className="font-semibold text-ink">
+								{asAdmin ? "Admin" : (displayName ? `${displayName} (You)` : "You (anon)")}
+							</span>
+						</span>
+					</div>
 					{replyTo && (
 						<div className="flex items-center gap-2 text-xs text-accent mb-2 bg-accent-soft rounded-lg px-2.5 py-1.5">
 							<CornerDownRight size={12} /> Replying to a comment
@@ -743,6 +835,17 @@ export default memo(function Comments({
 				open={!!reportTarget}
 				onClose={() => setReportTarget(null)}
 				onSubmit={(reason) => reportTarget && report(reportTarget, reason)}
+			/>
+			<UserProfileDialog
+				profileMeta={activeProfile}
+				localProfile={profile}
+				displayName={displayName}
+				onClose={() => setActiveProfile(null)}
+				onMention={(handle) => {
+					setText((prev) => (prev ? `${prev} @${handle} ` : `@${handle} `));
+					const el = document.getElementById("comment-input");
+					if (el) el.focus();
+				}}
 			/>
 		</section>
 	);

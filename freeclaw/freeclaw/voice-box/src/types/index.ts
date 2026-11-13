@@ -62,6 +62,8 @@ export interface PostData {
 	purge_at?: string;
 	star?: { reactions?: Record<string, number> };
 	author_name?: string;
+	author_photo?: string;
+	author_avatar?: string;
 }
 
 // ─── Comment ─────────────────────────────────────────
@@ -194,6 +196,10 @@ export interface AccountStatus {
 	suspended_until: string | null;
 	strikes: number;
 	latest_warning?: string | null;
+	/** Canonical restriction level: none | feed_blocked | read_only | full_ban */
+	restriction_level?: string;
+	restriction_reason?: string | null;
+	restriction_expires_at?: string | null;
 }
 
 // ─── Report ──────────────────────────────────────────
