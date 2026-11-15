@@ -79,7 +79,13 @@ export function postWithdrawal(
 
 	const id = asId(next?.id);
 	if (!id) return null;
-	if (next?.hidden === true || next?.deleted === true) {
+	if (
+		next?.hidden === true ||
+		next?.deleted === true ||
+		next?.status === "pending_review" ||
+		next?.status === "quarantined" ||
+		Boolean(next?.hidden_by)
+	) {
 		return { id, permanent: false };
 	}
 	return null;

@@ -35,6 +35,7 @@ import Trend, { Sparkline } from "../components/Trend";
 import WordCloud from "../components/WordCloud";
 import { useApp } from "../contexts/AppContext";
 import { useCategories } from "../hooks/useCategories";
+import { useFeedKeyboardNav } from "../hooks/useFeedKeyboardNav";
 import { api, isSessionDeadMessage } from "../lib/api";
 import { tablistKeyDown } from "../lib/tablist";
 import { resetAnonId } from "../lib/identity";
@@ -186,7 +187,7 @@ function buildPostsPath({
 }
 
 export default function Home() {
-	const { anonId, refreshIdentity } = useApp();
+	const { anonId, refreshIdentity, toggleBookmark } = useApp();
 	const categories = useCategories();
 	const [posts, setPosts] = useState<PostData[]>([]);
 	const [myReactions, setMyReactions] = useState<Record<string, string[]>>({});
@@ -932,6 +933,18 @@ export default function Home() {
 		return [...pinned, ...rest];
 	}, [posts, cat, feedType, query, sort, statusFilter]);
 
+	const { activeId } = useFeedKeyboardNav({
+		items: filtered,
+		onBookmark: (item) => {
+			toggleBookmark(item.id);
+		},
+		onUpvote: (item) => {
+			const el = document.querySelector(`[data-feed-id="${item.id}"]`);
+			const btn = el?.querySelector('button[aria-label*="reaction"], button[aria-label*="upvote"], button[aria-label*="Support"]') as HTMLButtonElement | null;
+			btn?.click();
+		},
+	});
+
 	// Rank-move chips: when a vote re-sorts the feed, the card glides (FLIP)
 	// and wears "↑ 2 / ↓ 1" for three seconds so the new position is legible
 	// instead of a teleport. Chips never stack: a fresh reorder replaces the
@@ -1500,7 +1513,12 @@ export default function Home() {
 					<div
 						key={p.id}
 						data-flip-id={p.id}
-						className={`relative ${mobileApp ? "vb-feed-item" : ""}`}
+						data-feed-id={p.id}
+						className={`relative transition-all duration-200 rounded-2xl ${
+							activeId === p.id
+								? "ring-2 ring-accent/70 shadow-[0_0_24px_rgba(118,87,255,0.25)]"
+								: ""
+						} ${mobileApp ? "vb-feed-item" : ""}`}
 						{...(i === 0 ? { "data-tour": "post-card" } : {})}
 					>
 						{rankMoves.has(p.id) && <RankDelta move={rankMoves.get(p.id) ?? 0} />}

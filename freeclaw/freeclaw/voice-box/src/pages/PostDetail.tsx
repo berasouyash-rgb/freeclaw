@@ -3,6 +3,7 @@ import {
 	ArrowLeft,
 	Bell,
 	BellRing,
+	BookOpen,
 	Bookmark,
 	CheckCircle2,
 	Eye,
@@ -11,6 +12,7 @@ import {
 	Flag,
 	Link2,
 	Lock,
+	Maximize2,
 	RefreshCw,
 	ShieldCheck,
 	Sparkles,
@@ -18,6 +20,7 @@ import {
 	Volume2,
 	VolumeX,
 } from "lucide-react";
+import { triggerHaptic } from "../lib/haptics";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router";
 import Comments from "../components/Comments";
@@ -282,6 +285,27 @@ export default function PostDetail() {
 		() => (p ? validateSchoolProblem(p.title, p.description) : null),
 		[p?.title, p?.description],
 	);
+
+	const [readProgress, setReadProgress] = useState(0);
+	const [imageLightbox, setImageLightbox] = useState(false);
+
+	useEffect(() => {
+		const onScroll = () => {
+			const scrollY = window.scrollY;
+			const total = document.documentElement.scrollHeight - window.innerHeight;
+			if (total > 0) {
+				setReadProgress(Math.min(100, Math.max(0, (scrollY / total) * 100)));
+			}
+		};
+		window.addEventListener("scroll", onScroll, { passive: true });
+		return () => window.removeEventListener("scroll", onScroll);
+	}, []);
+
+	const estimatedReadTime = useMemo(() => {
+		if (!p) return 1;
+		const words = `${p.title || ""} ${p.description || ""}`.trim().split(/\s+/).filter(Boolean).length;
+		return Math.max(1, Math.ceil(words / 180));
+	}, [p]);
 
 	const fetchPost = useCallback(async () => {
 		try {
@@ -660,6 +684,7 @@ export default function PostDetail() {
 	const copyLink = async () => {
 		try {
 			await navigator.clipboard.writeText(window.location.href);
+			triggerHaptic("success");
 			setCopied(true);
 			toast("Link copied to clipboard", "ok");
 			setTimeout(() => setCopied(false), 2000);
@@ -807,6 +832,17 @@ export default function PostDetail() {
 
 	return (
 		<div className="max-w-3xl mx-auto vb-page-enter">
+			{readProgress > 0 && (
+				<div
+					className="fixed top-0 left-0 right-0 h-[3px] bg-gradient-to-r from-violet-600 via-indigo-500 to-purple-400 z-50 transition-all duration-75"
+					style={{ width: `${readProgress}%` }}
+					role="progressbar"
+					aria-valuenow={Math.round(readProgress)}
+					aria-valuemin={0}
+					aria-valuemax={100}
+					aria-label="Reading progress"
+				/>
+			)}
 			<button className="btn btn-ghost !px-3 mb-4" onClick={() => nav(-1)}>
 				<ArrowLeft size={15} /> Back
 			</button>
@@ -821,6 +857,9 @@ export default function PostDetail() {
 				<div className="flex flex-wrap items-center gap-1.5 mb-3">
 					<span className="chip">
 						{CAT_EMOJI[p.category]} {p.category}
+					</span>
+					<span className="chip !text-[11px] !py-0.5" title={`Estimated read time: ${estimatedReadTime} minute${estimatedReadTime > 1 ? "s" : ""}`}>
+						<BookOpen size={11} className="inline mr-1 text-accent" /> {estimatedReadTime} min read
 					</span>
 					{p.locked && (
 						<span className="chip">
@@ -891,12 +930,21 @@ export default function PostDetail() {
 				</p>
 
 				{p.image_url && (
-					<img
-						src={p.image_url}
-						alt="Attached to post"
-						loading="lazy"
-						className="mt-4 rounded-xl border border-border max-h-96 object-contain vb-card-press"
-					/>
+					<div
+						className="relative mt-4 group cursor-pointer inline-block"
+						onClick={() => setImageLightbox(true)}
+						title="Click to view full image"
+					>
+						<img
+							src={p.image_url}
+							alt="Attached to post"
+							loading="lazy"
+							className="rounded-xl border border-border max-h-96 object-contain vb-card-press transition-all duration-200 group-hover:brightness-105"
+						/>
+						<span className="absolute bottom-2.5 right-2.5 bg-black/75 backdrop-blur-xs text-white text-[11px] font-medium px-2 py-1 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-1.5 shadow-md pointer-events-none">
+							<Maximize2 size={12} /> Expand
+						</span>
+					</div>
 				)}
 
 				{p.tags && p.tags.length > 0 && (
@@ -1304,6 +1352,36 @@ export default function PostDetail() {
 				displayName={displayName}
 				onClose={() => setAuthorProfileOpen(false)}
 			/>
+
+			{/* Fullscreen image preview lightbox */}
+			{imageLightbox && p.image_url && (
+				<div
+					className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/85 backdrop-blur-md vb-fade-in"
+					role="dialog"
+					aria-modal="true"
+					aria-label="Image Preview"
+					onClick={() => setImageLightbox(false)}
+				>
+					<div
+						className="relative max-w-4xl max-h-[90vh] flex flex-col items-center"
+						onClick={(e) => e.stopPropagation()}
+					>
+						<img
+							src={p.image_url}
+							alt="Full preview"
+							className="max-h-[85vh] max-w-full rounded-2xl object-contain shadow-2xl border border-border/40"
+						/>
+						<button
+							type="button"
+							onClick={() => setImageLightbox(false)}
+							className="absolute -top-3 -right-3 w-8 h-8 rounded-full bg-surface text-ink border border-border shadow-lg hover:scale-110 active:scale-95 transition-all flex items-center justify-center font-bold text-xs cursor-pointer"
+							aria-label="Close preview"
+						>
+							✕
+						</button>
+					</div>
+				</div>
+			)}
 		</div>
 	);
 }

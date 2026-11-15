@@ -9,9 +9,13 @@
 	ShieldCheck,
 	Sparkles,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";import { Link } from "react-router";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Link } from "react-router";
 import UpdateNotice from "../components/admin/UpdateNotice";
+import RankDelta from "../components/RankDelta";
 import { useApp } from "../contexts/AppContext";
+import { useFlipList } from "../hooks/useFlipList";
+import { useFeedKeyboardNav } from "../hooks/useFeedKeyboardNav";
 import { useUpdateSignal } from "../hooks/useUpdateSignal";
 import { Segmented } from "../components/ui";
 import { api } from "../lib/api";
@@ -263,6 +267,56 @@ export default function Suggestions() {
 		return list;
 	}, [items, sort, statusF]);
 
+	// ── Top-ranked rank motion ──
+	// A vote reorders this list the moment it lands (optimistic) and again
+	// when the server row merges. Without FLIP the cards teleport and the tap
+	// reads as a glitch. Here the cards glide to their new slots over a slow
+	// 900ms — deliberately slower than the 380ms default so a reorder is
+	// legible rather than a blur: the eye can follow which card overtook
+	// which — and wear an "↑ 2 / ↓ 1" chip for three seconds. Switching sort
+	// or filter re-baselines silently — that reorder was the reader's, not a
+	// vote's.
+	const [rankMoves, setRankMoves] = useState<Map<string, number>>(new Map());
+	const rankTimer = useRef<number | null>(null);
+	const flipRef = useFlipList({
+		order: sorted.map((s) => s.id),
+		durationMs: 900,
+		resetKey: `${sort}:${statusF}`,
+		onMoved: (moves) => {
+			setRankMoves(new Map(moves));
+			if (rankTimer.current !== null) window.clearTimeout(rankTimer.current);
+			rankTimer.current = window.setTimeout(
+				() => setRankMoves(new Map()),
+				3000,
+			);
+		},
+	});
+
+	useEffect(() => {
+		setRankMoves(new Map());
+		if (rankTimer.current !== null) {
+			window.clearTimeout(rankTimer.current);
+			rankTimer.current = null;
+		}
+	}, [sort, statusF]);
+
+	useEffect(
+		() => () => {
+			if (rankTimer.current !== null) window.clearTimeout(rankTimer.current);
+		},
+		[],
+	);
+
+	const { activeId } = useFeedKeyboardNav({
+		items: sorted,
+		onBookmark: (item) => {
+			toggleBookmark(item.id);
+		},
+		onUpvote: (item) => {
+			void vote(item.id);
+		},
+	});
+
 	return (
 		<div className="max-w-3xl mx-auto">
 			<div className="flex items-center justify-between mb-1">
@@ -351,12 +405,21 @@ export default function Suggestions() {
 				</div>
 			)}
 
-			<div className="space-y-3">
+			<div ref={flipRef} className="space-y-3 vb-feed-list">
 				{sorted.map((s, rank) => (
 					<article
 						key={s.id}
-						className="card card-hover p-4 flex gap-3.5 vb-rise"
+						data-flip-id={s.id}
+						data-feed-id={s.id}
+						className={`relative card card-hover p-4 flex gap-3.5 vb-rise transition-all duration-200 rounded-2xl ${
+							activeId === s.id
+								? "ring-2 ring-accent/70 shadow-[0_0_24px_rgba(118,87,255,0.25)]"
+								: ""
+						}`}
 					>
+						{rankMoves.has(s.id) && (
+							<RankDelta move={rankMoves.get(s.id) ?? 0} />
+						)}
 						<button
 							onClick={() => vote(s.id)}
 							disabled={busy === s.id}

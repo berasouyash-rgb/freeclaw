@@ -6,7 +6,9 @@ import {
 	EyeOff,
 	GitMerge,
 	Loader2,
-	Lock,
+	Lock,
+	Bot,
+	ShieldAlert,
 	MessageSquare,
 	Pin,
 	Play,
@@ -648,7 +650,15 @@ export default function PostsTable({
 		// returned — most visibly every poll, because a poll is a post whose
 		// `type` is still problem/suggestion and only `linked_poll` marks it.
 		let list = posts;
-		if (statusF !== "all") list = list.filter((p) => p.status === statusF);
+		if (statusF !== "all") {
+			if (statusF === "hidden_by_agent") {
+				list = list.filter((p) => p.hidden && p.hidden_by === "agent");
+			} else if (statusF === "hidden") {
+				list = list.filter((p) => p.hidden);
+			} else {
+				list = list.filter((p) => p.status === statusF);
+			}
+		}
 		if (catF !== "All") list = list.filter((p) => p.category === catF);
 		if (priorityF !== "all") list = list.filter((p) => p.priority === priorityF);
 		if (query.trim()) {
@@ -826,7 +836,9 @@ export default function PostsTable({
 					value={statusF}
 					onChange={(e) => setStatusF(e.target.value)}
 				>
-					<option value="all">All statuses</option>
+					<option value="all">All statuses</option>
+					<option value="hidden_by_agent">🤖 Hidden by Agent (Quarantined)</option>
+					<option value="hidden">Hidden from Public</option>
 					{Object.entries(STATUS_META).map(([k, v]) => (
 						<option key={k} value={k}>
 							{v.label}
@@ -936,7 +948,20 @@ export default function PostsTable({
 										/>
 									</td>
 									<td className="px-4 py-3 font-medium max-w-64">
-										<span className="line-clamp-1">{p.title}</span>
+										<span className="line-clamp-1">{p.title}</span>
+										{p.hidden && p.hidden_by === "agent" && (
+											<span
+												className="ml-1.5 inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-500/15 text-amber-500 border border-amber-500/30 shrink-0"
+												title={p.quarantine_reason ? `Hidden by Agent: ${p.quarantine_reason}` : "Hidden from public by AI safety sentinel"}
+											>
+												<Bot size={10} /> Hidden by Agent
+											</span>
+										)}
+										{p.hidden && p.hidden_by !== "agent" && (
+											<span className="ml-1.5 inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-red-500/15 text-red-400 shrink-0" title="Hidden from public">
+												<EyeOff size={10} /> Hidden
+											</span>
+										)}
 										{p.deleted && (<span className="ml-1.5 text-[10px] text-ink3 font-semibold" title={`Deleted by ${p.author_id ?? "user"} · ${p.updated_at ?? p.created_at ?? "unknown time"} · auto-removes 5h after deletion`}>🗑 Deleted by user</span>)}
 										{p.status === "pending_review" && (
 											<span className="ml-1.5 text-[10px] text-warn font-semibold" title="Held for review — possible PII or quality issue">
@@ -944,7 +969,8 @@ export default function PostsTable({
 											</span>
 										)}
 									</td>
-									<td className="px-2 py-3 text-xs">{p.category}</td>									<td className="px-2 py-3 text-xs" title={`Auto-assigned: ${p.priority}`}>
+									<td className="px-2 py-3 text-xs">{p.category}</td>
+									<td className="px-2 py-3 text-xs" title={`Auto-assigned: ${p.priority}`}>
 										<span
 											className="inline-flex items-center gap-1 font-semibold"
 											style={{ color: PRIORITY_META[p.priority]?.color }}
@@ -1256,6 +1282,41 @@ export default function PostsTable({
 							</label>
 						</div>
 
+						{/* Agent Auto-Quarantine Detail Panel */}
+						{selected.hidden && selected.hidden_by === "agent" && (
+							<div className="rounded-xl border border-amber-500/30 bg-amber-500/[0.08] p-3.5 mb-4 shadow-xs">
+								<div className="flex items-center justify-between mb-2">
+									<div className="flex items-center gap-2">
+										<ShieldAlert size={15} className="text-amber-400" />
+										<span className="text-xs font-bold tracking-wider text-amber-400 uppercase">
+											Hidden by 24/7 AI Safety Agent
+										</span>
+									</div>
+									<span className="text-[10px] px-2 py-0.5 rounded-full font-bold bg-amber-500/20 text-amber-300">
+										Quarantined
+									</span>
+								</div>
+								<p className="text-xs text-ink dark:text-white/90 leading-relaxed mb-3">
+									<strong className="text-amber-300">Reason:</strong> {selected.quarantine_reason || "Policy violation detected by safety sentinel."}
+								</p>
+								<div className="flex items-center gap-2">
+									<button
+										onClick={() => {
+											update(selected.id, {
+												hidden: false,
+												hidden_by: null,
+												quarantine_reason: null,
+												status: "reported",
+											});
+										}}
+										className="btn btn-soft !py-1 !px-2.5 !text-xs text-good border-good/40 hover:bg-good/10 font-semibold flex items-center gap-1"
+									>
+										<CheckCircle2 size={12} /> Allow & Restore to Public
+									</button>
+								</div>
+							</div>
+						)}
+
 						{/* PII Detection Detail Panel */}
 						{selected.status === "pending_review" && (
 							<div className="rounded-lg border border-amber-500/25 bg-amber-500/[0.04] p-3 mb-4">

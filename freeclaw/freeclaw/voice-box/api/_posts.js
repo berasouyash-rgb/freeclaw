@@ -440,7 +440,15 @@ export default async function handler(req, res) {
 			/** Narrow any posts query (row fetch OR exact count) by the same filters. */
 			const applyListFilters = (query) => {
 				let out = query;
-				if (listFilters.status) out = out.eq("status", listFilters.status);
+				if (listFilters.status) {
+					if (listFilters.status === "hidden_by_agent") {
+						out = out.eq("hidden", true).eq("hidden_by", "agent");
+					} else if (listFilters.status === "hidden") {
+						out = out.eq("hidden", true);
+					} else {
+						out = out.eq("status", listFilters.status);
+					}
+				}
 				if (listFilters.category) out = out.eq("category", listFilters.category);
 				if (listFilters.priority) out = out.eq("priority", listFilters.priority);
 				if (listFilters.from) out = out.gte("created_at", listFilters.from);
@@ -841,9 +849,9 @@ export default async function handler(req, res) {
 					.from("posts")
 					.select("id,title,category,status,created_at,deleted,hidden")
 					.eq("author_id", author_id)
-					.gte("created_at", new Date(Date.now() - IDEMPOTENCY_MS).toISOString())
+					.gte("created_at", new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString())
 					.order("created_at", { ascending: false })
-					.limit(10),
+					.limit(50),
 				supabase
 					.from("posts")
 					.select("id, title, category, status, author_id, created_at")
@@ -924,9 +932,11 @@ export default async function handler(req, res) {
 			//    repost window, so a later complaint that merely reuses the
 			//    same words is still accepted.
 			const DUP_SIMILARITY_WINDOW_MS = 24 * 60 * 60 * 1000;
-			const isDuplicate = comparablePosts.some((p) => {
-				if (["solved", "archived"].includes(p.status)) return false; // ignore closed posts
-				if (p.author_id !== author_id) return false;
+			const isMatch = (p) => {
+				if (["solved", "archived", "pending_review"].includes(p.status)) return false; // ignore closed/unreviewed posts
+				if (p.deleted || p.hidden) return false;
+				if (isTestArtifact(p.title)) return false;
+				if (p.author_id && p.author_id !== author_id) return false;
 				if (normalizedTitle === "") return false;
 				const existingTitle = normalizeForCompare(p.title || "");
 				if (existingTitle === "") return false;
@@ -952,12 +962,22 @@ export default async function handler(req, res) {
 				if (shorterWords.size > 0 && overlap / shorterWords.size >= 0.85)
 					return true;
 				return false;
+			};
+
+			// Cross-category duplicate guard: check author's recent posts across ALL categories
+			const myCrossDup = (recentMine.data || []).find(isMatch);
+			const isDuplicate = Boolean(myCrossDup) || comparablePosts.some((p) => {
+				if (p.author_id !== author_id) return false;
+				return isMatch(p);
 			});
 
 			if (isDuplicate) {
+				const catSuffix = myCrossDup && myCrossDup.category !== category
+					? ` in ${myCrossDup.category}`
+					: " in this category";
 				return res.status(409).json({
 					error:
-						"You already have a very similar post open in this category. Please check your existing post before creating a duplicate.",
+						`You already have a very similar post open${catSuffix}. Creating duplicate posts across categories is not allowed.`,
 					code: "DUPLICATE_POST",
 				});
 			}
@@ -1295,6 +1315,16 @@ export default async function handler(req, res) {
 				}
 				for (const f of ["pinned", "featured", "hidden", "locked", "official"])
 					if (typeof b[f] === "boolean") patch[f] = b[f];
+				if (b.hidden === false) {
+					// Admin explicitly unhid/restored: clear agent quarantine flags
+					patch.hidden_by = null;
+					patch.quarantine_reason = null;
+				} else if (b.hidden_by !== undefined) {
+					patch.hidden_by = clean(b.hidden_by, 100) || null;
+				}
+				if (b.quarantine_reason !== undefined) {
+					patch.quarantine_reason = clean(b.quarantine_reason, 500) || null;
+				}
 				if (b.admin_reply !== undefined)
 					patch.admin_reply = clean(b.admin_reply, 1000);
 				if (b.admin_notes !== undefined)

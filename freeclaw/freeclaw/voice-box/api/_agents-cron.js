@@ -21,6 +21,7 @@ import { logger } from "./_observability.js";
 import { dispatchNotifications } from "./_notification-delivery.js";
 import { buildChain, callLLMChain } from "./_providers.js";
 import { runAgent } from "./agents/_runner.js";
+import { scanAllPublishedPosts } from "./_auto-quarantine.js";
 
 // Helper: enrich posts with real engagement from the reactions + comments tables.
 // The posts table has NO upvotes/downvotes/comment_count columns - those are
@@ -1147,7 +1148,12 @@ const AGENTS = {
 		name: "Content Moderator",
 		division: "moderation",
 		task: async (event) => {
-			// REAL: Scan recent posts/comments for moderation flags
+			// 24/7 ACTIVE AUTO-QUARANTINE: Scan all published posts for policy/privacy violations
+			const scanResult = await scanAllPublishedPosts({
+				limit: 100,
+				agentName: "24/7 AI Safety Sentinel",
+			});
+
 			const oneDayAgo = new Date(Date.now() - 86400000).toISOString();
 			const { data: flagged } = await supabase
 				.from("settings")
@@ -1160,18 +1166,21 @@ const AGENTS = {
 				(i) => new Date(i.created_at) > new Date(oneDayAgo),
 			);
 
-			// Check for content that might need review
+			// Count current items needing admin review
 			const { data: posts } = await supabase
 				.from("posts")
-				.select("id, title, description, status, created_at")
+				.select("id, title, description, status, hidden, hidden_by, created_at")
 				.gte("created_at", oneDayAgo);
 
 			const needsReview = (posts || []).filter(
-				(p) => p.status === "flagged" || p.status === "pending",
+				(p) => p.status === "flagged" || p.status === "pending_review" || p.hidden_by === "agent",
 			);
 
 			return {
-				summary: `Content moderation: ${recentFlags.length} new flags in 24h. ${needsReview.length} posts need admin review.`,
+				summary: `Content moderation: Scanned ${scanResult.scanned} published posts. Auto-quarantined ${scanResult.quarantined} violating posts. ${needsReview.length} total posts awaiting admin review.`,
+				scanned_posts: scanResult.scanned,
+				auto_quarantined: scanResult.quarantined,
+				quarantined_items: scanResult.items,
 				flags_24h: recentFlags.length,
 				pending_review: needsReview.length,
 				moderation_queue_size: queue.length,

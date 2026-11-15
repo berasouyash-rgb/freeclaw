@@ -122,6 +122,7 @@ import users from "./_users.js";
 import version from "./version.js";
 import workforce from "./_workforce.js";
 import autonomousHarnesses from "./_autonomous-harnesses.js";
+import autoQuarantine from "./_auto-quarantine.js";
 import agentCron from "./agent-cron.js";
 import learning from "./learning.js";
 import v3Audit from "./v3/_audit.js";
@@ -231,6 +232,7 @@ const routes = {
 	appeals: protect(appeals, "appeals"),
 	leaderboard: protect(leaderboard, "leaderboard"),
 	"evidence-scan": protect(evidenceScan, "evidence-scan"),
+	"quarantine-scan": protect(autoQuarantine, "quarantine-scan"),
 	inbox: protect(inbox, "inbox"),
 	"agents-cron": protect(agentsCron, "agents-cron"),
 	"agent-cron": protect(agentCron, "agent-cron"),
@@ -380,7 +382,7 @@ export default async function handler(req, res) {
 		const secFetchSite = req.headers["sec-fetch-site"];
 		const origin = req.headers["origin"];
 		const nativeShell = isNativeShell(req);
-		const originAllowed = nativeShell || (origin ? isAllowedOrigin(origin, req) : false);
+		const originAllowed = origin ? isAllowedOrigin(origin, req) : nativeShell;
 		if (secFetchSite === "cross-site" && !originAllowed) {
 			corsFn(res, req);
 			return res.status(403).json({ error: "Cross-site request blocked", requestId });

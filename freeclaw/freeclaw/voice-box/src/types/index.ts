@@ -43,6 +43,9 @@ export interface PostData {
 	pinned?: boolean;
 	featured?: boolean;
 	hidden?: boolean;
+	hidden_by?: string | null;
+	quarantine_reason?: string | null;
+	quarantined_at?: string | null;
 	/** 'private' → visible ONLY to author + admins/moderators */
 	visibility?: "public" | "private";
 	locked?: boolean;
@@ -79,6 +82,9 @@ export interface CommentData {
 	edited?: boolean;
 	deleted?: boolean;
 	hidden?: boolean;
+	hidden_by?: string | null;
+	quarantine_reason?: string | null;
+	quarantined_at?: string | null;
 	is_mine?: boolean;
 }
 
@@ -97,6 +103,9 @@ export interface PollData {
 	archived?: boolean;
 	deleted?: boolean;
 	hidden?: boolean;
+	hidden_by?: string | null;
+	quarantine_reason?: string | null;
+	quarantined_at?: string | null;
 	total_votes?: number;
 	vote_counts?: Record<number, number>;
 	is_mine?: boolean;

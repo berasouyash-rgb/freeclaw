@@ -47,6 +47,15 @@ export const ROUTE_MATRIX = {
 	"v3/audit": ROUTE_CLASS.ADMIN_ONLY,
 	"v3/security": ROUTE_CLASS.ADMIN_ONLY,
 	"v3/monitoring": ROUTE_CLASS.ADMIN_ONLY,
+	"v3/stream": ROUTE_CLASS.ADMIN_ONLY,
+	security: ROUTE_CLASS.ADMIN_ONLY,
+	"evidence-scan": ROUTE_CLASS.ADMIN_ONLY,
+	"quarantine-scan": ROUTE_CLASS.ADMIN_ONLY,
+	memory: ROUTE_CLASS.ADMIN_ONLY,
+	"agent-chat": ROUTE_CLASS.ADMIN_ONLY,
+	"meta-agent": ROUTE_CLASS.ADMIN_ONLY,
+	"agent-team": ROUTE_CLASS.ADMIN_ONLY,
+	performance: ROUTE_CLASS.ADMIN_ONLY,
 	// Spam console. GET returns quarantined posts (including author_id) plus
 	// activity_logs entries; on an anonymous platform that pairing is
 	// deanonymizing, so it must never be reachable without an admin token.
@@ -77,9 +86,14 @@ export const ROUTE_MATRIX = {
 	me: ROUTE_CLASS.USER_ONLY,
 	appeals: ROUTE_CLASS.USER_ONLY,
 	"data-export": ROUTE_CLASS.USER_ONLY,
+	notifications: ROUTE_CLASS.USER_ONLY,
+	inbox: ROUTE_CLASS.USER_ONLY,
 
 	// ── Method-Specific Matrix ──
 	admin: ROUTE_CLASS.METHOD_MATRIX,
+	"admin-events": ROUTE_CLASS.METHOD_MATRIX,
+	upload: ROUTE_CLASS.METHOD_MATRIX,
+	users: ROUTE_CLASS.METHOD_MATRIX,
 	reports: ROUTE_CLASS.METHOD_MATRIX,
 	announcements: ROUTE_CLASS.METHOD_MATRIX,
 	announcement: ROUTE_CLASS.METHOD_MATRIX,
@@ -102,6 +116,38 @@ export const ROUTE_MATRIX = {
 	"v3/orchestrate": ROUTE_CLASS.METHOD_MATRIX,
 	"v3/rag": ROUTE_CLASS.METHOD_MATRIX,
 	"v3/memory": ROUTE_CLASS.METHOD_MATRIX,
+
+	// ── Public Routes (Explicitly Registered) ──
+	posts: ROUTE_CLASS.PUBLIC,
+	comments: ROUTE_CLASS.PUBLIC,
+	communities: ROUTE_CLASS.PUBLIC,
+	polls: ROUTE_CLASS.PUBLIC,
+	reactions: ROUTE_CLASS.PUBLIC,
+	chat: ROUTE_CLASS.PUBLIC,
+	search: ROUTE_CLASS.PUBLIC,
+	health: ROUTE_CLASS.PUBLIC,
+	trends: ROUTE_CLASS.PUBLIC,
+	timeline: ROUTE_CLASS.PUBLIC,
+	version: ROUTE_CLASS.PUBLIC,
+	badges: ROUTE_CLASS.PUBLIC,
+	vitals: ROUTE_CLASS.PUBLIC,
+	errors: ROUTE_CLASS.PUBLIC,
+	events: ROUTE_CLASS.PUBLIC,
+	"identity-link": ROUTE_CLASS.PUBLIC,
+	"pre-publish": ROUTE_CLASS.PUBLIC,
+	"pre-review": ROUTE_CLASS.PUBLIC,
+	moderate: ROUTE_CLASS.PUBLIC,
+	leaderboard: ROUTE_CLASS.PUBLIC,
+	transcribe: ROUTE_CLASS.PUBLIC,
+	duplicates: ROUTE_CLASS.PUBLIC,
+	routing: ROUTE_CLASS.PUBLIC,
+	agent: ROUTE_CLASS.PUBLIC,
+	ai: ROUTE_CLASS.PUBLIC,
+	assist: ROUTE_CLASS.PUBLIC,
+	evidence: ROUTE_CLASS.PUBLIC,
+	"conversation-assist": ROUTE_CLASS.PUBLIC,
+	"ai-chat": ROUTE_CLASS.PUBLIC,
+	proactive: ROUTE_CLASS.PUBLIC,
 };
 
 /**
@@ -206,6 +252,47 @@ export async function verifyRouteAccess(endpoint, req) {
 			};
 		}
 
+		// /api/admin-events handler
+		if (endpoint === "admin-events") {
+			if (adminVerdict) return { authorized: true };
+			const ticket = req.query?.ticket;
+			if (method === "GET" && typeof ticket === "string" && ticket.length >= 32) {
+				return { authorized: true };
+			}
+			return {
+				authorized: false,
+				status: hasAdminToken ? 403 : 401,
+				error: hasAdminToken ? "Admin only" : "Admin access required",
+				code: hasAdminToken ? "forbidden" : "unauthorized",
+			};
+		}
+
+		// /api/upload handler (file upload bound to active user or admin)
+		if (endpoint === "upload") {
+			if (adminVerdict) return { authorized: true };
+			const anonId = req.headers?.["x-anon-id"];
+			const hasSessionToken = Boolean(req.headers?.["x-session-token"] || req.headers?.authorization);
+			if (anonId || hasSessionToken) return { authorized: true };
+			return {
+				authorized: false,
+				status: 401,
+				error: "User identity required for uploads",
+				code: "unauthorized",
+			};
+		}
+
+		// /api/users handler (POST heartbeat is public/user, admin views are admin-only)
+		if (endpoint === "users") {
+			if (method === "POST") return { authorized: true };
+			if (adminVerdict) return { authorized: true };
+			return {
+				authorized: false,
+				status: hasAdminToken ? 403 : 401,
+				error: hasAdminToken ? "Admin only" : "Admin access required",
+				code: hasAdminToken ? "forbidden" : "unauthorized",
+			};
+		}
+
 		// Read-public, write-admin endpoints
 		const readPublicWriteAdmin = [
 			"announcements",
@@ -244,5 +331,8 @@ export async function verifyRouteAccess(endpoint, req) {
 		}
 	}
 
+	if (!ROUTE_MATRIX[endpoint]) {
+		console.warn(`[gateway] Unclassified route accessed: ${endpoint} (${req.method})`);
+	}
 	return { authorized: true };
 }

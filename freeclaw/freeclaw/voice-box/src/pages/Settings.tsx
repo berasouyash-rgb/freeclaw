@@ -42,6 +42,7 @@ import {
 } from "../lib/browserNotify";
 import { api, isSessionDeadError } from "../lib/api";
 import { sendNotificationEmail } from "../lib/email";
+import { setSoundEnabled, triggerHaptic } from "../lib/haptics";
 import {
 	adoptIdentityById,
 	createLinkCode,
@@ -118,6 +119,13 @@ export default function Settings() {
 	const [bioDraft, setBioDraft] = useState(profile.bio || "");
 	const [photoDraft, setPhotoDraft] = useState(profile.photo || "");
 	const [dialog, setDialog] = useState<"resetTutorial" | "resetIdentity" | "adoptIdentity" | null>(null);
+	const [soundActive, setSoundActive] = useState(() => {
+		try {
+			return localStorage.getItem("vb_sound_enabled") !== "false";
+		} catch {
+			return true;
+		}
+	});
 
 	// Identity linking: one ID across this student's browser, APK, and EXE.
 	// Storage silos are OS-segregated, so linking is explicit and typed.
@@ -623,6 +631,40 @@ export default function Settings() {
 									setDisplayPrefs({ ...displayPrefs, showAvatars: v })
 								}
 							/>
+
+							<div className="flex items-center justify-between p-4 rounded-xl border border-border bg-surface2/40">
+								<div className="space-y-0.5">
+									<p className="text-sm font-medium text-ink">Tactile Sound & Haptics</p>
+									<p className="text-xs text-ink3">
+										Play subtle zero-latency acoustic clicks and harmonic chimes on user actions
+									</p>
+								</div>
+								<div className="flex items-center gap-2">
+									<button
+										type="button"
+										onClick={() => {
+											triggerHaptic("success");
+											toast("Previewing success chime", "ok");
+										}}
+										className="btn btn-ghost !text-xs !py-1 !px-2.5"
+									>
+										Play preview
+									</button>
+									<input
+										type="checkbox"
+										checked={soundActive}
+										onChange={(e) => {
+											const val = e.target.checked;
+											setSoundActive(val);
+											setSoundEnabled(val);
+											if (val) triggerHaptic("success");
+											toast(val ? "Tactile sound enabled" : "Tactile sound muted", "ok");
+										}}
+										className="toggle"
+										aria-label="Toggle tactile sound and haptics"
+									/>
+								</div>
+							</div>
 
 							{/* UI scale — the whole interface, proportionally */}
 							<div className="pt-4 border-t border-border/50">
@@ -1185,7 +1227,7 @@ function ToggleRow({
 				onClick={() => onChange(!checked)}
 				aria-pressed={checked}
 				aria-label={label}
-				className={`relative w-11 h-6 rounded-full transition-colors flex-shrink-0 ${
+				className={`switch relative w-11 h-6 rounded-full transition-colors flex-shrink-0 ${
 					checked ? "bg-accent" : "bg-surface2 border border-border"
 				}`}
 			>
