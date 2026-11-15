@@ -12,10 +12,123 @@
 import supabase from "./_db-client.js";
 import { auditLog, notifyUser } from "./_auth.js";
 import { serverModerate } from "./_moderation.js";
-import {
-	moderateContent,
-	detectGibberishOrLowQuality,
-} from "../src/lib/moderation.ts";
+
+const COURTESY_WORDS = new Set([
+	"yes", "no", "dear", "hello", "hi", "hey", "thanks", "thank", "sorry",
+	"please", "morning", "evening", "afternoon", "excuse", "pardon",
+	"welcome", "ok", "okay", "alright", "right", "good", "both", "our",
+	"your", "to", "the", "a", "an", "by", "with", "for", "and", "or",
+	"you", "me", "us", "them", "all",
+]);
+
+const GENERIC_AFTER_TITLE = new Set([
+	"here", "there", "said", "told", "asked", "was", "is", "are", "were",
+	"did", "does", "do", "has", "have", "had", "can", "could", "will",
+	"would", "should", "must", "name", "names", "room", "cabin", "office",
+	"desk", "evaluation", "feedback", "meeting", "union", "staff", "student", "students",
+	"that", "the", "about", "to", "in", "on", "at", "who", "which", "my", "our", "your", "his", "her",
+]);
+
+/**
+ * Detects faculty names, teacher references, or personal names in text.
+ */
+export function detectFacultyOrPersonalName(text) {
+	if (!text || typeof text !== "string") return null;
+
+	// 1. Postfix honorifics: "[name] mam/sir/miss" (e.g. "kauli mam", "sharma sir", "gupta ma'am")
+	const POSTFIX_HONORIFIC_RE = /\b([a-zA-Z]{3,20})\s+(?:mam|maam|ma'am|madam|sir|miss)\b/gi;
+	let match;
+	while ((match = POSTFIX_HONORIFIC_RE.exec(text)) !== null) {
+		const target = (match[1] || "").toLowerCase();
+		if (!COURTESY_WORDS.has(target)) {
+			return {
+				matched: match[0],
+				message: `Faculty/personal name detected ("${match[0]}") — VoiceFlow strictly protects campus anonymity. Real names cannot be published.`,
+			};
+		}
+	}
+
+	// 2. Prefix titles: "tecaher kauli", "teacher kauli", "faculty sharma", "prof verma"
+	const PREFIX_TITLE_RE = /\b(?:teacher|tecaher|techer|teachr|faculty|faclty|faculity|prof|proff|professor|principal|princpal|headmaster|headmistress|warden|hod|dean)\s+([a-zA-Z]{2,20})\b/gi;
+	while ((match = PREFIX_TITLE_RE.exec(text)) !== null) {
+		const word = (match[1] || "").toLowerCase();
+		if (word && !GENERIC_AFTER_TITLE.has(word)) {
+			return {
+				matched: match[0],
+				message: `Teacher/faculty name detected ("${match[0]}") — VoiceFlow strictly protects campus anonymity. Real names cannot be published.`,
+			};
+		}
+	}
+
+	// 3. Combined teacher + name + honorific ("tecaher kauli mam", "teacher sharma sir")
+	const TEACHER_NAME_MAM_RE = /\b(?:tecaher|teacher|techer|teachr|faculty|faclty|prof|proff)\s+([a-zA-Z]{2,20})\s+(?:mam|maam|ma'am|madam|sir|miss)\b/i;
+	const tMatch = text.match(TEACHER_NAME_MAM_RE);
+	if (tMatch) {
+		return {
+			matched: tMatch[0],
+			message: `Teacher name detected ("${tMatch[0]}") — VoiceFlow is strictly anonymous. Real names cannot be published.`,
+		};
+	}
+
+	// 4. Reporting/complaining phrase naming a teacher/staff ("told our tecaher kauli mam")
+	const REPORT_NAME_RE = /\b(?:told|telling|complained\s+to|spoke\s+to|talked\s+to|informed|reported\s+to|went\s+to)\s+(?:our\s+)?(?:tecaher|teacher|techer|faculty|prof)?\s*([a-zA-Z]{2,20})\s*(?:mam|maam|ma'am|madam|sir|miss)\b/i;
+	const rMatch = text.match(REPORT_NAME_RE);
+	if (rMatch) {
+		return {
+			matched: rMatch[0],
+			message: `Reporting a named teacher/faculty member ("${rMatch[0]}") — submit privately to administration instead of public posts.`,
+		};
+	}
+
+	return null;
+}
+
+/**
+ * Detects keyboard mash, interior punctuation, or corrupted low-quality words.
+ */
+export function detectGibberishOrLowQuality(text) {
+	if (!text || typeof text !== "string") return null;
+
+	// Words with interior punctuation like "shou;d", "asdd;ac"
+	const punctuationInWordMatch = text.match(/\b[a-zA-Z]{2,}[;:{}|\\<>[\]~`][a-zA-Z]{1,}\b/);
+	if (punctuationInWordMatch) {
+		return [
+			{
+				category: "quality",
+				severity: "medium",
+				message: `Garbled spelling or punctuation within word ("${punctuationInWordMatch[0]}"). Please use clear, complete words.`,
+				matched: punctuationInWordMatch[0],
+			},
+		];
+	}
+
+	// Keyboard mash tokens
+	const tokens = text.toLowerCase().split(/\s+/).map((w) => w.replace(/^[^a-z]+|[^a-z]+$/g, "")).filter(Boolean);
+	for (const token of tokens) {
+		if (token.length >= 6 && /(.)\1{4,}/.test(token)) {
+			return [
+				{
+					category: "quality",
+					severity: "medium",
+					message: `Repeated character mash ("${token}").`,
+					matched: token,
+				},
+			];
+		}
+		if (token.length >= 7 && /[bcdfghjklmnpqrstvwxyz]{6,}/i.test(token)) {
+			return [
+				{
+					category: "quality",
+					severity: "medium",
+					message: `Unpronounceable consonant cluster ("${token}").`,
+					matched: token,
+				},
+			];
+		}
+	}
+
+	return [];
+}
 
 /**
  * Evaluates an existing post record for policy or privacy violations.
@@ -28,7 +141,6 @@ export async function evaluatePostForQuarantine(post) {
 
 	const title = String(post.title || "").trim();
 	const description = String(post.description || "").trim();
-	const category = String(post.category || "Other");
 	const combined = `${title}\n\n${description}`.trim();
 
 	if (!title) {
@@ -40,35 +152,15 @@ export async function evaluatePostForQuarantine(post) {
 		};
 	}
 
-	// 1. Comprehensive Client/Server Content Moderation
-	const modRes = moderateContent(combined);
-	const serverMod = serverModerate(title, description);
-
-	// Check for Faculty / Personal Name Privacy Flags
-	const facultyHit =
-		(modRes.privacyFlags && modRes.privacyFlags.length > 0) ||
-		(serverMod.flags &&
-			serverMod.flags.some(
-				(f) =>
-					(f.type === "privacy" || f.category === "privacy") &&
-					(f.message?.toLowerCase().includes("name") ||
-						f.message?.toLowerCase().includes("teacher") ||
-						f.message?.toLowerCase().includes("faculty") ||
-						f.message?.toLowerCase().includes("sir") ||
-						f.message?.toLowerCase().includes("mam")),
-			));
-
+	// 1. Check for Faculty / Personal Name Privacy Flags
+	const facultyHit = detectFacultyOrPersonalName(combined);
 	if (facultyHit) {
-		const msg =
-			modRes.privacyFlags?.[0]?.message ||
-			serverMod.flags?.find((f) => f.type === "privacy" || f.category === "privacy")?.message ||
-			"Privacy violation: contains faculty or personal name";
 		return {
 			shouldQuarantine: true,
-			reason: msg,
+			reason: facultyHit.message,
 			rule: "privacy_faculty_name",
 			severity: "critical",
-			flags: modRes.privacyFlags || serverMod.flags,
+			flags: [facultyHit],
 		};
 	}
 
@@ -85,6 +177,7 @@ export async function evaluatePostForQuarantine(post) {
 	}
 
 	// 3. Core Server Moderation Engine (Profanity, Harassment, Hate, Self-harm, Threats, PII)
+	const serverMod = serverModerate(title, description);
 	if (serverMod.blocked) {
 		const worstFlag = serverMod.flags?.[0];
 		const flagCategory = worstFlag?.category || worstFlag?.type || "safety";
@@ -98,19 +191,7 @@ export async function evaluatePostForQuarantine(post) {
 		};
 	}
 
-	// 4. Blocked flags from unified moderateContent
-	if (modRes.blocked || modRes.coercionBlock) {
-		const worstFlag = modRes.flags?.[0];
-		return {
-			shouldQuarantine: true,
-			reason: worstFlag?.message || "Violates platform safety policy",
-			rule: worstFlag?.category || "safety_violation",
-			severity: "critical",
-			flags: modRes.flags,
-		};
-	}
-
-	// 5. Targeted Personal Attack or Threat patterns
+	// 4. Targeted Personal Attack or Threat patterns
 	const lower = combined.toLowerCase();
 	if (
 		/i will (find|beat|harm|kill|leak|expose|destroy|ruin) you/i.test(lower) ||
