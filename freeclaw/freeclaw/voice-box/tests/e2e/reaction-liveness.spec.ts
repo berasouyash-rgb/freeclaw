@@ -72,12 +72,10 @@ test.describe("Reaction liveness", () => {
 		// sessions, so reload once and act on the second load.
 		await page.reload();
 		await page.waitForLoadState("domcontentloaded");
-		const feed = page.locator(".vb-feed-list");
+		// The locator re-resolves after navigation; re-check without redeclaring.
 		await feed.waitFor({ timeout: 10_000 }).catch(() => undefined);
 		if ((await feed.count()) === 0) {
-			// Backend degraded in this environment — the client path cannot be
-			// proven without a feed; skip instead of timing out.
-			console.log("[e2e] feed unavailable (backend degraded) — skipping");
+			console.log("[e2e] feed unavailable after reload — skipping");
 			test.skip();
 			return;
 		}
@@ -136,12 +134,9 @@ test.describe("Reaction liveness", () => {
 		// toggle persisted (not just an optimistic flash).
 		await page.reload();
 		await page.waitForLoadState("domcontentloaded");
-		const feed = page.locator(".vb-feed-list");
 		await feed.waitFor({ timeout: 10_000 }).catch(() => undefined);
 		if ((await feed.count()) === 0) {
-			// Backend degraded in this environment — the client path cannot be
-			// proven without a feed; skip instead of timing out.
-			console.log("[e2e] feed unavailable (backend degraded) — skipping");
+			console.log("[e2e] feed unavailable after second reload — skipping");
 			test.skip();
 			return;
 		}
