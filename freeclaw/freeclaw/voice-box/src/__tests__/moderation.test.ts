@@ -237,6 +237,35 @@ describe("Frontend Moderation - PII Detection", () => {
 		).toBe(true);
 	});
 
+	it("detects teacher and faculty names with honorifics (user reported case)", () => {
+		// Exact phrase from user screenshot:
+		const reported = moderateContent("we habve told our tecaher kauli mam but still she di");
+		expect(reported.flags.some((f) => f.category === "privacy")).toBe(true);
+		expect(isBlockedByServer(reported)).toBe(true);
+
+		// Postfix and prefix honorifics:
+		expect(moderateContent("kauli mam is not checking copies").flags.some((f) => f.category === "privacy")).toBe(true);
+		expect(moderateContent("tecaher kauli mam does not come on time").flags.some((f) => f.category === "privacy")).toBe(true);
+		expect(moderateContent("sharma sir gave homework").flags.some((f) => f.category === "privacy")).toBe(true);
+		expect(moderateContent("gupta ma'am canceled class").flags.some((f) => f.category === "privacy")).toBe(true);
+		expect(moderateContent("anita miss is in room 12").flags.some((f) => f.category === "privacy")).toBe(true);
+		expect(moderateContent("warden ramesh locked the gate").flags.some((f) => f.category === "privacy")).toBe(true);
+	});
+
+	it("does NOT false-positive on polite courtesy words before sir or mam", () => {
+		expect(moderateContent("Yes sir, the assignment is submitted").flags.some((f) => f.category === "privacy")).toBe(false);
+		expect(moderateContent("Thank you mam for helping us").flags.some((f) => f.category === "privacy")).toBe(false);
+		expect(moderateContent("Please sir look into the canteen food").flags.some((f) => f.category === "privacy")).toBe(false);
+		expect(moderateContent("Good morning sir, library is closed").flags.some((f) => f.category === "privacy")).toBe(false);
+	});
+
+	it("detects garbled punctuation within words and keyboard mash (user reported case)", () => {
+		// Exact phrase from user screenshot: "we shou;d asddm ac"
+		const result = moderateContent("we shou;d asddm ac");
+		expect(result.flags.some((f) => f.category === "quality")).toBe(true);
+		expect(result.flags.some((f) => f.message.includes("shou;d") || f.message.includes("asddm"))).toBe(true);
+	});
+
 	it("does NOT flag a bare name without location context", () => {
 		const result = moderateContent("Kaku is a bad boy");
 		expect(result.flags.some((f) => f.category === "privacy")).toBe(false);

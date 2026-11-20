@@ -11,7 +11,6 @@ import {
 	Search,
 	ShieldCheck,
 	SlidersHorizontal,
-	Sparkles,
 	Target,
 	ThumbsUp,
 	TrendingUp,
@@ -23,7 +22,6 @@ import UpdateNotice from "../components/admin/UpdateNotice";
 import { useUpdateSignal } from "../hooks/useUpdateSignal";
 import { Link } from "react-router";
 import CountUp from "../components/CountUp";
-import GlowButton from "../components/GlowButton";
 import GridPattern from "../components/ui/grid-pattern";
 import ShimmerButton from "../components/ui/shimmer-button";
 import BorderBeam from "../components/ui/border-beam";
@@ -38,7 +36,6 @@ import { useCategories } from "../hooks/useCategories";
 import { useFeedKeyboardNav } from "../hooks/useFeedKeyboardNav";
 import { api, isSessionDeadMessage } from "../lib/api";
 import { tablistKeyDown } from "../lib/tablist";
-import { resetAnonId } from "../lib/identity";
 import {
 	applyServerMine,
 	mergeReactionCounts,
@@ -187,7 +184,7 @@ function buildPostsPath({
 }
 
 export default function Home() {
-	const { anonId, refreshIdentity, toggleBookmark } = useApp();
+	const { anonId, toggleBookmark } = useApp();
 	const categories = useCategories();
 	const [posts, setPosts] = useState<PostData[]>([]);
 	const [myReactions, setMyReactions] = useState<Record<string, string[]>>({});
@@ -930,7 +927,14 @@ export default function Home() {
 				(b.reactions?.support || 0) - (a.reactions?.support || 0),
 		};
 		rest.sort(sorter[sort] ?? sorter.newest);
-		return [...pinned, ...rest];
+		const combined = [...pinned, ...rest];
+		const seen = new Set<string>();
+		return combined.filter((p, i) => {
+			const k = p.id || `post_${i}`;
+			if (seen.has(k)) return false;
+			seen.add(k);
+			return true;
+		});
 	}, [posts, cat, feedType, query, sort, statusFilter]);
 
 	const { activeId } = useFeedKeyboardNav({
@@ -1133,19 +1137,6 @@ export default function Home() {
 						>
 							View solving board
 						</Link>
-						<GlowButton
-							variant="gold"
-							size="md"
-							className="!mt-0"
-							onClick={() =>
-								window.scrollTo({
-									top: document.body.scrollHeight,
-									behavior: "smooth",
-								})
-							}
-						>
-							<Sparkles size={14} /> See what's new
-						</GlowButton>
 					</div>
 				</div>
 			</section>
@@ -1443,21 +1434,11 @@ export default function Home() {
 					)}
 					{isSessionDeadMessage(error) ? (
 						<div className="flex flex-wrap items-center justify-center gap-3 mt-4">
-							<button
-								type="button"
-								className="btn btn-primary"
-								onClick={() => {
-									resetAnonId();
-									refreshIdentity();
-									setError("");
-									setHasLoaded(false);
-									void load({ fresh: true });
-								}}
-							>
-								Start Fresh
-							</button>
+							{/* No "Start Fresh" here: minting a new ID while the old
+							    ID still owns posts orphans that content forever.
+							    Recovery must be explicit in Settings → Account. */}
 							<Link to="/settings" className="btn btn-soft">
-								Pair This Device
+								Recover this ID in Settings
 							</Link>
 						</div>
 					) : (

@@ -5,7 +5,14 @@
 //   - openai/gpt-oss-20b                        → hangs past 20s
 //   - nvidia/nemotron-nano-3-30b-a3b            → 404 "Not found for account" (retired)
 //   - nvidia/nemotron-3-ultra-550b-a55b         → 200 in ~4s (alive)
-//   - nvidia/nemotron-3-super-120b-a12b         → 200 in ~2.5s (alive)
+//   - nvidia/nemotron-3-super-120b-a12b         → 200 in ~2.5s (alive then)
+//
+// Re-probed 2026-11-15 against this deployment's key:
+//   - nvidia/nemotron-3-super-120b-a12b         → 404 "Function not found for
+//     account" (retired for this account; removed from the hedge lane)
+//   - nvidia/nemotron-3.5-bolt-e4b              → 200 in ~700ms, {"pong":true}
+//   - nvidia/nemotron-3-ultra-550b-a55b         → 503 Service temporarily
+//     overloaded (kept as the congestion hedge, not the first responder)
 //   - openai/whisper-large-v3 (audio)           → 404 page not found (endpoint gone)
 //
 // A retired model ID in the hedge lane or serial chain is not a slow path —
@@ -29,6 +36,8 @@ const RETIRED_MODEL_IDS = [
 	"nvidia/nemotron-nano-3-30b-a3b",
 	"meta/llama-3.1-8b-instruct",
 	"meta/llama-3.3-70b-instruct",
+	// 404 "Function not found for account" on the 2026-11-15 reprobe.
+	"nvidia/nemotron-3-super-120b-a12b",
 ];
 
 function fastLane(src: string): string[] {
@@ -57,7 +66,7 @@ describe("NIM model-liveness contract", () => {
 
 	it("hedges on the live-measured responders first", () => {
 		const lane = fastLane(providersSrc);
-		expect(lane[0]).toBe("nvidia/nemotron-3-super-120b-a12b");
+		expect(lane[0]).toBe("nvidia/nemotron-3.5-bolt-e4b");
 		expect(lane).toContain("nvidia/nemotron-3-ultra-550b-a55b");
 	});
 });

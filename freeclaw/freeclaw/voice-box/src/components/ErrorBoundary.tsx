@@ -21,6 +21,7 @@ import {
 import { isChunkLoadError, reloadOnceForStaleChunk } from "../lib/retryLazy";
 import { reportBoundaryError } from "../lib/errors";
 import { navigateTo } from "../lib/platform";
+import BlurFade from "./ui/blur-fade";
 
 interface Props {
 	children: ReactNode;
@@ -297,12 +298,13 @@ interface LoadingSpinnerProps {
 }
 
 /**
- * Premium motive loader for async operations — an ambient stage with
- * drifting brand orbs, a brand tile with animated voice bars in a conic
- * gradient ring with a soft halo, the Voice Flow wordmark and tagline,
- * a shimmering status line, a rotating line that tells the full SaaS
- * motive, and chapter dots marking story progress. Pure CSS, static
- * under prefers-reduced-motion.
+ * Premium motive loader for async operations — an ambient stage with a
+ * soft drifting mesh of blurred brand orbs, a brand tile with animated
+ * voice bars in a conic gradient ring with a soft halo, the Voice Flow
+ * wordmark and tagline (Magic UI BlurFade entrances), a shimmering
+ * status line, a rotating line that tells the full SaaS motive, and
+ * chapter dots marking story progress. Motion is CSS + framer-motion
+ * driven by real wait states; static under prefers-reduced-motion.
  */
 export function LoadingSpinner({
 	text = "Loading…",
@@ -335,51 +337,59 @@ export function LoadingSpinner({
 			role="status"
 			aria-live="polite"
 		>
-			{/* Ambient stage — drifting brand orbs behind the ring (pure CSS) */}
-			<span className="vb-loader-orb vb-loader-orb--1" aria-hidden="true" />
-			<span className="vb-loader-orb vb-loader-orb--2" aria-hidden="true" />
-			<span className="vb-loader-orb vb-loader-orb--3" aria-hidden="true" />
+			{/* Ambient stage — soft drifting mesh orbs behind the ring (pure CSS) */}
+			<span className="vb-motive-mesh" aria-hidden="true">
+				<span className="vb-mesh-orb vb-mesh-orb--a" />
+				<span className="vb-mesh-orb vb-mesh-orb--b" />
+				<span className="vb-mesh-orb vb-mesh-orb--c" />
+			</span>
 
-			<div className="relative w-16 h-16 mb-4">
-				<div
-					className="absolute inset-0 rounded-full vb-loading-ring"
-					aria-hidden="true"
-				/>
-				<div
-					className="absolute inset-0 rounded-full vb-loading-halo"
-					aria-hidden="true"
-				/>
-				<div className="absolute inset-0 flex items-center justify-center">
-					<svg width={38} height={38} viewBox="0 0 96 96" aria-hidden="true">
-						<defs>
-							<linearGradient id={gradId} x1="0" y1="0" x2="1" y2="1">
-								<stop offset="0" stopColor="#6366F1" />
-								<stop offset="1" stopColor="#7C3AED" />
-							</linearGradient>
-						</defs>
-						<rect
-							x="4"
-							y="4"
-							width="88"
-							height="88"
-							rx="24"
-							fill={`url(#${gradId})`}
-						/>
-						<g
-							className="vb-loading-bars"
-							fill="none"
-							stroke="#fff"
-							strokeLinecap="round"
-						>
-							<rect x="26" y="30" width="44" height="8" rx="4" />
-							<rect x="30" y="44" width="36" height="8" rx="4" />
-							<rect x="26" y="58" width="44" height="8" rx="4" />
-						</g>
-					</svg>
+			<BlurFade>
+				<div className="relative w-16 h-16 mb-4">
+					<div
+						className="absolute inset-0 rounded-full vb-loading-ring"
+						aria-hidden="true"
+					/>
+					<div
+						className="absolute inset-0 rounded-full vb-loading-halo"
+						aria-hidden="true"
+					/>
+					<div className="absolute inset-0 flex items-center justify-center">
+						<svg width={38} height={38} viewBox="0 0 96 96" aria-hidden="true">
+							<defs>
+								<linearGradient id={gradId} x1="0" y1="0" x2="1" y2="1">
+									<stop offset="0" stopColor="#6366F1" />
+									<stop offset="1" stopColor="#7C3AED" />
+								</linearGradient>
+							</defs>
+							<rect
+								x="4"
+								y="4"
+								width="88"
+								height="88"
+								rx="24"
+								fill={`url(#${gradId})`}
+							/>
+							<g
+								className="vb-loading-bars"
+								fill="none"
+								stroke="#fff"
+								strokeLinecap="round"
+							>
+								<rect x="26" y="29" width="44" height="13" rx="4" />
+								<rect x="30" y="40" width="36" height="19" rx="4" />
+								<rect x="25" y="53" width="46" height="25" rx="4" />
+								<rect x="36" y="36" width="24" height="14" rx="4" />
+								<rect x="26" y="30" width="40" height="12" rx="4" />
+							</g>
+						</svg>
+					</div>
 				</div>
-			</div>
-			<p className="vb-loading-wordmark">Voice Flow</p>
-			<p className="vb-loading-tagline">Your Voice Matters</p>
+				<BlurFade>
+					<p className="vb-loading-wordmark">Voice Flow</p>
+					<p className="vb-loading-tagline">Your Voice Matters</p>
+				</BlurFade>
+			</BlurFade>
 			{text && (
 				<p className="vb-loading-label text-xs font-medium tracking-wide">
 					{text}

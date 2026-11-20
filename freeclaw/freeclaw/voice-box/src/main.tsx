@@ -31,10 +31,15 @@ initVitals();
 // Capture real JS errors and send to backend for admin visibility
 initErrorCapture();
 
-/** Remove the HTML splash. Safe to call multiple times. */
+/** Remove the HTML splash. Safe to call multiple times. Skips the element
+ *  while the boot morph owns it — the morph itself removes it. */
 function killSplash() {
 	const splash = document.getElementById("vb-splash");
-	if (splash) {
+	if (
+		splash &&
+		!splash.classList.contains("vb-morph-out") &&
+		splash.isConnected
+	) {
 		splash.classList.add("vb-hide");
 		setTimeout(() => splash.remove(), 260);
 	}
@@ -45,8 +50,8 @@ function killSplash() {
 function showFatal(message: string) {
 	const splash = document.getElementById("vb-splash");
 	if (!splash) return;
-	// If the splash was mid-hide, bring it back so the error is readable.
-	splash.classList.remove("vb-hide");
+	// If the splash was mid-hide or mid-morph, bring it back so the error is readable.
+	splash.classList.remove("vb-hide", "vb-morph-out");
 	// Clear any existing children safely
 	splash.replaceChildren();
 
@@ -121,6 +126,16 @@ async function boot(): Promise<void> {
 			<App />
 		</StrictMode>,
 	);
+	// Premium boot morph: the static splash dissolves into the mounted app —
+	// a transition between two real states, not a fake progress bar. The 3s
+	// killSplash ceiling above still applies as the hard backup.
+	requestAnimationFrame(() => {
+		const splash = document.getElementById("vb-splash");
+		if (splash) {
+			splash.classList.add("vb-morph-out");
+			setTimeout(() => splash.remove(), 320);
+		}
+	});
 	// Warm core routes during idle so all subsequent page navigations complete in < 300ms
 	preloadCoreRoutes();
 	// Primary: remove splash after first painted frame

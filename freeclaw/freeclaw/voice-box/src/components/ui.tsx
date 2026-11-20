@@ -1,6 +1,8 @@
 import { AlertTriangle, Flag, X } from "lucide-react";
-import { type ReactNode, useEffect, useRef, useState } from "react";
+import { type ReactNode, useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { useFocusTrap } from "../hooks/useFocusTrap";
+import { tablistKeyDown } from "../lib/tablist";
 
 /* ---------- Modal ---------- */
 export function Modal({
@@ -20,6 +22,11 @@ export function Modal({
 	footer?: ReactNode;
 }) {
 	const ref = useRef<HTMLDivElement>(null);
+	const titleId = useId();
+	/* Tab/Shift+Tab stay inside the dialog and focus returns to the trigger on
+	 * close. Escape is handled by the window listener below (kept on window so
+	 * it still fires when focus is on the backdrop or document). */
+	useFocusTrap(ref, { active: open });
 	useEffect(() => {
 		if (!open) return;
 		const h = (e: KeyboardEvent) => e.key === "Escape" && onClose();
@@ -40,7 +47,7 @@ export function Modal({
 			className="fixed inset-0 z-[70] grid place-items-end sm:place-items-center p-0 sm:p-4 overflow-y-auto"
 			role="dialog"
 			aria-modal="true"
-			aria-label={title}
+			aria-labelledby={titleId}
 		>
 			<div
 				className="absolute inset-0"
@@ -53,7 +60,9 @@ export function Modal({
 				className={`relative w-full ${maxWidth} card !rounded-b-none sm:!rounded-2xl shadow-2xl vb-rise max-h-[92dvh] flex flex-col overflow-hidden`}
 			>
 				<div className="flex items-center justify-between px-5 pt-5 pb-4 shrink-0">
-					<h2 className="font-display font-semibold text-base">{title}</h2>
+					<h2 id={titleId} className="font-display font-semibold text-base">
+						{title}
+					</h2>
 					<button
 						className="btn btn-ghost !p-1.5"
 						onClick={onClose}
@@ -95,20 +104,41 @@ export function ConfirmDialog({
 	danger?: boolean;
 }) {
 	const [busy, setBusy] = useState(false);
+	const [error, setError] = useState("");
+
+	// A fresh confirmation starts clean; a stale failure must not follow the
+	// dialog into an unrelated action.
+	useEffect(() => {
+		if (open) setError("");
+	}, [open]);
 
 	/* Async handlers (e.g. bulk deletes) get real busy feedback: the confirm
 	 * button disables and shows progress while the action runs, and the dialog
-	 * only closes on success — a failure leaves the dialog open so the admin
-	 * can retry. Sync handlers keep the old fire-and-close behavior. A busy
-	 * guard also stops a double-click from firing the action twice. */
+	 * only closes on success — a failure leaves the dialog open, explains what
+	 * went wrong and offers the same button as a retry. Sync handlers keep the
+	 * old fire-and-close behavior. A busy guard also stops a double-click from
+	 * firing the action twice. */
 	const handleConfirm = async () => {
 		if (busy) return;
-		const result = onConfirm();
+		setError("");
+		let result: void | Promise<void>;
+		try {
+			result = onConfirm();
+		} catch (err: unknown) {
+			setError(err instanceof Error ? err.message : "The action failed. Try again.");
+			return;
+		}
 		if (result instanceof Promise) {
 			setBusy(true);
 			try {
 				await result;
 				onClose();
+			} catch (err: unknown) {
+				setError(
+					err instanceof Error
+						? err.message
+						: "The action failed. Nothing was changed — try again.",
+				);
 			} finally {
 				setBusy(false);
 			}
@@ -131,9 +161,10 @@ export function ConfirmDialog({
 						className={`btn ${danger ? "btn-danger !bg-bad !text-white" : "btn-primary"}`}
 						onClick={handleConfirm}
 						disabled={busy}
+						aria-busy={busy}
 						autoFocus
 					>
-						{busy ? "Working…" : confirmLabel}
+						{busy ? "Working…" : error ? "Try again" : confirmLabel}
 					</button>
 				</div>
 			}
@@ -144,6 +175,11 @@ export function ConfirmDialog({
 				)}
 				{message}
 			</p>
+			{error && (
+				<p role="alert" className="mt-3 text-xs font-semibold text-bad">
+					{error}
+				</p>
+			)}
 		</Modal>
 	);
 }
@@ -417,6 +453,7 @@ export function Segmented<T extends string>({
 		<div
 			className="inline-flex rounded-xl bg-surface2 p-1 gap-0.5"
 			role="tablist"
+			onKeyDown={tablistKeyDown}
 		>
 			{options.map((o) => (
 				<button

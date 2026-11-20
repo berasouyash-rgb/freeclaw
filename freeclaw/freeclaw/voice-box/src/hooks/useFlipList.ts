@@ -8,10 +8,12 @@ import { useLayoutEffect, useRef } from "react";
  * number moves, the page jumps, and the tap feels like a glitch instead of
  * a result. Here every `[data-flip-id]` child is measured before the commit
  * and, when its position changed, played back from where it used to be so it
- * glides into its new slot (380ms, decelerating).
+ * glides into its new slot (380ms by default, decelerating).
  *
  * Rules this hook keeps:
  *  - First paint never animates (there is no "before" to invert from).
+ *  - A new sort/filter (`resetKey`) re-baselines without motion — the list
+ *    was re-ordered by the reader, not by a vote.
  *  - Only position changes animate; a new/removed card never fakes a slide.
  *  - `offsetTop` is read instead of `getBoundingClientRect()` because a
  *    still-running transform would otherwise be measured as the element's
@@ -45,11 +47,21 @@ interface Snapshot {
 export function useFlipList<T extends HTMLElement = HTMLDivElement>({
 	order,
 	onMoved,
+	durationMs = DURATION_MS,
+	resetKey,
 }: {
 	/** The rendered order — the hook re-measures when this sequence changes. */
 	order: string[];
 	/** Called with id → rank delta (positive moved up, negative moved down). */
 	onMoved?: (moves: Map<string, number>) => void;
+	/** Glide length for this list — longer reads calmer on roomy cards. */
+	durationMs?: number;
+	/**
+	 * Any value identifying the current view (sort + filter). Changing it
+	 * re-baselines the snapshot but plays no motion and reports no moves:
+	 * re-sorting is a new list, not a card climbing the ranks.
+	 */
+	resetKey?: string | number;
 }) {
 	const containerRef = useRef<T | null>(null);
 	const previous = useRef<Map<string, Snapshot> | null>(null);
@@ -57,6 +69,7 @@ export function useFlipList<T extends HTMLElement = HTMLDivElement>({
 	// function every render would otherwise re-run the measurement.
 	const onMovedRef = useRef(onMoved);
 	onMovedRef.current = onMoved;
+	const previousResetKey = useRef(resetKey);
 
 	const orderKey = order.join("\u0000");
 
@@ -73,7 +86,11 @@ export function useFlipList<T extends HTMLElement = HTMLDivElement>({
 		});
 		const before = previous.current;
 		previous.current = next;
+		const viewChanged =
+			resetKey !== undefined && resetKey !== previousResetKey.current;
+		previousResetKey.current = resetKey;
 		if (!before) return; // first paint — nothing has moved yet
+		if (viewChanged) return; // re-sort / filter — baseline only
 		// A pure reorder only. An arrival or removal (a new post, a filter, a
 		// deletion) makes every card shift by one, and animating that would
 		// glide the whole feed and label ten cards "↓1" for one new post.
@@ -98,11 +115,11 @@ export function useFlipList<T extends HTMLElement = HTMLDivElement>({
 					{ transform: `translateY(${dy}px)` },
 					{ transform: "translateY(0px)" },
 				],
-				{ duration: DURATION_MS, easing: EASING },
+				{ duration: durationMs, easing: EASING },
 			);
 		});
 		if (moves.size) onMovedRef.current?.(moves);
-	}, [orderKey]);
+	}, [orderKey, durationMs, resetKey]);
 
 	return containerRef;
 }

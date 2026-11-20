@@ -39,6 +39,32 @@ async function getTableStats(table) {
 	}
 }
 
+/**
+ * Health score from measured table stats.
+ *
+ * Table ERRORS are the failure signal. Latency is context: a Supabase count
+ * taking ~1s on a cold connection is normal, and the previous formula counted
+ * every table slower than 500ms as broken — with 14 measured tables a fully
+ * reachable database scored 0 and the admin console painted "unhealthy" on
+ * every load. Only measured errors move the score (10 points each, the
+ * documented db-intel contract); a slow-but-working table is reported as
+ * `tables_slow`, which is information, not a failure.
+ */
+function scoreTableHealth(tableStats) {
+	const failed = tableStats.filter((t) => t.status === "error").length;
+	const slow = tableStats.filter(
+		(t) => t.status === "ok" && t.latency_ms > 500,
+	).length;
+	const healthScore = Math.max(0, 100 - failed * 10);
+	return {
+		healthScore,
+		status:
+			healthScore >= 80 ? "healthy" : healthScore >= 50 ? "degraded" : "unhealthy",
+		failed,
+		slow,
+	};
+}
+
 async function getStaleData() {
 	const now = Date.now();
 	const DAY = 86400000;
@@ -240,16 +266,13 @@ export default async function handler(req, res) {
 			.filter((t) => t.rows >= 0)
 			.reduce((a, b) => a + b.rows, 0);
 
-		const tablesWithIssues = tableStats.filter(
-			(t) => t.status === "error" || t.latency_ms > 500,
-		);
-
-		const healthScore = tablesWithIssues.length === 0 ? 100
-			: Math.max(0, 100 - tablesWithIssues.length * 10);
+		const health = scoreTableHealth(tableStats);
 
 		return res.status(200).json({
-			status: healthScore >= 80 ? "healthy" : healthScore >= 50 ? "degraded" : "unhealthy",
-			health_score: healthScore,
+			status: health.status,
+			health_score: health.healthScore,
+			tables_failed: health.failed,
+			tables_slow: health.slow,
 			total_rows: totalRows,
 			tables: tableStats,
 			stale_data: staleData,
@@ -280,21 +303,22 @@ export async function runDbIntel({ nowMs = Date.now() } = {}) {
 	const totalRows = tableStats
 		.filter((t) => t.rows >= 0)
 		.reduce((a, b) => a + b.rows, 0);
-	const issues = tableStats.filter(
-		(t) => t.status === "error" || t.latency_ms > SLOW_TABLE_MS,
+	// An advisory row is only warranted for real errors; a slow-but-working
+	// table is reported in the snapshot, not escalated as a failure.
+	const issues = tableStats.filter((t) => t.status === "error");
+	const slowTables = tableStats.filter(
+		(t) => t.status === "ok" && t.latency_ms > SLOW_TABLE_MS,
 	);
-	const healthScore =
-		issues.length === 0 ? 100 : Math.max(0, 100 - issues.length * 10);
+	const health = scoreTableHealth(tableStats);
+	const healthScore = health.healthScore;
 
 	const snapshot = {
 		generated_at: new Date(nowMs).toISOString(),
 		health_score: healthScore,
-		status:
-			healthScore >= 80
-				? "healthy"
-				: healthScore >= 50
-					? "degraded"
-					: "unhealthy",
+		status: health.status,
+		tables_failed: health.failed,
+		tables_slow: health.slow,
+		slow_tables: slowTables.map((t) => ({ table: t.table, latency_ms: t.latency_ms })),
 		total_rows: totalRows,
 		tables_measured: tableStats.length,
 		issues: issues.map((t) => ({

@@ -88,8 +88,10 @@ describe("failure honesty: timeouts, outages, garbage", () => {
 		providers.callNvidiaFast.mockImplementationOnce(() => new Promise(() => {}));
 		providers.callLLMChain.mockImplementationOnce(() => new Promise(() => {}));
 		const text = "we need more bins in the cafeteria";
+		// Above MIN_MODEL_SLICE_MS so the call is actually attempted; the race
+		// must fire at the CALLER's number (900 ms), not a re-inflated second.
 		const d = await evaluateContentDeep(text, "direct", null, {
-			timeoutMs: 150,
+			timeoutMs: 900,
 			taskKey: "test.deep",
 		});
 		expect(d.model_used).toBe(false);
@@ -97,6 +99,24 @@ describe("failure honesty: timeouts, outages, garbage", () => {
 		// Deterministic verdict stands: clean text stays clean.
 		expect(d.blocked).toBe(false);
 		expect(d.flags).toEqual([]);
+	});
+
+	it("skips a slice too small to answer instead of pretending it timed out", async () => {
+		const text = "we need more bins in the cafeteria";
+		const started = Date.now();
+		const d = await evaluateContentDeep(text, "direct", null, {
+			timeoutMs: 150,
+			taskKey: "test.deep",
+		});
+		// No model attempt is affordable, so none must be made: an attempt here
+		// would hold a socket for a guaranteed miss and then report a timeout
+		// that never really ran out.
+		expect(providers.callNvidiaFast).not.toHaveBeenCalled();
+		expect(providers.callLLMChain).not.toHaveBeenCalled();
+		expect(d.model_used).toBe(false);
+		expect(d.timedOut).toBe(false);
+		expect(d.blocked).toBe(false);
+		expect(Date.now() - started).toBeLessThan(600);
 	});
 
 	it("ignores unparsable model output", async () => {

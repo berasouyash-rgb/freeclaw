@@ -28,6 +28,7 @@ const LOADERS: Record<string, ChunkLoader> = {
 	insights: () => import("../pages/Insights"),
 	privacy: () => import("../pages/Privacy"),
 	faq: () => import("../pages/Faq"),
+	developer: () => import("../pages/Developer"),
 	home: () => import("../pages/Home"),
 	admin: () => import("../pages/Admin"),
 };
@@ -48,6 +49,8 @@ const ROUTE_KEYS: Record<string, string> = {
 	"/insights": "insights",
 	"/privacy": "privacy",
 	"/faq": "faq",
+	"/developer": "developer",
+	"/about/developer": "developer",
 	"/": "home",
 	"/admin": "admin",
 };

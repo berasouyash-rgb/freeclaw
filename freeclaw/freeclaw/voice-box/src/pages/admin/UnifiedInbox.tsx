@@ -39,6 +39,7 @@ import { useApp } from "../../contexts/AppContext";
 import { useUpdateSignal } from "../../hooks/useUpdateSignal";
 import { useAdminStream } from "../../hooks/useAdminStream";
 import { api } from "../../lib/api";
+import { tablistKeyDown } from "../../lib/tablist";
 import { renderMarkdown } from "../../lib/markdown";
 import { useRealtime } from "../../lib/useRealtime";
 import { fmtDate, timeAgo } from "../../lib/utils";
@@ -968,7 +969,12 @@ export default function UnifiedInbox() {
 		})();
 	}, [active, messages, aiSummary, summaryBusy]);
 
-	/* ── AI suggest ───────────────────────────────────────── */
+	/* ── AI suggest & Situational Responses ─────────────────── */
+	const [aiOptions, setAiOptions] = useState<Array<{ style: string; label: string; text: string }>>([]);
+	const [sentiment, setSentiment] = useState<string | null>(null);
+	const [urgency, setUrgency] = useState<string | null>(null);
+	const [draftDismissed, setDraftDismissed] = useState<string | null>(null);
+
 	const aiSuggest = async () => {
 		if (!messages.length) {
 			setText(QUICK_REPLIES[0] ?? "");
@@ -977,19 +983,31 @@ export default function UnifiedInbox() {
 		setAiBusy(true);
 		try {
 			// Drafting runs the full chain (up to ~28s) — never the 15s default.
-			const r = await api.postLong<{ reply?: string; engine?: string }>(
+			const r = await api.postLong<{
+				reply?: string;
+				engine?: string;
+				options?: Array<{ style: string; label: string; text: string }>;
+				sentiment?: string;
+				urgency?: string;
+			}>(
 				"/api/assist",
 				{
 					task: "chat_reply",
 					messages: messages.map((m) => ({ sender: m.sender, body: m.body })),
 				},
 			);
+			if (r.options && r.options.length > 0) {
+				setAiOptions(r.options);
+			}
+			if (r.sentiment) setSentiment(r.sentiment);
+			if (r.urgency) setUrgency(r.urgency);
+
 			if (r.reply) {
 				setText(r.reply);
 				toast(
 					r.engine === "keyword"
-						? "Suggested reply (add NVIDIA_API_KEY for smarter AI)"
-						: "AI reply drafted — edit before sending",
+						? "Suggested reply ready — choose a style below"
+						: "AI reply drafted with situational choices",
 					"info",
 				);
 				inputRef.current?.focus();
@@ -1004,7 +1022,7 @@ export default function UnifiedInbox() {
 	/* Post-draft proposal (accept/reject popup) */
 	const [draftBusy, setDraftBusy] = useState(false);
 	const draftProposal = (threadState?.draft_proposal ?? null) as (DraftProposalData & { status?: string }) | null;
-	const draftOpen = !!draftProposal && draftProposal.status === "proposed";
+	const draftOpen = !!draftProposal && draftProposal.status === "proposed" && draftDismissed !== active;
 	const requestDraft = async () => {
 		if (!active || draftBusy) return;
 		setDraftBusy(true);
@@ -1209,7 +1227,7 @@ export default function UnifiedInbox() {
 				</div>
 
 				<div className="px-3 pt-2 flex flex-wrap items-center gap-2">
-					<div className="inline-flex rounded-xl bg-surface2 p-1 gap-0.5" role="tablist" aria-label="Thread importance">
+					<div className="inline-flex rounded-xl bg-surface2 p-1 gap-0.5" role="tablist" aria-label="Thread importance" onKeyDown={tablistKeyDown}>
 						{(["important", "slang", "all"] as const).map((m) => (
 							<button
 								key={m}
@@ -1572,7 +1590,15 @@ export default function UnifiedInbox() {
 						)}
 
 						{draftOpen && draftProposal && (
-							<div className="px-4 pt-3">
+							<div className="px-4 pt-3 relative">
+								<button
+									type="button"
+									onClick={() => setDraftDismissed(active)}
+									className="absolute top-4 right-6 text-xs text-ink3 hover:text-ink font-semibold z-10 px-2 py-0.5 rounded bg-surface border border-border"
+									title="Dismiss draft proposal"
+								>
+									✕ Dismiss
+								</button>
 								<DraftProposal
 									proposal={draftProposal}
 									excerpt={messages.filter((m) => m.sender === "user").map((m) => m.body ?? "(attachment)").slice(-3)}
@@ -1594,7 +1620,7 @@ export default function UnifiedInbox() {
 						})()}
 						{/* Input */}
 						<div className="border-t border-border bg-surface px-4 py-3">
-							<div className="flex gap-1.5 overflow-x-auto pb-2.5 scrollbar-none">
+							<div className="flex gap-1.5 overflow-x-auto pb-2.5 scrollbar-none items-center">
 								<button
 									className="chip shrink-0 cursor-pointer !text-accent hover:!border-accent disabled:opacity-50 !py-1"
 									onClick={aiSuggest}
@@ -1607,10 +1633,31 @@ export default function UnifiedInbox() {
 									)}
 									{aiBusy ? "Thinking…" : "AI suggest"}
 								</button>
+								{sentiment && (
+									<span className="chip shrink-0 !py-1 !text-[10px] bg-accent/10 text-accent font-semibold border-accent/20">
+										{sentiment} {urgency === "high" ? "🔥 Urgent" : ""}
+									</span>
+								)}
+								{aiOptions.map((opt) => (
+									<button
+										key={opt.style}
+										type="button"
+										className="chip shrink-0 cursor-pointer !bg-accent-soft !text-accent hover:!border-accent !py-1 !text-[11px] font-semibold flex items-center gap-1"
+										title={opt.text}
+										onClick={() => {
+											setText(opt.text);
+											inputRef.current?.focus();
+										}}
+									>
+										<span>{opt.style === "empathy" ? "💜" : opt.style === "investigate" ? "🔍" : "⚡"}</span>
+										<span>{opt.label}</span>
+									</button>
+								))}
 								<button
-									className="chip shrink-0 cursor-pointer !text-accent hover:!border-accent disabled:opacity-50 !py-1"
+									className="chip shrink-0 cursor-pointer text-ink3 hover:!border-accent disabled:opacity-50 !py-1"
 									onClick={requestDraft}
 									disabled={draftBusy}
+									title="Create a community post from this discussion"
 								>
 									{draftBusy ? (
 										<Loader2 size={11} className="animate-spin" />

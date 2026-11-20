@@ -1,6 +1,55 @@
 import { useCallback, useEffect, useState } from "react";
-import { Bot, RefreshCcw } from "lucide-react";
+import { Activity, Bot, CheckCircle2, Cpu, Layers, Loader2, Play, RefreshCcw, ShieldAlert, Sparkles } from "lucide-react";
 import { api } from "../../lib/api";
+import { useApp } from "../../contexts/AppContext";
+
+const AUTONOMOUS_EMPLOYEES = [
+  {
+    id: "backend-load-optimizer",
+    name: "Backend Server & Load Optimizer",
+    role: "Database connection pools, latency checks, session maintenance & query speed",
+    division: "Infrastructure",
+    icon: Cpu,
+    color: "text-blue-500",
+    bg: "bg-blue-500/10 border-blue-500/25",
+  },
+  {
+    id: "platform-manager",
+    name: "Platform Manager",
+    role: "Sector triage, unassigned complaint routing, urgency prioritization",
+    division: "Operations",
+    icon: Layers,
+    color: "text-purple-500",
+    bg: "bg-purple-500/10 border-purple-500/25",
+  },
+  {
+    id: "safety-sentinel",
+    name: "AI Safety Sentinel",
+    role: "Scans posts, comments & polls; auto-quarantines PII & inappropriate content",
+    division: "Security",
+    icon: ShieldAlert,
+    color: "text-emerald-500",
+    bg: "bg-emerald-500/10 border-emerald-500/25",
+  },
+  {
+    id: "workforce-supervisor",
+    name: "Workforce Supervisor",
+    role: "Monitors agent heartbeat, cleans stalled executions, asserts SLA standards",
+    division: "Executive",
+    icon: Activity,
+    color: "text-amber-500",
+    bg: "bg-amber-500/10 border-amber-500/25",
+  },
+  {
+    id: "feedback-evaluator",
+    name: "Content & Feedback Evaluator",
+    role: "Synthesizes student sentiment, friction clusters, drafts executive briefs",
+    division: "Intelligence",
+    icon: Sparkles,
+    color: "text-pink-500",
+    bg: "bg-pink-500/10 border-pink-500/25",
+  },
+];
 
 interface AiTaskLive {
   calls?: number;
@@ -32,6 +81,30 @@ interface AiCheck {
   registry?: AiRegistryEntry[];
 }
 
+interface AiModelProbe {
+  configured?: boolean;
+  live?: boolean;
+  model?: string;
+  status?: number;
+  latency_ms?: number;
+  error?: string;
+}
+
+/** Live connectivity proof from /api/health `checks.ai_verification`. */
+interface AiVerification {
+  status?: string;
+  verified_real_llm?: boolean;
+  primary_fast?: string;
+  primary_quality?: string;
+  groq_live?: boolean;
+  nvidia_live?: boolean;
+  live_models?: string[];
+  checked?: { groq?: AiModelProbe; nvidia?: AiModelProbe };
+  latency_ms?: number;
+  note?: string;
+  timestamp?: string;
+}
+
 /**
  * AI Systems console — every managed AI task with its live health.
  * Read-only observe surface: rows render registry entries merged with
@@ -39,7 +112,9 @@ interface AiCheck {
  * Refresh is an explicit button tap per the page-lifecycle contract.
  */
 export default function AiSystems() {
+  const { toast } = useApp();
   const [check, setCheck] = useState<AiCheck | null>(null);
+  const [verification, setVerification] = useState<AiVerification | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
@@ -49,9 +124,10 @@ export default function AiSystems() {
     try {
       const r = await api.get<{
         status?: string;
-        checks?: { ai?: AiCheck };
+        checks?: { ai?: AiCheck; ai_verification?: AiVerification };
       }>("/api/health");
       setCheck(r.checks?.ai ?? null);
+      setVerification(r.checks?.ai_verification ?? null);
       if (!r.checks?.ai) setError("Health endpoint returned no AI section.");
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Failed to load AI health");
@@ -62,6 +138,30 @@ export default function AiSystems() {
   useEffect(() => {
     load();
   }, [load]);
+
+  const [runningAgent, setRunningAgent] = useState<string | null>(null);
+  const [employeeReports, setEmployeeReports] = useState<Record<string, string>>({});
+
+  const runEmployee = async (agentId: string) => {
+    if (runningAgent) return;
+    setRunningAgent(agentId);
+    try {
+      const res = await api.post<{ ok?: boolean; agent?: string; result?: { summary?: string } }>("/api/agents-cron", {
+        agent: agentId,
+      });
+      // Never fabricate a success summary when the backend returns no result.
+      const summary =
+        res.result?.summary ||
+        "Run finished, but the backend returned no summary — check the audit log before trusting it.";
+      setEmployeeReports((prev) => ({ ...prev, [agentId]: summary }));
+      toast(summary, "ok");
+      await load();
+    } catch (e: unknown) {
+      toast(e instanceof Error ? e.message : "Agent sweep failed", "err");
+    } finally {
+      setRunningAgent(null);
+    }
+  };
 
   const registry = check?.registry ?? [];
   const tasks = check?.tasks ?? {};
@@ -81,6 +181,109 @@ export default function AiSystems() {
           <RefreshCcw size={13} aria-hidden />{" "}
           {loading ? "Loading…" : "Refresh"}
         </button>
+      </div>
+
+      {verification && (
+        <div
+          className={`card p-3 mb-3 ${verification.verified_real_llm ? "border-good" : "border-warn"}`}
+          data-testid="ai-verification"
+          role="status"
+        >
+          <p className="text-xs font-bold mb-1">
+            {verification.verified_real_llm ? (
+              <span className="text-good">Live model verified</span>
+            ) : (
+              <span className="text-warn">No live model answered</span>
+            )}
+            {typeof verification.latency_ms === "number" && (
+              <span className="text-ink3 font-normal">
+                {" "}— {verification.latency_ms}ms
+              </span>
+            )}
+          </p>
+          <p className="text-xs text-ink2">
+            {(verification.live_models ?? []).length > 0
+              ? `Answering now: ${(verification.live_models ?? []).join(", ")}`
+              : "No provider returned generated text for the probe, so AI features report a degraded state instead of inventing answers."}
+          </p>
+          <p className="text-[10px] text-ink3 mt-1">
+            Probe asserts real generated content, not just an HTTP 200
+            {verification.timestamp
+              ? ` — checked ${new Date(verification.timestamp).toLocaleTimeString()}`
+              : ""}
+            .
+          </p>
+        </div>
+      )}
+
+      {/* 24/7 Autonomous Workforce Fleet */}
+      <div className="mb-6 space-y-3" data-testid="autonomous-workforce-fleet">
+        <div className="flex items-center justify-between">
+          <div>
+            <h3 className="font-display font-semibold text-xs text-ink uppercase tracking-wider flex items-center gap-1.5">
+              <span className="w-2 h-2 rounded-full bg-amber-500" />
+              On-demand agent routines (5)
+            </h3>
+            <p className="text-[11px] text-ink3">
+              Routines connected to real LLMs. No 24/7 scheduler is configured — runs start when you trigger them or when an external scheduler calls the cron endpoint.
+            </p>
+          </div>
+          <span className="inline-flex items-center gap-1 text-[10px] font-mono px-2 py-0.5 rounded-full bg-amber-400/10 text-amber-300 border border-amber-400/30 font-semibold">
+            On demand
+          </span>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+          {AUTONOMOUS_EMPLOYEES.map((emp) => {
+            const Icon = emp.icon;
+            const isBusy = runningAgent === emp.id;
+            const report = employeeReports[emp.id];
+            return (
+              <div
+                key={emp.id}
+                className="card p-3.5 flex flex-col justify-between hover:border-accent/40 transition-all rounded-2xl bg-surface/80"
+              >
+                <div>
+                  <div className="flex items-start justify-between gap-2 mb-2">
+                    <div className="flex items-center gap-2">
+                      <div className={`p-1.5 rounded-xl border ${emp.bg}`}>
+                        <Icon size={14} className={emp.color} />
+                      </div>
+                      <div>
+                        <h4 className="text-xs font-bold text-ink leading-tight">{emp.name}</h4>
+                        <span className="text-[10px] text-ink3">{emp.division} Division</span>
+                      </div>
+                    </div>
+                    <span className="inline-flex items-center gap-1 text-[9px] font-semibold px-2 py-0.5 rounded-full bg-good/10 text-good border border-good/20">
+                      <CheckCircle2 size={9} /> On demand
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-ink2 leading-relaxed mb-3">
+                    {emp.role}
+                  </p>
+                  {report && (
+                    <div className="mb-3 p-2 rounded-lg bg-surface2/60 border border-border/60 text-[10px] text-ink2 line-clamp-3">
+                      <span className="font-semibold text-accent block mb-0.5">Last Run:</span>
+                      {report}
+                    </div>
+                  )}
+                </div>
+                <div className="pt-2 border-t border-border/40 flex items-center justify-between">
+                  <span className="text-[10px] text-ink3 font-mono">LLM: invoked per run</span>
+                  <button
+                    type="button"
+                    onClick={() => runEmployee(emp.id)}
+                    disabled={isBusy}
+                    className="btn btn-ghost !text-[10px] !py-1 !px-2.5 flex items-center gap-1 hover:text-accent cursor-pointer"
+                  >
+                    {isBusy ? <Loader2 size={10} className="animate-spin" /> : <Play size={10} />}
+                    {isBusy ? "Running…" : "Run Now"}
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
       </div>
 
       {check && check.status === "warning" && (

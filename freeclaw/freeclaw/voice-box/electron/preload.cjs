@@ -35,3 +35,16 @@ contextBridge.exposeInMainWorld("vbNotify", {
 	show: (ping) => ipcRenderer.invoke("vb-notify:show", ping),
 	isSupported: () => ipcRenderer.invoke("vb-notify:isSupported"),
 });
+
+ipcRenderer.on("vb-notify:navigate", (_event, url) => {
+	try {
+		if (url && typeof url === "string") {
+			const target = url.startsWith("#")
+				? url
+				: `#${url.startsWith("/") ? url : "/" + url}`;
+			window.location.hash = target;
+		}
+	} catch {
+		/* navigation is best-effort */
+	}
+});

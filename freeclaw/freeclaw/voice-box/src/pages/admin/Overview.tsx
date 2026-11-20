@@ -32,11 +32,13 @@ import {
 	ArrowDown,
 	ArrowUp,
 	BarChart3,
+	Bot,
 	Bug,
 	CheckCircle2,
 	Clock,
 	Command,
 	Flag,
+	ShieldAlert,
 	GripVertical,
 	Info,
 	Lightbulb,
@@ -73,6 +75,7 @@ import WorkSections from "./WorkSections";
 import { useApp } from "../../contexts/AppContext";
 import { useUpdateSignal } from "../../hooks/useUpdateSignal";
 import { api } from "../../lib/api";
+import { tablistKeyDown } from "../../lib/tablist";
 import { useRealtime } from "../../lib/useRealtime";
 import {
 	CAT_EMOJI,
@@ -367,6 +370,12 @@ export default function Overview() {
 	// for display). null = server didn't send a count.
 	const [usersTotal, setUsersTotal] = useState<number | null>(null);
 	const [polls, setPolls] = useState<PollData[]>([]);
+	// Security events come from the real audit trail (/api/security?action=events);
+	// the dashboard only counts them — the Security Center owns the detail view.
+	const [securitySummary, setSecuritySummary] = useState<{
+		total: number;
+		high: number;
+	}>({ total: 0, high: 0 });
 	const [alerts, setAlerts] = useState<AlertRow[]>([]);
 	const [threads, setThreads] = useState<InboxThread[]>([]);
 	const [announce, setAnnounce] = useState<Announcement | null>(null);
@@ -435,6 +444,9 @@ export default function Overview() {
 				api.post<UserRow[]>("/api/admin", { action: "users" }),
 				api.get<PollData[]>("/api/polls"),
 			api.get<InboxThread[] | { threads: InboxThread[] }>("/api/inbox?threads=1"),
+			api.get<{
+				events?: Array<{ severity?: string; created_at?: string }>;
+			}>("/api/security?action=events"),
 			]);
 			const names = [
 				"posts",
@@ -443,6 +455,7 @@ export default function Overview() {
 				"users",
 				"polls",
 			"inbox",
+			"security",
 			] as const;
 			const failed: string[] = [];
 			settled.forEach((s, i) => {
@@ -456,7 +469,7 @@ export default function Overview() {
 					});
 				}
 			});
-			const [p, c, r, u, pl, ib] = settled;
+			const [p, c, r, u, pl, ib, sec] = settled;
 			if (p.status === "fulfilled") setPosts(p.value);
 			if (c.status === "fulfilled") setComments(c.value);
 			if (r.status === "fulfilled") setReports(r.value);
@@ -471,6 +484,18 @@ export default function Overview() {
 			}
 			if (pl.status === "fulfilled") setPolls(pl.value);
 			if (ib.status === "fulfilled") setThreads(Array.isArray(ib.value) ? ib.value : ((ib.value as { threads?: InboxThread[] })?.threads ?? []));
+			if (sec.status === "fulfilled") {
+				const weekAgo = Date.now() - 7 * 86400000;
+				const recent = (sec.value?.events ?? []).filter(
+					(e) => +new Date(e.created_at || 0) >= weekAgo,
+				);
+				setSecuritySummary({
+					total: recent.length,
+					high: recent.filter(
+						(e) => e.severity === "high" || e.severity === "critical",
+					).length,
+				});
+			}
 			setLoadError(
 				failed.length
 					? `Some sources failed: ${failed.join(", ")} — showing last-known data.`
@@ -801,7 +826,9 @@ export default function Overview() {
 		0,
 	);
 	const engagement = reactionTotal + comments.length;
-	const openReports = reports.filter((r) => r.status !== "resolved");
+	const openReports = reports.filter(
+		(r) => r.status !== "resolved" && r.status !== "dismissed",
+	);
 	const usersCount = usersTotal ?? users.length;
 
 	// Urgency: weighted open work, capped at 100. Bands are fixed and
@@ -1049,6 +1076,20 @@ export default function Overview() {
 	const criticalCount = emergencies.filter((t) => t.emotion?.level === "critical").length;
 	const highCount = emergencies.length - criticalCount;
 
+	// Executive-summary metrics. Every value is either a server total or a
+	// count over the loaded snapshot — never an estimate.
+	const pollVotes = pollRows.reduce(
+		(sum, p) => sum + (Number(p.total_votes) || 0),
+		0,
+	);
+	const pendingItems =
+		openReports.length +
+		waiting.length +
+		posts.filter((p) => p.status === "reported" && !p.deleted).length;
+	const aiHandled = openThreads.filter(
+		(t) => !t.handoff && t.last_sender === "ai",
+	).length;
+
 const queueCounts: Record<QueueKey, number> = {
 		trending: trending.length,
 		recent: recentRanked.length,
@@ -1072,7 +1113,11 @@ const queueCounts: Record<QueueKey, number> = {
 
 			{/* AI Daily Executive Briefing & AI Moderator To-Do List */}
 			<AdminDailyBriefing
-				openReportsCount={reports.filter((r) => r.status !== "resolved").length}
+				openReportsCount={
+					reports.filter(
+						(r) => r.status !== "resolved" && r.status !== "dismissed",
+					).length
+				}
 				flaggedPostsCount={posts.filter((p) => p.status === "reported").length}
 				onOpenReportsTab={() => window.dispatchEvent(new CustomEvent("vb:admin-tab", { detail: "reports" }))}
 				onOpenUsersTab={() => window.dispatchEvent(new CustomEvent("vb:admin-tab", { detail: "users" }))}
@@ -1235,7 +1280,7 @@ const queueCounts: Record<QueueKey, number> = {
 					<button type="button" className="ml-2 underline text-ink3 hover:text-accent" onClick={() => setDigestOpen((v) => !v)} aria-expanded={digestOpen} aria-label={digestOpen ? "Collapse emergency inbox" : "Expand emergency inbox"}>{digestOpen ? "Show less" : "Show all"}</button>
 				</p>
 				{digestOpen && digestTotal > 0 && (
-					<div className="inline-flex rounded-xl bg-surface2 p-1 gap-0.5 mb-2" role="tablist" aria-label="Digest filter">
+					<div className="inline-flex rounded-xl bg-surface2 p-1 gap-0.5 mb-2" role="tablist" aria-label="Digest filter" onKeyDown={tablistKeyDown}>
 						{(["all", "emergencies", "waiting"] as const).map((f) => (
 							<button
 								key={f}
@@ -1537,6 +1582,42 @@ const queueCounts: Record<QueueKey, number> = {
 						suffix: "",
 						label: "Total content",
 						sub: "problems + ideas",
+						spark: [],
+						chip: null,
+					},
+					{
+						icon: <BarChart3 size={16} className="text-accent" />,
+						num: pollVotes,
+						suffix: "",
+						label: "Poll votes",
+						sub: `${polls.length} poll${polls.length === 1 ? "" : "s"} on the platform`,
+						spark: [],
+						chip: null,
+					},
+					{
+						icon: <Clock size={16} className="text-warn" />,
+						num: pendingItems,
+						suffix: "",
+						label: "Pending items",
+						sub: "open reports · waiting chats · flagged posts",
+						spark: [],
+						chip: null,
+					},
+					{
+						icon: <Bot size={16} className="text-accent" />,
+						num: aiHandled,
+						suffix: "",
+						label: "AI-handled chats",
+						sub: "open threads the AI answered last",
+						spark: [],
+						chip: null,
+					},
+					{
+						icon: <ShieldAlert size={16} className="text-bad" />,
+						num: securitySummary.total,
+						suffix: "",
+						label: "Security events",
+						sub: `last 7 days · ${securitySummary.high} high/critical`,
 						spark: [],
 						chip: null,
 					},

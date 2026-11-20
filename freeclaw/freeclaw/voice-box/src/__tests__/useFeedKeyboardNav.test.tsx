@@ -72,9 +72,7 @@ describe("useFeedKeyboardNav", () => {
 
 	it("handles Enter key to open focused post", () => {
 		const onOpen = vi.fn();
-		const { result } = renderHook(() =>
-			useFeedKeyboardNav({ items: mockItems, onOpen })
-		);
+		renderHook(() => useFeedKeyboardNav({ items: mockItems, onOpen }));
 
 		act(() => {
 			window.dispatchEvent(new KeyboardEvent("keydown", { key: "j" }));

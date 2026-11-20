@@ -48,6 +48,5 @@ describe("CommandPalette admin navigation", () => {
 		openPalette();
 
 		expect(screen.queryByRole("button", { name: /ReportsAdmin/i })).not.toBeInTheDocument();
-		expect(screen.queryByRole("button", { name: /AI Coworker/i })).not.toBeInTheDocument();
 	});
 });

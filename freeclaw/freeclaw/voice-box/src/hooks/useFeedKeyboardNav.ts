@@ -63,24 +63,30 @@ export function useFeedKeyboardNav<T extends { id: string }>({
 					return next;
 				});
 			} else if (e.key === "Enter") {
-				if (activeIndex >= 0 && activeIndex < items.length) {
+				// Narrow once instead of indexing twice: `noUncheckedIndexedAccess`
+				// types `items[activeIndex]` as `T | undefined` even after the
+				// range check, so the local is what carries the proof.
+				const item = activeIndex >= 0 ? items[activeIndex] : undefined;
+				if (item) {
 					e.preventDefault();
 					triggerHaptic("medium");
 					if (onOpen) {
-						onOpen(items[activeIndex]);
+						onOpen(item);
 					} else {
-						navigate(`/post/${items[activeIndex].id}`);
+						navigate(`/post/${item.id}`);
 					}
 				}
 			} else if (e.key === "u") {
-				if (activeIndex >= 0 && activeIndex < items.length && onUpvote) {
+				const item = activeIndex >= 0 ? items[activeIndex] : undefined;
+				if (item && onUpvote) {
 					e.preventDefault();
-					onUpvote(items[activeIndex]);
+					onUpvote(item);
 				}
 			} else if (e.key === "b") {
-				if (activeIndex >= 0 && activeIndex < items.length && onBookmark) {
+				const item = activeIndex >= 0 ? items[activeIndex] : undefined;
+				if (item && onBookmark) {
 					e.preventDefault();
-					onBookmark(items[activeIndex]);
+					onBookmark(item);
 				}
 			} else if (e.key === "n") {
 				e.preventDefault();

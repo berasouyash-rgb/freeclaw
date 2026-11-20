@@ -26,6 +26,13 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("../lib/api", () => ({
 	api: mocks,
+	// The feed's empty state branches on this to offer Pair / Start Fresh. The
+	// stub must mirror the real predicate (identity comparison against the
+	// message), not merely exist — returning true unconditionally would hide a
+	// genuine refresh failure behind session-recovery advice.
+	isSessionDeadMessage: (m: string) =>
+		m ===
+		"Your anonymous session isn't recognized on this device anymore. Your posts stay up — recover the same ID in Settings → Account, or start fresh.",
 }));
 
 vi.mock("../contexts/AppContext", () => ({

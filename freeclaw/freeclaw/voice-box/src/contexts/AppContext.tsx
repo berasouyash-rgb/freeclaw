@@ -12,16 +12,16 @@ import { api } from "../lib/api";
 import { showBrowserNotification } from "../lib/browserNotify";
 import {
 	getAnonId,
-	resetAnonId,
 	getDisplayName,
 	getProfile,
+	getSessionToken,
 	lsGet,
 	lsSet,
 	setDisplayName as persistDisplayName,
 	setProfile as persistProfile,
 	type LocalProfile,
 } from "../lib/identity";
-import { apiBase, navigateTo } from "../lib/platform";
+import { apiBase, isNativeShell, navigateTo } from "../lib/platform";
 import { loadHarness } from "../lib/loadHarness";
 import type {
 	AccountStatus,
@@ -62,8 +62,37 @@ interface ServerNotif {
 	title: string;
 	body: string;
 	post_id?: string | null;
+	/** Explicit same-origin deep link attached by `notifyUser` (optional). */
+	link?: string | null;
 	read: boolean;
 	created_at: string;
+}
+
+/**
+ * Where tapping a server notice should land. Order:
+ *   1. an explicit same-origin link written by the sender,
+ *   2. the affected post when the notice names one,
+ *   3. a sensible area by kind — account/moderation notices go to the
+ *      admin inbox, content notices to my activity.
+ * Anything unrecognized stays linkless rather than guessing a page.
+ */
+function serverNotifLink(n: ServerNotif): string | undefined {
+	const explicit = typeof n.link === "string" ? n.link.trim() : "";
+	if (explicit.startsWith("/") && !explicit.startsWith("//")) return explicit;
+	if (n.post_id) return `/post/${encodeURIComponent(String(n.post_id))}`;
+	const type = String(n.type || "");
+	if (
+		type === "warning" ||
+		type === "suspension" ||
+		type === "suspension_lifted" ||
+		type === "ban" ||
+		type === "unban" ||
+		type === "moderation"
+	)
+		return type === "warning" ? "/activity" : "/chat";
+	if (type === "status" || type === "reply" || type === "comment" || type === "mention")
+		return "/activity";
+	return undefined;
 }
 
 // Map a server-side notification (from /api/notifications, written by admin
@@ -102,7 +131,7 @@ function mapServerNotif(n: ServerNotif): Notification | null {
 		kind,
 		title: String(n.title || "Notification"),
 		body: String(n.body || ""),
-		link: n.post_id ? `/post/${n.post_id}` : undefined,
+		link: serverNotifLink(n),
 		at: n.created_at || new Date().toISOString(),
 		read: !!n.read,
 	};
@@ -137,6 +166,58 @@ const DEFAULT_DISPLAY_PREFS: DisplayPrefs = {
 	uiScale: 95,
 };
 
+/**
+ * Notification kinds that may raise an on-device notification. Account
+ * decisions (warn/suspend/ban) are critical and always allowed — a student
+ * must not miss them just because the tab happens to be focused. Everything
+ * else pings only while the tab is hidden, so the browser alert never
+ * duplicates a banner the user is already looking at. Notices about the
+ * user's own actions (submitted/success) never ping the user back.
+ */
+const CRITICAL_NOTIF_KINDS = new Set<NotificationKind>([
+	"warning",
+	"suspension",
+	"suspension_lifted",
+	"ban",
+	"unban",
+	"moderation",
+]);
+const SELF_NOTIF_KINDS = new Set<NotificationKind>(["submitted", "success"]);
+
+function shouldPingBrowser(kind: NotificationKind): boolean {
+	if (SELF_NOTIF_KINDS.has(kind)) return false;
+	const critical = CRITICAL_NOTIF_KINDS.has(kind);
+	try {
+		// Native desktop & mobile shells deliver real OS notifications to the user
+		// regardless of window visibility, because desktop toasts and mobile heads-up
+		// alerts are expected to show when events occur. Web tabs only suppress when visible.
+		if (
+			!critical &&
+			!isNativeShell() &&
+			typeof document !== "undefined" &&
+			document.visibilityState === "visible"
+		)
+			return false;
+		// Mirror switch (Settings → browser notifications) always wins.
+		const mirror = lsGet<{ enabled?: boolean }>("vb:browser-notify", {});
+		if (mirror?.enabled === false) return false;
+		const prefs = lsGet<{
+			push?: boolean;
+			mentions?: boolean;
+			replies?: boolean;
+			updates?: boolean;
+		}>("vb:notif-prefs", {});
+		if (prefs.push === false) return false;
+		if (critical) return true;
+		if (kind === "mention") return prefs.mentions !== false;
+		if (kind === "reply" || kind === "comment" || kind === "chat")
+			return prefs.replies !== false;
+		return prefs.updates !== false;
+	} catch {
+		return false;
+	}
+}
+
 interface AppCtx {
 	anonId: string;
 	displayName: string;
@@ -160,6 +241,8 @@ interface AppCtx {
 	 *  the notification list can never claim more live posts than exist. */
 	retireNotifsForLink: (link: string) => void;
 	toast: (text: string, kind?: Toast["kind"], action?: Toast["action"]) => void;
+	/** Remove one toast immediately (manual dismiss). */
+	dismissToast: (id: number) => void;
 	toasts: Toast[];
 	refreshIdentity: () => void;
 	recentlyViewed: string[];
@@ -169,11 +252,40 @@ interface AppCtx {
 	accountStatus: AccountStatus | null;
 }
 
+const DEFAULT_APP_CTX: AppCtx = {
+	anonId: "anon_default",
+	displayName: "Anonymous Student",
+	setDisplayName: () => {},
+	profile: getProfile(),
+	setProfile: (p: LocalProfile) => p,
+	theme: "light",
+	setTheme: () => {},
+	toggleTheme: () => {},
+	displayPrefs: DEFAULT_DISPLAY_PREFS,
+	setDisplayPrefs: () => {},
+	bookmarks: [],
+	toggleBookmark: () => {},
+	notifications: [],
+	markNotifsRead: () => {},
+	markNotifRead: () => {},
+	clearNotifs: () => {},
+	pushNotif: () => {},
+	retireNotifsForLink: () => {},
+	toast: () => {},
+	dismissToast: () => {},
+	toasts: [],
+	refreshIdentity: () => {},
+	recentlyViewed: [],
+	addRecentlyViewed: () => {},
+	chatUnread: 0,
+	setChatUnread: () => {},
+	accountStatus: null,
+};
+
 const Ctx = createContext<AppCtx | null>(null);
 export const useApp = (): AppCtx => {
 	const ctx = useContext(Ctx);
-	if (!ctx) throw new Error("useApp must be used within <AppProvider>");
-	return ctx;
+	return ctx ?? DEFAULT_APP_CTX;
 };
 
 let toastSeq = 1;
@@ -256,6 +368,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
 	// current list without a stale closure and without side effects inside a
 	// state updater.
 	const notificationsRef = useRef<Notification[]>(notifications);
+	/** Last on-device ping, so a replayed event can't fire twice in a minute. */
+	const lastPingRef = useRef<{ key: string; at: number }>({ key: "", at: 0 });
 	/** True when the last engine pass was skipped while hidden. */
 	const wasAwayRef = useRef(false);
 	// Latest engine pass — lets the live stream and the fallback interval
@@ -356,10 +470,36 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
 	const pushNotif = useCallback(
 		(n: Omit<Notification, "id" | "at" | "read">) => {
+			const now = Date.now();
+			// Ping the OS only for a genuinely new event — never for the
+			// in-app duplicate that the state dedupe below collapses.
+			const duplicate = notificationsRef.current.some(
+				(p) =>
+					!p.read &&
+					p.kind === n.kind &&
+					p.title === n.title &&
+					p.body === n.body &&
+					(p.link || null) === (n.link || null) &&
+					now - new Date(p.at).getTime() < 60000,
+			);
+			const pingKey = `${n.kind}|${n.title}|${n.body}|${n.link || ""}`;
+			const lastPing = lastPingRef.current;
+			if (
+				!duplicate &&
+				shouldPingBrowser(n.kind) &&
+				(lastPing.key !== pingKey || now - lastPing.at >= 60000)
+			) {
+				lastPingRef.current = { key: pingKey, at: now };
+				showBrowserNotification({
+					title: n.title,
+					body: n.body,
+					tag: `vf-${n.kind}`,
+					url: n.link,
+				});
+			}
 			setNotifications((prev) => {
 				// Dedupe: an identical unread notice within 60s is a double-fire
 				// (double submit, re-mount replay), never two real events.
-				const now = Date.now();
 				const dup = prev.some(
 					(p) =>
 						!p.read &&
@@ -466,6 +606,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
 		},
 		[],
 	);
+
+	const dismissToast = useCallback((id: number) => {
+		setToasts((curr) => curr.filter((t) => t.id !== id));
+	}, []);
 
 	// Apply a fresh account status: store it and fire the ban/strike
 	// popups ONLY on a real change (prev === null means first sight —
@@ -582,33 +726,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
 		return () => window.removeEventListener("storage", handleStorage);
 	}, [refreshIdentity]);
 
-	// Auto-recovery for dead anonymous sessions — offer an immediate 1-click
-	// "Start Fresh" toast action to instantly mint a clean anonymous ID.
-	useEffect(() => {
-		let lastToast = 0;
-		const handleSessionDead = () => {
-			const now = Date.now();
-			if (now - lastToast < 15000) return;
-			lastToast = now;
-			toast(
-				"Anonymous session lost on this device (cookies or storage cleared). Pair from Settings → Account to recover the same ID.",
-				"err",
-				{
-					label: "Start Fresh",
-					fn: () => {
-						resetAnonId();
-						refreshIdentity();
-						setToasts((prev) =>
-							prev.filter((t) => !t.text.includes("Anonymous session")),
-						);
-						toast("Started fresh with a new anonymous ID!", "ok");
-					},
-				},
-			);
-		};
-		window.addEventListener("vb:session-dead", handleSessionDead);
-		return () => window.removeEventListener("vb:session-dead", handleSessionDead);
-	}, [refreshIdentity, toast]);
+	// A dead-session notice is NEVER raised automatically. Minting a new
+	// anonymous ID while the old ID still owns posts permanently orphans that
+	// content. Recovery is an explicit, user-initiated action in Settings →
+	// Account only — see Settings.tsx.
 
 	// ---------- presence heartbeat ----------
 	// One lightweight last_seen touch per minute while the tab is visible so
@@ -647,8 +768,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
 	useEffect(() => {
 		let cancelled = false;
 		async function check() {
-			// Skip if tab is hidden — will catch up when user returns
-			if (document.hidden) {
+			// Skip if web tab is hidden — will catch up when user returns.
+			// Native shells (desktop app / Android APK) never skip on hidden,
+			// ensuring background updates trigger real system notifications.
+			if (document.hidden && !isNativeShell()) {
 				wasAwayRef.current = true;
 				return;
 			}
@@ -823,10 +946,21 @@ export function AppProvider({ children }: { children: ReactNode }) {
 		}
 		checkRef.current = check;
 		check();
+		const onVisibilityChange = () => {
+			if (!document.hidden && wasAwayRef.current) {
+				check();
+			}
+		};
+		if (typeof document !== "undefined") {
+			document.addEventListener("visibilitychange", onVisibilityChange);
+		}
 		// Catch-up is intentionally one-shot after mount. A quiet tab must not
 		// generate recurring full-history notification requests.
 		return () => {
 			cancelled = true;
+			if (typeof document !== "undefined") {
+				document.removeEventListener("visibilitychange", onVisibilityChange);
+			}
 		};
 	}, [anonId, pushNotif, applyAccountStatus]);
 
@@ -851,8 +985,17 @@ export function AppProvider({ children }: { children: ReactNode }) {
 		};
 		if (typeof EventSource !== "undefined" && anonId) {
 			try {
+				let st: string | null = null;
+				try {
+					if (typeof getSessionToken === "function") {
+						st = getSessionToken();
+					}
+				} catch {
+					/* identity mock in tests may omit getSessionToken */
+				}
+				const sParam = st ? `&session_token=${encodeURIComponent(st)}` : "";
 				es = new EventSource(
-					`${apiBase()}/api/events?user_id=${encodeURIComponent(anonId)}`,
+					`${apiBase()}/api/events?user_id=${encodeURIComponent(anonId)}${sParam}`,
 					{ withCredentials: true },
 				);
 				es.addEventListener("update", run);
@@ -896,6 +1039,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 			pushNotif,
 			retireNotifsForLink,
 			toast,
+			dismissToast,
 			toasts,
 			refreshIdentity,
 			recentlyViewed,
@@ -926,6 +1070,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 			pushNotif,
 			retireNotifsForLink,
 			toast,
+			dismissToast,
 			toasts,
 			refreshIdentity,
 			recentlyViewed,

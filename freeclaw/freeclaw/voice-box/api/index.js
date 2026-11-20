@@ -15,11 +15,11 @@ process.on("uncaughtException", (err) => {
 
 import admin from "./_admin.js";
 import agent from "./_agent.js";
-import agentChat from "./_agent-chat.js";
 import agentExecutions from "./_agent-executions.js";
 import agentTeam from "./_agent-team.js";
 import agentsCron from "./_agents-cron.js";
 import ai from "./_ai.js";
+import smartFeatures from "./_smart-features.js";
 import aiChat from "./_ai-chat.js";
 import aiResolution from "./_ai-resolution.js";
 import resolutionEvidence from "./_resolution-evidence.js";
@@ -115,7 +115,6 @@ import {
 import timeline from "./_timeline.js";
 import transcribe from "./_transcribe.js";
 import toolApi from "./_agent-tool-api.js";
-import toolForge from "./_tool-forge.js";
 import trends from "./_trends.js";
 import upload from "./_upload.js";
 import users from "./_users.js";
@@ -204,10 +203,10 @@ const routes = {
 	users: protect(users, "users"),
 	agent: protect(agent, "agent"),
 	ai: protect(ai, "ai"),
+	smart: protect(smartFeatures, "smart"),
 	assist: protect(assist, "assist"),
 	me: protect(me, "me"),
 	providers: protect(providers, "providers"),
-	"agent-chat": protect(agentChat, "agent-chat"),
 	"meta-agent": protect(metaAgent, "meta-agent"),
 	"agent-team": protect(agentTeam, "agent-team"),
 	"ai-resolution": protect(aiResolution, "ai-resolution"),
@@ -239,7 +238,6 @@ const routes = {
 	"agent-executions": protect(agentExecutions, "agent-executions"),
 	"event-agents": protect(eventAgents, "event-agents"),
 	"keep-alive": protect(keepAlive, "keep-alive"),
-	"tool-forge": protect(toolForge, "tool-forge"),
 	"tool-registry": protect(toolApi, "tool-registry"),
 	memory: protect(memoryApi, "memory"),
 	rag: protect(ragApi, "rag"),
@@ -309,7 +307,7 @@ const routes = {
 	// V3 Enterprise routes
 	"v3/stream": protect(v3Stream, "v3-stream"),
 	"v3/audit": protect(v3Audit, "v3-audit"),
-	"v3/tools": protect(v3Tools, "v3-tools"),
+	"v3/tools": protect(v3Tools, "v3/tools"),
 	"v3/verify": protect(v3Verify, "v3-verify"),
 	"v3/orchestrate": protect(v3Orchestrate, "v3-orchestrate"),
 	"v3/rag": protect(v3Rag, "v3-rag"),

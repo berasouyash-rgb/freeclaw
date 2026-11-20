@@ -412,9 +412,15 @@ export default function Suggestions() {
 						data-flip-id={s.id}
 						data-feed-id={s.id}
 						className={`relative card card-hover p-4 flex gap-3.5 vb-rise transition-all duration-200 rounded-2xl ${
-							activeId === s.id
-								? "ring-2 ring-accent/70 shadow-[0_0_24px_rgba(118,87,255,0.25)]"
-								: ""
+							rankMoves.has(s.id) ? "pr-24 sm:pr-28" : ""
+						} ${
+							rankMoves.has(s.id)
+								? (rankMoves.get(s.id)! > 0
+									? "ring-2 ring-emerald-500/80 shadow-[0_0_24px_rgba(16,185,129,0.35)]"
+									: "ring-2 ring-amber-500/80 shadow-[0_0_24px_rgba(245,158,11,0.35)]")
+								: activeId === s.id
+									? "ring-2 ring-accent/70 shadow-[0_0_24px_rgba(118,87,255,0.25)]"
+									: ""
 						}`}
 					>
 						{rankMoves.has(s.id) && (
@@ -446,13 +452,22 @@ export default function Suggestions() {
 								{net(s)}
 							</span>
 						</button>
-						{sort === "top" && rank < 3 && (
-							<span
-								className="text-base self-center -ml-1.5"
-								aria-label={`Rank ${rank + 1}`}
-							>
-								{["🥇", "🥈", "🥉"][rank]}
-							</span>
+						{sort === "top" && (
+							rank < 3 ? (
+								<span
+									className="text-base self-center -ml-1.5"
+									aria-label={`Rank ${rank + 1}`}
+								>
+									{["🥇", "🥈", "🥉"][rank]}
+								</span>
+							) : (
+								<span
+									className="text-[11px] font-bold font-mono px-2 py-0.5 rounded-md bg-surface2 border border-border text-ink3 self-center -ml-1"
+									aria-label={`Rank ${rank + 1}`}
+								>
+									#{rank + 1}
+								</span>
+							)
 						)}
 						<div className="min-w-0 flex-1">
 							<Link to={`/post/${s.id}`} className="group">

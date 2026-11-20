@@ -16,7 +16,7 @@ import {
 	pickDownload,
 	type PlatformRelease,
 } from "../lib/download";
-import { apiBase } from "../lib/platform";
+import { apiBase, getPlatform, isNativeShell } from "../lib/platform";
 
 const LABELS: Record<string, { title: string; file: string; hint: string; icon: typeof Smartphone }> = {
 	android: {
@@ -43,8 +43,21 @@ export default function Download() {
 	const [feed, setFeed] = useState<Record<string, PlatformRelease> | null>(null);
 	const [failed, setFailed] = useState(false);
 	const device = detectDevicePlatform();
-	const pick = feed ? pickDownload(feed, device) : null;
-	const hasAnyRelease = feed && Object.values(feed).some((p) => p && p.url);
+	// Inside a packaged shell the current platform's installer is the one
+	// thing we must never offer: the user is already running it, and the only
+	// way to "use" that link would be to copy it out to a browser by hand.
+	// Web has no self to exclude and keeps the full grid.
+	const platform = getPlatform();
+	const native = isNativeShell();
+	const selfKey = platform === "mobile" ? "android" : platform === "desktop" ? "windows" : null;
+	const rawPick = feed ? pickDownload(feed, device) : null;
+	const pick = rawPick && rawPick.key !== selfKey ? rawPick : null;
+	// Entries (not just keys) so the label metadata is non-optional at the
+	// use site — noUncheckedIndexedAccess makes LABELS[key] possibly undefined.
+	const platforms = Object.entries(LABELS).filter(([k]) => k !== selfKey);
+	const hasAnyRelease = feed
+		? platforms.some(([k]) => Boolean(feed[k]?.url))
+		: false;
 
 	useEffect(() => {
 		let live = true;
@@ -69,11 +82,12 @@ export default function Download() {
 					<ArrowDownToLine size={28} />
 				</span>
 				<h1 className="font-display font-bold text-3xl sm:text-4xl text-ink mb-2">
-					Get the app
+					{native ? "Voice Flow apps" : "Get the app"}
 				</h1>
 				<p className="text-sm sm:text-base text-ink3 max-w-lg mx-auto">
-					Download Voice Flow for Android, Windows, Mac, or use the instant Web PWA.
-					One tap per device — zero bloatware, zero automatic downloads.
+					{native
+						? "You're already using the Voice Flow app. Here are the other platforms, if you need Voice Flow somewhere else too."
+						: "Download Voice Flow for Android, Windows, Mac, or use the instant Web PWA. One tap per device — zero bloatware, zero automatic downloads."}
 				</p>
 			</div>
 
@@ -99,7 +113,9 @@ export default function Download() {
 			{feed && !hasAnyRelease && (
 				<div className="card p-6 text-center border-border bg-surface mb-8">
 					<p className="text-sm text-ink2">
-						No packaged releases published yet — the web app keeps working meanwhile.
+						{native
+							? "Nothing else to download right now — you're already on the Voice Flow app."
+							: "No packaged releases published yet — the web app keeps working meanwhile."}
 					</p>
 				</div>
 			)}
@@ -143,14 +159,14 @@ export default function Download() {
 				</div>
 			)}
 
-			{/* All Platforms Grid */}
-			{feed && (
+			{/* All Platforms Grid — never lists the shell you are already in */}
+			{feed && platforms.length > 0 && (
 				<div className="mb-12">
 					<h2 className="font-display font-bold text-lg text-ink mb-4">
-						All Available Platforms
+						{native ? "Other platforms" : "All Available Platforms"}
 					</h2>
 					<div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-						{Object.entries(LABELS).map(([key, meta]) => {
+						{platforms.map(([key, meta]) => {
 							const r = feed[key];
 							const Icon = meta.icon;
 							return (
@@ -198,27 +214,30 @@ export default function Download() {
 				</div>
 			)}
 
-			{/* Instant Web PWA & Zero-Install Note */}
-			<div className="card p-6 border border-border/80 bg-surface2/40 rounded-2xl mb-12">
-				<div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-					<div className="flex items-center gap-3.5">
-						<span className="w-10 h-10 rounded-xl bg-good/15 text-good grid place-items-center shrink-0">
-							<Globe size={20} />
-						</span>
-						<div>
-							<h3 className="font-display font-bold text-sm text-ink">
-								Instant Web App (Zero Install Required)
-							</h3>
-							<p className="text-xs text-ink2 mt-0.5">
-								Voice Flow runs natively in any modern mobile or desktop browser with full offline caching.
-							</p>
+			{/* Instant Web PWA & Zero-Install Note — a browser promise, so it has
+			    no place inside the APK/EXE where the app is already installed. */}
+			{!native && (
+				<div className="card p-6 border border-border/80 bg-surface2/40 rounded-2xl mb-12">
+					<div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+						<div className="flex items-center gap-3.5">
+							<span className="w-10 h-10 rounded-xl bg-good/15 text-good grid place-items-center shrink-0">
+								<Globe size={20} />
+							</span>
+							<div>
+								<h3 className="font-display font-bold text-sm text-ink">
+									Instant Web App (Zero Install Required)
+								</h3>
+								<p className="text-xs text-ink2 mt-0.5">
+									Voice Flow runs natively in any modern mobile or desktop browser with full offline caching.
+								</p>
+							</div>
 						</div>
+						<span className="text-xs font-semibold text-good bg-good/10 px-3 py-1.5 rounded-xl border border-good/20 self-start sm:self-auto flex items-center gap-1">
+							<Check size={12} /> PWA Ready
+						</span>
 					</div>
-					<span className="text-xs font-semibold text-good bg-good/10 px-3 py-1.5 rounded-xl border border-good/20 self-start sm:self-auto flex items-center gap-1">
-						<Check size={12} /> PWA Ready
-					</span>
 				</div>
-			</div>
+			)}
 
 			{/* Cryptographic Binary Integrity Guarantee */}
 			<div className="card p-6 border border-border bg-surface text-center mb-12">

@@ -124,7 +124,9 @@ function readItem(key: string): string | null {
 function writeItem(key: string, value: string) {
 	storeSet(key, value);
 	writeCookie(key, value);
-	lsDirectWrite(key, value);
+	if (storageBackend() !== "device") {
+		lsDirectWrite(key, value);
+	}
 	mem.set(key, value);
 	void backupToVault(key, value);
 }
@@ -310,6 +312,14 @@ export function resetAnonId(): string {
 	]) {
 		removeItem(k);
 	}
+	deleteCookie("vb_session");
+	deleteCookie("vb_sessionToken");
+	try {
+		document.cookie = "vb_session=; path=/; max-age=0; SameSite=Lax";
+		document.cookie = "vb_sessionToken=; path=/; max-age=0; SameSite=Lax";
+	} catch {
+		/* ignore */
+	}
 	return id;
 }
 
@@ -449,6 +459,7 @@ export function __resetIdentityForTests(): void {
 	// relaunch.
 	provisionalId = null;
 	provisionalUsed = false;
+	mem.clear();
 }
 
 // ---------- typed localStorage helpers ----------

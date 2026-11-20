@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="600" viewBox="0 0 1600 600">
+<title>Main school building</title>
+
+<g stroke="#276caa" stroke-width="4" stroke-linejoin="round">
+ <path d="M430 390 L430 215 L800 105 L1170 215 L1170 390Z" fill="#f7fcff"/>
+ <path d="M390 220 L800 85 L1210 220" fill="none" stroke="#145b9b" stroke-width="8"/>
+ <path d="M470 230 L800 125 L1130 230" fill="none" stroke="#8bd3ff" stroke-width="3"/>
+ <rect x="485" y="240" width="630" height="150" rx="3" fill="#e8f7ff"/>
+ <path d="M450 390 H1150" stroke="#145b9b" stroke-width="8"/>
+ <path d="M765 390 V295 Q800 250 835 295 V390" fill="#b9e6ff"/>
+ <path d="M780 390 V300 Q800 275 820 300 V390" fill="#ffffff"/>
+ <path d="M430 215 H1170" stroke="#145b9b" stroke-width="6"/>
+</g>
+<g fill="#ffffff" stroke="#3b8bc7" stroke-width="3">
+ <rect x="520" y="265" width="72" height="72"/><rect x="630" y="265" width="72" height="72"/>
+ <rect x="898" y="265" width="72" height="72"/><rect x="1008" y="265" width="72" height="72"/>
+</g>
+<g stroke="#83cfff" stroke-width="2">
+ <path d="M556 265 V337 M520 301 H592 M666 265 V337 M630 301 H702 M934 265 V337 M898 301 H970 M1044 265 V337 M1008 301 H1080"/>
+</g>
+<g fill="none" stroke="#8fcfff" stroke-width="2" opacity=".8">
+ <path d="M470 230 V390 M1130 230 V390 M800 105 V85"/>
+ <path d="M455 405 H1145"/>
+</g>
+
+</svg>

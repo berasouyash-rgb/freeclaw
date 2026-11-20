@@ -49,6 +49,9 @@ const _rateLimitState = new Map();
 const ALLOWED_ORIGINS = [
 	"https://voice-box.vercel.app",
 	"https://voice-box-psi.vercel.app",
+	"https://voice-box-ballyvisiontutorial-hues-projects.vercel.app",
+	"https://ballyvisiontutorial-hue-voice-box-w.vercel.app",
+	"https://ballyvisiontutorial-hue-voice-ballyvisiontutorial-hues-projects.vercel.app",
 	"http://localhost:5173",
 	"http://localhost:4173",
 	"http://localhost:3000",
@@ -65,7 +68,16 @@ function isNativeOrigin(origin) {
 	if (!origin) return true; // no Origin header: curl, Electron file:// GET, same-origin
 	if (origin === "null") return true; // Electron file:// fetch
 	if (origin === "file://") return true;
-	if (typeof origin === "string" && (origin.startsWith("capacitor://") || origin.startsWith("ionic://"))) return true;
+	if (
+		typeof origin === "string" &&
+		(origin.startsWith("capacitor://") ||
+			origin.startsWith("ionic://") ||
+			origin.startsWith("https://localhost") ||
+			origin.startsWith("http://localhost") ||
+			/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(origin))
+	) {
+		return true;
+	}
 	return false;
 }
 
@@ -73,10 +85,10 @@ export function isAllowedOrigin(origin, req) {
 	if (!origin) return false;
 	if (ALLOWED_ORIGINS.includes(origin)) return true;
 	if (isNativeOrigin(origin)) return true;
-	// Non-production only: local dev loopback, Android emulator, and LAN testing
+	// Any localhost or loopback port (dev servers, test runners, mobile forwarders)
+	if (/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(origin)) return true;
+	// Non-production only: Android emulator and LAN testing
 	if (process.env.NODE_ENV !== "production") {
-		// Any localhost or loopback port (dev servers, test runners, mobile forwarders)
-		if (/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(origin)) return true;
 		// Android emulator loopback
 		if (/^https?:\/\/10\.0\.2\.2(:\d+)?$/i.test(origin)) return true;
 		// Local LAN IPs for testing APK / device over local Wi-Fi
@@ -879,6 +891,11 @@ export function extractSessionToken(req) {
 	if (typeof auth === "string" && auth.startsWith("Bearer ")) {
 		const bearer = auth.slice(7).trim();
 		if (bearer && bearer.length >= 32) return bearer;
+	}
+	// Query param fallback for EventSource (which cannot set request headers)
+	const queryToken = req?.query?.session_token || req?.query?.token;
+	if (typeof queryToken === "string" && queryToken.trim().length >= 32) {
+		return queryToken.trim();
 	}
 	return null;
 }

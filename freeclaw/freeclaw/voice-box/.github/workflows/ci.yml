@@ -103,7 +103,7 @@ jobs:
         run: npm ci
 
       - name: Run API tests
-        run: node ./scripts/vitest-run.mjs run --config vitest.config.api.ts --maxWorkers=1 --minWorkers=1
+        run: node ./scripts/vitest-run.mjs run --config vitest.config.api.ts
         env:
           NODE_OPTIONS: '--max-old-space-size=4096'
 

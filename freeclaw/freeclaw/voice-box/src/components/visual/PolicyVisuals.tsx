@@ -145,7 +145,7 @@ export function DataFlowDiagram() {
 			{/* Deep-dive Explanation Card */}
 			<div className="p-4 sm:p-5 rounded-2xl bg-surface2/70 border border-border">
 				<div className="flex items-start gap-3.5">
-					<span className="w-10 h-10 rounded-xl bg-accent text-white grid place-items-center shrink-0 shadow-sm">
+					<span className="w-10 h-10 rounded-xl bg-accent text-on-accent grid place-items-center shrink-0 shadow-sm">
 						<Lock size={18} />
 					</span>
 					<div className="min-w-0 flex-1">
@@ -275,7 +275,7 @@ export function SolvingPipelineDiagram() {
 								onClick={() => setActiveStage(idx)}
 								className={`p-3 rounded-xl text-center border transition-all ${
 									isCurrent
-										? "bg-accent text-white border-accent shadow-md scale-105"
+										? "bg-accent text-on-accent border-accent shadow-md scale-105"
 										: isPast
 											? "bg-surface border-good/40 text-good"
 											: "bg-surface2/60 border-border text-ink3 hover:text-ink hover:bg-surface2"
@@ -547,7 +547,7 @@ export function LiveContrastInspector() {
 						onClick={() => setActiveToken(key)}
 						className={`px-3 py-1.5 rounded-xl text-xs font-medium transition-all ${
 							activeToken === key
-								? "bg-accent text-white shadow-sm font-semibold scale-105"
+								? "bg-accent text-on-accent shadow-sm font-semibold scale-105"
 								: "bg-surface2 text-ink2 hover:bg-surface3"
 						}`}
 						aria-pressed={activeToken === key}
@@ -604,6 +604,10 @@ export function StaticFooter() {
 				<div className="flex flex-wrap items-center justify-center gap-x-6 gap-y-2 text-xs font-medium text-ink2 mb-4">
 					<a href="/about" className="hover:text-accent transition-colors">
 						About Us
+					</a>
+					<span className="text-border" aria-hidden>•</span>
+					<a href="/developer" className="hover:text-accent font-semibold text-accent/90 transition-colors">
+						Founder & Developer
 					</a>
 					<span className="text-border" aria-hidden>•</span>
 					<a href="/privacy" className="hover:text-accent transition-colors">

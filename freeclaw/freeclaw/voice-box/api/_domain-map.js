@@ -36,7 +36,6 @@ export const SPEC_SYSTEMS = Object.freeze([
 	{ key: "N", name: "QA" },
 	{ key: "O", name: "AI QUALITY" },
 	{ key: "P", name: "RELEASE & CHANGE" },
-	{ key: "Q", name: "AUTONOMOUS COWORKER" },
 ]);
 
 /**
@@ -94,11 +93,6 @@ export const SPEC_SYSTEM_MAP = Object.freeze({
 	N: { name: "QA", primary: "quality", source: "§8.7 E2E QA, Mobile QA, Accessibility" },
 	O: { name: "AI QUALITY", primary: "quality", source: "§8.7 AI Evaluation, Red Team, Drift" },
 	P: { name: "RELEASE & CHANGE", primary: "quality", source: "§8.7 Regression (golden journeys)" },
-	Q: {
-		name: "AUTONOMOUS COWORKER",
-		primary: "coworker",
-		source: "§8.8 Chat, Voice, Files, Research, Coding, Investigation, Delegation, Reports",
-	},
 });
 
 /**

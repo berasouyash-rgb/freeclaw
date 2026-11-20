@@ -491,9 +491,9 @@ function detectPII(text: string): ModerationFlag[] {
 	if (/\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b/.test(text)) {
 		flags.push({
 			category: "privacy",
-			severity: "medium",
+			severity: "critical",
 			message:
-				"Email addresses detected — this is an anonymous platform. Remove personal contact info.",
+				"Email addresses detected — VoiceFlow is strictly anonymous. Remove personal contact info.",
 			matched:
 				text.match(
 					/\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b/,
@@ -505,13 +505,160 @@ function detectPII(text: string): ModerationFlag[] {
 	) {
 		flags.push({
 			category: "privacy",
-			severity: "medium",
+			severity: "critical",
 			message:
-				"Phone number detected — this is an anonymous platform. Remove personal contact info.",
+				"Phone number detected — VoiceFlow is strictly anonymous. Remove personal contact info.",
 			matched:
 				text.match(
 					/\b(?:\+?\d{1,3}[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b/,
 				)?.[0] || "",
+		});
+	}
+
+	// ── Personal names & student identification (Zero-Knowledge Protection) ──
+	// 1. Postfix honorifics: "[name] mam/sir/miss" (e.g. "kauli mam", "sharma sir", "gupta ma'am")
+	const COURTESY_BEFORE_HONORIFIC = new Set([
+		"yes", "no", "dear", "hello", "hi", "hey", "thanks", "thank", "sorry",
+		"please", "morning", "evening", "afternoon", "excuse", "pardon",
+		"welcome", "ok", "okay", "alright", "right", "good", "both", "our",
+		"your", "to", "the", "a", "an", "by", "with", "for", "and", "or",
+		"you", "me", "us", "them", "all",
+	]);
+	const POSTFIX_HONORIFIC_RE = /\b([a-zA-Z]{3,20})\s+(?:mam|maam|ma'am|madam|sir|miss)\b/gi;
+	let postfixMatch: RegExpExecArray | null;
+	while ((postfixMatch = POSTFIX_HONORIFIC_RE.exec(text)) !== null) {
+		const word = (postfixMatch[1] || "").toLowerCase();
+		if (word && !COURTESY_BEFORE_HONORIFIC.has(word)) {
+			flags.push({
+				category: "privacy",
+				severity: "critical",
+				message: `Faculty/personal name detected ("${postfixMatch[0]}") — VoiceFlow strictly protects campus anonymity. Real names cannot be published.`,
+				matched: postfixMatch[0],
+			});
+			break;
+		}
+	}
+
+	// 2. Prefix titles with typos: "tecaher kauli", "teacher kauli", "faculty sharma", "prof verma"
+	const TITLE_GENERIC_AFTER = new Set([
+		"here", "there", "said", "told", "asked", "was", "is", "are", "were",
+		"did", "does", "do", "has", "have", "had", "can", "could", "will",
+		"would", "should", "must", "name", "names", "room", "cabin", "office",
+		"desk", "evaluation", "feedback", "meeting", "union", "staff", "student", "students",
+		"that", "the", "about", "to", "in", "on", "at", "who", "which", "my", "our", "your", "his", "her",
+	]);
+	const PREFIX_TITLE_RE = /\b(?:teacher|tecaher|techer|teachr|faculty|faclty|faculity|prof|proff|professor|principal|princpal|headmaster|headmistress|warden|hod|dean)\s+([a-zA-Z]{2,20})\b/gi;
+	let prefixMatch: RegExpExecArray | null;
+	while ((prefixMatch = PREFIX_TITLE_RE.exec(text)) !== null) {
+		const word = (prefixMatch[1] || "").toLowerCase();
+		if (word && !TITLE_GENERIC_AFTER.has(word) && !flags.some((f) => f.matched.toLowerCase() === prefixMatch![0].toLowerCase())) {
+			flags.push({
+				category: "privacy",
+				severity: "critical",
+				message: `Teacher/faculty name detected ("${prefixMatch[0]}") — VoiceFlow strictly protects campus anonymity. Real names cannot be published.`,
+				matched: prefixMatch[0],
+			});
+			break;
+		}
+	}
+
+	// 3. Combined teacher + name + honorific ("tecaher kauli mam", "teacher sharma sir")
+	const TEACHER_NAME_MAM_RE = /\b(?:tecaher|teacher|techer|teachr|faculty|faclty|prof|proff)\s+([a-zA-Z]{2,20})\s+(?:mam|maam|ma'am|madam|sir|miss)\b/i;
+	const tMatch = text.match(TEACHER_NAME_MAM_RE);
+	if (tMatch && !flags.some((f) => f.matched.toLowerCase() === tMatch[0].toLowerCase())) {
+		flags.push({
+			category: "privacy",
+			severity: "critical",
+			message: `Teacher name detected ("${tMatch[0]}") — VoiceFlow is strictly anonymous. Real names cannot be published in public submissions.`,
+			matched: tMatch[0],
+		});
+	}
+
+	// 4. Reporting/complaining phrase naming a teacher/staff ("told our tecaher kauli mam")
+	const REPORT_NAME_RE = /\b(?:told|telling|complained\s+to|spoke\s+to|talked\s+to|informed|reported\s+to|went\s+to)\s+(?:our\s+)?(?:tecaher|teacher|techer|faculty|prof)?\s*([a-zA-Z]{2,20})\s*(?:mam|maam|ma'am|madam|sir|miss)\b/i;
+	const rMatch = text.match(REPORT_NAME_RE);
+	if (rMatch && !flags.some((f) => f.matched.toLowerCase() === rMatch[0].toLowerCase())) {
+		flags.push({
+			category: "privacy",
+			severity: "critical",
+			message: `Reporting a named teacher/faculty member ("${rMatch[0]}") — submit privately to administration instead of public posts.`,
+			matched: rMatch[0],
+		});
+	}
+
+	// 5. Existing formal and direct name patterns
+	const COMMON_SALUTATION_AFTER = new Set([
+		"please", "can", "could", "will", "would", "look", "help", "check",
+		"see", "we", "i", "you", "they", "he", "she", "it", "the", "this",
+		"that", "our", "my", "your", "is", "are", "was", "were", "do", "does",
+		"did", "have", "has", "had", "tell", "listen", "pardon", "excuse",
+		"thank", "thanks", "for", "to", "in", "at", "on", "from",
+	]);
+	const TITLE_NAME_RE = /\b(?:mr|mrs|ms|miss|dr|prof|professor|coach|principal|headmaster)\s+([a-zA-Z]{2,}(?:\s+[a-zA-Z]{2,})?)\b/i;
+	const SIR_NAME_RE = /\b(?:sir|ma(?:'am|am))\s+([a-zA-Z]{2,})\b/i;
+
+	const titleM = text.match(TITLE_NAME_RE);
+	if (titleM && !flags.some((f) => f.matched.toLowerCase() === titleM[0].toLowerCase())) {
+		flags.push({
+			category: "privacy",
+			severity: "critical",
+			message: `Faculty title and name detected ("${titleM[0]}") — VoiceFlow strictly protects campus anonymity.`,
+			matched: titleM[0].slice(0, 50),
+		});
+	}
+
+	const sirM = text.match(SIR_NAME_RE);
+	const sirTarget = (sirM?.[1] || "").toLowerCase();
+	if (sirM && sirTarget && !COMMON_SALUTATION_AFTER.has(sirTarget) && !flags.some((f) => f.matched.toLowerCase() === sirM[0].toLowerCase())) {
+		flags.push({
+			category: "privacy",
+			severity: "critical",
+			message: `Faculty name detected ("${sirM[0]}") — VoiceFlow strictly protects campus anonymity.`,
+			matched: sirM[0].slice(0, 50),
+		});
+	}
+
+	const OTHER_NAME_PATTERNS = [
+		/\b(?:student|kid|boy|girl|classmate)\s+named\s+([a-zA-Z]{2,}(?:\s+[a-zA-Z]{2,})?)\b/i,
+		/\b(?:student|kid|boy|girl|classmate)\s+([A-Z][a-z]{1,20}(?:\s+[A-Z][a-z]{1,20})+)\b/,
+		/\b(?:named|name\s+is|his\s+name\s+is|her\s+name\s+is)\s+([a-zA-Z]{2,}(?:\s+[a-zA-Z]{2,})?)\b/i,
+		/\b(?:about|against|call(?:ed)?)\s+([A-Z][a-z]{2,}\s+[A-Z][a-z]{2,})\b/,
+	];
+	for (const pattern of OTHER_NAME_PATTERNS) {
+		const match = text.match(pattern);
+		if (match && !flags.some((f) => f.matched.toLowerCase() === match[0].toLowerCase())) {
+			flags.push({
+				category: "privacy",
+				severity: "critical",
+				message:
+					"Personal name detected in submission — VoiceFlow strictly protects campus anonymity. Publishing real names in public posts is prohibited. Please remove the name or submit privately.",
+				matched: match[0].slice(0, 50),
+			});
+			break;
+		}
+	}
+
+	// Student roll number or admission ID
+	const ID_PATTERN = /\b(?:roll\s*(?:no|num|number|#)?\s*[:=-]?\s*\d{1,5}|student\s*id\s*[:=-]?\s*[A-Za-z0-9_-]{4,14}|admission\s*(?:no|number|#)?\s*[:=-]?\s*\d{3,10})\b/i;
+	if (ID_PATTERN.test(text)) {
+		flags.push({
+			category: "privacy",
+			severity: "critical",
+			message:
+				"Student ID or roll number detected — sharing personal student identifiers compromises anonymity. Remove it before publishing.",
+			matched: text.match(ID_PATTERN)?.[0] || "",
+		});
+	}
+
+	// Personal social media handles
+	const SOCIAL_PATTERN = /\b(?:instagram|insta|ig|snapchat|snap|telegram|discord)\s*[:=-]?\s*@?([a-zA-Z0-9_.]{3,30})\b/i;
+	if (SOCIAL_PATTERN.test(text)) {
+		flags.push({
+			category: "privacy",
+			severity: "high",
+			message:
+				"Social media handle detected — do not post personal social accounts on this anonymous forum.",
+			matched: text.match(SOCIAL_PATTERN)?.[0] || "",
 		});
 	}
 
@@ -699,6 +846,47 @@ function maskWith(text: string, re: RegExp): string {
 	return text.replace(re, (m) => maskWord(m));
 }
 
+/** Check for garbled punctuation within words or keyboard mash */
+export function detectGibberishOrLowQuality(text: string): ModerationFlag[] {
+	const flags: ModerationFlag[] = [];
+	// Words with interior punctuation like "shou;d", "asdd;ac"
+	const punctuationInWordMatch = text.match(/\b[a-zA-Z]{2,}[;:{}|\\<>[\]~`][a-zA-Z]{1,}\b/);
+	if (punctuationInWordMatch) {
+		flags.push({
+			category: "quality",
+			severity: "medium",
+			message: `Garbled spelling or punctuation within word ("${punctuationInWordMatch[0]}"). Please use clear, complete words.`,
+			matched: punctuationInWordMatch[0],
+		});
+	}
+
+	// Keyboard mash tokens (e.g. "asdf", "sdfg", "qwer", or 5+ consecutive consonants)
+	const tokens = text.toLowerCase().split(/\s+/).map((w) => w.replace(/^[^a-z]+|[^a-z]+$/g, "")).filter(Boolean);
+	for (const token of tokens) {
+		if (token.length >= 4) {
+			if (!/[aeiouy]/.test(token) || /[^aeiouy]{5,}/.test(token)) {
+				flags.push({
+					category: "quality",
+					severity: "medium",
+					message: `Unintelligible word or keyboard mash ("${token}"). Please write clear descriptions.`,
+					matched: token,
+				});
+				break;
+			}
+			if (/(?:asdf|sdfg|dfgh|fghj|ghjk|hjkl|zxcv|xcvb|cvbn|vbnm|qwer|wert|erty|rtyu|tyui|yuio|uiop)/i.test(token)) {
+				flags.push({
+					category: "quality",
+					severity: "medium",
+					message: `Keyboard mash pattern detected ("${token}").`,
+					matched: token,
+				});
+				break;
+			}
+		}
+	}
+	return flags;
+}
+
 /**
  * Moderate content — returns flags, overall severity, and masked text.
  * Run this on the CLIENT for instant UI feedback before submission.
@@ -801,6 +989,9 @@ export function moderateContent(text: string): ModerationResult {
 
 	// 9. Bullying patterns
 	flags.push(...detectBullyingPatterns(text));
+
+	// 10. Garbled punctuation & keyboard mash
+	flags.push(...detectGibberishOrLowQuality(text));
 
 	// Compute overall
 	const overallSeverity = worstSeverity(flags);

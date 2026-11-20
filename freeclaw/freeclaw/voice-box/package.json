@@ -1,14 +1,17 @@
 {
   "name": "voice-box",
   "private": true,
-  "version": "2.0.1",
+  "version": "2.0.3",
   "description": "Voice Flow — anonymous school feedback platform for students and administrators.",
   "author": "Voice Flow",
   "license": "UNLICENSED",
   "overrides": {
     "pptxgenjs": {
       "image-size": "2.0.4"
-    }
+    },
+    "@grpc/grpc-js": "^1.14.7",
+    "glob": "^14.0.6",
+    "minimatch": "^11.0.9"
   },
   "homepage": "https://voice-box-psi.vercel.app",
   "type": "module",
@@ -17,8 +20,8 @@
   },
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && node --max-old-space-size=4096 ./node_modules/vite/bin/vite.js build",
-    "typecheck": "tsc -b --force",
+    "build": "node --max-old-space-size=4096 ./node_modules/typescript/bin/tsc -b && node --max-old-space-size=2560 ./node_modules/vite/bin/vite.js build",
+    "typecheck": "node --max-old-space-size=6144 ./node_modules/typescript/bin/tsc -b --force",
     "lint": "eslint .",
     "preview": "vite preview",
     "test": "node --max-old-space-size=4096 ./scripts/test-batch.mjs",
@@ -31,6 +34,9 @@
     "icons": "node scripts/make-icons.mjs",
     "desktop:start": "electron electron/main.cjs",
     "desktop:build": "node scripts/desktop-build.mjs",
+    "release:native": "node scripts/release-native.mjs",
+    "release:android": "node scripts/release-native.mjs --android",
+    "release:desktop": "node scripts/release-native.mjs --desktop",
     "mobile:sync": "cap sync",
     "mobile:open:android": "cap open android",
     "loadtest": "node scripts/loadtest.mjs",
@@ -40,8 +46,10 @@
     "example:ai-gateway": "tsx examples/ai-gateway/index.ts"
   },
   "dependencies": {
+    "@capacitor/local-notifications": "^7.0.7",
     "@capacitor/preferences": "^7.0.4",
     "@emailjs/browser": "^4.4.1",
+    "@firebase/firestore": "^4.19.1",
     "@sentry/node": "~10.69.0",
     "@sentry/react": "^10.69.0",
     "@sentry/vite-plugin": "^5.4.0",
@@ -49,7 +57,9 @@
     "ai": "^7.0.122",
     "clsx": "^2.1.1",
     "dotenv": "^18.0.4",
+    "firebase": "^13.2.0",
     "framer-motion": "^12.43.0",
+    "jszip": "^3.10.2",
     "lucide-react": "^0.577.0",
     "pptxgenjs": "^3.12.0",
     "qrcode": "^1.5.4",

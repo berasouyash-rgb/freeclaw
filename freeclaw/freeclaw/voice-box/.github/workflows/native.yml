@@ -40,10 +40,27 @@ jobs:
       - name: Generate icons
         run: node scripts/make-icons.mjs
 
+      # appUpdate.ts compares the release feed against the version baked into
+      # the bundle. Without this every CI-built installer fell back to the
+      # hard-coded constant and reported the WRONG version to itself — a 2.1.0
+      # EXE claiming 2.0.2 prompts to "update" to the build it is already
+      # running, then keeps prompting after the user installs it. $GITHUB_ENV
+      # only reaches LATER steps, so this must stay ABOVE the build.
+      - name: Bake the app version into the bundle
+        shell: bash
+        run: echo "VITE_APP_VERSION=$(node -p 'require("./package.json").version')" >> "$GITHUB_ENV"
+
       - name: Build native web bundle (relative base for file://)
         run: npm run build
         env:
           VB_NATIVE_ELECTRON: "1"
+
+      # public/downloads/ holds the APK the release pipeline serves, and vite
+      # copies public/ into dist/ verbatim — which is exactly what gets packed
+      # into app.asar. Without this the installer carries a nested copy of the
+      # previous APK and grows by it on every release.
+      - name: Drop previously published installers from the bundle
+        run: node scripts/strip-published-downloads.mjs Electron
 
       - name: Build NSIS installer
         run: npx electron-builder --config electron-builder.yml --win --publish never
@@ -78,10 +95,23 @@ jobs:
       - name: Generate icons (incl. icon.icns via iconutil)
         run: node scripts/make-icons.mjs
 
+      # appUpdate.ts compares the release feed against the version baked into
+      # the bundle. Without this every CI-built installer fell back to the
+      # hard-coded constant and reported the WRONG version to itself — a 2.1.0
+      # EXE claiming 2.0.2 prompts to "update" to the build it is already
+      # running, then keeps prompting after the user installs it. $GITHUB_ENV
+      # only reaches LATER steps, so this must stay ABOVE the build.
+      - name: Bake the app version into the bundle
+        shell: bash
+        run: echo "VITE_APP_VERSION=$(node -p 'require("./package.json").version')" >> "$GITHUB_ENV"
+
       - name: Build native web bundle (relative base for file://)
         run: npm run build
         env:
           VB_NATIVE_ELECTRON: "1"
+
+      - name: Drop previously published installers from the bundle
+        run: node scripts/strip-published-downloads.mjs Electron
 
       - name: Build DMG + ZIP (unsigned)
         run: npx electron-builder --config electron-builder.yml --mac --publish never
@@ -123,10 +153,26 @@ jobs:
       - name: Generate icons
         run: node scripts/make-icons.mjs
 
+      # appUpdate.ts compares the release feed against the version baked into
+      # the bundle. Without this every CI-built installer fell back to the
+      # hard-coded constant and reported the WRONG version to itself — a 2.1.0
+      # EXE claiming 2.0.2 prompts to "update" to the build it is already
+      # running, then keeps prompting after the user installs it. $GITHUB_ENV
+      # only reaches LATER steps, so this must stay ABOVE the build.
+      - name: Bake the app version into the bundle
+        shell: bash
+        run: echo "VITE_APP_VERSION=$(node -p 'require("./package.json").version')" >> "$GITHUB_ENV"
+
       - name: Build web bundle (strip source maps for mobile APK)
         run: npm run build
         env:
           VB_NATIVE_ANDROID: "1"
+
+      # The committed APK in public/downloads/ would otherwise be bundled INTO
+      # the APK being built: every release would ship the previous release
+      # inside itself (~7.5 MB of dead weight on the student's mobile data).
+      - name: Drop previously published installers from the bundle
+        run: node scripts/strip-published-downloads.mjs Android
 
       - name: Add + sync native project
         run: |
@@ -140,6 +186,16 @@ jobs:
       # when the generated tree is absent.
       - name: Accept third-party cookies in the app WebView
         run: node scripts/patch-android-webview-cookies.mjs android
+
+      # Back must navigate the WebView's route history, not finish() the
+      # activity. Also idempotent, also fails loudly on an unexpected tree.
+      - name: Make the hardware back button navigate
+        run: node scripts/patch-android-back-button.mjs android
+
+      # Android compares build.gradle's versionCode, not package.json. Keep
+      # them equal or the update feed advertises a version the phone refuses.
+      - name: Sync the Android version identity
+        run: node scripts/sync-android-version.mjs android
 
       - name: Build debug APK
         working-directory: android

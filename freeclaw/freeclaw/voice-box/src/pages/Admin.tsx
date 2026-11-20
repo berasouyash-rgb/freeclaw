@@ -60,6 +60,7 @@ const ActivityReport = retryLazy(() => import("./admin/ActivityReport"));
 // Config
 const AdminSettings = retryLazy(() => import("./admin/AdminSettings"));
 const AiSystems = retryLazy(() => import("./admin/AiSystems"));
+const SmartFeatures = retryLazy(() => import("./admin/SmartFeatures"));
 
 function TabFallback() {
 	return (
@@ -131,7 +132,7 @@ export default function Admin() {
 		const h = (e: Event) => {
 			const detail = (e as CustomEvent).detail as
 				| string
-				| { tab?: string; thread?: string };
+				| { tab?: string; thread?: string; user?: string };
 			if (typeof detail === "string") {
 				setTab(detail);
 				return;
@@ -141,6 +142,7 @@ export default function Admin() {
 				const p = new URLSearchParams(prev);
 				p.set("tab", key);
 				if (detail?.thread) p.set("thread", detail.thread);
+				if (detail?.user) p.set("user", detail.user);
 				return p;
 			});
 		};
@@ -638,6 +640,11 @@ export default function Admin() {
 						{tab === "ai-systems" && (
 							<ErrorBoundary key="ai-systems">
 								<AiSystems />
+							</ErrorBoundary>
+						)}
+						{tab === "smart-features" && (
+							<ErrorBoundary key="smart-features">
+								<SmartFeatures />
 							</ErrorBoundary>
 						)}
 					</Suspense>

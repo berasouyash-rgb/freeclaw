@@ -35,7 +35,6 @@ export const DOMAINS = Object.freeze([
 	"platform",
 	"security",
 	"quality",
-	"coworker",
 ]);
 
 const CLASSES = Object.freeze(["A", "B", "C"]);
@@ -86,7 +85,6 @@ const READ_POLLS = () => tool("get_polls", ["polls"], false, false);
 const SET_PRIORITY = () => tool("set_priority", ["posts"], false, true);
 const CREATE_POLL = () => tool("create_poll", ["polls"], false, true);
 const SEARCH_KB = () => tool("search_knowledge_base", ["knowledge_base"], false, false);
-const EXEC_SQL = () => tool("execute_sql", ["sql"], false, false);
 
 /**
  * The 10 Trust & Safety capabilities from FRAMEWORK §8.2.
@@ -556,7 +554,7 @@ export const PLATFORM_CONTRACTS = Object.freeze([
 		class: "A",
 		classDegradeTo: "B",
 		trigger: { kind: "cron", expr: "25 * * * *" },
-		tools: [EXEC_SQL(), READ_ANALYTICS()],
+		tools: [READ_ANALYTICS()],
 		caps: { ...CLASS_CAPS.A },
 		workflow: "deterministic_sweep",
 		disableTest:
@@ -1078,7 +1076,6 @@ export const ALL_CONTRACTS = Object.freeze([
 	...PLATFORM_CONTRACTS,
 	...SECURITY_CONTRACTS,
 	...QUALITY_CONTRACTS,
-	...COWORKER_CONTRACTS,
 ]);
 
 const BY_ID = new Map(ALL_CONTRACTS.map((c) => [c.id, c]));

@@ -14,9 +14,14 @@ export default defineConfig({
   globalSetup: "./tests/e2e/global-setup.ts",
   timeout: 60_000,
   retries: 1,
+  // Six workers against a dev server that also serves real API calls starved
+  // navigation (ERR_ABORTED, networkidle never settling). Two workers keep
+  // the suite deterministic on a shared machine.
+  workers: 2,
   use: {
     baseURL: BASE_URL,
     headless: true,
+    navigationTimeout: 90_000,
     viewport: { width: 1280, height: 720 },
     screenshot: "only-on-failure",
     trace: "retain-on-failure",

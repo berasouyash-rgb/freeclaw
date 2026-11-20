@@ -55,10 +55,44 @@ interface UserDetail {
 	comments: (CommentData & { created_at: string; deleted?: boolean })[];
 	reactions: { created_at: string; kind: string; target_id: string }[];
 	reports: { created_at: string; target_type: string; reason: string }[];
+	restriction?: {
+		level?: string | null;
+		scope?: string;
+		reason?: string;
+		created_at?: string;
+		expires_at?: string | null;
+		active?: boolean;
+	} | null;
+	restriction_level?: string;
 	[k: string]: unknown;
 }
 
 const SUSPEND_OPTIONS = [1, 3, 7, 30, 90];
+
+const RESTRICTION_OPTIONS = [
+	{
+		value: "feed_blocked",
+		label: "Level 1 — Feed blocked",
+		help: "Cannot load the main feed; other surfaces stay available.",
+	},
+	{
+		value: "read_only",
+		label: "Level 2 — Read only",
+		help: "Can browse, but cannot post, comment, react or upload.",
+	},
+	{
+		value: "full_ban",
+		label: "Level 3 — Full ban",
+		help: "Blocks every protected read and write and revokes device sessions.",
+	},
+] as const;
+
+const RESTRICTION_LABEL: Record<string, string> = {
+	feed_blocked: "Level 1 — Feed blocked",
+	read_only: "Level 2 — Read only",
+	full_ban: "Level 3 — Full ban",
+	none: "No restriction",
+};
 
 export default function UserManager() {
 	const { toast } = useApp();
@@ -66,7 +100,8 @@ export default function UserManager() {
 	const [detail, setDetail] = useState<UserDetail | null>(null);
 	const [detailLoading, setDetailLoading] = useState(false);
 	const [dialog, setDialog] = useState<{
-		kind: "warn" | "spam" | "ban";
+		kind: "warn" | "spam" | "ban" | "restrict";
+		level?: string;
 	} | null>(null);
 	// Monotonic id of the latest detail request (see openDetail race guard).
 	const detailReqRef = useRef(0);
@@ -197,6 +232,18 @@ export default function UserManager() {
 		setDetailLoading(false);
 	};
 
+	// Deep link from Reports / feed author links: /admin?tab=users&user=<id>
+	// mounts this panel with the target already in the URL. Read it directly
+	// (no router context required) and open the full account drawer once.
+	useEffect(() => {
+		const target = new URLSearchParams(window.location.search).get("user");
+		if (!target) return;
+		setQuery(target);
+		void openDetail(target);
+		// One-shot on mount: the admin shell remounts this panel per tab.
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, []);
+
 	const updateUser = async (anonId: string, patch: Record<string, unknown>) => {
 		try {
 			await api.post("/api/admin", {
@@ -209,6 +256,41 @@ export default function UserManager() {
 			openDetail(anonId);
 		} catch (e: unknown) {
 			toast(e instanceof Error ? e.message : "Failed to update user", "err");
+		}
+	};
+
+	// Deep link from Reports / the feed: /admin?tab=users&user=<anon_id>
+	// opens that account's full drawer (activity, restriction history, ban).
+	const applyRestriction = async (anonId: string, level: string, reason: string) => {
+		try {
+			const res = await api.post<{ sessions_revoked?: boolean }>("/api/admin", {
+				action: "set_restriction",
+				anon_id: anonId,
+				level,
+				reason: reason.trim() || "Applied by moderator",
+			});
+			toast(
+				`${RESTRICTION_LABEL[level] || level} applied${res?.sessions_revoked ? " — sessions revoked" : ""}`,
+				"ok",
+			);
+			reset();
+			openDetail(anonId);
+		} catch (e: unknown) {
+			toast(e instanceof Error ? e.message : "Failed to apply restriction", "err");
+		}
+	};
+
+	const liftRestriction = async (anonId: string) => {
+		try {
+			await api.post("/api/admin", {
+				action: "clear_restriction",
+				anon_id: anonId,
+			});
+			toast("Restriction lifted", "ok");
+			reset();
+			openDetail(anonId);
+		} catch (e: unknown) {
+			toast(e instanceof Error ? e.message : "Failed to lift restriction", "err");
 		}
 	};
 
@@ -443,6 +525,53 @@ export default function UserManager() {
 											{fmtDate(meta.suspended_until)}
 										</p>
 									)}
+
+								<div className="card p-3 mb-3">
+									<div className="flex items-center justify-between gap-2">
+										<span className="text-xs font-semibold text-ink2">
+											Account restriction level
+										</span>
+										<span className="badge badge-soft text-[10px]">
+											{RESTRICTION_LABEL[detail?.restriction_level || "none"] ||
+												RESTRICTION_LABEL.none}
+										</span>
+									</div>
+									{detail?.restriction?.reason && (
+										<p className="text-[11px] text-ink3 mt-1">
+											Reason: {detail.restriction.reason}
+											{detail.restriction.expires_at
+												? ` · expires ${fmtDate(detail.restriction.expires_at)}`
+												: ""}
+										</p>
+									)}
+									<div className="grid grid-cols-2 gap-2 mt-2">
+										{RESTRICTION_OPTIONS.map((o) => {
+											const active = (detail?.restriction_level || "none") === o.value;
+											return (
+												<button
+													key={o.value}
+													className={`btn !text-xs ${active ? "btn-soft" : o.value === "full_ban" ? "btn-danger" : "btn-ghost"}`}
+													title={o.help}
+													disabled={active}
+													onClick={() =>
+														setDialog({ kind: "restrict", level: o.value })
+													}
+												>
+													{active ? "Applied · " : ""}
+													{o.label.replace(" — ", " · ")}
+												</button>
+											);
+										})}
+										{(detail?.restriction_level || "none") !== "none" && (
+											<button
+												className="btn btn-soft !text-xs col-span-2"
+												onClick={() => liftRestriction(meta.anon_id)}
+											>
+												<RotateCcw size={13} /> Lift restriction
+											</button>
+										)}
+									</div>
+								</div>
 
 								<div className="grid grid-cols-2 gap-2 mb-4">
 									<button
@@ -708,6 +837,26 @@ export default function UserManager() {
 						message={`Permanently ban ${meta.anon_id}? They will no longer be able to post, comment, vote or chat. You can unban later if needed.`}
 						confirmLabel="Ban permanently"
 						danger
+					/>
+					<PromptDialog
+						open={dialog?.kind === "restrict"}
+						onClose={() => setDialog(null)}
+						onSubmit={(v) => {
+							if (dialog?.level) applyRestriction(meta.anon_id, dialog.level, v);
+						}}
+						title={
+							RESTRICTION_LABEL[dialog?.level || ""] || "Apply restriction"
+						}
+						label={
+							dialog?.level === "full_ban"
+								? "Reason (required) — this blocks all access and revokes the user's device sessions."
+								: "Reason shown to the user and recorded in the audit log."
+						}
+						placeholder="e.g. Repeated harassment after warnings"
+						multiline
+						submitLabel={
+							dialog?.level === "full_ban" ? "Apply full ban" : "Apply restriction"
+						}
 					/>
 				</>
 			)}

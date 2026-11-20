@@ -244,8 +244,8 @@ export default function Strikes() {
 								</tr>
 							</thead>
 							<tbody className="divide-y divide-border/60">
-								{filteredStrikes.map((s) => (
-									<tr key={s.id} className="hover:bg-surface2/30 transition-colors">
+								{filteredStrikes.map((s, i) => (
+									<tr key={s.id ? `${s.id}-${i}` : `strike-${i}`} className="hover:bg-surface2/30 transition-colors">
 										<td className="py-3 px-4 font-mono font-medium text-ink">
 											@{s.author_id.slice(0, 12)}
 										</td>

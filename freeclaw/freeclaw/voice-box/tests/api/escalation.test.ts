@@ -56,7 +56,7 @@ function chainFor(table: string): Chain {
 				fn({ data: null, error: null });
 				return;
 			}
-			let out = rows().filter(matches);
+			const out = rows().filter(matches);
 			fn({ data: single ? (out[0] ?? null) : out, error: null });
 		},
 		select() {
@@ -110,11 +110,6 @@ function chainFor(table: string): Chain {
 			return self;
 		},
 	};
-	// `insert` resolves through `then()`; route a simulated failure there.
-	function fnPlaceholder(failure: unknown) {
-		op = "select";
-		void failure;
-	}
 	return self;
 }
 
@@ -462,11 +457,29 @@ describe("restriction storage", () => {
 	});
 
 	it("treats an expired restriction as lifted", async () => {
-		const { setRestriction, getRestriction } = await import("../../api/_restrictions.js");
-		await setRestriction("anon_exp", "full_block", {
-			expires_at: new Date(Date.now() - 60_000).toISOString(),
-		});
+		const { getRestriction } = await import("../../api/_restrictions.js");
+		// Seed an already-active row whose expiry has passed — setRestriction
+		// rejects past dates on write, but rows can expire while stored.
+		state.settings["restriction:anon_exp"] = {
+			key: "restriction:anon_exp",
+			value: {
+				anon_id: "anon_exp",
+				level: "full_ban",
+				scope: "full_block",
+				active: true,
+				expires_at: new Date(Date.now() - 60_000).toISOString(),
+			},
+		};
 		expect(await getRestriction("anon_exp")).toBeNull();
+	});
+
+	it("refuses to store an expiry that is already in the past", async () => {
+		const { setRestriction } = await import("../../api/_restrictions.js");
+		await expect(
+			setRestriction("anon_exp", "full_block", {
+				expires_at: new Date(Date.now() - 60_000).toISOString(),
+			}),
+		).rejects.toThrow(/future/i);
 	});
 });
 

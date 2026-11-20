@@ -1,5 +1,10 @@
 /// <reference types="vite/client" />
 
+interface ImportMetaEnv {
+	/** Published Spline scene URL for the admin pet. Empty → SVG fallback. */
+	readonly VITE_SPLINE_PET_URL?: string;
+}
+
 interface Window {
 	vbDesktop?: boolean;
 	vbStore?: {

@@ -1,13 +1,13 @@
 // ═══════════════════════════════════════════════════════════════════
 // Slice 18 — Orchestration domain enrollment (FRAMEWORK §8.1) +
-// SPEC §7 (A–Q) ↔ FRAMEWORK §8 domain crosswalk (api/_domain-map.js).
+// SPEC §7 (A–P) ↔ FRAMEWORK §8 domain crosswalk (api/_domain-map.js).
 // Slice 21 — Community (§8.3) + Search & Knowledge (§8.4) enrollment.
 // ═══════════════════════════════════════════════════════════════════
 // Held-out: the 6 §8.1 rows (shape/class/trigger/verify/ui), the
 // deployed */5 cron schedule (vercel.json), class-A caps, the
 // read-only tool envelope, disable-test form (24h, ≥40 chars),
 // ALL_CONTRACTS composition behind the R14 gate, the full
-// 17-system crosswalk with validator positives + tamper negatives,
+// 16-system crosswalk with validator positives + tamper negatives,
 // the 6 §8.3 + 5 §8.4 rows with raw-token → contract mapping
 // (PA→parallelization, DS+EO/DS+CH→deterministic_sweep,
 // CH→chaining_gates, EO→evaluator_optimizer, E/C→event with cron
@@ -50,7 +50,6 @@ type ContractsModule = {
 	PLATFORM_CONTRACTS: Contract[];
 	SECURITY_CONTRACTS: Contract[];
 	QUALITY_CONTRACTS: Contract[];
-	COWORKER_CONTRACTS: Contract[];
 	ALL_CONTRACTS: Contract[];
 	DOMAINS: string[];
 	validateContract: (c: Contract) => { ok: boolean; errors: string[] };
@@ -484,91 +483,6 @@ const QUAL_ROWS = [
 	},
 ] as const;
 
-// Held-out FRAMEWORK §8.8 AI Coworker rows — same raw-token rule;
-// manual (M) is the primary trigger for seven of eight rows.
-const COW_ROWS = [
-	{
-		id: "cw-chat",
-		capability: "Chat",
-		shape: "RT",
-		class: "B",
-		trigger: "M/E",
-		expr: "manual (user message)|event: intent-routed WorkItem",
-		verify: ["V1"],
-		ui: "Coworker panel",
-	},
-	{
-		id: "cw-voice",
-		capability: "Voice",
-		shape: "CH",
-		class: "B",
-		trigger: "M",
-		expr: "manual (voice submit → transcript)",
-		verify: ["V3", "V1"],
-		ui: "Submit voice UI",
-	},
-	{
-		id: "cw-files",
-		capability: "Files",
-		shape: "CH",
-		class: "A/B",
-		trigger: "M",
-		expr: "manual (file upload)",
-		verify: ["V1", "V2"],
-		ui: "Coworker panel",
-	},
-	{
-		id: "cw-research",
-		capability: "Research",
-		shape: "CH",
-		class: "B",
-		trigger: "M",
-		expr: "manual (research question)",
-		verify: ["V6", "V1"],
-		ui: "Coworker panel",
-	},
-	{
-		id: "cw-coding",
-		capability: "Coding",
-		shape: "CH",
-		class: "B",
-		trigger: "M",
-		expr: "manual (coding task)",
-		verify: ["V5"],
-		ui: "Coworker panel",
-	},
-	{
-		id: "cw-investigation",
-		capability: "Investigation",
-		shape: "DS",
-		class: "C",
-		trigger: "M",
-		expr: "manual (investigation question)",
-		verify: ["V1"],
-		ui: "Coworker panel",
-	},
-	{
-		id: "cw-delegation",
-		capability: "Delegation",
-		shape: "OW",
-		class: "B",
-		trigger: "M",
-		expr: "manual (delegate WorkItem)",
-		verify: ["V1"],
-		ui: "Coworker + OpsCenter",
-	},
-	{
-		id: "cw-reports",
-		capability: "Reports",
-		shape: "DS",
-		class: "A",
-		trigger: "C/M",
-		expr: "40 6 * * *|manual rerun",
-		verify: ["V1"],
-		ui: "Reports (3 tabs)",
-	},
-] as const;
-
 // Held-out SPEC §7 crosswalk → primary FRAMEWORK §8 domain.
 const EXPECTED_PRIMARY: Record<string, string> = {
 	A: "orchestration",
@@ -587,7 +501,6 @@ const EXPECTED_PRIMARY: Record<string, string> = {
 	N: "quality",
 	O: "quality",
 	P: "quality",
-	Q: "coworker",
 };
 
 const EXPECTED_NAMES: Record<string, string> = {
@@ -607,7 +520,6 @@ const EXPECTED_NAMES: Record<string, string> = {
 	N: "QA",
 	O: "AI QUALITY",
 	P: "RELEASE & CHANGE",
-	Q: "AUTONOMOUS COWORKER",
 };
 
 const SYSTEM_KEYS = [
@@ -627,7 +539,6 @@ const SYSTEM_KEYS = [
 	"N",
 	"O",
 	"P",
-	"Q",
 ];
 
 let cm: ContractsModule;
@@ -695,9 +606,9 @@ describe("orchestration domain enrollment — FRAMEWORK §8.1", () => {
 		}
 	});
 
-	it("indexes all eight enrolled domains behind ALL_CONTRACTS / the R14 gate", () => {
+	it("indexes all seven enrolled domains behind ALL_CONTRACTS / the R14 gate", () => {
 		expect(cm.TRUST_SAFETY_CONTRACTS).toHaveLength(10);
-		expect(cm.ALL_CONTRACTS).toHaveLength(54);
+		expect(cm.ALL_CONTRACTS).toHaveLength(46);
 		expect(new Set(cm.ALL_CONTRACTS.map((c) => c.domain))).toEqual(
 			new Set([
 				"trust_safety",
@@ -707,7 +618,6 @@ describe("orchestration domain enrollment — FRAMEWORK §8.1", () => {
 				"platform",
 				"security",
 				"quality",
-				"coworker",
 			]),
 		);
 		const ids = cm.ALL_CONTRACTS.map((c) => c.id);
@@ -828,7 +738,7 @@ describe("platform domain enrollment — FRAMEWORK §8.5", () => {
 		const db = cm.PLATFORM_CONTRACTS.find((x) => x.id === "plat-database");
 		expect(db).toBeDefined();
 		if (!db) throw new Error("missing plat-database");
-		expect(db.tools.map((t) => t.name)).toEqual(["execute_sql", "get_analytics"]);
+		expect(db.tools.map((t) => t.name)).toEqual(["get_analytics"]);
 		for (const t of db.tools) {
 			expect(t.destructive).toBe(false);
 			expect(t.dryRunSupported).toBe(false);
@@ -924,64 +834,9 @@ describe("quality domain enrollment — FRAMEWORK §8.7", () => {
 	});
 });
 
-describe("coworker domain enrollment — FRAMEWORK §8.8", () => {
-	it("enrolls exactly the 8 §8.8 rows under the §8.8 mapping rules", () => {
-		expect(cm.COWORKER_CONTRACTS).toHaveLength(8);
-		expect(cm.COWORKER_CONTRACTS.map((c) => c.id)).toEqual(COW_ROWS.map((r) => r.id));
-		for (const row of COW_ROWS) {
-			const c = cm.COWORKER_CONTRACTS.find((x) => x.id === row.id);
-			expect(c).toBeDefined();
-			if (!c) throw new Error(`missing ${row.id}`);
-			expect(c.capability).toBe(row.capability);
-			expect(c.domain).toBe("coworker");
-			expect(c.class).toBe(primaryClass(row.class));
-			expect(c.classDegradeTo).toBe(degradeClass(row.class));
-			expect(c.workflow).toBe(SHAPE_TO_WORKFLOW[row.shape]);
-			expect(c.trigger.kind).toBe(primaryKind(row.trigger));
-			expect(c.trigger.expr).toBe(row.expr);
-			expect(c.verify).toEqual([...row.verify]);
-			expect(c.ui).toEqual(uiFromLabel(row.ui));
-		}
-	});
-
-	it("caps by primary class, keeps R5 observation-only envelopes, passes §3 validation", () => {
-		for (const c of cm.COWORKER_CONTRACTS) {
-			expect(c.caps).toEqual(capsForClass(c.class));
-			const r = cm.validateContract(c);
-			expect(r.errors).toEqual([]);
-			expect(r.ok).toBe(true);
-			expect(c.disableTest.length).toBeGreaterThanOrEqual(40);
-			expect(c.disableTest).toContain("24h");
-			// R5: the coworker never gets a tool handle — every enrolled
-			// tool is a read (get_/search_), never a mutation or enforce.
-			for (const t of c.tools) {
-				expect(t.destructive).toBe(false);
-				expect(t.name).toMatch(/^(get_|search_)/);
-			}
-		}
-	});
-
-	it("keeps investigation read-only and routes delegation through WorkItems", () => {
-		const inv = cm.COWORKER_CONTRACTS.find((x) => x.id === "cw-investigation");
-		expect(inv).toBeDefined();
-		if (!inv) throw new Error("missing cw-investigation");
-		expect(inv.trigger.kind).toBe("manual");
-		expect(inv.tools.map((t) => t.name)).toEqual(["get_analytics", "get_activity_logs"]);
-		const del = cm.COWORKER_CONTRACTS.find((x) => x.id === "cw-delegation");
-		expect(del).toBeDefined();
-		if (!del) throw new Error("missing cw-delegation");
-		expect(del.workflow).toBe("orchestrator_workers");
-		const reports = cm.COWORKER_CONTRACTS.find((x) => x.id === "cw-reports");
-		expect(reports).toBeDefined();
-		if (!reports) throw new Error("missing cw-reports");
-		expect(reports.trigger.kind).toBe("cron");
-		expect(reports.trigger.expr).toContain("manual rerun");
-	});
-});
-
 describe("SPEC §7 ↔ FRAMEWORK §8 domain map", () => {
-	it("holds out the full 17-system crosswalk (keys, names, primaries)", () => {
-		expect(cm.DOMAINS).toHaveLength(8);
+	it("holds out the full 16-system crosswalk (keys, names, primaries)", () => {
+		expect(cm.DOMAINS).toHaveLength(7);
 		expect(dm.SPEC_SYSTEMS.map((s) => s.key)).toEqual(SYSTEM_KEYS);
 		expect(dm.SPEC_SYSTEMS.map((s) => s.name)).toEqual(SYSTEM_KEYS.map((k) => EXPECTED_NAMES[k]));
 		expect(Object.keys(dm.SPEC_SYSTEM_MAP)).toEqual(SYSTEM_KEYS);

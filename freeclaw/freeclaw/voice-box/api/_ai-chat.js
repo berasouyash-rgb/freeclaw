@@ -16,7 +16,6 @@ import { logger } from "./_observability.js";
 import { buildPersonaSystemPrompt, loadPersona } from "./_persona.js";
 import { callLLMChain, callProviderStream } from "./_providers.js";
 import { detectPromptInjection } from "./_security.js";
-import { listForgedTools } from "./_tool-forge.js";
 import {
 	buildToolSystemPrompt,
 	getToolsForRole,
@@ -259,10 +258,9 @@ async function executeTool(name, args) {
 }
 
 // ─── System Prompt Builder (cached) ──────────────────────────────
-// The prompt involves 2 DB round-trips (persona + forged tools) and a
-// large tool-definition string. Rebuilding it on EVERY message added
-// ~100-300ms of serial latency before the first token. Cache it for a
-// short TTL; forged-tool changes propagate within 10s.
+// The prompt involves one DB round-trip (persona) and a large tool-definition
+// string. Rebuilding it on EVERY message added ~100-300ms of serial latency
+// before the first token. Cache it for a short TTL.
 let _promptCache = { at: 0, value: "" };
 const PROMPT_CACHE_TTL_MS = 10000;
 
@@ -273,14 +271,7 @@ async function buildSystemPrompt() {
 	}
 	const persona = await loadPersona();
 	const personaPrompt = buildPersonaSystemPrompt(persona);
-	const forgedTools = await listForgedTools();
-	const forgedToolList = forgedTools
-		.map((t) => `- ${t.name}: ${t.description}`)
-		.join("\n");
-
-	const prompt =
-		buildToolSystemPrompt("admin", personaPrompt) +
-		`\n\n## FORGED TOOLS\nYou have custom tools available:\n${forgedToolList || "(No custom tools forged yet — use forge_tool to create one.)"}\n`;
+	const prompt = buildToolSystemPrompt("admin", personaPrompt);
 	_promptCache = { at: now, value: prompt };
 	return prompt;
 }
@@ -404,6 +395,18 @@ function looksLikeToolCallPartial(text) {
 
 // ─── Execute Tool + Return Result as String ───────────────────────
 async function executeToolSafe(name, args) {
+	if (
+		name === "execute_sql" ||
+		name === "forge_tool" ||
+		name === "execute_forged_tool" ||
+		name === "delete_forged_tool"
+	) {
+		return {
+			result: null,
+			error:
+				"Raw SQL execution is disabled for safety. Use standard domain tools (get_posts, get_analytics, admin_reply, browse_and_navigate_ui).",
+		};
+	}
 	try {
 		const result = await executeTool(name, args);
 		return { result, error: null };

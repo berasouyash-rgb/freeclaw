@@ -36,6 +36,7 @@ const Terms = retryLazy(() => import("./pages/Terms"));
 const StatusPage = retryLazy(() => import("./pages/StatusPage"));
 const Changelog = retryLazy(() => import("./pages/Changelog"));
 const Accessibility = retryLazy(() => import("./pages/Accessibility"));
+const Developer = retryLazy(() => import("./pages/Developer"));
 const Download = retryLazy(() => import("./pages/Download"));
 const Settings = retryLazy(() => import("./pages/Settings"));
 const Notifications = retryLazy(() => import("./pages/Notifications"));
@@ -71,6 +72,8 @@ function PageRoute({ El }: { El: React.ComponentType }) {
 // Marketing & Legal pages — rendered outside the Layout shell.
 const PUBLIC_ROUTES = [
 	{ path: "/about", El: About },
+	{ path: "/developer", El: Developer },
+	{ path: "/about/developer", El: Developer },
 	{ path: "/contact", El: Contact },
 	{ path: "/terms", El: Terms },
 	{ path: "/status", El: StatusPage },

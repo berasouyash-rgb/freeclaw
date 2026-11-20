@@ -98,6 +98,7 @@ describe("Admin console shell", () => {
 	});
 
 	it("redirects removed autonomous UI controls while keeping operations controls", async () => {
+		// Ops Center stays retired and must not appear in the shell.
 		renderShell("/admin?tab=ops-center");
 		await waitFor(() => {
 			expect(
@@ -105,7 +106,6 @@ describe("Admin console shell", () => {
 			).toBe("page");
 		});
 		expect(screen.queryByRole("button", { name: /Ops Center/ })).not.toBeInTheDocument();
-		expect(screen.queryByRole("button", { name: /AI Coworker/ })).not.toBeInTheDocument();
 		expect(screen.getByRole("button", { name: "Errors" })).toBeInTheDocument();
 		expect(screen.getByRole("button", { name: "Logs" })).toBeInTheDocument();
 	});

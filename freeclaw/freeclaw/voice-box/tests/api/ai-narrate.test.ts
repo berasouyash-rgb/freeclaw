@@ -122,15 +122,21 @@ describe("POST /api/ai { task: narrate }", () => {
 
 	it("throttles narration when the rate limiter trips (admin loop cannot burn provider quota)", async () => {
 		authMocks.isAdmin.mockResolvedValue(true);
-		authMocks.rateLimited.mockReturnValueOnce(true);
+		// The limiter now resolves the SECONDS LEFT in the window, not a
+		// boolean, so the 429 can quote the real wait.
+		authMocks.rateLimited.mockReturnValueOnce(42);
 		const res = await narrate(true);
 		expect(res.statusCode).toBe(429);
+		// 60 SECONDS (10/min), not 60000: the argument is seconds, and the
+		// old 60000 silently made the budget 10 narrations per 16.6 hours.
 		expect(authMocks.rateLimited).toHaveBeenCalledWith(
 			"ai_narrate",
 			"203.0.113.7",
-			60000,
+			60,
 			10,
 		);
+		// The caller's own wait is forwarded, not a hardcoded 60.
+		expect((res.body as { retry_after?: number }).retry_after).toBe(42);
 		expect(providerMocks.callLLMChain).not.toHaveBeenCalled();
 	});
 

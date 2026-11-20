@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="600" viewBox="0 0 1600 600">
+<title>SOUYASH BERA wordmark</title>
+
+<defs>
+ <linearGradient id="nameFill" x1="0" y1="0" x2="1" y2="0">
+  <stop stop-color="#145b9b"/><stop offset=".48" stop-color="#278fd0"/><stop offset="1" stop-color="#56c7e8"/>
+ </linearGradient>
+ <pattern id="stripes" width="12" height="12" patternUnits="userSpaceOnUse">
+  <path d="M0 12 L12 0" stroke="#ffffff" stroke-width="2" opacity=".45"/>
+ </pattern>
+</defs>
+<g font-family="Arial, Helvetica, sans-serif" font-weight="900" text-anchor="middle" letter-spacing="3">
+ <text x="805" y="555" font-size="94" fill="#0c477c" opacity=".16">SOUYASH BERA.</text>
+ <text x="800" y="545" font-size="94" fill="url(#nameFill)" stroke="#ffffff" stroke-width="2" paint-order="stroke">SOUYASH BERA.</text>
+ <text x="800" y="545" font-size="94" fill="url(#stripes)" opacity=".55">SOUYASH BERA.</text>
+</g>
+
+</svg>

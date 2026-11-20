@@ -585,6 +585,45 @@ describe("GET /api/posts — pagination, ids, visibility", () => {
 		expect(out[0].is_mine).toBe(false);
 	});
 
+	it("never exposes internal admin_notes or assigned_to to anonymous readers", async () => {
+		state.posts = [
+			makePost({
+				id: "p1",
+				admin_notes: "internal: watch this reporter",
+				assigned_to: "Ms. Lee",
+			}),
+		];
+		const { default: handler } = await import("../../api/_posts.js");
+		const res = response();
+		await handler({ method: "GET", query: {}, body: {}, headers: {} }, res);
+
+		expect(res.statusCode).toBe(200);
+		const out = res.body as Array<Record<string, unknown>>;
+		expect(out[0].admin_notes).toBeNull();
+		expect(out[0].assigned_to).toBeNull();
+	});
+
+	it("keeps internal admin fields for admins", async () => {
+		state.posts = [
+			makePost({
+				id: "p1",
+				admin_notes: "internal note",
+				assigned_to: "Ms. Lee",
+			}),
+		];
+		(authMocks.isAdmin as ReturnType<typeof vi.fn>).mockResolvedValueOnce(true);
+		const { default: handler } = await import("../../api/_posts.js");
+		const res = response();
+		await handler(
+			{ method: "GET", query: { all: "1" }, body: {}, headers: {} },
+			res,
+		);
+
+		const out = res.body as Array<Record<string, unknown>>;
+		expect(out[0].admin_notes).toBe("internal note");
+		expect(out[0].assigned_to).toBe("Ms. Lee");
+	});
+
 	it("caps non-paginated feeds at 300 rows", async () => {
 		state.posts = Array.from({ length: 310 }, (_, i) =>
 			makePost({ id: `p${i}` }),
@@ -707,13 +746,14 @@ describe("POST /api/posts — gate, validation, duplicate, moderation", () => {
 		expect((res.body as { error: string }).error).toContain("Description");
 	});
 
-	it("409s on a near-duplicate title in the same category", async () => {
+	it("409s on a near-duplicate title the same author posted moments ago", async () => {
 		state.posts = [
 			makePost({
 				id: "old",
 				title: "Broken projector in room 12",
 				category: "Facilities",
 				status: "reported",
+				created_at: new Date().toISOString(),
 			}),
 		];
 		const { default: handler } = await import("../../api/_posts.js");
@@ -724,8 +764,8 @@ describe("POST /api/posts — gate, validation, duplicate, moderation", () => {
 				query: {},
 				body: {
 					author_id: "anon-2",
-					title: "Broken projector in room 12",
-					description: "It shuts down after ten minutes",
+					title: "Broken projector in room 12 again",
+					description: "It shuts down after ten minutes, still",
 					category: "Facilities",
 				},
 				headers: { "x-anon-id": "anon-2" },
@@ -734,6 +774,131 @@ describe("POST /api/posts — gate, validation, duplicate, moderation", () => {
 		);
 		expect(res.statusCode).toBe(409);
 		expect((res.body as { code: string }).code).toBe("DUPLICATE_POST");
+	});
+
+	it("409s on an identical title the same author attempts to post in another category", async () => {
+		state.posts = [
+			makePost({
+				id: "old-academic",
+				title: "Hostel Wi-Fi disconnects repeatedly",
+				category: "Academics",
+				status: "reported",
+				author_id: "anon-2",
+				created_at: new Date().toISOString(),
+			}),
+		];
+		const { default: handler } = await import("../../api/_posts.js");
+		const res = response();
+		await handler(
+			{
+				method: "POST",
+				query: {},
+				body: {
+					author_id: "anon-2",
+					title: "Hostel Wi-Fi disconnects repeatedly",
+					description: "Wi-Fi in block 2 keeps disconnecting every evening.",
+					category: "Technology",
+				},
+				headers: { "x-anon-id": "anon-2" },
+			},
+			res,
+		);
+		expect(res.statusCode).toBe(409);
+		expect((res.body as { code: string }).code).toBe("DUPLICATE_POST");
+		expect((res.body as { error: string }).error).toMatch(/Academics/);
+	});
+
+	it("never 409s a second witness with a near-identical title", async () => {
+		// A complaint box must accept two students reporting the same teacher.
+		// Word-set overlap on short titles is trivially ≥0.85, so a
+		// cross-author duplicate rule silently swallowed real complaints.
+		state.posts = [
+			makePost({
+				id: "first-witness",
+				title: "Kakuli mam is a horrible teacher",
+				category: "Teachers",
+				status: "reported",
+				author_id: "anon-1",
+				created_at: new Date().toISOString(),
+			}),
+		];
+		const { default: handler } = await import("../../api/_posts.js");
+		const res = response();
+		await handler(
+			{
+				method: "POST",
+				query: {},
+				body: {
+					author_id: "anon-2",
+					title: "Kakuli mam is a horrible teacher in physics",
+					description: "She shouts at students who ask questions.",
+					category: "Teachers",
+				},
+				headers: { "x-anon-id": "anon-2" },
+			},
+			res,
+		);
+		expect(res.statusCode).toBe(201);
+	});
+
+	it("never 409s a different author whose title overlaps almost completely", async () => {
+		state.posts = [
+			makePost({
+				id: "first-witness",
+				title: "Broken projector in room 12",
+				category: "Facilities",
+				status: "reported",
+				author_id: "anon-1",
+				created_at: new Date().toISOString(),
+			}),
+		];
+		const { default: handler } = await import("../../api/_posts.js");
+		const res = response();
+		await handler(
+			{
+				method: "POST",
+				query: {},
+				body: {
+					author_id: "anon-2",
+					title: "Broken projector in room 12 is still broken",
+					description: "Same projector, still shutting down after ten minutes.",
+					category: "Facilities",
+				},
+				headers: { "x-anon-id": "anon-2" },
+			},
+			res,
+		);
+		expect(res.statusCode).toBe(201);
+	});
+
+	it("allows the same author to re-complain once the rapid window has passed", async () => {
+		state.posts = [
+			makePost({
+				id: "old",
+				title: "Kakuli mam is a horrible teacher",
+				category: "Teachers",
+				status: "reported",
+				author_id: "anon-2",
+				created_at: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString(),
+			}),
+		];
+		const { default: handler } = await import("../../api/_posts.js");
+		const res = response();
+		await handler(
+			{
+				method: "POST",
+				query: {},
+				body: {
+					author_id: "anon-2",
+					title: "Kakuli mam is a horrible teacher in physics",
+					description: "A new term, the same behaviour, now with examples.",
+					category: "Teachers",
+				},
+				headers: { "x-anon-id": "anon-2" },
+			},
+			res,
+		);
+		expect(res.statusCode).toBe(201);
 	});
 
 	it("does not treat a hidden test artifact as an existing post", async () => {

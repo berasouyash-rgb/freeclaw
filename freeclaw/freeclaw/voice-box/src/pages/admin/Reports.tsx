@@ -27,6 +27,7 @@ import {
 	Unlock,
 	User,
 	Users,
+	X,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import UpdateNotice from "../../components/admin/UpdateNotice";
@@ -730,6 +731,15 @@ function reportDetailPayload(
 
 export default function Reports() {
 	const { toast } = useApp();
+	// Every author id in the queue is a door into the full account view
+	// (activity, restriction history, ban) instead of a dead string. Plain
+	// anchors keep this component router-independent (the admin shell owns
+	// routing) and the admin session now survives a full reload.
+	const accountHref = useCallback(
+		(id?: string | null) =>
+			id ? `/admin?tab=users&user=${encodeURIComponent(String(id))}` : "",
+		[],
+	);
 	const [tab, setTab] = useState<Tab>("reports");
 
 	// ── Data ──────────────────────────────────────────────────────
@@ -751,7 +761,7 @@ export default function Reports() {
 	// ── Report view state ─────────────────────────────────────────
 	const [actingId, setActingId] = useState<number | null>(null);
 	const [selectedReport, setSelectedReport] = useState<WorkItemData | null>(null);
-	const [reportFilter, setReportFilter] = useState<"all" | "urgent" | "comments" | "posts" | "inbox" | "resolved">("all");
+	const [reportFilter, setReportFilter] = useState<"all" | "urgent" | "comments" | "posts" | "inbox" | "resolved" | "dismissed">("all");
 	const [reportSearch, setReportSearch] = useState("");
 	const [showHarnessBanner, setShowHarnessBanner] = useState(true);
 
@@ -952,6 +962,46 @@ export default function Reports() {
 			failed === 0 ? "ok" : "err",
 		);
 		load();
+		setBusy(null);
+	};
+
+	const setStatus = async (
+		id: number,
+		status: "dismissed" | "pending",
+		reason?: string,
+	) => {
+		setBusy(`status:${id}`);
+		try {
+			await api.put("/api/reports", { id, status, reason });
+			toast(status === "dismissed" ? "Report dismissed" : "Report reopened", "ok");
+			load();
+		} catch (e: unknown) {
+			toast(e instanceof Error ? e.message : "Action failed", "err");
+		}
+		setBusy(null);
+	};
+
+	const dismissUnavailable = async () => {
+		if (!unavailableReports.length) return;
+		setBusy("dismiss-unavailable");
+		try {
+			const r = await api.put<{ dismissed?: number; skipped?: number }>(
+				"/api/reports",
+				{
+					action: "dismiss_unavailable",
+					ids: unavailableReports.map((r) => r.id),
+				},
+			);
+			toast(
+				`Dismissed ${r.dismissed ?? 0} report(s) with unavailable content${
+					r.skipped ? ` · ${r.skipped} skipped` : ""
+				}`,
+				"ok",
+			);
+			load();
+		} catch (e: unknown) {
+			toast(e instanceof Error ? e.message : "Bulk dismiss failed", "err");
+		}
 		setBusy(null);
 	};
 
@@ -1329,8 +1379,15 @@ export default function Reports() {
 	};
 
 	// ── Derived ───────────────────────────────────────────────────
-	const openReports = reports.filter((r) => r.status !== "resolved");
+	const openReports = reports.filter(
+		(r) => r.status !== "resolved" && r.status !== "dismissed",
+	);
 	const resolvedReports = reports.filter((r) => r.status === "resolved");
+	const dismissedReports = reports.filter((r) => r.status === "dismissed");
+	// Reports whose target is already gone: safe to clear from the active queue.
+	const unavailableReports = openReports.filter(
+		(r) => r.target_state === "deleted" || r.target_state === "hidden",
+	);
 	// Reports the autonomous workforce dispositioned on its own — each carries
 	// the audit evidence that justified the decision. Shown ABOVE the hand-
 	// moderated queue so AI work is visible instead of vanishing into history.
@@ -1413,17 +1470,18 @@ export default function Reports() {
 		setBusy(`hide:${r.id}`);
 		try {
 			if (r.target_type === "post") {
-				try {
-					await api.del(`/api/posts?id=${encodeURIComponent(r.target_id)}`, { id: r.target_id });
-				} catch {
-					await api.put("/api/posts", { id: r.target_id, status: "rejected" });
-				}
+				// Hide, never delete. DELETE /api/posts is a HARD delete that
+				// cascades comments and reactions, destroying moderation
+				// evidence and making the reported post vanish permanently.
+				await api.put("/api/posts", {
+					id: r.target_id,
+					hidden: true,
+				});
 			} else if (r.target_type === "comment") {
-				try {
-					await api.del(`/api/comments?id=${encodeURIComponent(r.target_id)}`, { id: r.target_id });
-				} catch {
-					await api.put("/api/comments", { id: r.target_id, hidden: true });
-				}
+				await api.put("/api/comments", {
+					id: r.target_id,
+					hidden: true,
+				});
 			}
 			await api.put("/api/reports", { id: r.id, status: "resolved" });
 			toast("Offending content hidden & report resolved ✓", "ok");
@@ -1927,6 +1985,28 @@ export default function Reports() {
 									</button>
 								</div>
 
+								<button
+									type="button"
+									onClick={() => setReportFilter("dismissed")}
+									className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition-all ${
+										reportFilter === "dismissed"
+											? "bg-ink2 text-white shadow-sm"
+											: "bg-surface2 text-ink2 hover:bg-surface2/80"
+									}`}
+								>
+									🗂 Dismissed ({dismissedReports.length})
+								</button>
+								{unavailableReports.length > 0 && (
+									<button
+										type="button"
+										onClick={() => void dismissUnavailable()}
+										disabled={busy === "dismiss-unavailable"}
+										className="px-3 py-1.5 rounded-xl text-xs font-semibold bg-bad/10 text-bad hover:bg-bad/20 transition-all"
+										title="Dismiss every open report whose target content was already deleted or hidden"
+									>
+										🧹 Dismiss unavailable ({unavailableReports.length})
+									</button>
+								)}
 								<div className="relative min-w-[200px] flex-1 sm:max-w-xs">
 									<input
 										type="text"
@@ -1953,14 +2033,14 @@ export default function Reports() {
 									All reports — {reports.length}
 								</p>
 							)}
-							{reportFilter !== "resolved" && visibleOpenReports.map((r) => {
+							{reportFilter !== "resolved" && reportFilter !== "dismissed" && visibleOpenReports.map((r, i) => {
 										const commentPostId = r.target_type === "comment" ? commentStates[r.target_id]?.postId : null;
 										const openDetail = () => setSelectedReport(reportDetailPayload(r, reports, commentPostId));
 										const guidance = getReportGuidance(r);
 										const urgent = isInboxUrgent(r) || isUrgentOrBullying(r);
 									return (
 									<div
-										key={r.id}
+										key={r.id ? `${r.id}-${i}` : `rep-${i}`}
 										className={`glass-card rounded-2xl overflow-hidden border transition-all duration-300 shadow-sm ${
 											urgent
 												? "border-bad/60 shadow-lg shadow-bad/10 ring-1 ring-bad/50 bg-bad/[0.02]"
@@ -2110,13 +2190,37 @@ export default function Reports() {
 												)}
 											</div>
 
-											{/* Test requirement: reported by and target story text */}
-											<p className="text-xs text-ink2" data-testid={`report-story-text-${r.id}`}>
-												Reported by <span className="font-semibold">{String(r.author_id || "unknown")}</span>
+											{/* Both sides of the report: who filed it and who created the target. */}
+											<p className="text-xs text-ink2 flex flex-wrap items-center gap-x-1 gap-y-0.5" data-testid={`report-story-text-${r.id}`}>
+												<span className="text-ink3">Reporter:</span>
+												{r.author_id ? (
+													<a
+														href={accountHref(r.author_id)}
+														className="font-semibold text-accent hover:underline"
+														title="Open reporter account"
+													>
+														{String(r.author_id)}
+													</a>
+												) : (
+													<span className="font-semibold">unknown</span>
+												)}
 												{r.target_author_id ? (
-													<> against <span className="font-semibold">{String(r.target_author_id)}</span></>
-												) : null}{" "}
-												· {String(r.target_type || "content")} {String(r.target_id || "").slice(0, 20)} · {timeAgo(r.created_at)}
+													<>
+														<span className="text-ink3">· Creator:</span>
+														<a
+															href={accountHref(r.target_author_id)}
+															className="font-semibold text-accent hover:underline"
+															title="Open creator account"
+														>
+															{String(r.target_author_id)}
+														</a>
+													</>
+												) : null}
+												<span className="text-ink3">
+													· {String(r.target_type || "content")}{" "}
+													{String(r.target_id || "").slice(0, 20)} ·{" "}
+													{timeAgo(r.created_at)}
+												</span>
 											</p>
 
 											{/* Targeted content preview quote */}
@@ -2170,6 +2274,23 @@ export default function Reports() {
 													<CheckCircle2 size={14} className="text-emerald-400" />
 													<span>Resolve</span>
 													<span className="text-[10px] font-normal opacity-70 hidden sm:inline">(Safe)</span>
+												</button>
+
+												{/* 1b. Neutral: Dismiss (no violation) */}
+												<button
+													type="button"
+													className="btn btn-ghost !px-3.5 !py-2 !rounded-xl !text-xs font-bold flex items-center gap-1.5 transition-all active:scale-95 text-ink2 hover:text-ink"
+													onClick={(e) => {
+														e.stopPropagation();
+														void setStatus(r.id, "dismissed", "No violation found");
+													}}
+													disabled={busy === `status:${r.id}` || busy === `resolve:${r.id}`}
+													aria-label={`Dismiss report ${r.id} without action`}
+													title="Close this report with no action — the content stays public (audited)"
+												>
+													<X size={14} />
+													<span>Dismiss</span>
+													<span className="text-[10px] font-normal opacity-70 hidden sm:inline">(No Violation)</span>
 												</button>
 
 												{/* 2. Red: Hide / Remove Content */}
@@ -2324,10 +2445,56 @@ export default function Reports() {
 											<p className="text-[11px] text-ink3 mt-1 font-mono">
 												target: {r.target_id} · resolved {timeAgo(r.created_at)}
 											</p>
+											<button
+												type="button"
+												className="mt-2 text-[11px] px-2.5 py-1.5 rounded-lg font-semibold text-accent bg-accent/10 border border-accent/25 hover:bg-accent/20 transition-all active:scale-95"
+												onClick={(e) => {
+													e.stopPropagation();
+													void setStatus(r.id, "pending", "Reopened for re-review");
+												}}
+												disabled={busy === `status:${r.id}`}
+											>
+												↩ Reopen
+											</button>
 										</div>
 									</div>
 								</div>
 							))}
+							{(reportFilter === "dismissed" || reportFilter === "all") && dismissedReports
+								.filter((r) => {
+									if (!reportSearch.trim()) return true;
+									const q = reportSearch.toLowerCase();
+									return `${r.reason || ""} ${r.details || ""} ${r.author_id || ""} ${r.target_id || ""}`
+										.toLowerCase()
+										.includes(q);
+								})
+								.map((r) => (
+									<div key={r.id} className="card p-4 opacity-60 hover:opacity-100 transition-opacity">
+										<div className="flex items-start gap-3">
+											<X size={16} className="text-ink3 shrink-0 mt-0.5" />
+											<div className="min-w-0 flex-1">
+												<span className="chip !text-[9px] !py-0.5">Dismissed</span>
+												<p className="text-sm font-medium mt-1">{r.reason}</p>
+												<p className="text-[11px] text-ink3 mt-1 font-mono">
+													target: {r.target_id} · dismissed {timeAgo(r.created_at)}
+												</p>
+												<button
+													type="button"
+													className="mt-2 text-[11px] px-2.5 py-1.5 rounded-lg font-semibold text-accent bg-accent/10 border border-accent/25 hover:bg-accent/20 transition-all active:scale-95"
+													onClick={() => void setStatus(r.id, "pending", "Reopened for re-review")}
+													disabled={busy === `status:${r.id}`}
+												>
+													↩ Reopen
+												</button>
+											</div>
+										</div>
+									</div>
+								))}
+							{reportFilter === "dismissed" && dismissedReports.length === 0 && (
+								<p className="card p-8 text-center text-sm text-ink3">
+									No dismissed reports.
+								</p>
+							)}
 							{reports.length === 0 && (
 								<p className="card p-8 text-center text-sm text-ink3">
 									No reports yet.

@@ -21,7 +21,7 @@ function findTestFiles(dir) {
 }
 
 const files = findTestFiles(testsDir);
-const BATCH_SIZE = 15;
+const BATCH_SIZE = 8;
 const total = files.length;
 let passed = 0;
 let failed = 0;
@@ -51,9 +51,21 @@ for (let i = 0; i < total; i += BATCH_SIZE) {
 		passed += batch.length;
 		console.log(`\n  ✅ Batch ${batchNum} passed`);
 	} else {
-		failed += batch.length;
-		failedFiles.push(...batch);
-		console.log(`\n  ❌ Batch ${batchNum} had failures`);
+		console.log(`\n  ⚠️ Batch ${batchNum} had worker failure/timeout, retrying batch...`);
+		const retryProc = spawnSync(process.execPath, args, {
+			cwd: root,
+			env,
+			encoding: "utf-8",
+			stdio: "inherit",
+		});
+		if (retryProc.status === 0) {
+			passed += batch.length;
+			console.log(`\n  ✅ Batch ${batchNum} passed on retry`);
+		} else {
+			failed += batch.length;
+			failedFiles.push(...batch);
+			console.log(`\n  ❌ Batch ${batchNum} had failures`);
+		}
 	}
 	console.log("");
 }

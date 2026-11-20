@@ -5,12 +5,12 @@
 // failure mode (network down, bad payload, empty feed) resolves to "no
 // update" — the check must never break or nag the app.
 
-import { apiBase, getPlatform } from "./platform";
+import { apiBase, getPlatform, isNativeShell } from "./platform";
 import { showBrowserNotification } from "./browserNotify";
 
 /** Build baked at compile time; override with VITE_APP_VERSION per release. */
 const CURRENT_VERSION: string =
-	(import.meta.env?.VITE_APP_VERSION as string | undefined) || "2.0.1";
+	(import.meta.env?.VITE_APP_VERSION as string | undefined) || "2.0.2";
 
 const LAST_CHECK_KEY = "vb:update:lastCheck";
 const SNOOZE_KEY = "vb:update:snoozeUntil";
@@ -165,7 +165,13 @@ export function maybeNotifyAppUpdate(update: AppUpdate | null): boolean {
 			title: `Update detected — Voice Flow ${update.version}`,
 			body: update.notes || "A new version is ready. Open the app to install it.",
 			tag: "voice-flow-update",
-			url: "/download",
+			// Inside the APK/EXE the UpdateDialog is already waiting in the
+			// app, and a native shell routes on the hash — sending the user to
+			// the browser-only "/download" path would navigate the WebView off
+			// the SPA (a dead page, and an install link for the build they are
+			// running). Tapping the ping just focuses the app. Only a web
+			// client — which never reaches this path — would need a URL.
+			url: isNativeShell() ? undefined : "/download",
 		});
 	} catch {
 		return false;

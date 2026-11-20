@@ -51,7 +51,10 @@ const WCAG_TAGS = ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"];
 /** axe impact levels that are hard failures (AA breaches, not advisories). */
 const HARD_IMPACTS = new Set(["critical", "serious"]);
 
-test.describe.configure({ retries: 0, timeout: 180_000 });
+// One retry absorbs the cold-start navigation race (first test hits a
+// dev server that is still priming modules); a real WCAG violation still
+// fails both attempts.
+test.describe.configure({ retries: 1, timeout: 180_000 });
 
 /**
  * Boot the app with a pinned theme, then wait for real content.
@@ -75,13 +78,16 @@ async function boot(
 		},
 		[scheme],
 	);
-	await page.goto(path);
+	// domcontentloaded + an explicit render wait: "networkidle" never settles
+	// on a live app (heartbeats, event polling) and consumed the whole test
+	// timeout on slow backend calls.
+	await page.goto(path, { waitUntil: "domcontentloaded" });
 	await page
 		.locator("#root > *")
 		.first()
 		.waitFor({ state: "attached", timeout: 20_000 })
 		.catch(() => undefined);
-	await page.waitForLoadState("networkidle").catch(() => undefined);
+	await page.waitForLoadState("networkidle", { timeout: 3_000 }).catch(() => undefined);
 	await page.waitForTimeout(400);
 }
 

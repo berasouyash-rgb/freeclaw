@@ -56,16 +56,14 @@ test.describe("Navigation", () => {
   });
 
   test("direct page navigation works", async ({ page }) => {
-    await page.goto("/");
-    await page.waitForLoadState("networkidle");
-
-    await page.goto("/search");
-    await page.waitForLoadState("networkidle");
-    expect(page.url()).toContain("/search");
-
-    await page.goto("/polls");
-    await page.waitForLoadState("networkidle");
-    expect(page.url()).toContain("/polls");
+    // Bounded waits: networkidle can hang for the whole test timeout when a
+    // backend call is slow. Navigation is proven by the URL + rendered main.
+    for (const path of ["/", "/search", "/polls"]) {
+      await page.goto(path, { waitUntil: "domcontentloaded" });
+      await page.waitForLoadState("networkidle", { timeout: 3_000 }).catch(() => undefined);
+      expect(page.url()).toContain(path);
+      await expect(page.locator("main").first()).toBeAttached();
+    }
   });
 });
 

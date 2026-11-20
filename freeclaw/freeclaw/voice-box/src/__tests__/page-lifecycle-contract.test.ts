@@ -155,7 +155,6 @@ describe("page lifecycle contracts", () => {
 		// Center panel inside Overview, not as an Admin shell import.
 		const source = readFileSync(resolve(process.cwd(), "src/pages/Admin.tsx"), "utf8");
 		for (const name of [
-			"AgentChat",
 			"OpsCenter",
 			"SystemHealth",
 			"PerformanceCenter",

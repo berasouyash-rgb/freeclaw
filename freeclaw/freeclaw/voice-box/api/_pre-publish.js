@@ -685,6 +685,67 @@ async function emergencyRegex(text, visibility = "public") {
 		riskScore += 35;
 	}
 
+	// Personal names & faculty identification (Zero-Knowledge Campus Protection)
+	// Staff opinion complaints (e.g. "Kakuli mam is a horrible teacher", "Mr Sharma is rude")
+	// are legitimate student feedback and explicitly allowed by the platform policy.
+	if (!isStaffComplaint(text)) {
+		const COURTESY_HONORIFICS = new Set([
+			"yes", "no", "dear", "hello", "hi", "hey", "thanks", "thank", "sorry",
+			"please", "morning", "evening", "afternoon", "excuse", "pardon",
+			"welcome", "ok", "okay", "alright", "right", "good", "both", "our",
+			"your", "to", "the", "a", "an", "by", "with", "for", "and", "or",
+			"you", "me", "us", "them", "all",
+		]);
+		const POSTFIX_NAME_RE = /\b([a-zA-Z]{3,20})\s+(?:mam|maam|ma'am|madam|sir|miss)\b/gi;
+		let pnm;
+		while ((pnm = POSTFIX_NAME_RE.exec(text)) !== null) {
+			const w = pnm[1].toLowerCase();
+			if (!COURTESY_HONORIFICS.has(w)) {
+				privacyIssues.push(`Faculty/personal name detected ("${pnm[0]}")`);
+				riskScore += 80;
+				break;
+			}
+		}
+
+		const TITLE_EXCLUDE_AFTER = new Set([
+			"here", "there", "said", "told", "asked", "was", "is", "are", "were",
+			"did", "does", "do", "has", "have", "had", "can", "could", "will",
+			"would", "should", "must", "name", "names", "room", "cabin", "office",
+			"desk", "evaluation", "feedback", "meeting", "union", "staff", "student", "students",
+			"that", "the", "about", "to", "in", "on", "at", "who", "which", "my", "our", "your", "his", "her",
+		]);
+		const PREFIX_TITLE_RE = /\b(?:teacher|tecaher|techer|teachr|faculty|faclty|faculity|prof|proff|professor|principal|princpal|headmaster|headmistress|warden|hod|dean)\s+([a-zA-Z]{2,20})\b/gi;
+		let ptm;
+		while ((ptm = PREFIX_TITLE_RE.exec(text)) !== null) {
+			const w = ptm[1].toLowerCase();
+			if (!TITLE_EXCLUDE_AFTER.has(w) && !privacyIssues.some((i) => i.includes(ptm[0]))) {
+				privacyIssues.push(`Teacher/faculty name detected ("${ptm[0]}")`);
+				riskScore += 80;
+				break;
+			}
+		}
+
+		const TEACHER_NAME_MAM_RE = /\b(?:tecaher|teacher|techer|teachr|faculty|faclty|prof|proff)\s+([a-zA-Z]{2,20})\s+(?:mam|maam|ma'am|madam|sir|miss)\b/i;
+		const tMatch = text.match(TEACHER_NAME_MAM_RE);
+		if (tMatch && !privacyIssues.some((i) => i.includes(tMatch[0]))) {
+			privacyIssues.push(`Teacher name detected ("${tMatch[0]}")`);
+			riskScore += 80;
+		}
+
+		const REPORT_NAME_RE = /\b(?:told|telling|complained\s+to|spoke\s+to|talked\s+to|informed|reported\s+to|went\s+to)\s+(?:our\s+)?(?:tecaher|teacher|techer|faculty|prof)?\s*([a-zA-Z]{2,20})\s*(?:mam|maam|ma'am|madam|sir|miss)\b/i;
+		const rMatch = text.match(REPORT_NAME_RE);
+		if (rMatch && !privacyIssues.some((i) => i.includes(rMatch[0]))) {
+			privacyIssues.push(`Reporting a named teacher/faculty member ("${rMatch[0]}")`);
+			riskScore += 80;
+		}
+	}
+
+	const ID_PATTERN = /\b(?:roll\s*(?:no|num|number|#)?\s*[:=-]?\s*\d{1,6}|student\s*id\s*[:=-]?\s*[A-Za-z0-9_-]{4,14}|admission\s*(?:no|number|#)?\s*[:=-]?\s*\d{3,10})\b/i;
+	if (ID_PATTERN.test(text) && !privacyIssues.some((i) => i.includes("Student ID"))) {
+		privacyIssues.push("Student ID or roll number detected");
+		riskScore += 80;
+	}
+
 	// Direct threats — only if POST AUTHOR is making threats (not reporting them)
 	if (
 		/\b(kill yourself|kys|i will find you|i will hurt you|watch your back|shoot|stab|bomb|burn down)\b/i.test(
@@ -792,6 +853,30 @@ async function emergencyRegex(text, visibility = "public") {
 	if (text.trim().length < 5) {
 		qualityIssues.push("Too short");
 		riskScore += 10;
+	}
+
+	// Interior punctuation in words (e.g., "shou;d", "asdd;ac")
+	const garbledPunctMatch = text.match(/\b[a-zA-Z]{2,}[;:{}|\\<>[\]~`][a-zA-Z]{1,}\b/);
+	if (garbledPunctMatch) {
+		qualityIssues.push(`Garbled punctuation within word ("${garbledPunctMatch[0]}")`);
+		riskScore += 30;
+	}
+
+	// Keyboard mash tokens
+	const rawTokens = text.toLowerCase().split(/\s+/).map((w) => w.replace(/^[^a-z]+|[^a-z]+$/g, "")).filter(Boolean);
+	for (const token of rawTokens) {
+		if (token.length >= 4) {
+			if (!/[aeiouy]/.test(token) || /[^aeiouy]{5,}/.test(token)) {
+				qualityIssues.push(`Keyboard mash or unintelligible word ("${token}")`);
+				riskScore += 25;
+				break;
+			}
+			if (/(?:asdf|sdfg|dfgh|fghj|ghjk|hjkl|zxcv|xcvb|cvbn|vbnm|qwer|wert|erty|rtyu|tyui|yuio|uiop)/i.test(token)) {
+				qualityIssues.push(`Keyboard mash pattern ("${token}")`);
+				riskScore += 25;
+				break;
+			}
+		}
 	}
 
 	riskScore = Math.min(100, riskScore);

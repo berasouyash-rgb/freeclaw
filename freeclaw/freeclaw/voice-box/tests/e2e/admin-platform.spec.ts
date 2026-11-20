@@ -100,7 +100,12 @@ test.describe("Admin Login Page", () => {
     await page.waitForLoadState("networkidle");
 
     const criticalErrors = consoleErrors.filter(
-      (e) => !e.includes("Failed to fetch") && !e.includes("chunk")
+      (e) =>
+        !e.includes("Failed to fetch") &&
+        !e.includes("chunk") &&
+        // Pre-auth probes (auth_mode / admin-events) legitimately answer 401
+        // before a credential exists; the login UI handles that state.
+        !e.includes("401")
     );
     expect(criticalErrors).toHaveLength(0);
   });

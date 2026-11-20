@@ -12,7 +12,6 @@ const PageContext = createContext({
 
 const TAB_DESCRIPTIONS = {
 	dashboard: "Platform overview and key metrics",
-	"agent-chat": "AI Coworker conversations and action previews",
 	"ops-center": "Automation registry, workforce health, and manual controls",
 	"system-health": "Service health and degraded dependencies",
 	performance: "Latency, throughput, and resource trends",
@@ -34,7 +33,7 @@ const TAB_DESCRIPTIONS = {
 const LEGACY_PATH_TABS = {
 	analytics: "performance",
 	notifications: "inbox",
-	ai: "agent-chat",
+	ai: "dashboard",
 	agents: "ops-center",
 	"command-center": "ops-center",
 	knowledge: "activity-stream",

@@ -163,7 +163,11 @@ ipcMain.handle("vb-notify:show", (_event, ping) => {
 		n.on("click", () => {
 			if (mainWin) {
 				if (mainWin.isMinimized()) mainWin.restore();
+				mainWin.show();
 				mainWin.focus();
+				if (ping && ping.url) {
+					mainWin.webContents.send("vb-notify:navigate", ping.url);
+				}
 			}
 		});
 		n.show();

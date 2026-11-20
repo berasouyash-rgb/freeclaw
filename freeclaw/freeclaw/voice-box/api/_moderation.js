@@ -5,6 +5,8 @@
 
 import supabase from "./_db-client.js";
 import { hasBlockedTerm } from "./_lexicon.js";
+import { stalkingFlags } from "./_stalking.js";
+import { isStaffComplaint } from "./_context-moderation.js";
 
 // ─── Self-learning feedback loop (weak signals ONLY) ─────────────
 // Admin decisions feed back into confidence: every time an admin APPROVES a
@@ -188,6 +190,9 @@ const DO_AS_I_SAY =
 	/\bdo\s+(?:as\s+i\s+say|what\s+i\s+say)\b[^.!?]{0,60}\b(?:or\s+(?:else|i(?:'ll| will))|otherwise)\b/i;
 const COERCION_VICTIM_REPORT =
 	/\b(?:someone|somebody|some\s+one|he|she|they|this\s+(?:guy|person|boy|girl|man))\b[^.!?]{0,40}\b(?:blackmail(?:ing|ed|s)?|threaten(?:ed|ing|s)?|extort(?:ing|ed|s)?|forcing\s+me)\b|\b(?:blackmail(?:ing|ed)?|threaten(?:ed|ing)?|extort(?:ing|ed)?)\s+(?:me|him|her|them|us)\b/i;
+// Stalking / intimidation patterns live in _stalking.js because the automatic
+// priority scale needs the SAME signal: a post that blocks as stalking must
+// also rank critical, and neither copy may drift from the other.
 // Ambiguous sexualization � HELD for human review on posts (never public
 // auto), blocked on comments/polls which have no review queue.
 const EXPLICIT_HOLD = /\b(?:sexy|hookups?)\b/i;
@@ -403,6 +408,82 @@ export function serverModerate(title, description, learned = null) {
 			severity: "high",
 			message: "Personal name with address detected",
 		});
+
+	// ── Personal names & faculty identification (Zero-Knowledge Campus Protection) ──
+	// Staff opinion complaints (e.g. "Kakuli mam is a horrible teacher", "Mr Sharma is rude")
+	// are legitimate student feedback and explicitly protected by platform policy.
+	if (!isStaffComplaint(text)) {
+		const COURTESY_HONORIFICS = new Set([
+			"yes", "no", "dear", "hello", "hi", "hey", "thanks", "thank", "sorry",
+			"please", "morning", "evening", "afternoon", "excuse", "pardon",
+			"welcome", "ok", "okay", "alright", "right", "good", "both", "our",
+			"your", "to", "the", "a", "an", "by", "with", "for", "and", "or",
+			"you", "me", "us", "them", "all",
+		]);
+		const POSTFIX_NAME_RE = /\b([a-zA-Z]{3,20})\s+(?:mam|maam|ma'am|madam|sir|miss)\b/gi;
+		let pnm;
+		while ((pnm = POSTFIX_NAME_RE.exec(text)) !== null) {
+			const w = pnm[1].toLowerCase();
+			if (!COURTESY_HONORIFICS.has(w)) {
+				flags.push({
+					type: "privacy",
+					severity: "high",
+					message: `Faculty/personal name detected ("${pnm[0]}") — VoiceFlow strictly protects campus anonymity`,
+				});
+				break;
+			}
+		}
+
+		const TITLE_EXCLUDE_AFTER = new Set([
+			"here", "there", "said", "told", "asked", "was", "is", "are", "were",
+			"did", "does", "do", "has", "have", "had", "can", "could", "will",
+			"would", "should", "must", "name", "names", "room", "cabin", "office",
+			"desk", "evaluation", "feedback", "meeting", "union", "staff", "student", "students",
+			"that", "the", "about", "to", "in", "on", "at", "who", "which", "my", "our", "your", "his", "her",
+		]);
+		const PREFIX_TITLE_RE = /\b(?:teacher|tecaher|techer|teachr|faculty|faclty|faculity|prof|proff|professor|principal|princpal|headmaster|headmistress|warden|hod|dean)\s+([a-zA-Z]{2,20})\b/gi;
+		let ptm;
+		while ((ptm = PREFIX_TITLE_RE.exec(text)) !== null) {
+			const w = ptm[1].toLowerCase();
+			if (!TITLE_EXCLUDE_AFTER.has(w) && !flags.some((f) => f.type === "privacy")) {
+				flags.push({
+					type: "privacy",
+					severity: "high",
+					message: `Teacher/faculty name detected ("${ptm[0]}") — VoiceFlow strictly protects campus anonymity`,
+				});
+				break;
+			}
+		}
+
+		const TEACHER_NAME_MAM_RE = /\b(?:tecaher|teacher|techer|teachr|faculty|faclty|prof|proff)\s+([a-zA-Z]{2,20})\s+(?:mam|maam|ma'am|madam|sir|miss)\b/i;
+		const tMatch = text.match(TEACHER_NAME_MAM_RE);
+		if (tMatch && !flags.some((f) => f.type === "privacy")) {
+			flags.push({
+				type: "privacy",
+				severity: "high",
+				message: `Teacher name detected ("${tMatch[0]}") — VoiceFlow strictly protects campus anonymity`,
+			});
+		}
+
+		const REPORT_NAME_RE = /\b(?:told|telling|complained\s+to|spoke\s+to|talked\s+to|informed|reported\s+to|went\s+to)\s+(?:our\s+)?(?:tecaher|teacher|techer|faculty|prof)?\s*([a-zA-Z]{2,20})\s*(?:mam|maam|ma'am|madam|sir|miss)\b/i;
+		const rMatch = text.match(REPORT_NAME_RE);
+		if (rMatch && !flags.some((f) => f.type === "privacy")) {
+			flags.push({
+				type: "privacy",
+				severity: "high",
+				message: `Reporting a named faculty member ("${rMatch[0]}") — submit privately to administration instead of public posts`,
+			});
+		}
+	}
+
+	const ID_PATTERN = /\b(?:roll\s*(?:no|num|number|#)?\s*[:=-]?\s*\d{1,6}|student\s*id\s*[:=-]?\s*[A-Za-z0-9_-]{4,14}|admission\s*(?:no|number|#)?\s*[:=-]?\s*\d{3,10})\b/i;
+	if (ID_PATTERN.test(text) && !flags.some((f) => f.type === "privacy")) {
+		flags.push({
+			type: "privacy",
+			severity: "high",
+			message: "Student ID or roll number detected — sharing personal student identifiers compromises anonymity",
+		});
+	}
 	// ── Named accusation — a named person accused of wrongdoing ────
 	// "Student Rahul accused of blackmailing a peer" names a real-seeming
 	// person in an allegation. Published blind, that is defamation by the
@@ -544,6 +625,12 @@ export function serverModerate(title, description, learned = null) {
 			message: "Possible photo-sharing threat — needs review",
 		});
 	}
+
+	// Stalking / intimidation. A victim describing the same words ("he said
+	// i know your name", "my senior keeps following me") is HELD for review and
+	// never blocked; the author making the claim blocks as a critical flag.
+	// The patterns live in _stalking.js so post priority sees the same signal.
+	for (const flag of stalkingFlags(text, threatCtx)) flags.push(flag);
 
 	// Check for spam patterns (same words repeated 10+ times)
 	const words = text.toLowerCase().split(/\s+/);

@@ -58,7 +58,6 @@ export interface PlatformEventPayload {
 
 class AutonomousWorkforceEngine {
 	private harnesses: Map<string, AutonomousHarnessState> = new Map();
-	private intervalId: ReturnType<typeof setInterval> | null = null;
 
 	constructor() {
 		this.initHarnesses();
@@ -137,29 +136,10 @@ class AutonomousWorkforceEngine {
 			kpiValue: "Instant (< 200ms)",
 		});
 
-		this.startHeartbeat();
-	}
-
-	private startHeartbeat() {
-		if (typeof window === "undefined") return;
-		if (this.intervalId) clearInterval(this.intervalId);
-
-		// Autonomous background tick every 15s
-		this.intervalId = setInterval(() => {
-			this.autonomousTick();
-		}, 15000);
-	}
-
-	private autonomousTick() {
-		const now = Date.now();
-		// Update Reliability Commander with live P95 reading
-		const rel = this.harnesses.get("reliability-commander");
-		if (rel) {
-			rel.totalActionsTaken += 1;
-			rel.lastActionTimestamp = now;
-			const jitterLatency = Math.floor(95 + Math.random() * 45);
-			rel.kpiValue = `${jitterLatency}ms (SLA < 300ms)`;
-		}
+		// No background heartbeat: nothing here is a running agent. The old
+		// 15s tick invented P95 latency with Math.random() and incremented an
+		// action counter with no real work behind it. Harnesses only run when
+		// explicitly dispatched; real execution history is in AI Systems.
 	}
 
 	/** Ingest an event and dispatch to matching 24/7 employee harness */

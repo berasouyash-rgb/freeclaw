@@ -43,7 +43,7 @@ export default function KeyboardShortcutsModal({
 	onClose,
 }: KeyboardShortcutsModalProps) {
 	const dialogRef = useRef<HTMLDivElement>(null);
-	useFocusTrap(dialogRef, open);
+	useFocusTrap(dialogRef, { active: open, onEscape: onClose });
 
 	useEffect(() => {
 		if (!open) return;

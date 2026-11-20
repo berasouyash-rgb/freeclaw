@@ -33,9 +33,6 @@ vi.mock("../../api/_auth.js", async (importOriginal) => {
 });
 
 import {
-	isCronAuthorized,
-	ROUTE_CLASS,
-	ROUTE_MATRIX,
 	verifyRouteAccess,
 } from "../../api/_auth-matrix.js";
 
@@ -326,6 +323,23 @@ describe("Route-Level Authorization Matrix", () => {
 			const sensitiveRes = await verifyRouteAccess("admin", sensitiveReq as never);
 			expect(sensitiveRes.authorized).toBe(false);
 			expect(sensitiveRes.status).toBe(401);
+		});
+
+		it("permits /api/admin action=auth_mode before login (GET and POST)", async () => {
+			// Regression: auth_mode returns only { env_secret: boolean } and the
+			// login screen must read it BEFORE it holds any credential. When the
+			// matrix blocked it, Admin.tsx caught the 401 and failed open to
+			// password mode, breaking env-secret deployments.
+			const getReq = mockReq({ method: "GET", query: { action: "auth_mode" } });
+			const getRes = await verifyRouteAccess("admin", getReq as never);
+			expect(getRes.authorized).toBe(true);
+
+			const postReq = mockReq({
+				method: "POST",
+				body: { action: "auth_mode" },
+			});
+			const postRes = await verifyRouteAccess("admin", postReq as never);
+			expect(postRes.authorized).toBe(true);
 		});
 	});
 

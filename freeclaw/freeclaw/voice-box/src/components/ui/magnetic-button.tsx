@@ -7,7 +7,7 @@
  */
 
 import { useRef, useState, type ReactNode } from "react";
-import { motion, useMotionValue, useSpring } from "framer-motion";
+import { motion, useMotionValue, useReducedMotion, useSpring } from "framer-motion";
 import { cn } from "../../lib/utils";
 
 interface MagneticButtonProps {
@@ -36,6 +36,10 @@ export default function MagneticButton({
 }: MagneticButtonProps) {
   const ref = useRef<HTMLButtonElement>(null);
   const [_isHovered, setIsHovered] = useState(false);
+  // Reduced motion: no magnetic travel and no press scale. The button still
+  // responds visually through the shared .btn hover/press CSS, which the
+  // reduced-motion rules already neutralise.
+  const reduceMotion = useReducedMotion();
 
   const x = useMotionValue(0);
   const y = useMotionValue(0);
@@ -50,7 +54,7 @@ export default function MagneticButton({
   });
 
   const handleMouseMove = (e: React.MouseEvent) => {
-    if (!ref.current || disabled) return;
+    if (reduceMotion || !ref.current || disabled) return;
     const rect = ref.current.getBoundingClientRect();
     const centerX = rect.left + rect.width / 2;
     const centerY = rect.top + rect.height / 2;
@@ -73,14 +77,14 @@ export default function MagneticButton({
       onMouseMove={handleMouseMove}
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={handleMouseLeave}
-      style={{ x: springX, y: springY }}
+      style={reduceMotion ? undefined : { x: springX, y: springY }}
       className={cn(
         "cursor-pointer transition-shadow duration-200",
         "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-400",
         disabled && "opacity-50 cursor-not-allowed",
         className
       )}
-      whileTap={{ scale: 0.97 }}
+      whileTap={reduceMotion ? undefined : { scale: 0.97 }}
     >
       {children}
     </motion.button>

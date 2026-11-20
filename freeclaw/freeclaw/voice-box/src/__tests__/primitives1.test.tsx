@@ -124,9 +124,11 @@ describe("AILoader", () => {
 // ─── LoadingSpinner (motive loader) ──────────────────────────────────
 
 describe("LoadingSpinner", () => {
-	it("renders brand lockup: ring, halo, wordmark, tagline, and status text", () => {
+	it("renders brand lockup: mesh, ring, halo, wordmark, tagline, and status text", () => {
 		render(<LoadingSpinner text="Loading conversation…" motiveOff />);
 		expect(screen.getByRole("status")).toBeInTheDocument();
+		expect(document.querySelector(".vb-motive-mesh")).toBeInTheDocument();
+		expect(document.querySelectorAll(".vb-mesh-orb").length).toBe(3);
 		expect(document.querySelector(".vb-loading-ring")).toBeInTheDocument();
 		expect(document.querySelector(".vb-loading-halo")).toBeInTheDocument();
 		expect(screen.getByText("Voice Flow")).toBeInTheDocument();

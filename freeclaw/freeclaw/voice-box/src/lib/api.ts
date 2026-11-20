@@ -1,25 +1,30 @@
 /** Thin fetch wrapper for Voice Flow API routes with offline queue for failed writes. */
 
 import { getAnonId, getSessionToken, markIdentityUsed, setSessionToken } from "./identity";
-import { apiBase } from "./platform";
+import { apiBase, isMobileApp, isNativeShell } from "./platform";
 import { flushQueue, queueAction, queuedCount } from "./offline";
 import { errorText } from "./utils";
 import { loadHarness, type RequestPriority } from "./loadHarness";
 
-function adminToken(): string | null {
-	try {
-		const raw = sessionStorage.getItem("vb:adminAuth");
-		if (!raw) return null;
-		const { token, exp } = JSON.parse(raw);
-		if (exp && exp < Date.now()) {
-			sessionStorage.removeItem("vb:adminAuth");
-			return null;
-		}
-		return token;
-	} catch {
-		return null;
-	}
-}
+import {
+	ADMIN_AUTH_KEY,
+	ADMIN_AUTH_EVENT,
+	adminToken,
+	hasAdminSession,
+	subscribeAdminSession,
+	setAdminSession,
+	clearAdminSession,
+} from "./adminSession";
+
+export {
+	ADMIN_AUTH_KEY,
+	ADMIN_AUTH_EVENT,
+	adminToken,
+	hasAdminSession,
+	subscribeAdminSession,
+	setAdminSession,
+	clearAdminSession,
+};
 
 /**
  * Thrown for a non-2xx API response, carrying the HTTP status.
@@ -67,24 +72,22 @@ export function isSessionDeadError(err: unknown): boolean {
 }
 
 /** Actionable recovery text shown instead of the raw server error when the
- *  session is dead. Names the exact controls that fix it. Sessions never
- *  expire — a dead session means this device lost its proof (cleared data,
- *  new install without a transfer), never elapsed time. */
+ *  session is dead. Sessions never expire — a dead session means this device
+ *  lost its proof (cleared data, new install without a transfer), never elapsed
+ *  time. Kept to one sentence on purpose: the same string is rendered inline in
+ *  the feed AND in a floating toast, and the previous 330-character paragraph
+ *  covered most of a phone screen twice over. The step-by-step pairing
+ *  instructions live in Settings → Account, next to the controls that perform
+ *  them. */
 export const SESSION_DEAD_MESSAGE =
-	"Your anonymous session isn't recognized on this device anymore (its data was cleared). Your published posts stay up — recover the same ID in Settings → Account: on a device that still holds this ID press Show my pairing code, then type that 6-digit code here and press Pair this device. Or reset your anonymous ID there → Start fresh.";
+	"Your anonymous session isn't recognized on this device anymore. Your posts stay up — recover the same ID in Settings → Account, or start fresh.";
 
-let lastSessionDeadDispatch = 0;
-
-export function hasAdminSession(): boolean {
-	return !!adminToken();
-}
-
-export function setAdminSession(token: string, exp: string | number) {
-	sessionStorage.setItem("vb:adminAuth", JSON.stringify({ token, exp }));
-}
-
-export function clearAdminSession() {
-	sessionStorage.removeItem("vb:adminAuth");
+/** Message-level counterpart of `isSessionDeadError`, for components that only
+ *  keep the string. Matching lives here so a reworded message cannot desync the
+ *  two call sites (the feed empty-state used to spell out its own substring
+ *  test). */
+export function isSessionDeadMessage(message: string): boolean {
+	return message === SESSION_DEAD_MESSAGE;
 }
 
 export { queuedCount } from "./offline";
@@ -241,6 +244,9 @@ async function request<T = unknown>(
 	const headers: Record<string, string> = {
 		"Content-Type": "application/json",
 	};
+	if (isNativeShell()) {
+		headers["x-voiceflow-client"] = isMobileApp() ? "mobile" : "desktop";
+	}
 	const t = adminToken();
 	if (t) headers["X-Admin-Token"] = t;
 	// Send per-user identity for rate limiting (each user gets their own bucket).
@@ -251,7 +257,12 @@ async function request<T = unknown>(
 		aid = getAnonId() || "";
 		if (aid) headers["x-anon-id"] = aid;
 		const st = getSessionToken();
-		if (st) headers["x-session-token"] = st;
+		if (st) {
+			headers["x-session-token"] = st;
+			if (!headers["Authorization"]) {
+				headers["Authorization"] = `Bearer ${st}`;
+			}
+		}
 	} catch { /* identity module not ready */ }
 	// A mutating request issues server-side writes under this identity —
 	// a provisional (pre-hydration) id that owns fresh content must never
@@ -365,17 +376,11 @@ async function request<T = unknown>(
 				// message ("Invalid session identity") the user cannot act on.
 				const sessionDead =
 					serverCode !== undefined && SESSION_DEAD_CODES.has(serverCode);
-				if (sessionDead && typeof window !== "undefined") {
-					const now = Date.now();
-					if (now - lastSessionDeadDispatch > 15000) {
-						lastSessionDeadDispatch = now;
-						window.dispatchEvent(
-							new CustomEvent("vb:session-dead", {
-								detail: { message: SESSION_DEAD_MESSAGE },
-							}),
-						);
-					}
-				}
+				// No automatic session-dead notice and no automatic new ID.
+				// The explicit failure still carries SESSION_DEAD_MESSAGE so a
+				// user-initiated action can be explained, but nothing is shown
+				// spontaneously while the old ID's data still exists. Recovery
+				// lives only in Settings → Account.
 				throw new ApiError(
 					res.status === 429 && retryAfter > 0
 						? `Slow down a little — try again in ${retryAfter}s.`

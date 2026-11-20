@@ -2,7 +2,7 @@
 // Shows both admin audit logs AND all 110 agents' events in one chronological view
 
 import { Loader2, RefreshCw } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useInfiniteScroll } from "../../hooks/useInfiniteScroll";
 import { api } from "../../lib/api";
 import { downloadFile, fmtDate, safeStringify } from "../../lib/utils";
@@ -163,6 +163,26 @@ export default function Logs() {
 	const [loadingAgents, setLoadingAgents] = useState(false);
 	const [agentFilter, setAgentFilter] = useState("all");
 	const [searchQuery, setSearchQuery] = useState("");
+	// Audit filters are server-side: the Logs list used to paginate the whole
+	// table and its search box only affected agent events.
+	const [auditSearchInput, setAuditSearchInput] = useState("");
+	const [auditSearch, setAuditSearch] = useState("");
+	const [auditActor, setAuditActor] = useState("");
+	const [auditActionName, setAuditActionName] = useState("");
+	const [auditFrom, setAuditFrom] = useState("");
+	const [auditTo, setAuditTo] = useState("");
+	const hasAuditFilters = !!(
+		auditSearch ||
+		auditActor.trim() ||
+		auditActionName.trim() ||
+		auditFrom ||
+		auditTo
+	);
+
+	useEffect(() => {
+		const t = setTimeout(() => setAuditSearch(auditSearchInput.trim()), 300);
+		return () => clearTimeout(t);
+	}, [auditSearchInput]);
 
 	// Fetch audit logs with infinite scroll
 	const fetchLogs = useCallback(
@@ -173,6 +193,12 @@ export default function Logs() {
 				limit: String(limit),
 			});
 			if (cursor) params.set("cursor", cursor);
+			if (auditSearch) params.set("q", auditSearch);
+			if (auditActor.trim()) params.set("actor", auditActor.trim());
+			if (auditActionName.trim())
+				params.set("logAction", auditActionName.trim());
+			if (auditFrom) params.set("since", auditFrom);
+			if (auditTo) params.set("until", auditTo);
 			const result = await api.get<{
 				data: AuditLog[];
 				nextCursor: string;
@@ -185,7 +211,7 @@ export default function Logs() {
 				total: result.total || 0,
 			};
 		},
-		[],
+		[auditSearch, auditActor, auditActionName, auditFrom, auditTo],
 	);
 
 	const {
@@ -197,6 +223,18 @@ export default function Logs() {
 		sentinelRef,
 		softReset,
 	} = useInfiniteScroll<AuditLog>(fetchLogs, { limit: 30 });
+
+	// Re-base the list when a server-side filter changes. The hook keeps the
+	// latest fetch function in a ref, so softReset re-reads page one with the
+	// new predicates instead of appending off-filter rows.
+	const auditFilterMounted = useRef(false);
+	useEffect(() => {
+		if (!auditFilterMounted.current) {
+			auditFilterMounted.current = true;
+			return;
+		}
+		softReset();
+	}, [auditSearch, auditActor, auditActionName, auditFrom, auditTo, softReset]);
 
 	// Fetch agent activities
 	const fetchAgentActivities = useCallback(async () => {
@@ -363,6 +401,73 @@ export default function Logs() {
 							</option>
 						))}
 					</select>
+				</div>
+			)}
+
+			{/* Audit filters — applied in Postgres, count reflects the filter set */}
+			{activeTab !== "agents" && (
+				<div className="flex items-center gap-2 mb-4 flex-wrap">
+					<input
+						type="text"
+						placeholder="Search actor, action or detail…"
+						value={auditSearchInput}
+						onChange={(e) => setAuditSearchInput(e.target.value)}
+						aria-label="Search audit log"
+						className="px-3 py-1.5 rounded-lg bg-white/5 border border-white/10 text-sm text-white placeholder-white/30 focus:outline-none focus:border-white/20 w-64"
+					/>
+					<input
+						type="text"
+						placeholder="Actor"
+						value={auditActor}
+						onChange={(e) => setAuditActor(e.target.value)}
+						aria-label="Filter by actor"
+						className="px-3 py-1.5 rounded-lg bg-white/5 border border-white/10 text-sm text-white placeholder-white/30 focus:outline-none focus:border-white/20 w-32"
+					/>
+					<input
+						type="text"
+						placeholder="Action"
+						value={auditActionName}
+						onChange={(e) => setAuditActionName(e.target.value)}
+						aria-label="Filter by action"
+						className="px-3 py-1.5 rounded-lg bg-white/5 border border-white/10 text-sm text-white placeholder-white/30 focus:outline-none focus:border-white/20 w-36"
+					/>
+					<label className="text-[11px] text-ink3 flex items-center gap-1">
+						From
+						<input
+							type="date"
+							value={auditFrom}
+							onChange={(e) => setAuditFrom(e.target.value)}
+							className="px-2 py-1 rounded-lg bg-white/5 border border-white/10 text-xs text-white/70 focus:outline-none"
+						/>
+					</label>
+					<label className="text-[11px] text-ink3 flex items-center gap-1">
+						To
+						<input
+							type="date"
+							value={auditTo}
+							onChange={(e) => setAuditTo(e.target.value)}
+							className="px-2 py-1 rounded-lg bg-white/5 border border-white/10 text-xs text-white/70 focus:outline-none"
+						/>
+					</label>
+					{hasAuditFilters && (
+						<button
+							type="button"
+							className="btn btn-ghost !text-xs"
+							onClick={() => {
+								setAuditSearchInput("");
+								setAuditSearch("");
+								setAuditActor("");
+								setAuditActionName("");
+								setAuditFrom("");
+								setAuditTo("");
+							}}
+						>
+							Clear filters
+						</button>
+					)}
+					<span className="text-[11px] text-ink3">
+						{total} matching event{total === 1 ? "" : "s"}
+					</span>
 				</div>
 			)}
 
@@ -535,7 +640,9 @@ export default function Logs() {
 							)}
 							{logs.length === 0 && !loading && (
 								<p className="p-8 text-center text-sm text-ink3">
-									No log entries yet.
+									{hasAuditFilters
+										? "No audit events match these filters."
+										: "No log entries yet."}
 								</p>
 							)}
 						</>

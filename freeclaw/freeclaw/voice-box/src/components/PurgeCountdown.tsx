@@ -1,7 +1,10 @@
 import { Timer } from "lucide-react";
 import { useEffect, useState } from "react";
 
-/** Live countdown until a solved post is permanently auto-deleted (resets on activity) */
+/** Live countdown until a solved or archived post is permanently auto-deleted.
+ *  ONE rule: 5 days after the post's last activity, and a comment or reaction
+ *  resets the countdown (see api/_retention.js). The deadline comes from the
+ *  same helper both server sweeps use, so the promise here is always enforced. */
 export default function PurgeCountdown({ purgeAt }: { purgeAt: string }) {
 	const [now, setNow] = useState(Date.now());
 	useEffect(() => {
@@ -24,7 +27,7 @@ export default function PurgeCountdown({ purgeAt }: { purgeAt: string }) {
 					? { color: "#dc4b4b", borderColor: "rgba(220,75,75,0.3)" }
 					: undefined
 			}
-			title="Solved posts are permanently deleted after 5 days of no activity. Any comment or reaction resets this countdown."
+			title="Solved and archived posts are permanently deleted 5 days after their last activity. Any comment or reaction resets that countdown."
 		>
 			<Timer size={10} className={urgentSoon ? "vb-trend-bounce" : ""} />{" "}
 			auto-deletes in {label}

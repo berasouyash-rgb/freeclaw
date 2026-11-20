@@ -46,11 +46,15 @@ function restoreLayout() {
 function Harness({
 	ids,
 	onMoved,
+	durationMs,
+	resetKey,
 }: {
 	ids: string[];
 	onMoved: (moves: Map<string, number>) => void;
+	durationMs?: number;
+	resetKey?: string;
 }) {
-	const ref = useFlipList({ order: ids, onMoved });
+	const ref = useFlipList({ order: ids, onMoved, durationMs, resetKey });
 	return (
 		<div ref={ref}>
 			{ids.map((id) => (
@@ -170,6 +174,59 @@ describe("useFlipList", () => {
 		expect(animate).not.toHaveBeenCalled();
 		const moves = onMoved.mock.calls.at(-1)?.[0] as Map<string, number>;
 		expect(moves.get("b")).toBe(1);
+	});
+
+	it("re-baselines a new sort without gliding or labelling the reorder", () => {
+		tops.set("a", 0);
+		tops.set("b", 100);
+		const onMoved = vi.fn();
+		const { rerender } = render(
+			<Harness ids={["a", "b"]} resetKey="new:all" onMoved={onMoved} />,
+		);
+
+		// The reader picked "Top ranked": the cards re-order because the view
+		// changed, not because a vote landed.
+		tops.set("b", 0);
+		tops.set("a", 100);
+		rerender(<Harness ids={["b", "a"]} resetKey="top:all" onMoved={onMoved} />);
+
+		expect(animate).not.toHaveBeenCalled();
+		expect(onMoved).not.toHaveBeenCalled();
+	});
+
+	it("keeps animating real vote reorders after a sort change", () => {
+		tops.set("a", 0);
+		tops.set("b", 100);
+		const onMoved = vi.fn();
+		const { rerender } = render(
+			<Harness ids={["a", "b"]} resetKey="new:all" onMoved={onMoved} />,
+		);
+
+		tops.set("b", 0);
+		tops.set("a", 100);
+		rerender(<Harness ids={["b", "a"]} resetKey="top:all" onMoved={onMoved} />);
+		expect(animate).not.toHaveBeenCalled();
+
+		// Same view, fresh vote: now it must glide and report.
+		tops.set("a", 0);
+		tops.set("b", 100);
+		rerender(<Harness ids={["a", "b"]} resetKey="top:all" onMoved={onMoved} />);
+		expect(animate).toHaveBeenCalledTimes(2);
+	});
+
+	it("honours a per-list glide duration", () => {
+		tops.set("a", 0);
+		tops.set("b", 100);
+		const onMoved = vi.fn();
+		const { rerender } = render(
+			<Harness ids={["a", "b"]} durationMs={520} onMoved={onMoved} />,
+		);
+
+		tops.set("b", 0);
+		tops.set("a", 100);
+		rerender(<Harness ids={["b", "a"]} durationMs={520} onMoved={onMoved} />);
+
+		expect(animate.mock.calls[0]?.[1]).toMatchObject({ duration: 520 });
 	});
 
 	it("survives a browser with no Web Animations API", () => {

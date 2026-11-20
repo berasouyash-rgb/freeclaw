@@ -200,6 +200,37 @@ export default function About() {
 				</FadeIn>
 			</section>
 
+			{/* Founder & Lead Developer Spotlight */}
+			<section className="max-w-4xl mx-auto px-6 py-6">
+				<FadeIn>
+					<div className="card p-6 sm:p-8 border border-accent/25 bg-gradient-to-r from-accent/10 via-surface to-surface2 relative overflow-hidden flex flex-col sm:flex-row items-center justify-between gap-6">
+						<div>
+							<div className="flex items-center gap-2 mb-2">
+								<span className="text-xs font-mono font-bold uppercase tracking-wider text-accent">
+									Founder & Architect
+								</span>
+								<span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 font-semibold">
+									Independent Developer
+								</span>
+							</div>
+							<h3 className="text-xl sm:text-2xl font-display font-bold text-ink mb-2">
+								Meet Souyash Bera
+							</h3>
+							<p className="text-xs sm:text-sm text-ink2 leading-relaxed max-w-xl">
+								"Technology should bring people closer to possibilities, remove unnecessary complexity, and make everyday life better."
+								Explore Souyash's philosophy, ideation river, and creative studio.
+							</p>
+						</div>
+						<Link
+							to="/developer"
+							className="btn btn-primary shrink-0 !px-5 !py-2.5 !text-xs !font-semibold flex items-center gap-1.5 shadow-md"
+						>
+							Visit Developer Studio <ArrowRight size={14} />
+						</Link>
+					</div>
+				</FadeIn>
+			</section>
+
 			{/* Core Values Bento Grid */}
 			<section className="max-w-4xl mx-auto px-6 py-12">
 				<FadeIn className="mb-10 text-center">

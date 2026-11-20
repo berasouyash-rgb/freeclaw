@@ -39,6 +39,14 @@ vi.mock("../components/Confetti", () => ({
 	fireConfetti: mocks.fireConfetti,
 }));
 
+vi.mock("../lib/identity", async (importOriginal) => {
+	const mod = await importOriginal<typeof import("../lib/identity")>();
+	return {
+		...mod,
+		checkCooldown: vi.fn(() => 0),
+	};
+});
+
 function mockPublishFlow() {
 	let published: Record<string, unknown> | null = null;
 	mocks.post.mockImplementation(

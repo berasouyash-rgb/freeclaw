@@ -241,6 +241,11 @@ export function buildPollCSV(polls: PollData[]): string {
 	// Header + rows
 	const cols = [
 		{ label: "Poll ID", extract: (p: PollData) => String(p.id).slice(0, 12) },
+		// Who created the poll. Ownership already decides edit/delete rights in
+		// PollCard (`author_id === anonId`), so an export that omits it cannot
+		// answer "whose poll is this?" — the one question a poll audit asks.
+		// This is the anon id, never a revealed identity.
+		{ label: "Created By", extract: (p: PollData) => p.author_id || "" },
 		{ label: "Question", extract: (p: PollData) => p.title || "" },
 		{ label: "Options", extract: (p: PollData) => (p.options || []).join(" | ") },
 		{ label: "Total Votes", extract: (p: PollData) => String(p.total_votes ?? 0) },

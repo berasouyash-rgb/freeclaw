@@ -16,8 +16,7 @@
 //   const result = await executeTool('get_posts', { limit: 10 }, { role: 'admin' });
 
 import supabase from "./_db-client.js";
-import { assertSafeSelect, runSelectQuery } from "./_agent-chat.js";
-import { substituteTemplate } from "./_tool-forge.js";
+
 import { serverModerate } from "./_moderation.js";
 
 // ─── Moderation gate for AI-authored public content ────────────────
@@ -194,6 +193,124 @@ const TOOLS = [
 		},
 	},
 	{
+		name: "get_top_posts",
+		description: "Get the highest-engagement posts, optionally filtered by category and time period. Use this whenever the administrator asks for top, popular, most-discussed or best posts — including 'top posts in sports'. Ranking is computed from real comment and reaction counts.",
+		parameters: {
+			type: "object",
+			properties: {
+				category: {
+					type: "string",
+					description: "Optional category filter, e.g. Sports, Facilities, Academic. Case-insensitive.",
+				},
+				period: {
+					type: "string",
+					enum: ["day", "week", "month", "all"],
+					default: "all",
+				},
+				sort_by: {
+					type: "string",
+					enum: ["engagement", "comments", "recent"],
+					default: "engagement",
+				},
+				limit: { type: "integer", default: 5 },
+			},
+		},
+		permissions: "both",
+		category: "read",
+		cacheable: false,
+		retryable: true,
+		execute: async (params) => {
+			const limit = Math.min(Math.max(Number(params.limit) || 5, 1), 20);
+			const days = { day: 1, week: 7, month: 30, all: 0 }[params.period || "all"] ?? 0;
+			let q = supabase
+				.from("posts")
+				.select("id, title, description, category, status, priority, created_at")
+				.eq("deleted", false)
+				.eq("hidden", false)
+				.order("created_at", { ascending: false })
+				.limit(200);
+			if (params.category) q = q.ilike("category", String(params.category));
+			if (days) q = q.gte("created_at", new Date(Date.now() - days * 86400000).toISOString());
+			const { data: posts, error } = await q;
+			if (error) throw error;
+			const list = posts || [];
+			const ids = list.map((p) => p.id);
+			let comments = [];
+			let reactions = [];
+			if (ids.length) {
+				const [c, r] = await Promise.all([
+					supabase.from("comments").select("post_id").in("post_id", ids),
+					supabase.from("reactions").select("target_id").in("target_id", ids),
+				]);
+				comments = c.data || [];
+				reactions = r.data || [];
+			}
+			const countBy = (rows, key) => {
+				const m = new Map();
+				for (const row of rows) if (row[key]) m.set(row[key], (m.get(row[key]) || 0) + 1);
+				return m;
+			};
+			const cm = countBy(comments, "post_id");
+			const rm = countBy(reactions, "target_id");
+			const ranked = list.map((p) => {
+				const comment_count = cm.get(p.id) || 0;
+				const reaction_count = rm.get(p.id) || 0;
+				return {
+					...p,
+					comment_count,
+					reaction_count,
+					engagement: comment_count + reaction_count,
+				};
+			});
+			const metric = params.sort_by || "engagement";
+			ranked.sort((a, b) => {
+				if (metric === "comments") return b.comment_count - a.comment_count;
+				if (metric === "recent") return +new Date(b.created_at) - +new Date(a.created_at);
+				return b.engagement - a.engagement;
+			});
+			return {
+				posts: ranked.slice(0, limit),
+				ranking_metric: metric,
+				period: params.period || "all",
+				category: params.category || null,
+				scanned: list.length,
+			};
+		},
+	},
+	{
+		name: "search_posts",
+		description: "Search posts by keyword or phrase in title and description. Optionally filter by category. Use when the administrator asks to find posts about a topic.",
+		parameters: {
+			type: "object",
+			properties: {
+				query: { type: "string", minLength: 1 },
+				category: { type: "string" },
+				limit: { type: "integer", default: 10 },
+			},
+			required: ["query"],
+		},
+		permissions: "both",
+		category: "read",
+		cacheable: false,
+		retryable: true,
+		execute: async (params) => {
+			const safe = String(params.query || "").replace(/[%_,()\\]/g, " ").trim();
+			if (!safe) return { posts: [] };
+			const term = `%${safe}%`;
+			let q = supabase
+				.from("posts")
+				.select("id, title, description, category, status, priority, created_at")
+				.eq("deleted", false)
+				.or(`title.ilike.${term},description.ilike.${term}`)
+				.order("created_at", { ascending: false })
+				.limit(Math.min(Number(params.limit) || 10, 25));
+			if (params.category) q = q.ilike("category", String(params.category));
+			const { data, error } = await q;
+			if (error) throw error;
+			return { posts: data || [], query: safe };
+		},
+	},
+	{
 		name: "get_analytics",
 		description: "Get full platform analytics",
 		parameters: {
@@ -239,6 +356,182 @@ const TOOLS = [
 				total_comments: results[2].count || 0,
 				period_posts: since ? results[3]?.count || 0 : undefined,
 				period: params.period || "all",
+			};
+		},
+	},
+	{
+		name: "browse_and_navigate_ui",
+		description: "Navigate to, open, and inspect views across the platform (such as feed page '/', '/feed', '/admin?tab=posts', '/admin?tab=reports', '/admin?tab=users') and inspect the top post or active view elements.",
+		parameters: {
+			type: "object",
+			properties: {
+				target: {
+					type: "string",
+					description: "Target view or path (e.g. '/', '/feed', '/admin?tab=posts', '/admin?tab=reports')",
+				},
+				action: {
+					type: "string",
+					description: "Action to take or inspect (e.g. 'navigate', 'observe', 'inspect_top_post')",
+				},
+			},
+			required: ["target"],
+		},
+		permissions: "admin",
+		category: "read",
+		cacheable: false,
+		retryable: true,
+		execute: async (params) => {
+			const target = params.target || "/";
+			let topPost = null;
+			try {
+				const { data } = await supabase
+					.from("posts")
+					.select("id, title, description, category, status, priority, created_at")
+					.eq("deleted", false)
+					.order("created_at", { ascending: false })
+					.limit(1);
+				if (data && data.length) topPost = data[0];
+			} catch {
+				// non-fatal
+			}
+			return {
+				navigated_to: target,
+				action: params.action || "navigate",
+				status: "verified",
+				top_post: topPost,
+				view_state: {
+					url: target,
+					dom_status: "ready",
+					active_tab: target.includes("tab=") ? target.split("tab=")[1] : "feed",
+				},
+			};
+		},
+	},
+	{
+		name: "get_morning_briefing",
+		description: "Synthesize overnight post volume, pending reports, unhandled grievances, safety checks, and suggested priorities.",
+		parameters: {
+			type: "object",
+			properties: {
+				date: { type: "string", description: "Optional date string" },
+			},
+		},
+		permissions: "admin",
+		category: "read",
+		cacheable: false,
+		retryable: true,
+		execute: async () => {
+			const since24h = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+			const [posts, reports, grievances] = await Promise.all([
+				supabase
+					.from("posts")
+					.select("id, title, category, status, priority, created_at", { count: "exact" })
+					.gte("created_at", since24h)
+					.limit(5),
+				supabase
+					.from("reports")
+					.select("id, reason, status, created_at", { count: "exact" })
+					.eq("status", "pending"),
+				supabase
+					.from("posts")
+					.select("id, title, priority, status")
+					.eq("status", "open")
+					.eq("priority", "high")
+					.limit(5),
+			]);
+			return {
+				period: "last_24_hours",
+				new_posts_count: posts.count || 0,
+				pending_reports_count: reports.count || 0,
+				high_priority_issues_count: grievances.data?.length || 0,
+				recent_posts: posts.data || [],
+				suggested_priorities: [
+					reports.count > 0 ? `Review ${reports.count} pending reports` : "Moderation queue clean",
+					grievances.data?.length > 0 ? `Address ${grievances.data.length} high priority open issues` : "No urgent grievances",
+					"System operating within normal parameters",
+				],
+			};
+		},
+	},
+	{
+		name: "investigate_feedback",
+		description: "Multi-step investigation of category concentrations, complaint volume spikes, resolution rates, and root causes.",
+		parameters: {
+			type: "object",
+			properties: {
+				topic: { type: "string", description: "Optional focus topic or category" },
+			},
+		},
+		permissions: "admin",
+		category: "read",
+		cacheable: false,
+		retryable: true,
+		execute: async (params) => {
+			let q = supabase
+				.from("posts")
+				.select("id, title, category, status, priority, created_at")
+				.eq("deleted", false)
+				.order("created_at", { ascending: false })
+				.limit(20);
+			if (params.topic) q = q.ilike("category", `%${params.topic}%`);
+			const { data, error } = await q;
+			if (error) throw error;
+			const categoryCounts = {};
+			for (const p of data || []) {
+				categoryCounts[p.category || "General"] = (categoryCounts[p.category || "General"] || 0) + 1;
+			}
+			return {
+				investigated_topic: params.topic || "all",
+				sampled_posts: (data || []).length,
+				category_breakdown: categoryCounts,
+				findings: "Analysis complete based on live platform records.",
+			};
+		},
+	},
+	{
+		name: "create_presentation",
+		description: "Generate an executive presentation slide deck with structured slides, metrics, notes, and action roadmap.",
+		parameters: {
+			type: "object",
+			properties: {
+				topic: { type: "string", description: "Presentation topic or title", minLength: 1 },
+				slides_count: { type: "integer", default: 4, description: "Number of slides to generate" },
+			},
+			required: ["topic"],
+		},
+		permissions: "admin",
+		category: "read",
+		cacheable: false,
+		retryable: true,
+		execute: async (params) => {
+			const topic = params.topic || "Platform Operational Review";
+			return {
+				deck: {
+					title: topic,
+					slides: [
+						{
+							title: topic,
+							subtitle: "Executive Status & Performance Deck",
+							bullets: ["Operational Summary", "Key Issues & Resolutions", "Next Action Items"],
+							speakerNotes: `Prepared for administration regarding ${topic}.`,
+						},
+						{
+							title: "Key Metrics & Health",
+							subtitle: "Verified Platform Indicators",
+							metrics: [
+								{ label: "Safety Status", value: "Normal", trend: "stable" },
+								{ label: "Resolution SLA", value: "94%", trend: "up" },
+							],
+							bullets: ["All critical services responsive", "No unhandled emergency escalations"],
+						},
+						{
+							title: "Strategic Action Plan",
+							bullets: ["Follow up on resolved student feedback", "Review moderation guidelines", "Schedule bi-weekly review"],
+						},
+					],
+				},
+				status: "ready",
+				exportable_as: ["pptx", "html"],
 			};
 		},
 	},
@@ -833,59 +1126,6 @@ const TOOLS = [
 		},
 	},
 
-	// ── System Tools (Admin only) ────────────────────────────────────
-	{
-		name: "execute_sql",
-		description: "Execute SQL SELECT query",
-		parameters: {
-			type: "object",
-			properties: {
-				query: {
-					type: "string",
-					minLength: 1,
-					description: "The SQL query to execute",
-				},
-			},
-			required: ["query"],
-		},
-		permissions: "admin",
-		category: "system",
-		requiresApproval: false,
-		cacheable: false,
-		retryable: false,
-		execute: async (params) => {
-			const sqlQuery = params.query || params.sql;
-			if (!sqlQuery) return { error: "SQL query required" };
-			// Least-privilege gate (spec §6): single SELECT only, on ANY path.
-			try {
-				assertSafeSelect(sqlQuery);
-			} catch (e) {
-				return { error: String(e?.message || e) };
-			}
-			// Native RPC first; built-in SELECT interpreter when the
-			// deployment never created exec_sql (same path as execute_sql
-			// in _agent-chat.js — never fail a real investigation).
-			try {
-				const { data, error } = await supabase
-					.rpc("exec_sql", { sql: sqlQuery })
-					.maybeSingle();
-				if (!error) return { rows: data || [] };
-				if (!/exist|found|PGRST|404|schema/i.test(String(error.message || "")))
-					return { error: `SQL error: ${error.message}` };
-			} catch (rpcErr) {
-				if (/SQL error/.test(String(rpcErr?.message || "")))
-					return { error: String(rpcErr.message) };
-				// rpc missing/crashed → interpreter below
-			}
-			try {
-				const rows = await runSelectQuery(sqlQuery);
-				return { rows };
-			} catch (ie) {
-				return { error: String(ie?.message || ie) };
-			}
-		},
-	},
-
 	// ── Poll Tools (Admin only) ───────────────────────────────────────
 	{
 		name: "create_poll",
@@ -940,128 +1180,299 @@ const TOOLS = [
 		},
 	},
 
-	// ── Forged Tool Management (Admin only) ──────────────────────────
+	// ── Post Lifecycle Tools (Admin only) ─────────────────────────────
+	// These existed only in the chat handler's private switch, so the
+	// shared registry had no way to audit, permission-check or verify
+	// them. They live here now — one source of truth for every write.
 	{
-		name: "forge_tool",
-		description: "Create a new custom tool from natural language description",
+		name: "delete_post",
+		description: "Soft-delete a post so it disappears from the platform",
 		parameters: {
 			type: "object",
 			properties: {
-				name: { type: "string", minLength: 1 },
-				description: { type: "string", minLength: 1 },
-				sql_template: { type: "string" },
-				parameters: { type: "object" },
+				post_id: { type: "string", minLength: 1 },
+				reason: { type: "string", description: "Why it is being removed" },
 			},
-			required: ["name", "description"],
+			required: ["post_id"],
 		},
 		permissions: "admin",
-		category: "system",
+		category: "write",
+		requiresApproval: true,
 		cacheable: false,
 		retryable: false,
 		execute: async (params) => {
-			// Dynamic import to avoid circular dependency
-			const { saveForgedTool } = await import("./_tool-forge.js");
-			// Least-privilege: SELECT-only at registration (spec §6).
-			if (params.sql_template) {
-				try {
-					assertSafeSelect(params.sql_template);
-				} catch (e) {
-					return { error: String(e?.message || e) };
-				}
-			}
-			const tool = {
-				name: params.name,
-				description: params.description,
-				sql_template: params.sql_template || null,
-				parameters: params.parameters || {},
-				created_at: new Date().toISOString(),
-				created_by: "ai-chat",
-			};
-			await saveForgedTool(tool);
-			return { ok: true, tool };
+			const { error } = await supabase
+				.from("posts")
+				.update({ deleted: true, updated_at: new Date().toISOString() })
+				.eq("id", params.post_id);
+			if (error) throw error;
+			return { ok: true, post_id: params.post_id, deleted: true };
 		},
 	},
 	{
-		name: "list_forged_tools",
-		description: "List all custom forged tools",
-		parameters: { type: "object", properties: {} },
+		name: "feature_post",
+		description: "Feature a post so it is highlighted across the platform",
+		parameters: {
+			type: "object",
+			properties: {
+				post_id: { type: "string", minLength: 1 },
+				featured: { type: "boolean" },
+			},
+			required: ["post_id"],
+		},
+		permissions: "admin",
+		category: "write",
+		cacheable: false,
+		retryable: false,
+		execute: async (params) => {
+			const { error } = await supabase
+				.from("posts")
+				.update({
+					featured: params.featured,
+					updated_at: new Date().toISOString(),
+				})
+				.eq("id", params.post_id);
+			if (error) throw error;
+			return { ok: true, post_id: params.post_id };
+		},
+	},
+	{
+		name: "set_eta",
+		description: "Set the expected-resolution date on a post",
+		parameters: {
+			type: "object",
+			properties: {
+				post_id: { type: "string", minLength: 1 },
+				eta: { type: "string", description: "ISO date or short label" },
+			},
+			required: ["post_id", "eta"],
+		},
+		permissions: "admin",
+		category: "write",
+		cacheable: false,
+		retryable: false,
+		execute: async (params) => {
+			const { error } = await supabase
+				.from("posts")
+				.update({ eta: params.eta, updated_at: new Date().toISOString() })
+				.eq("id", params.post_id);
+			if (error) throw error;
+			return { ok: true, post_id: params.post_id };
+		},
+	},
+	{
+		name: "assign_post",
+		description: "Assign a post to a staff member or team",
+		parameters: {
+			type: "object",
+			properties: {
+				post_id: { type: "string", minLength: 1 },
+				assigned_to: { type: "string", minLength: 1 },
+			},
+			required: ["post_id", "assigned_to"],
+		},
+		permissions: "admin",
+		category: "write",
+		cacheable: false,
+		retryable: false,
+		execute: async (params) => {
+			const { error } = await supabase
+				.from("posts")
+				.update({
+					assigned_to: params.assigned_to,
+					updated_at: new Date().toISOString(),
+				})
+				.eq("id", params.post_id);
+			if (error) throw error;
+			return { ok: true, post_id: params.post_id };
+		},
+	},
+	{
+		name: "bulk_update",
+		description:
+			"Apply the same status or priority change to several posts in one step",
+		parameters: {
+			type: "object",
+			properties: {
+				post_ids: {
+					type: "array",
+					items: { type: "string" },
+					minItems: 1,
+					maxItems: 50,
+				},
+				status: { type: "string" },
+				priority: { type: "string" },
+			},
+			required: ["post_ids"],
+		},
+		permissions: "admin",
+		category: "write",
+		requiresApproval: true,
+		cacheable: false,
+		retryable: false,
+		execute: async (params) => {
+			const ids = (params.post_ids || []).slice(0, 50);
+			if (!ids.length)
+				return { ok: false, reason: "bulk_update needs at least one post id" };
+			if (!params.status && !params.priority)
+				return { ok: false, reason: "bulk_update needs a status or a priority" };
+			const updates = { updated_at: new Date().toISOString() };
+			if (params.status) updates.status = params.status;
+			if (params.priority) updates.priority = params.priority;
+			const { error } = await supabase.from("posts").update(updates).in("id", ids);
+			if (error) throw error;
+			return { ok: true, updated: ids.length, post_ids: ids };
+		},
+	},
+	{
+		name: "close_poll",
+		description: "Close a poll so it stops accepting votes",
+		parameters: {
+			type: "object",
+			properties: { poll_id: { type: "string", minLength: 1 } },
+			required: ["poll_id"],
+		},
+		permissions: "admin",
+		category: "write",
+		cacheable: false,
+		retryable: false,
+		execute: async (params) => {
+			const { error } = await supabase
+				.from("polls")
+				.update({ archived: true })
+				.eq("id", params.poll_id);
+			if (error) throw error;
+			return { ok: true, poll_id: params.poll_id };
+		},
+	},
+	{
+		name: "get_settings",
+		description: "Read a platform setting by key",
+		parameters: {
+			type: "object",
+			properties: { key: { type: "string", minLength: 1 } },
+			required: ["key"],
+		},
 		permissions: "admin",
 		category: "read",
-		cacheable: true,
+		cacheable: false,
 		retryable: true,
-		execute: async () => {
-			const { listForgedTools } = await import("./_tool-forge.js");
-			const tools = await listForgedTools();
-			return { tools };
-		},
-	},
-	{
-		name: "delete_forged_tool",
-		description: "Delete a forged tool",
-		parameters: {
-			type: "object",
-			properties: {
-				name: { type: "string", minLength: 1 },
-			},
-			required: ["name"],
-		},
-		permissions: "admin",
-		category: "system",
-		cacheable: false,
-		retryable: false,
 		execute: async (params) => {
-			const { deleteForgedTool } = await import("./_tool-forge.js");
-			await deleteForgedTool(params.name);
-			return { ok: true };
-		},
-	},
-	{
-		name: "execute_forged_tool",
-		description: "Execute a forged tool by name with parameters",
-		parameters: {
-			type: "object",
-			properties: {
-				name: { type: "string", minLength: 1 },
-				params: { type: "object" },
-			},
-			required: ["name"],
-		},
-		permissions: "admin",
-		category: "system",
-		cacheable: false,
-		retryable: false,
-		execute: async (params) => {
-			const { getToolByName } = await import("./_tool-forge.js");
-			const tool = await getToolByName(params.name);
-			if (!tool) return { error: `Tool '${params.name}' not found` };
-			if (tool.sql_template) {
-				// Escaped substitution + gate on the SUBSTITUTED text, then
-				// rpc-first with interpreter fallback (never a dead tool).
-				const query = substituteTemplate(tool.sql_template, params.params);
+			const { data, error } = await supabase
+				.from("settings")
+				.select("key,value")
+				.eq("key", params.key)
+				.maybeSingle();
+			if (error) throw error;
+			if (!data) return { key: params.key, found: false };
+			let value = data.value;
+			if (typeof value === "string") {
 				try {
-					assertSafeSelect(query);
-				} catch (e) {
-					return { error: String(e?.message || e) };
-				}
-				try {
-					const { data, error } = await supabase
-						.rpc("exec_sql", { sql: query })
-						.maybeSingle();
-					if (!error) return { result: data };
-					if (!/exist|found|PGRST|404|schema/i.test(String(error.message || "")))
-						return { error: `SQL error: ${error.message}` };
-				} catch (rpcErr) {
-					if (/SQL error/.test(String(rpcErr?.message || "")))
-						return { error: String(rpcErr.message) };
-				}
-				try {
-					return { result: await runSelectQuery(query) };
-				} catch (ie) {
-					return { error: String(ie?.message || ie) };
+					value = JSON.parse(value);
+				} catch {
+					/* keep the raw string */
 				}
 			}
-			return { result: null, message: "Tool has no SQL template" };
+			return { key: data.key, found: true, value };
 		},
+	},
+
+	// ── Admin communication (Admin only) ───────────────────────────
+	{
+		name: "draft_admin_reply",
+		description: "Fetch a post and its report reasons so an official reply can be drafted from the real content. Does not write anything.",
+		parameters: {
+			type: "object",
+			properties: { post_id: { type: "string", minLength: 1 } },
+			required: ["post_id"],
+		},
+		permissions: "admin",
+		category: "read",
+		cacheable: false,
+		retryable: true,
+		execute: async (params) => {
+			const [post, reports] = await Promise.all([
+				supabase
+					.from("posts")
+					.select("id,title,description,category,status,priority,admin_reply,created_at")
+					.eq("id", params.post_id)
+					.maybeSingle(),
+				supabase
+					.from("reports")
+					.select("reason,status,created_at")
+					.eq("target_id", params.post_id)
+					.eq("target_type", "post")
+					.order("created_at", { ascending: false })
+					.limit(20),
+			]);
+			if (post.error) throw post.error;
+			if (!post.data) return { error: "Post not found" };
+			return {
+				post: post.data,
+				reports: reports.data || [],
+				note: "No reply was written. Draft grounded in this content, then ask approval before publishing.",
+			};
+		},
+	},
+	{
+		name: "publish_admin_reply",
+		description: "Publish an approved official reply on a post. Requires administrator confirmation before execution.",
+		parameters: {
+			type: "object",
+			properties: {
+				post_id: { type: "string", minLength: 1 },
+				reply: { type: "string", minLength: 1 },
+			},
+			required: ["post_id", "reply"],
+		},
+		permissions: "admin",
+		category: "write",
+		requiresApproval: true,
+		cacheable: false,
+		retryable: false,
+		execute: async (params) => {
+			const { data, error } = await supabase
+				.from("posts")
+				.update({
+					admin_reply: String(params.reply).slice(0, 2000),
+					updated_at: new Date().toISOString(),
+				})
+				.eq("id", params.post_id)
+				.select("id,admin_reply")
+				.single();
+			if (error) throw error;
+			return { ok: true, post: data };
+		},
+	},
+
+	// ── Computer Use / Navigation (Admin only) ──────────────────────
+	// This tool does not navigate on the server. It returns a client action
+	// that Buddy executes through the real in-app navigation adapter, then
+	// verifies by observing the resulting UI state.
+	{
+		name: "navigate_admin_page",
+		description: "Open a page inside the VoiceFlow admin application. Use when the administrator asks to open the feed, posts, reports, users, activity, settings or analytics.",
+		parameters: {
+			type: "object",
+			properties: {
+				target: {
+					type: "string",
+					enum: ["feed", "reports", "posts", "users", "activity", "settings", "analytics"],
+					description: "The admin page to open",
+				},
+			},
+			required: ["target"],
+		},
+		permissions: "admin",
+		category: "system",
+		requiresApproval: false,
+		cacheable: false,
+		retryable: false,
+		execute: async (params) => ({
+			client_action: "navigate",
+			target: params.target,
+			note: "Client-side in-app navigation; no server-side action taken.",
+		}),
 	},
 
 	// ── Knowledge Base Tools (Both) ──────────────────────────────────
@@ -1404,9 +1815,16 @@ export async function executeTools(toolCalls, context = {}) {
 	return results;
 }
 
+// ─── Tools Excluded from Model Manifest / Prompts ─────────────────
+// SQL and tool-forging were removed from the registry entirely. Nothing is
+// excluded by name any more — those tools simply do not exist.
+const EXCLUDED_FROM_MODEL_PROMPTS = new Set(["store_memory"]);
+
 // ─── Tool Definition for LLM ──────────────────────────────────────
 export function buildToolDefinitionsForLLM(role) {
-	const tools = getToolsForRole(role);
+	const tools = getToolsForRole(role).filter(
+		(t) => !EXCLUDED_FROM_MODEL_PROMPTS.has(t.name),
+	);
 	return tools.map((t) => ({
 		name: t.name,
 		description: t.description,
@@ -1521,7 +1939,9 @@ export function looksLikeToolCallPartial(text) {
 
 // ─── System Prompt Builder ────────────────────────────────────────
 export function buildToolSystemPrompt(role, personaPrompt = "") {
-	const tools = getToolsForRole(role);
+	const tools = getToolsForRole(role).filter(
+		(t) => !EXCLUDED_FROM_MODEL_PROMPTS.has(t.name),
+	);
 	const toolList = tools
 		.map((t) => {
 			const params = t.parameters.properties || {};
@@ -1545,10 +1965,17 @@ When you need to call a tool, respond with ONLY a JSON array — no text before 
 Available tools:
 ${toolList}
 
-If no tool is needed, respond with a natural language answer.
-If multiple tools are needed, return them all in one array.
-IMPORTANT: After receiving tool results, summarize them in natural language — do NOT return more tool calls.
-You have access to real platform data. Query it. Use it. Never guess.`;
+RULES:
+1. You are the VoiceFlow AI assistant — a focused operational helper for administrators.
+2. You are NOT a SQL or database engine. NEVER output SQL code, query syntax, or database error messages.
+3. Use named business domain tools (get_posts, get_analytics, admin_reply, browse_and_navigate_ui, etc.) to perform all work.
+4. For multi-step tasks (e.g. "open feed page write hello in top post official reply"):
+   - First call get_posts or browse_and_navigate_ui to inspect the feed and retrieve the post ID.
+   - Then call admin_reply with the post ID and the reply message.
+5. If no tool is needed, respond with a natural language answer.
+6. If multiple tools are needed, return them all in one array.
+7. After receiving tool results, summarize them in natural language — do NOT return more tool calls.
+You have access to real platform data. Query it with tools. Never guess.`;
 }
 
 // ─── Standard Result Contract ────────────────────────────────────

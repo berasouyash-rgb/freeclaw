@@ -1,7 +1,33 @@
 import { createClient } from "@supabase/supabase-js";
 import { triggerRestore } from "./_db-wake.js";
 import { observePrimaryWrite } from "./_mirror.js";
+import { acceptedResponse, queueWriteForReplay } from "./_outbox.js";
 import { shouldFallbackRead, standbyResponse } from "./_standby-read.js";
+
+// Recording a write must not turn a 15s outage into a 30s hang. The outbox is
+// local and small when it works; if Firestore is slow, give up quickly and let
+// the caller see the original error rather than a request that never returns.
+const OUTBOX_TIMEOUT_MS = 3000;
+
+/**
+ * Record a refused write, bounded in time.
+ *
+ * Returns null when nothing was durably recorded, so the caller keeps the real
+ * failure instead of inventing a success.
+ */
+async function recordForReplay(url, options, status) {
+	try {
+		const queued = await Promise.race([
+			queueWriteForReplay(url, options, status),
+			new Promise((resolve) =>
+				setTimeout(() => resolve({ recorded: false, reason: "outbox_timeout" }), OUTBOX_TIMEOUT_MS),
+			),
+		]);
+		return queued?.recorded ? acceptedResponse(queued) : null;
+	} catch {
+		return null;
+	}
+}
 
 /**
  * Answer a failed primary read from the standby copy.
@@ -172,6 +198,10 @@ function getClient() {
 										const standby = await readFromStandby(url, options);
 										if (standby) return standby;
 									}
+									if (!retryRes.ok) {
+										const recorded = await recordForReplay(url, options, retryRes.status);
+										if (recorded) return recorded;
+									}
 									return retryRes;
 								} catch (retryErr) {
 									clearTimeout(retryTimeout);
@@ -187,6 +217,14 @@ function getClient() {
 							const standby = await readFromStandby(url, options);
 							if (standby) return standby;
 						}
+						// Durable writes: a write the primary REFUSED for an
+						// infrastructure reason is recorded in the outbox and replayed
+						// when Supabase answers again, so the user's save is not lost.
+						// If it could not be recorded, the real error is returned.
+						if (!res.ok) {
+							const recorded = await recordForReplay(url, options, res.status);
+							if (recorded) return recorded;
+						}
 						return res;
 					} catch (err) {
 						clearTimeout(timeout);
@@ -195,6 +233,10 @@ function getClient() {
 						// the standby exists for: try it before failing the read.
 						const standby = await readFromStandby(url, options);
 						if (standby) return standby;
+						// A transport failure on a WRITE is the same outage: record it
+						// for replay instead of losing the edit.
+						const recorded = await recordForReplay(url, options, 0);
+						if (recorded) return recorded;
 						throw err;
 					}
 				} finally {

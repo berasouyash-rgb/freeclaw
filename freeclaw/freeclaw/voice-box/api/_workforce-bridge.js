@@ -35,9 +35,13 @@ const TOOLS = {
     description: "Read pending reports",
     risk: "read",
     handler: async (params) => {
+      // `status` is nullable, and PostgREST cannot express `IN (null, ...)`
+      // (it serialises to `in.(,pending)`, which the API rejects → this tool
+      // failed with a database error on every call). The platform convention
+      // for "pending" rows (see api/_workforce.js) is `is null OR = pending`.
       const { data, error } = await supabase
         .from("reports").select("*")
-        .in("status", [null, "pending"])
+        .or("status.is.null,status.eq.pending")
         .order("created_at", { ascending: false })
         .limit(params.limit || 50);
       if (error) throw new Error(error.message);
@@ -113,7 +117,7 @@ const TOOLS = {
       try {
         const { count } = await supabase
           .from("reports").select("id", { count: "exact", head: true })
-          .in("status", [null, "pending"]);
+          .or("status.is.null,status.eq.pending");
         checks.pending_reports = count || 0;
       } catch { checks.pending_reports = -1; }
       // Recent failures
@@ -296,7 +300,11 @@ function isAuthenticated(req) {
 
 // ─── Request handler ────────────────────────────────────────────
 export default async function handler(req, res) {
-	if (cors(req, res)) return;
+	// `cors` is (res, req) and returns nothing. Calling it as `cors(req, res)`
+	// and testing its return value made every request throw
+	// "res.setHeader is not a function" → this whole endpoint answered
+	// 500 Internal server error before it could even look at the method.
+	cors(res, req);
 	if (req.method !== "POST") {
 		res.writeHead(405, { "Content-Type": "application/json" });
 		return res.end(JSON.stringify({ error: "POST required" }));
@@ -329,10 +337,14 @@ export default async function handler(req, res) {
     const result = await tool.handler(params);
     const durationMs = Date.now() - startTime;
 
-    // Audit log
-    await auditLog("workforce_bridge", {
-      action, agent_id, task_id, duration_ms: duration_ms, success: true,
-    }).catch(() => {});
+    // Audit log — signature is (actor, action, detail). Passing an object as
+    // `action` wrote a JSON object into a text column and the insert was
+    // rejected, so every bridge call was silently unaudited.
+    await auditLog(
+      "workforce_bridge",
+      action,
+      `agent=${agent_id} task=${task_id} ${durationMs}ms`,
+    ).catch(() => {});
 
     res.writeHead(200, { "Content-Type": "application/json" });
     return res.end(JSON.stringify({
@@ -341,9 +353,11 @@ export default async function handler(req, res) {
     }));
   } catch (err) {
     const durationMs = Date.now() - startTime;
-    await auditLog("workforce_bridge", {
-      action, agent_id, task_id, duration_ms, success: false, error: err.message,
-    }).catch(() => {});
+    await auditLog(
+      "workforce_bridge",
+      `${action}:failed`,
+      `agent=${agent_id} task=${task_id} ${durationMs}ms error=${String(err?.message || err).slice(0, 200)}`,
+    ).catch(() => {});
 
     res.writeHead(500, { "Content-Type": "application/json" });
     return res.end(JSON.stringify({

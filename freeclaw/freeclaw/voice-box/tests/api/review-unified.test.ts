@@ -196,3 +196,83 @@ describe("/api/moderate?fullReview — the live preview is the same verdict", ()
 		expect(r.body.review).toBeNull();
 	});
 });
+
+// ═══════════════════════════════════════════════════════════════════
+// OPINION-COMPLAINT RECONCILIATION
+// ═══════════════════════════════════════════════════════════════════
+// The reported bug: "Kakuli mam is a horrible teacher very mean and rude"
+// produced a self-contradicting verdict. The model's own prose classified it
+// as "an opinion/complaint about teaching quality, not a direct threat,
+// abuse, or violation of policy", while its numeric fields still carried
+// risk 45 plus a spam issue and a quality issue. The student was told
+// "AI flagged this ... it will be reviewed before going public" about a post
+// the AI had just cleared, and a legitimate teacher complaint went into the
+// moderator queue.
+//
+// `isStaffComplaint` (staff noun + opinion adjective, no harm verb, no
+// second-person menace) is the deterministic guard. When it agrees and the
+// model reported nothing severe and no PII leaked, the advisory buckets are
+// cleared. Criticism of staff conduct is the product's core use case.
+const CONTRADICTORY_AI = {
+	...SAFE_AI,
+	risk_score: 45,
+	spam_detected: true,
+	spam_issues: ["Repetitive wording"],
+	quality_issues: ["Subjective opinion"],
+	safety_issues: ["Possible hostility"],
+	summary:
+		"This is an opinion/complaint about teaching quality, not a direct threat, abuse, or violation of policy.",
+	decision: "revision",
+	reason:
+		"This is an opinion/complaint about teaching quality, not a direct threat, abuse, or violation of policy.",
+};
+
+describe("unifiedReview — staff opinion complaints", () => {
+	beforeEach(() => {
+		aiReply.value = JSON.stringify(CONTRADICTORY_AI);
+	});
+
+	it("publishes a teacher opinion despite a contradictory model verdict", async () => {
+		const result = await unifiedReview({
+			text: "Kakuli mam is a horrible teacher very mean and rude",
+			surface: "queued",
+			contentType: "post",
+			title: "Kakuli mam is a horrible teacher she is very bad",
+			description: "Kakuli mam is a horrible teacher very mean and rude",
+		});
+		expect(result.decision).toBe("safe");
+		expect(result.riskScore).toBe(0);
+		for (const key of ["safety", "spam", "quality", "privacy"]) {
+			expect(result.checks[key].pass).toBe(true);
+			expect(result.checks[key].issues).toEqual([]);
+		}
+	});
+
+	it("still blocks second-person abuse aimed at a teacher", async () => {
+		// Direct abuse is never an "opinion complaint", even though the words
+		// "teacher" and "horrible" both appear. The guard must not launder it.
+		const result = await unifiedReview({
+			text: "you are a horrible teacher and everyone hates you",
+			surface: "queued",
+			contentType: "post",
+		});
+		expect(result.decision).not.toBe("safe");
+	});
+
+	it("still holds a veiled threat for review even when the model says safe", async () => {
+		aiReply.value = JSON.stringify(SAFE_AI);
+		const result = await unifiedReview({
+			text: "Enjoy it while it lasts",
+			surface: "queued",
+			contentType: "post",
+		});
+		// Neither auto-published (0/safe) nor blocked: a human reads it.
+		expect(result.decision).toBe("revision");
+		expect(result.riskScore).toBeGreaterThanOrEqual(30);
+		expect(result.riskScore).toBeLessThan(70);
+		// Spam/quality are untouched — only safety is in question.
+		expect(result.checks.spam.pass).toBe(true);
+		expect(result.checks.quality.pass).toBe(true);
+		expect(result.checks.safety.pass).toBe(false);
+	});
+});

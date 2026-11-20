@@ -38,7 +38,12 @@ vi.mock("../../api/_observability.js", () => ({ logger: loggerMock }));
 vi.mock("../../api/_db-client.js", () => ({
 	default: { from: vi.fn() },
 }));
-const providerMocks = { callLLMChain: vi.fn() };
+// _ai.js walks a fast lane before the chain; the double returns null so these
+// tests keep exercising the chain path they were written for.
+const providerMocks = {
+	callLLMChain: vi.fn(),
+	callNvidiaFast: vi.fn().mockResolvedValue(null),
+};
 vi.mock("../../api/_providers.js", () => providerMocks);
 
 function response() {

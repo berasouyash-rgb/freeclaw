@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="600" viewBox="0 0 1600 600">
+<title>Clouds and sky details</title>
+
+<g fill="#ffffff" stroke="#9bdcff" stroke-width="2" opacity=".85">
+ <path d="M130 145 Q130 120 157 120 Q168 83 211 96 Q232 65 267 89 Q301 88 305 122 Q337 126 335 153 L130 153Z"/>
+ <path d="M1130 105 Q1130 82 1157 82 Q1170 48 1207 62 Q1234 34 1263 58 Q1296 57 1302 88 Q1331 91 1330 116 L1130 116Z"/>
+</g>
+<g fill="none" stroke="#c5eaff" stroke-width="2" stroke-dasharray="3 10" opacity=".8">
+ <path d="M360 180 Q440 145 520 178"/><path d="M980 155 Q1050 120 1110 150"/>
+</g>
+
+</svg>

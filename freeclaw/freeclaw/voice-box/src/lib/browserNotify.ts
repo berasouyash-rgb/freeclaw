@@ -235,19 +235,23 @@ export function showBrowserNotification(ping: BrowserPing): boolean {
 
 		// 2. Mobile App (Android native heads-up/tray notification via Capacitor)
 		if (isMobileApp()) {
-			void ensureAndroidNotificationChannel();
 			const notifId = (Date.now() + Math.floor(Math.random() * 1000)) % 2147483647;
-			void LocalNotifications.schedule({
-				notifications: [
-					{
-						id: notifId,
-						title,
-						body,
-						channelId: "voiceflow_alerts",
-						extra: { url: ping.url || "/" },
-					},
-				],
-			}).catch(() => {});
+			void ensureAndroidNotificationChannel()
+				.then(() =>
+					LocalNotifications.schedule({
+						notifications: [
+							{
+								id: notifId,
+								title,
+								body,
+								channelId: "voiceflow_alerts",
+								smallIcon: "ic_launcher",
+								extra: { url: ping.url || "/" },
+							},
+						],
+					}),
+				)
+				.catch(() => {});
 			return true;
 		}
 

@@ -24,10 +24,13 @@ import {
 	hasAdminSession,
 	isNotFound,
 	isSessionDeadError,
+	isSessionDeadMessage,
 	resetConcurrencyForTests,
+	SESSION_DEAD_MESSAGE,
 	setAdminSession,
 } from "../lib/api";
 import { queuedCount } from "../lib/offline";
+import { resetAnonId } from "../lib/identity";
 
 beforeEach(() => {
 	resetConcurrencyForTests();
@@ -58,8 +61,14 @@ function errResponse(status: number, body: unknown = {}, headers?: Record<string
 }
 
 describe("api admin session helpers", () => {
-	beforeEach(() => sessionStorage.clear());
-	afterEach(() => sessionStorage.clear());
+	beforeEach(() => {
+		localStorage.clear();
+		sessionStorage.clear();
+	});
+	afterEach(() => {
+		localStorage.clear();
+		sessionStorage.clear();
+	});
 
 	it("setAdminSession stores token+exp, hasAdminSession reads it", () => {
 		expect(hasAdminSession()).toBe(false);
@@ -67,6 +76,20 @@ describe("api admin session helpers", () => {
 		expect(hasAdminSession()).toBe(true);
 		clearAdminSession();
 		expect(hasAdminSession()).toBe(false);
+	});
+
+	it("keeps the admin session in shared storage for other tabs", () => {
+		setAdminSession("tok-shared", Date.now() + 60_000);
+		// Simulate a new tab: sessionStorage is empty, localStorage is shared.
+		sessionStorage.clear();
+		expect(hasAdminSession()).toBe(true);
+	});
+
+	it("accepts an ISO expiry string and stores a numeric timestamp", () => {
+		setAdminSession("tok-iso", new Date(Date.now() + 60_000).toISOString());
+		expect(hasAdminSession()).toBe(true);
+		const stored = JSON.parse(localStorage.getItem("vb:adminAuth") || "{}");
+		expect(typeof stored.exp).toBe("number");
 	});
 
 	it("hasAdminSession treats an expired session as absent and removes it", () => {
@@ -763,6 +786,87 @@ describe("api error status", () => {
 		expect(isSessionDeadError(new ApiError("nope", 403, 0, "other_code"))).toBe(false);
 		expect(isSessionDeadError(new Error("x"))).toBe(false);
 		expect(isSessionDeadError(null)).toBe(false);
+	});
+
+	// ── one dead session, one warning ──────────────────────────────────
+	// Reported symptom: the session-lost warning kept reappearing and covered
+	// the feed. Two causes — a per-request dispatch throttled by a 15s CLOCK,
+	// which re-fired for as long as the device kept polling, and a second, much
+	// longer copy rendered inline in the feed at the same time.
+
+	function collectSessionDead(): { events: Event[]; stop: () => void } {
+		const events: Event[] = [];
+		const listener = (e: Event) => events.push(e);
+		window.addEventListener("vb:session-dead", listener);
+		return {
+			events,
+			stop: () => window.removeEventListener("vb:session-dead", listener),
+		};
+	}
+
+	it("never raises a spontaneous session-dead notice, however many requests fail", async () => {
+		const { events, stop } = collectSessionDead();
+		fetchMock.mockResolvedValue(
+			errResponse(403, { error: "Invalid session identity", code: "session_unrecoverable" }),
+		);
+		try {
+			// Three surfaces fail, then time passes and they fail again. The
+			// user must never be told "not recognised" spontaneously while the
+			// old ID's data still exists.
+			await expect(api.get("/api/feed?a=1")).rejects.toBeInstanceOf(ApiError);
+			await expect(api.get("/api/me?b=1")).rejects.toBeInstanceOf(ApiError);
+			await expect(api.get("/api/polls?c=1")).rejects.toBeInstanceOf(ApiError);
+			await expect(api.get("/api/feed?a=2")).rejects.toBeInstanceOf(ApiError);
+		} finally {
+			stop();
+		}
+		expect(events).toHaveLength(0);
+		// The explicit failure still carries the honest, actionable message.
+		const caught = await api.get("/api/feed?d=1").catch((e: unknown) => e);
+		expect((caught as ApiError).message).toBe(SESSION_DEAD_MESSAGE);
+	});
+
+	it("does not re-arm a warning after an identity change", async () => {
+		const { events, stop } = collectSessionDead();
+		fetchMock.mockResolvedValue(
+			errResponse(403, { error: "Invalid session identity", code: "session_unrecoverable" }),
+		);
+		try {
+			await expect(api.get("/api/feed?d=1")).rejects.toBeInstanceOf(ApiError);
+			resetAnonId();
+			await expect(api.get("/api/feed?e=1")).rejects.toBeInstanceOf(ApiError);
+		} finally {
+			stop();
+		}
+		expect(events).toHaveLength(0);
+	});
+
+	it("never reports a transient failure as a lost session", async () => {
+		// A server fault or a dead network says nothing about identity, and
+		// telling a student their identity is gone when it is not is the
+		// worst possible false alarm here.
+		const { events, stop } = collectSessionDead();
+		try {
+			fetchMock.mockResolvedValue(errResponse(500, { error: "boom" }));
+			await expect(api.get("/api/feed?f=1")).rejects.toBeInstanceOf(ApiError);
+			fetchMock.mockRejectedValue(new TypeError("Failed to fetch"));
+			await expect(api.get("/api/feed?g=1")).rejects.toBeInstanceOf(Error);
+		} finally {
+			stop();
+		}
+		expect(events).toHaveLength(0);
+	});
+
+	it("isSessionDeadMessage matches the real message and nothing else", () => {
+		// The feed's empty state branches on this instead of spelling out its
+		// own substring test, which silently stopped matching when the copy
+		// changed.
+		expect(isSessionDeadMessage(SESSION_DEAD_MESSAGE)).toBe(true);
+		expect(isSessionDeadMessage("Slow down a little — try again in 25s.")).toBe(false);
+		expect(isSessionDeadMessage("Refresh failed — showing the last available posts.")).toBe(
+			false,
+		);
+		expect(isSessionDeadMessage("")).toBe(false);
 	});
 
 	it("falls back to a status-labelled message when the body has no error", async () => {

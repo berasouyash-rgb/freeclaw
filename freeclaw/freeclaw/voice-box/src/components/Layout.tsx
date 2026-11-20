@@ -9,7 +9,6 @@ import {
 	Bell,
 	Bookmark,
 	CheckCheck,
-	Ellipsis,
 	HelpCircle,
 	Home,
 	KanbanSquare,
@@ -48,8 +47,13 @@ import { timeAgo } from "../lib/utils";
 import CommandPalette from "./CommandPalette";
 import Tutorial from "./Tutorial";
 import InstallPrompt from "./InstallPrompt";
+import { CurvedMobileNav } from "./CurvedMobileNav";
+import { SiteFooter } from "./SiteFooter";
+import BackToTop from "./BackToTop";
+import KeyboardShortcutsModal from "./KeyboardShortcutsModal";
 import UpdateDialog from "./UpdateDialog";
 import VoiceLogo from "./VoiceLogo";
+import { isNativeShell } from "../lib/platform";
 
 const NAV_CORE = [
 	{ to: "/", label: "Feed", icon: Home, tour: "" },
@@ -111,6 +115,26 @@ const NAV_MORE = [
 ];
 /** Full nav (core + more) for anything that needs the complete list. */
 export const NAV_ALL = [...NAV_CORE, ...NAV_MORE];
+
+/**
+ * "Get the app" reads wrong inside the APK/EXE: offering to download the
+ * binary you are currently running looks like a bug, and the only way to
+ * follow it would be to copy the link out to a browser by hand.
+ *
+ * The entry is therefore kept but RENAMED, not removed. Hiding it lived
+ * through a build-and-install cycle as "the download option is missing from
+ * the app" — a user in the APK has no way to know the other platforms exist.
+ * As "Other platforms" it points at the same /download page, which already
+ * excludes the platform the user is on and lists only the real installers
+ * for the devices they are not holding. Nothing self-referential, nothing to
+ * copy-paste: every link it can offer downloads a genuine native build for a
+ * different device.
+ */
+export const NAV_MORE_VISIBLE = isNativeShell()
+	? NAV_MORE.map((n) =>
+			n.to === "/download" ? { ...n, label: "Other platforms" } : n,
+		)
+	: NAV_MORE;
 /** Bottom-bar tabs. Everything else lives in the More sheet — add a page
  *  to NAV_CORE/NAV_MORE and it appears on mobile automatically. */
 const MOBILE_PRIMARY = new Set(["/", "/search", "/submit", "/chat", "/activity"]);
@@ -171,19 +195,11 @@ export default function Layout() {
 	} | null>(null);
 	const [offline, setOffline] = useState(!navigator.onLine);
 	const [queued, setQueued] = useState(queuedCount());
-	const [showTop, setShowTop] = useState(false);
 	const [appUpdate, setAppUpdate] = useState<AppUpdate | null>(null);
 	const mobileDrawerRef = useRef<HTMLDivElement>(null);
 	useFocusTrap(mobileDrawerRef, { active: mobileOpen, onEscape: () => setMobileOpen(false) });
 	const moreSheetRef = useRef<HTMLDivElement>(null);
 	useFocusTrap(moreSheetRef, { active: moreOpen, onEscape: () => setMoreOpen(false) });
-
-	// Back-to-top visibility — show after scrolling 400px
-	useEffect(() => {
-		const h = () => setShowTop(window.scrollY > 400);
-		window.addEventListener("scroll", h, { passive: true });
-		return () => window.removeEventListener("scroll", h);
-	}, []);
 
 	// offline detection + queued-action flush on reconnect
 	useEffect(() => {
@@ -209,6 +225,29 @@ export default function Layout() {
 		};
 	}, []);
 
+	// Notification popover: Escape and a click outside close it, like every
+	// other popover in the app. Without this the panel could only be closed by
+	// clicking the bell again — on mobile the panel covers the page beneath it.
+	useEffect(() => {
+		if (!notifOpen) return;
+		const onKey = (e: KeyboardEvent) => {
+			if (e.key === "Escape") setNotifOpen(false);
+		};
+		const onPointerDown = (e: MouseEvent | TouchEvent) => {
+			const target = e.target as HTMLElement | null;
+			if (target?.closest("[data-notif-root]")) return;
+			setNotifOpen(false);
+		};
+		document.addEventListener("keydown", onKey);
+		document.addEventListener("mousedown", onPointerDown);
+		document.addEventListener("touchstart", onPointerDown, { passive: true });
+		return () => {
+			document.removeEventListener("keydown", onKey);
+			document.removeEventListener("mousedown", onPointerDown);
+			document.removeEventListener("touchstart", onPointerDown);
+		};
+	}, [notifOpen]);
+
 	// Admin live popup — useAdminStream dispatches this for every coalesced
 	// admin event. A toast (not a page reload) is the "mobile notification"
 	// equivalent inside the console; the device notification fires from the
@@ -224,6 +263,29 @@ export default function Layout() {
 		window.addEventListener("vb:admin-activity", onAdminActivity);
 		return () => window.removeEventListener("vb:admin-activity", onAdminActivity);
 	}, [toast]);
+
+	// Global Keyboard Shortcuts Help modal ('?' key)
+	const [shortcutsOpen, setShortcutsOpen] = useState(false);
+	useEffect(() => {
+		const onKey = (e: KeyboardEvent) => {
+			if (
+				e.key === "?" &&
+				!e.ctrlKey &&
+				!e.metaKey &&
+				!e.altKey &&
+				!(
+					e.target instanceof HTMLInputElement ||
+					e.target instanceof HTMLTextAreaElement ||
+					(e.target instanceof HTMLElement && e.target.isContentEditable)
+				)
+			) {
+				e.preventDefault();
+				setShortcutsOpen((o) => !o);
+			}
+		};
+		window.addEventListener("keydown", onKey);
+		return () => window.removeEventListener("keydown", onKey);
+	}, []);
 
 	// Native-shell app update: ask /api/version at most daily (the checker
 	// enforces web-exclusion, daily cache, and snooze itself). Deferred a
@@ -314,7 +376,7 @@ export default function Layout() {
 					More
 				</summary>
 				<div className="flex flex-col gap-1 pt-1">
-					{NAV_MORE.map(({ to, label, icon: Icon, tour }) => (
+					{NAV_MORE_VISIBLE.map(({ to, label, icon: Icon, tour }) => (
 						<NavLink
 							key={to}
 							to={to}
@@ -337,19 +399,30 @@ export default function Layout() {
 
 	// Banned IDs are blocked from browsing as well as writing (the
 	// server already rejects their writes). Suspended IDs keep browsing.
-	if (accountStatus?.banned) {
+	if (
+		accountStatus?.banned ||
+		accountStatus?.restriction_level === "full_ban"
+	) {
+		const fullBan = accountStatus?.restriction_level === "full_ban";
 		return (
 			<div className="min-h-dvh grid place-items-center px-4 bg-bg">
 				<div className="card w-full max-w-sm p-8 text-center vb-rise" role="alert">
 					<div className="text-4xl mb-3" aria-hidden>
 						🚫
 					</div>
-					<h1 className="font-display font-bold text-xl">Banned from Voice Flow</h1>
+					<h1 className="font-display font-bold text-xl">
+						{fullBan ? "Access restricted" : "Banned from Voice Flow"}
+					</h1>
 					<p className="text-sm text-ink2 mt-2 leading-relaxed">
-						This anonymous ID was permanently banned for breaking community
-						rules. Browsing, posting, commenting, and voting are all
-						disabled for it.
+						{fullBan
+							? "This anonymous ID is under a full restriction. Browsing, posting, commenting, and voting are all disabled for it."
+							: "This anonymous ID was permanently banned for breaking community rules. Browsing, posting, commenting, and voting are all disabled for it."}
 					</p>
+					{fullBan && accountStatus?.restriction_reason && (
+						<p className="text-xs text-ink3 mt-2">
+							Reason: {accountStatus.restriction_reason}
+						</p>
+					)}
 					<p className="text-xs text-ink3 mt-3 leading-relaxed">
 						If you believe this is a mistake, contact us — an admin can
 						lift the ban from the Users panel.
@@ -554,11 +627,19 @@ export default function Layout() {
 									setNotifOpen((o) => !o);
 								}}
 								aria-label={`Notifications, ${unread} unread`}
+								aria-expanded={notifOpen}
+								aria-haspopup="dialog"
+								aria-controls="notif-panel"
+								data-notif-root
 							>
 								<Bell size={17} />
 								{unread > 0 && (
-									<span className="absolute -top-0.5 -right-0.5 w-4.5 h-4.5 min-w-4 text-[9px] font-bold grid place-items-center bg-bad text-white rounded-full px-1">
-										{unread}
+									<span
+										key={unread}
+										className="absolute -top-0.5 -right-0.5 w-4.5 h-4.5 min-w-4 text-[9px] font-bold grid place-items-center bg-bad text-white rounded-full px-1 vb-pop"
+										aria-hidden
+									>
+										{unread > 99 ? "99+" : unread}
 									</span>
 								)}
 							</button>
@@ -583,9 +664,11 @@ export default function Layout() {
 					{/* Notification panel */}
 					{notifOpen && (
 						<div
+							id="notif-panel"
 							className="absolute right-4 top-[calc(3.5rem_+_env(safe-area-inset-top))] w-[min(92vw,380px)] card shadow-2xl p-3 vb-rise z-50"
 							role="region"
 							aria-label="Notifications"
+							data-notif-root
 						>
 							<div className="flex items-center justify-between px-2 pb-2 border-b border-border">
 								<span className="font-display font-semibold text-sm">
@@ -602,6 +685,7 @@ export default function Layout() {
 											className="btn btn-ghost !p-1.5 !text-xs"
 											onClick={markNotifsRead}
 											title="Mark all read"
+											aria-label="Mark all notifications read"
 										>
 											<CheckCheck size={14} />
 										</button>
@@ -611,6 +695,7 @@ export default function Layout() {
 											className="btn btn-ghost !p-1.5 !text-xs"
 											onClick={clearNotifs}
 											title="Clear all"
+											aria-label="Clear all notifications"
 										>
 											<Trash2 size={14} />
 										</button>
@@ -684,6 +769,42 @@ export default function Layout() {
 						. Browsing is allowed; posting and voting are paused.
 					</div>
 				)}
+				{!accountStatus?.banned &&
+					accountStatus?.restriction_level === "read_only" && (
+						<div
+							className="flex items-center gap-2.5 px-4 sm:px-6 py-2.5 text-sm font-semibold"
+							style={{
+								background: "rgba(217,138,11,0.12)",
+								color: "#d98a0b",
+								borderBottom: "1px solid rgba(217,138,11,0.25)",
+							}}
+							role="status"
+						>
+							✏️ Your account is read-only
+							{accountStatus.restriction_reason
+								? `: ${accountStatus.restriction_reason}`
+								: ""}
+							. You can browse, but posting, commenting and voting are paused.
+						</div>
+					)}
+				{!accountStatus?.banned &&
+					accountStatus?.restriction_level === "feed_blocked" && (
+						<div
+							className="flex items-center gap-2.5 px-4 sm:px-6 py-2.5 text-sm font-semibold"
+							style={{
+								background: "rgba(217,138,11,0.12)",
+								color: "#d98a0b",
+								borderBottom: "1px solid rgba(217,138,11,0.25)",
+							}}
+							role="status"
+						>
+							📵 Access to the main feed is restricted
+							{accountStatus.restriction_reason
+								? `: ${accountStatus.restriction_reason}`
+								: ""}
+							. Other areas of your account remain available.
+						</div>
+					)}
 				{offline && (
 					<div
 						className="flex items-center gap-2 px-4 sm:px-6 py-2 text-xs font-semibold border-b"
@@ -729,65 +850,19 @@ export default function Layout() {
 				>
 					<InstallPrompt />
 					<Outlet />
+					<SiteFooter />
 				</main>
 
-				{/* Mobile bottom nav — 6 tabs: Feed, Search, Submit, Inbox (with badge), Activity, Notifications */}
-				<nav
-					className="vb-bottomnav lg:hidden fixed bottom-0 inset-x-0 z-40 border-t border-border/80 flex pb-[max(env(safe-area-inset-bottom),0.75rem)] bg-surface/90 backdrop-blur-xl shadow-lg transition-colors duration-200"
-					aria-label="Mobile navigation"
-				>
-						{[
-							{ to: "/", label: "Feed", icon: Home },
-							{ to: "/search", label: "Search", icon: Search },
-							{ to: "/submit", label: "Submit", icon: PlusCircle },
-							{ to: "/chat", label: "Inbox", icon: MessageSquare, badge: chatUnread },
-							{ to: "/activity", label: "Me", icon: UserCircle2 },
-						].map((item) => (
-							<NavLink
-								key={item.to}
-								to={item.to}
-								end={item.to === "/"}
-								onMouseEnter={() => prefetchRouteForPath(item.to)}
-								onFocus={() => prefetchRouteForPath(item.to)}
-								className={({ isActive }) =>
-									`relative flex-1 flex flex-col items-center gap-0.5 pt-2 pb-1.5 text-[9.5px] font-semibold transition-all duration-200 min-w-0 ${isActive ? "text-accent" : "text-ink3 active:text-ink2"}`
-								}
-								aria-label={item.badge ? `${item.label}, ${item.badge} unread` : item.label}
-							>
-								{({ isActive }) => (
-									<>
-										{isActive && (
-											<span className="absolute top-0 left-1/2 -translate-x-1/2 w-5 h-0.5 rounded-full bg-accent" aria-hidden />
-										)}
-										<span className="relative">
-											<item.icon size={20} strokeWidth={isActive ? 2.2 : 1.8} />
-											{typeof item.badge === "number" && item.badge > 0 && (
-												<span className="absolute -top-1.5 -right-2 min-w-[16px] h-4 text-[8px] font-bold grid place-items-center bg-bad text-white rounded-full px-1 vb-pop" aria-hidden>
-												{item.badge > 99 ? "99+" : item.badge}
-											</span>
-											)}
-									</span>
-										<span className="truncate leading-none">{item.label}</span>
-									</>
-								)}
-							</NavLink>
-						))}
-						<button
-						type="button"
-						onClick={() => setMoreOpen(true)}
-						aria-label={unread > 0 ? `More pages, ${unread} unread alerts` : "More pages"}
-						aria-expanded={moreOpen}
-						className={`relative flex-1 flex flex-col items-center gap-0.5 pt-2 pb-1.5 text-[9.5px] font-semibold transition-all duration-200 min-w-0 ${moreOpen ? "text-accent" : "text-ink3 active:text-ink2"}`}
-						>
-							<span className="relative">
-								<Ellipsis size={20} strokeWidth={2.2} />
-								{unread > 0 && (
-									<span className="absolute -top-1 -right-1.5 w-2 h-2 rounded-full bg-bad vb-pop" aria-hidden />
-								)}
-							</span>
-							<span className="truncate leading-none">More</span>
-						</button>
-					</nav>
+				<BackToTop />
+				<KeyboardShortcutsModal open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
+
+				{/* Mobile bottom nav — Curved Floating Navigation Bar matching mobile app mockup */}
+				<CurvedMobileNav
+					chatUnread={chatUnread}
+					unreadAlerts={unread}
+					moreOpen={moreOpen}
+					onOpenMore={() => setMoreOpen(true)}
+				/>
 					{moreOpen && (
 						<div className="fixed inset-0 z-50 lg:hidden" role="dialog" aria-modal="true" aria-label="More pages">
 							<button
@@ -804,7 +879,7 @@ export default function Layout() {
 								{[
 									{ to: "/notifications", label: "Alerts", icon: Bell, badge: unread },
 									...NAV_CORE.filter((n) => !MOBILE_PRIMARY.has(n.to)),
-									...NAV_MORE,
+									...NAV_MORE_VISIBLE,
 									{ to: "/admin", label: "Admin", icon: ShieldCheck },
 								].map(({ to, label, icon: Icon, badge }: { to: string; label: string; icon: typeof Bell; badge?: number }) => (
 									<NavLink
@@ -835,18 +910,6 @@ export default function Layout() {
 			<Tutorial />
 
 			<CommandPalette />
-
-			{/* Back-to-top button — appears after scrolling down */}
-			{showTop && (
-				<button
-					onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}
-					className="fixed bottom-20 lg:bottom-8 right-4 z-50 w-10 h-10 rounded-full bg-surface border border-border shadow-lg grid place-items-center text-ink3 hover:text-accent hover:border-accent/40 transition-all vb-rise"
-					aria-label="Back to top"
-					title="Back to top"
-				>
-					↑
-				</button>
-			)}
 
 			{/* Native-shell app update prompt (APK + EXE only — the checker
 			returns null on web). Update now opens the fresh installer;

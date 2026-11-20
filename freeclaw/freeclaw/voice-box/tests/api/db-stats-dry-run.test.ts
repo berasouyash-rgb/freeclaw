@@ -1,7 +1,7 @@
 // db-stats dry run — the estimate mirrors the janitor's real predicates
-// (retention_config hours on updated_at with the enable toggle; 30-day age
-// outs). If _cleanup.js changes a predicate, this file must fail until the
-// mirror is updated.
+// (retention_config hours on updated_at with the enable toggle; closed posts 5
+// days after last activity; 30-day age outs). If _cleanup.js changes a
+// predicate, this file must fail until the mirror is updated.
 import { describe, expect, it, vi } from "vitest";
 
 const { mockFrom } = vi.hoisted(() => ({ mockFrom: vi.fn() }));
@@ -31,11 +31,14 @@ const COUNTS = {
   agent_insights: 8,
 };
 
+let postsQueries = [];
+
 function tableMock(table, retention) {
   const q = {};
   const chain = () => q;
   q.select = vi.fn(chain);
   q.eq = vi.fn(chain);
+  q.in = vi.fn(chain);
   q.lte = vi.fn(chain);
   q.maybeSingle = vi.fn(async () => ({
     data: { value: retention },
@@ -43,11 +46,13 @@ function tableMock(table, retention) {
   }));
   q.then = (resolve) =>
     Promise.resolve({ count: COUNTS[table] ?? 0, error: null }).then(resolve);
+  if (table === "posts") postsQueries.push(q);
   return q;
 }
 
 function setup(retention = { user_delete_hours: 5, auto_delete_enabled: true }) {
   vi.clearAllMocks();
+  postsQueries = [];
   mockFrom.mockImplementation((table) => tableMock(table, retention));
 }
 
@@ -80,12 +85,23 @@ describe("GET /api/db_stats — janitor-mirroring dry run", () => {
     expect(dry.old_archived_polls).toBe(6);
     expect(dry.old_agent_executions).toBe(9);
     expect(dry.old_agent_insights).toBe(8);
-    expect(dry.total_would_delete).toBe(7 + 5 + 3 + 2 + 4 + 1 + 6 + 9 + 8);
+    // solved_posts counts the same mock's posts table (7 rows)
+    expect(dry.solved_posts).toBe(7);
+    // The mirror must use the shared closed-status set, not a solved-only
+    // filter — that divergence is what let the served copy and the sweep
+    // disagree. Second posts query is the closed-post estimate.
+    const closedQuery = postsQueries[postsQueries.length - 1];
+    expect(closedQuery.in).toHaveBeenCalledWith("status", ["solved", "archived"]);
+    expect(closedQuery.eq).toHaveBeenCalledWith("deleted", false);
+    expect(closedQuery.lte).toHaveBeenCalledWith("updated_at", expect.any(String));
+    expect(closedQuery.eq).not.toHaveBeenCalledWith("status", "solved");
+    expect(dry.total_would_delete).toBe(7 + 5 + 3 + 2 + 4 + 1 + 6 + 9 + 8 + 7);
     expect(dry.retention_hours).toBe(5);
     expect(dry.auto_delete_skipped).toBe(false);
     // widget projection carries counts only — no flags or totals
     expect(res.body.dry_run_counts).toEqual({
       user_deleted_posts: 7,
+      solved_posts: 7,
       old_comments: 5,
       old_reactions: 3,
       old_chat_messages: 2,

@@ -24,6 +24,8 @@ const DEFAULT_TITLE = "Voice Flow — Anonymous School Feedback Platform";
 const TITLES: Array<[RegExp, string]> = [
 	[/^\/$/, DEFAULT_TITLE],
 	[/^\/about$/, "About Voice Flow — Anonymous School Feedback"],
+	[/^\/developer$/, "Souyash Bera — Founder of VoiceFlow"],
+	[/^\/about\/developer$/, "Souyash Bera — Founder of VoiceFlow"],
 	[/^\/contact$/, "Contact — Voice Flow"],
 	[/^\/terms$/, "Terms of Service — Voice Flow"],
 	[/^\/privacy$/, "Privacy Policy — Voice Flow"],

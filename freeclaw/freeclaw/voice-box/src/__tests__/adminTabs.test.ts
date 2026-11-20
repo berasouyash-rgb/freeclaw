@@ -9,7 +9,7 @@ import {
 } from "../lib/adminTabs";
 
 describe("admin tab registry", () => {
-	it("keeps the complete 17-tab product surface in canonical order", () => {
+	it("keeps the complete 18-tab product surface in canonical order", () => {
 		expect(ADMIN_TAB_KEYS).toEqual([
 			"dashboard",
 			"presentation",
@@ -27,9 +27,10 @@ describe("admin tab registry", () => {
 			"activity-report",
 			"email-templates",
 			"ai-systems",
+			"smart-features",
 			"settings",
 		]);
-		expect(ADMIN_TABS).toHaveLength(17);
+		expect(ADMIN_TABS).toHaveLength(18);
 		expect(ADMIN_TAB_GROUPS.map((group) => group.title)).toEqual([
 			"Overview",
 			"Content",
@@ -40,7 +41,6 @@ describe("admin tab registry", () => {
 
 	it("redirects the removed autonomous UI controls without deleting their capabilities", () => {
 		for (const tab of [
-			"agent-chat",
 			"ops-center",
 			"activity-stream",
 			"system-health",

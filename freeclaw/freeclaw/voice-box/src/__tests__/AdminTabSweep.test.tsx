@@ -56,7 +56,6 @@ vi.mock("../components/PostPreviewCard", () => ({
 // needs { type }); the test only needs the default export to render.
 const tabs: [string, () => Promise<{ default: unknown }>][] = [
 	["ActionCenter", () => import("../pages/admin/ActionCenter")],
-	["AgentChat", () => import("../pages/admin/AgentChat")],
 	["OpsCenter", () => import("../pages/admin/OpsCenter")],
 	["SystemHealth", () => import("../pages/admin/SystemHealth")],
 	["PerformanceCenter", () => import("../pages/admin/PerformanceCenter")],

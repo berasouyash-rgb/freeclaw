@@ -41,7 +41,7 @@ export const ROUTE_MATRIX = {
 	"autonomous-harnesses": ROUTE_CLASS.ADMIN_ONLY,
 	"event-agents": ROUTE_CLASS.ADMIN_ONLY,
 	"agent-executions": ROUTE_CLASS.ADMIN_ONLY,
-	"tool-forge": ROUTE_CLASS.ADMIN_ONLY,
+	smart: ROUTE_CLASS.ADMIN_ONLY,
 	"tool-registry": ROUTE_CLASS.ADMIN_ONLY,
 	"email-templates": ROUTE_CLASS.ADMIN_ONLY,
 	"v3/audit": ROUTE_CLASS.ADMIN_ONLY,
@@ -52,7 +52,6 @@ export const ROUTE_MATRIX = {
 	"evidence-scan": ROUTE_CLASS.ADMIN_ONLY,
 	"quarantine-scan": ROUTE_CLASS.ADMIN_ONLY,
 	memory: ROUTE_CLASS.ADMIN_ONLY,
-	"agent-chat": ROUTE_CLASS.ADMIN_ONLY,
 	"meta-agent": ROUTE_CLASS.ADMIN_ONLY,
 	"agent-team": ROUTE_CLASS.ADMIN_ONLY,
 	performance: ROUTE_CLASS.ADMIN_ONLY,
@@ -226,7 +225,16 @@ export async function verifyRouteAccess(endpoint, req) {
 		// /api/admin handler special cases
 		if (endpoint === "admin") {
 			const action = req.body?.action || req.query?.action;
-			if (action === "login" || action === "verify") {
+			// Pre-auth actions. `auth_mode` returns a single boolean
+			// (`env_secret`) that the login screen needs BEFORE it has a
+			// credential — without it, env-secret deployments silently fall
+			// back to password mode and lock the operator out. It leaks no
+			// secret, only which credential the UI should collect.
+			if (
+				action === "login" ||
+				action === "verify" ||
+				action === "auth_mode"
+			) {
 				return { authorized: true };
 			}
 			if (adminVerdict) return { authorized: true };

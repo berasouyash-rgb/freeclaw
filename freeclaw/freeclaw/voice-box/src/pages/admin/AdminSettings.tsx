@@ -72,6 +72,9 @@ export default function AdminSettings() {
 		{ key: "agent_conversations", label: "Old agent conversations", desc: "Agent conversations older than 30 days" },
 		{ key: "archived_polls", label: "Archived polls", desc: "Archived polls older than 30 days" },
 		{ key: "agent_history", label: "Agent runtime history", desc: "Executions + insights older than 90 days" },
+		// Mirrors api/_cleanup.js JANITOR_CLASSES.solved_posts, which also gates
+		// the purgeExpired closed-post sweep.
+		{ key: "solved_posts", label: "Solved & archived posts", desc: "5 days after last activity — a comment or reaction resets the countdown" },
 	];
 	const [cleanupStats, setCleanupStats] = useState<{ cleanup?: { last_run_at?: string; duration_ms?: number; results?: Record<string, number> }; purge?: { last_purge_at?: string } } | null>(null);
 	useEffect(() => {
@@ -341,7 +344,7 @@ const saveSpamConfig = async () => {
 						aria-checked={agentActions === true}
 						disabled={agentSaving || agentActions === null}
 						onClick={toggleAgentActions}
-						className={`relative w-11 h-6 rounded-full transition-colors shrink-0 ${
+						className={`switch relative w-11 h-6 rounded-full transition-colors shrink-0 ${
 							agentActions ? "bg-good" : "bg-surface3"
 						}`}
 					>
@@ -410,12 +413,14 @@ const saveSpamConfig = async () => {
 
 						<div className="card p-5 mb-4">
 				<h2 className="font-display font-semibold text-sm flex items-center gap-2 mb-1">
-					<SlidersHorizontal size={15} className="text-accent" /> Deleted-post retention
+					<SlidersHorizontal size={15} className="text-accent" /> Post retention &amp; auto-delete
 				</h2>
 				<p className="text-xs text-ink2 mb-4">
-					User-deleted posts stay visible in the admin feed with deleter and
-					time, then hard-delete automatically with their comments and
-					reactions. 1–168 hours. Default 5h. Change is audited.
+					Solved and archived posts hard-delete 5 days after their last activity —
+					any comment or reaction resets that countdown, and students see the same
+					deadline. User-deleted posts stay visible in the admin feed with deleter
+					and time, then hard-delete with their comments and reactions after the
+					window below. Change is audited.
 				</p>
 				<label className="text-xs block max-w-48">
 					<span className="font-semibold text-ink block mb-1">Auto-remove after (hours)</span>
@@ -465,7 +470,7 @@ const saveSpamConfig = async () => {
 					</p>
 				)}
 				<p className="text-xs text-ink2 mt-3">
-Currently: {autoDelete === false ? "deleted posts are kept for admins indefinitely" : `auto-remove ${retentionHours ?? 5}h after deletion`}.</p>
+Currently: {autoDelete === false ? "deleted posts are kept for admins indefinitely" : `auto-remove ${retentionHours ?? 5}h after deletion`}. Solved and archived posts hard-delete 5 days after their last activity.</p>
 {(autoDelete === false || (retentionHours !== null && retentionHours <= 2)) && (
 <p className="text-[11px] text-warn mt-2" role="alert">{/* retention warnings */}{autoDelete === false ? "Warning — auto-delete is off: deleted rows accumulate until purged manually. Watch table sizes in Health." : "Warning — short window: admins have little time to review a deletion before it is gone permanently."}</p>
 )}

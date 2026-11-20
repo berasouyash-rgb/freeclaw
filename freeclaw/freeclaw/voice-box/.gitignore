@@ -19,6 +19,12 @@ dist-ssr
 *.tsbuildinfo
 .env
 .env.*
+.env*
+!.env.template
+
+# Runtime state & SQLite databases
+services/artifacts/deepagents/.fabric/runtimes/*.sqlite
+*.sqlite
 
 # Editor directories and files
 .vscode/*
@@ -33,6 +39,7 @@ dist-ssr
 .vite-source-tags.js
 .vercel
 .env*
+!.env.template
 
 # Playwright artefacts
 test-results/
@@ -53,3 +60,12 @@ release/
 resources/
 *.apk
 *.aab
+
+# ...except the Android build the release pipeline publishes. It is what the
+# download page serves and /api/version advertises, so it has to travel with
+# the deployment. The Windows installer (~90 MB) travels with it too — it is
+# what the Download page serves for everyone who cannot build it themselves.
+!public/downloads/
+!public/downloads/*.apk
+!public/downloads/*.exe
+!public/downloads/*.blockmap

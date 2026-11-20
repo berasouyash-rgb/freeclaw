@@ -662,6 +662,92 @@ export default async function handler(req, res) {
 			return res.status(200).json({ ok: true, removed });
 		}
 
+		if (action === "strikes") {
+			const { data: users, error: uErr } = await supabase
+				.from("users_meta")
+				.select("anon_id,warnings,strikes,suspended_until,banned,notes,updated_at")
+				.or("strikes.gt.0,banned.eq.true,suspended_until.not.is.null")
+				.limit(100);
+			if (uErr) throw uErr;
+
+			const strikesList = [];
+			for (const u of users || []) {
+				const warnings = Array.isArray(u.warnings) ? u.warnings : [];
+				if (warnings.length > 0) {
+					warnings.forEach((w, idx) => {
+						strikesList.push({
+							id: `strike_${u.anon_id}_${idx}`,
+							author_id: u.anon_id,
+							reason: (w && typeof w === "object" && w.text) || (typeof w === "string" ? w : "Community standards violation flagged by moderation"),
+							severity: u.banned ? "ban" : (u.strikes > 1 ? "strike" : "warning"),
+							source: "ai_moderation",
+							created_at: (w && typeof w === "object" && w.at) || u.updated_at || new Date().toISOString(),
+							status: u.banned ? "active" : (u.suspended_until && new Date(u.suspended_until) > new Date() ? "active" : (u.strikes > 0 ? "active" : "pardoned")),
+							admin_notes: u.notes || undefined,
+							target_title: "Campus submission",
+						});
+					});
+				} else {
+					strikesList.push({
+						id: `strike_${u.anon_id}_0`,
+						author_id: u.anon_id,
+						reason: u.banned ? "Account banned for community violation" : u.suspended_until ? "Account temporarily suspended" : "Active moderation strikes recorded",
+						severity: u.banned ? "ban" : (u.strikes > 1 ? "strike" : "warning"),
+						source: "ai_moderation",
+						created_at: u.updated_at || new Date().toISOString(),
+						status: u.banned || (u.suspended_until && new Date(u.suspended_until) > new Date()) || (u.strikes > 0) ? "active" : "pardoned",
+						admin_notes: u.notes || undefined,
+						target_title: "Campus moderation record",
+					});
+				}
+			}
+
+			return res.status(200).json({ strikes: strikesList, items: strikesList });
+		}
+
+		if (action === "pardon_strike") {
+			const rawId = String(b.strike_id || b.id || "");
+			let targetId = rawId;
+			if (rawId.startsWith("strike_")) {
+				const parts = rawId.split("_");
+				if (parts.length >= 3) {
+					parts.shift(); // remove "strike"
+					parts.pop(); // remove idx
+					targetId = parts.join("_");
+				}
+			}
+			const anonId = targetId.toLowerCase();
+			const { data: user } = await supabase
+				.from("users_meta")
+				.select("anon_id,warnings,strikes,suspended_until,banned")
+				.eq("anon_id", anonId)
+				.maybeSingle();
+
+			if (user) {
+				const newStrikes = Math.max(0, (user.strikes || 1) - 1);
+				await supabase
+					.from("users_meta")
+					.update({
+						strikes: newStrikes,
+						suspended_until: null,
+						banned: false,
+						warnings: [],
+					})
+					.eq("anon_id", anonId);
+
+				await auditLog("admin", "pardon_strike", `Pardoned strike ${rawId} for student ${anonId}`);
+				await notifyUser(
+					anonId,
+					"pardon",
+					"Strike pardoned",
+					"Your moderation strike has been pardoned and your campus standing is fully restored.",
+					{ link: "/chat" },
+				);
+			}
+
+			return res.status(200).json({ ok: true, pardoned: rawId });
+		}
+
 		if (action === "admin_accountability") {
 			const {
 				period = "month",

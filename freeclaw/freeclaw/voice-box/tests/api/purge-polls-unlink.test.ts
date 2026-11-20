@@ -20,21 +20,45 @@ interface DbOp {
 interface DbControls {
 	purgeState: null | { value?: Record<string, unknown> };
 	retention: { value: { user_delete_hours: number; auto_delete_enabled: boolean } };
-	expiredSolved: Array<{ id: string }>;
-	expiredUserDeleted: Array<{ id: string }>;
+	expiredSolved: Array<Record<string, unknown> & { id: string }>;
+	expiredUserDeleted: Array<Record<string, unknown> & { id: string }>;
 	pollsUpdateError: null | Error;
 }
 
-const db = vi.hoisted(() => ({
-	ops: [] as DbOp[],
-	controls: {
-		purgeState: null,
-		retention: { value: { user_delete_hours: 5, auto_delete_enabled: true } },
-		expiredSolved: [{ id: "px-old" }],
-		expiredUserDeleted: [{ id: "ux-old" }],
-		pollsUpdateError: null,
-	} as DbControls,
-}));
+/** A closed post that is genuinely past its 5-day inactivity window. */
+function expiredPost(id: string): Record<string, unknown> & { id: string } {
+	const closedAt = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+	return {
+		id,
+		status: "solved",
+		deleted: false,
+		status_history: [{ status: "solved", at: closedAt }],
+		updated_at: closedAt,
+		created_at: closedAt,
+	};
+}
+
+const db = vi.hoisted(() => {
+	const closedAt = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+	const seed = (id: string) => ({
+		id,
+		status: "solved",
+		deleted: false,
+		status_history: [{ status: "solved", at: closedAt }],
+		updated_at: closedAt,
+		created_at: closedAt,
+	});
+	return {
+		ops: [] as DbOp[],
+		controls: {
+			purgeState: null,
+			retention: { value: { user_delete_hours: 5, auto_delete_enabled: true } },
+			expiredSolved: [seed("px-old")],
+			expiredUserDeleted: [{ id: "ux-old" }],
+			pollsUpdateError: null,
+		} as DbControls,
+	};
+});
 
 function chainFor(table: string) {
 	const state = { op: "select", patch: undefined as unknown, filters: [] as Filter[] };
@@ -47,6 +71,10 @@ function chainFor(table: string) {
 			return chain;
 		},
 		in(col: unknown, val: unknown) {
+			if (typeof col === "string") state.filters.push([col, val]);
+			return chain;
+		},
+		neq(col: unknown, val: unknown) {
 			if (typeof col === "string") state.filters.push([col, val]);
 			return chain;
 		},
@@ -112,9 +140,12 @@ function chainFor(table: string) {
 				return;
 			}
 			if (table === "posts") {
-				const rows = state.filters.some(([c]) => c === "deleted")
-					? db.controls.expiredUserDeleted
-					: db.controls.expiredSolved;
+				// The closed sweep now narrows by status AND deleted; distinguish
+				// the two sweeps on the status filter, which only one of them uses.
+				const closed = state.filters.some(([c]) => c === "status");
+				const rows = closed
+					? db.controls.expiredSolved
+					: db.controls.expiredUserDeleted;
 				resolve({ data: rows, error: null });
 				return;
 			}
@@ -198,7 +229,7 @@ beforeEach(async () => {
 	db.controls.retention = {
 		value: { user_delete_hours: 5, auto_delete_enabled: true },
 	};
-	db.controls.expiredSolved = [{ id: "px-old" }];
+	db.controls.expiredSolved = [expiredPost("px-old")];
 	db.controls.expiredUserDeleted = [{ id: "ux-old" }];
 	db.controls.pollsUpdateError = null;
 });
@@ -240,7 +271,7 @@ describe("purgeExpired — linked polls are unlinked before the post delete", ()
 	});
 
 	it("aborts the batch when the unlink fails so the link can never orphan", async () => {
-		db.controls.expiredSolved = [{ id: "px-fail" }];
+		db.controls.expiredSolved = [expiredPost("px-fail")];
 		db.controls.expiredUserDeleted = [];
 		db.controls.pollsUpdateError = new Error("polls unlink failed");
 		const purgeExpired = await loadPurgeExpired();

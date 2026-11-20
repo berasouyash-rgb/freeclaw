@@ -42,11 +42,21 @@ export function useFocusTrap(
 		// Save the element that had focus before the trap opened
 		previousFocusRef.current = document.activeElement as HTMLElement;
 
-		// Focus the first focusable element inside the container
-		const firstFocusable = container.querySelector<HTMLElement>(FOCUSABLE);
-		if (firstFocusable) {
-			// Small delay to allow the drawer animation to start
-			requestAnimationFrame(() => firstFocusable.focus());
+		// Respect a child that already claimed focus (React `autoFocus` on a
+		// dialog's primary action or textarea). Only move focus when it is
+		// still outside the dialog — never steal it back to the close button.
+		const focusAlreadyInside = container.contains(document.activeElement);
+		if (!focusAlreadyInside) {
+			const firstFocusable = container.querySelector<HTMLElement>(FOCUSABLE);
+			if (firstFocusable) {
+				// Small delay to allow the drawer animation to start
+				requestAnimationFrame(() => {
+					// Re-check: an autoFocus child may have mounted in the same frame.
+					if (!container.contains(document.activeElement)) {
+						firstFocusable.focus();
+					}
+				});
+			}
 		}
 
 		const handleKeyDown = (e: KeyboardEvent) => {

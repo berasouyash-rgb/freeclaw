@@ -11,6 +11,7 @@ import {
 	Mail,
 	Presentation,
 	Settings as SettingsIcon,
+	Sparkles,
 	Table2,
 	Tag,
 	Users,
@@ -35,10 +36,10 @@ export type AdminTabKey =
 	| "activity-report"
 	| "email-templates"
 	| "ai-systems"
+	| "smart-features"
 	| "settings";
 
 export type RetiredAdminTabKey =
-	| "agent-chat"
 	| "ops-center"
 	| "system-health"
 	| "performance"
@@ -87,6 +88,7 @@ export const ADMIN_TAB_GROUPS: AdminTabGroup[] = [
 			{ key: "activity-report", label: "Activity", icon: ClipboardList },
 			{ key: "email-templates", label: "Email", icon: Mail },
 			{ key: "ai-systems", label: "AI Systems", icon: Bot },
+			{ key: "smart-features", label: "Smart Features", icon: Sparkles },
 		],
 	},
 	{
@@ -103,7 +105,6 @@ export const ADMIN_TAB_KEYS: AdminTabKey[] = ADMIN_TABS.map((tab) => tab.key);
 
 export const RETIRED_ADMIN_TAB_KEYS: ReadonlySet<RetiredAdminTabKey> =
 	new Set([
-		"agent-chat",
 		"ops-center",
 		"system-health",
 		"performance",

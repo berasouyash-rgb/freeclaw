@@ -1,6 +1,6 @@
 # Capability map — spec §41 (102 capabilities, verified)
 
-Generated: 2026-10-04T07:04:11.100Z · by `scripts/audit-capabilities.mjs`. Every pointer below was checked against the working tree.
+Generated: 2026-11-17T17:10:14.699Z · by `scripts/audit-capabilities.mjs`. Every pointer below was checked against the working tree.
 
 ## 1. Proactive moderation — WIRED
 - worker `comment-watch`
@@ -184,9 +184,10 @@ Generated: 2026-10-04T07:04:11.100Z · by `scripts/audit-capabilities.mjs`. Ever
 - engine `api/_workforce.js#platformPulse`
 - route `/api/leaderboard`
 
-## 42. Poll creation — WIRED
+## 42. Poll creation — PARTIAL
 - route `/api/polls`
 - engine `api/_agent-chat.js#create_poll`
+  - ⚠ file missing: api/_agent-chat.js
 
 ## 43. Poll integrity — WIRED
 - worker `poll-integrity`
@@ -229,9 +230,11 @@ Generated: 2026-10-04T07:04:11.100Z · by `scripts/audit-capabilities.mjs`. Ever
 - ui `src/pages/UserChat.tsx`
 - route `/api/chat`
 
-## 53. Issue explanation — WIRED
+## 53. Issue explanation — GAP
 - engine `api/_agent-chat.js#INTENTS`
 - ui `src/pages/admin/AgentChat.tsx`
+  - ⚠ file missing: api/_agent-chat.js
+  - ⚠ file missing: src/pages/admin/AgentChat.tsx
 
 ## 54. Admin briefing — WIRED
 - engine `api/_workforce.js#overnightBriefing`
@@ -422,5 +425,5 @@ Generated: 2026-10-04T07:04:11.100Z · by `scripts/audit-capabilities.mjs`. Ever
 - test `tests/api/workforce-appeal-sla.test.ts`
 
 ## Totals
-- WIRED: 102 · PARTIAL: 0 · GAP: 0
-- Gate: exit code = GAP count (0).
+- WIRED: 100 · PARTIAL: 1 · GAP: 1
+- Gate: exit code = GAP count (1).

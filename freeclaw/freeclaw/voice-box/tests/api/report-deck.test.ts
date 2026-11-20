@@ -251,6 +251,42 @@ describe("GET /api/report-deck", () => {
 		}
 	});
 
+	it("buckets a solve by when it happened, not by the last comment", async () => {
+		seed();
+		// p4 was solved 40 days ago and commented on minutes ago: updated_at
+		// moved, the solve did not. Bucketing by updated_at — the previous
+		// behaviour — filed that resolution under the current week and quietly
+		// reported the wrong week to every admin looking at the trend.
+		const solvedAt = new Date(Date.now() - 40 * 86400000).toISOString();
+		tables.posts = tables.posts.map((p) =>
+			p.id === "p4"
+				? {
+						...p,
+						status_history: [
+							{
+								status: "reported",
+								at: new Date(Date.now() - 41 * 86400000).toISOString(),
+							},
+							{ status: "solved", at: solvedAt },
+						],
+					}
+				: p,
+		);
+		const res = await get(true);
+		const body = res.body as {
+			totals: { solved: number };
+			solved_by_week: Array<{ week: string; solved: number }>;
+		};
+		const monday = (iso: string) => {
+			const d = new Date(iso);
+			d.setUTCDate(d.getUTCDate() - ((d.getUTCDay() + 6) % 7));
+			d.setUTCHours(0, 0, 0, 0);
+			return d.toISOString().slice(0, 10);
+		};
+		expect(body.totals.solved).toBe(1);
+		expect(body.solved_by_week).toEqual([{ week: monday(solvedAt), solved: 1 }]);
+	});
+
 	it("notes low resolution rate with a labeled rule", async () => {
 		seed();
 		// 1 solved / 5 live = 20% < 25% with ≥ 5 live rows.

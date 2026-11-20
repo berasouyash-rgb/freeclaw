@@ -4,6 +4,8 @@ import {
 	Play,
 	Send,
 	ShieldCheck,
+	Trash2,
+	UserRound,
 } from "lucide-react";
 import { memo, useCallback, useState } from "react";
 import { useApp } from "../contexts/AppContext";
@@ -28,13 +30,28 @@ function PostCardAdminBarInner({ post, onStatusChange }: PostCardAdminBarProps) 
 		danger?: boolean;
 	} | null>(null);
 
+	const broadcastFeedChange = useCallback((detail: { id: string; hidden: boolean }) => {
+		if (typeof window === "undefined") return;
+		window.dispatchEvent(new CustomEvent("vb:post-hidden", { detail }));
+		try {
+			const bc = new BroadcastChannel("vb:feed-sync");
+			bc.postMessage({ type: "post-hidden", ...detail });
+			bc.close();
+		} catch {
+			/* optional */
+		}
+	}, []);
+
 	const adminSet = useCallback(
-		async (patch: { status?: string; hidden?: boolean }) => {
+		async (patch: { status?: string; hidden?: boolean; deleted?: boolean }) => {
 			if (busy) return;
 			setBusy("admin");
 			try {
 				await api.put("/api/posts", { id: post.id, ...patch });
-				if (patch.status === "solved")
+				if (patch.deleted !== undefined) {
+					toast(patch.deleted ? "Post deleted" : "Post restored", "ok");
+					if (patch.deleted) broadcastFeedChange({ id: post.id, hidden: true });
+				} else if (patch.status === "solved")
 					toast("Issue marked solved — community notified", "ok");
 				else if (patch.status === "in_progress")
 					toast("Marked in progress", "ok");
@@ -64,7 +81,7 @@ function PostCardAdminBarInner({ post, onStatusChange }: PostCardAdminBarProps) 
 				setBusy(null);
 			}
 		},
-		[busy, post.id, toast, onStatusChange],
+		[busy, post.id, toast, onStatusChange, broadcastFeedChange],
 	);
 
 	const sendReply = useCallback(
@@ -86,6 +103,35 @@ function PostCardAdminBarInner({ post, onStatusChange }: PostCardAdminBarProps) 
 		},
 		[busy, post.id, replyText, toast],
 	);
+
+	const deletePost = useCallback(async () => {
+		if (busy) return;
+		setBusy("delete");
+		try {
+			await api.del(`/api/posts?id=${encodeURIComponent(post.id)}`, {});
+			toast("Post permanently deleted", "ok");
+			if (typeof window !== "undefined") {
+				// Reuse the feed's hide channel: every open feed (and every tab)
+				// drops the card immediately instead of waiting for a refetch.
+				window.dispatchEvent(
+					new CustomEvent("vb:post-hidden", {
+						detail: { id: post.id, hidden: true },
+					}),
+				);
+				try {
+					const bc = new BroadcastChannel("vb:feed-sync");
+					bc.postMessage({ type: "post-hidden", id: post.id, hidden: true });
+					bc.close();
+				} catch {
+					/* optional */
+				}
+			}
+		} catch (e: unknown) {
+			toast(e instanceof Error ? e.message : "Delete failed", "err");
+		} finally {
+			setBusy(null);
+		}
+	}, [busy, post.id, toast]);
 
 	return (
 		<div className="border-t border-border bg-surface2/40">
@@ -164,6 +210,34 @@ function PostCardAdminBarInner({ post, onStatusChange }: PostCardAdminBarProps) 
 				>
 					<EyeOff size={13} /> {post.hidden ? "Unhide" : "Hide"}
 				</button>
+				{!post.deleted && (
+					<button
+						type="button"
+						disabled={!!busy}
+						onClick={() =>
+							setConfirmAction({
+								label: "Delete this post?",
+								description:
+									"Removes the post for everyone. Reports and audit history about it are preserved.",
+								fn: deletePost,
+								danger: true,
+							})
+						}
+						title="Delete post"
+						className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-bold text-red-400 bg-red-500/15 border border-red-500/30 transition-colors disabled:opacity-40"
+					>
+						<Trash2 size={13} /> Delete
+					</button>
+				)}
+				{post.author_id && (
+					<a
+						href={`/admin?tab=users&user=${encodeURIComponent(post.author_id)}`}
+						title="Open this author's account, activity and restrictions"
+						className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold text-accent bg-accent/10 border border-accent/25 transition-colors"
+					>
+						<UserRound size={13} /> Account
+					</a>
+				)}
 				<button
 					type="button"
 					onClick={() => setReplyOpen((o) => !o)}

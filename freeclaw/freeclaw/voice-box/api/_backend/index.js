@@ -45,6 +45,9 @@ import { VOICEFLOW_TABLES, inScope, tableMeta } from "./tables.js";
 // failover flags. Reporting it here means one dashboard answers "is the
 // standby actually current?" instead of two surfaces disagreeing.
 import { mirrorStats, flushMirrorQueue } from "../_mirror.js";
+// Durable writes: rows the primary refused are recorded in Firestore and
+// replayed later. Reported here so "is anything stuck?" has one answer.
+import { outboxStats } from "../_outbox.js";
 
 export const FLAGS = Object.freeze({
 	FAILOVER: "RELIABILITY_FAILOVER_ENABLED",
@@ -387,6 +390,7 @@ export class Backend {
 		// instance has its own, so these describe THIS instance, not the fleet —
 		// `pending > 0` is the signal that matters, and it is never faked.
 		const mirror = mirrorStats();
+		const outbox = outboxStats();
 
 		return {
 			available: this.available,
@@ -423,9 +427,82 @@ export class Backend {
 				lagging: mirror.pending > 0 || mirror.failed > 0,
 				...mirror,
 			},
+			write_outbox: outbox,
+			// A silent gap is the dangerous state: redundancy that looks present
+			// and is empty. These are raised from observed facts only, never from
+			// an assumption that configuration implies health.
+			warnings: this.warnings(mirror, outbox),
 			dlq_size: dlqSize,
 			scope: { tables: VOICEFLOW_TABLES.length },
 		};
+	}
+
+	/**
+	 * Reliability warnings for the standby copy and the write outbox.
+	 *
+	 * Severity `critical` means a Supabase outage is NOT covered right now.
+	 * Each one names the exact remedy so the gap can be closed before it matters
+	 * — that is the whole point: never discover it during the outage.
+	 */
+	warnings(mirror, outbox) {
+		const warnings = [];
+
+		if (!mirror.configured) {
+			warnings.push({
+				code: "STANDBY_NOT_CONFIGURED",
+				severity: "critical",
+				message:
+					"The Firebase standby copy is not configured: no rows are being copied, so a Supabase outage will surface to users as an error.",
+				remedy:
+					"Set FIREBASE_SERVICE_ACCOUNT_JSON (or FIREBASE_CLIENT_EMAIL + FIREBASE_PRIVATE_KEY) in the deployment environment.",
+			});
+			warnings.push({
+				code: "WRITE_OUTBOX_UNAVAILABLE",
+				severity: "critical",
+				message:
+					"Writes refused while Supabase is unavailable cannot be recorded for replay (the outbox lives in Firestore), so those edits still fail closed.",
+				remedy:
+					"Same credential as the standby copy; the `__outbox` collection is written with the same service account.",
+			});
+		} else if (outbox.failed > 0) {
+			warnings.push({
+				code: "WRITE_OUTBOX_UNAVAILABLE",
+				severity: "warning",
+				message: `Recording a refused write for replay failed ${outbox.failed} time(s) (last: ${outbox.lastError || "unknown"}).`,
+				remedy: "Check the Firestore credential and IAM on the `__outbox` collection.",
+			});
+		}
+
+		if (mirror.configured && mirror.pending > 0) {
+			warnings.push({
+				code: "STANDBY_LAGGING",
+				severity: "warning",
+				message: `${mirror.pending} standby copy operation(s) are queued for retry; the standby is behind the primary.`,
+				remedy:
+					"Run the reliability action `flush-standby-copy`, or wait for the scheduled tick to drain the queue.",
+			});
+		}
+		if (mirror.configured && mirror.failed > 0) {
+			warnings.push({
+				code: "STANDBY_FAILING",
+				severity: "warning",
+				message: `The standby copy has failed ${mirror.failed} delivery attempt(s) (last: ${mirror.lastError || "unknown"}).`,
+				remedy:
+					"Verify the service account still has Firestore write access and that the project id matches the standby.",
+			});
+		}
+
+		if (outbox.pending > 0) {
+			warnings.push({
+				code: "WRITES_AWAITING_REPLAY",
+				severity: "warning",
+				message: `${outbox.pending} write(s) were accepted during a primary outage and are waiting to be replayed onto Supabase.`,
+				remedy:
+					"Run the reliability action `outbox-replay` once Supabase is healthy; replay stops at the first failure by design.",
+			});
+		}
+
+		return warnings;
 	}
 
 	/**

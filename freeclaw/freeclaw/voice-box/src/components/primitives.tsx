@@ -8,6 +8,7 @@ import {
 	type LucideIcon,
 } from "lucide-react";
 import { type ReactNode, useRef, useState, useEffect, useId } from "react";
+import { tablistKeyDown } from "../lib/tablist";
 
 // ─── EmptyState ──────────────────────────────────────
 
@@ -263,6 +264,7 @@ export function SegmentedTabs({
 		<div
 			className={`inline-flex bg-surface2 rounded-xl p-0.5 gap-0.5 ${className}`}
 			role="tablist"
+			onKeyDown={tablistKeyDown}
 		>
 			{options.map((opt) => {
 				const active = opt.key === value;

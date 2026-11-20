@@ -12,7 +12,7 @@
  */
 
 import { type ReactNode } from "react";
-import { motion } from "framer-motion";
+import { motion, useReducedMotion } from "framer-motion";
 import { cn } from "../../lib/utils";
 
 interface AnimatedListProps {
@@ -36,6 +36,9 @@ export default function AnimatedList({
   distance: _distance = 20,
   className = "",
 }: AnimatedListProps) {
+  // A stagger is decoration; users who asked for reduced motion get the
+  // final list immediately, with no opacity ramp at all.
+  const reduceMotion = useReducedMotion();
   // Items fade in place. The `direction`/`distance` props are still accepted
   // for API compatibility, but list items no longer travel across the
   // viewport: a staggered slide makes a list feel slow and shifts layout
@@ -45,6 +48,16 @@ export default function AnimatedList({
   const getAnimate = () => ({ opacity: 1 });
 
   const items = Array.isArray(children) ? children : [children];
+
+  if (reduceMotion) {
+    return (
+      <div className={cn("flex flex-col", className)}>
+        {items.map((child, i) => (
+          <div key={i}>{child}</div>
+        ))}
+      </div>
+    );
+  }
 
   return (
     <div className={cn("flex flex-col", className)}>

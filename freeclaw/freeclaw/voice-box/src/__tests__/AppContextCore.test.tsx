@@ -63,6 +63,9 @@ function Probe() {
 					.join("|")}
 			</span>
 			<span data-testid="chat-unread">{app.chatUnread}</span>
+			<span data-testid="notif-links">
+				{app.notifications.map((n) => n.link || "-").join("|")}
+			</span>
 			<span data-testid="status">{JSON.stringify(app.accountStatus)}</span>
 			<span data-testid="recent">{app.recentlyViewed.join(",")}</span>
 			<span data-testid="bookmarks">{app.bookmarks.join(",")}</span>
@@ -101,8 +104,31 @@ function Probe() {
 			>
 				push
 			</button>
-			<button onClick={() => app.markNotifsRead()}>mark-read</button>
-			<button onClick={() => app.clearNotifs()}>clear-notifs</button>
+			<button
+				onClick={() =>
+					app.pushNotif({
+						kind: "warning",
+						title: "Warned",
+						body: "rule broken",
+						link: "/chat",
+					})
+				}
+			>
+				push-warning
+			</button>
+			<button
+				onClick={() =>
+					app.pushNotif({
+						kind: "reply",
+						title: "Replied",
+						body: "new reply",
+						link: "/post/p1",
+					})
+				}
+			>
+				push-reply
+			</button>
+			<button onClick={() => app.markNotifsRead()}>mark-read</button>			<button onClick={() => app.clearNotifs()}>clear-notifs</button>
 			<button onClick={() => app.retireNotifsForLink("/x")}>retire</button>
 			<button onClick={() => app.refreshIdentity()}>refresh</button>
 			<button onClick={() => app.toggleBookmark("b1")}>toggle-bookmark</button>
@@ -150,10 +176,11 @@ describe("AppProvider — core behavior", () => {
 		intervalSpy.mockRestore();
 	});
 
-	it("throws when useApp is used outside the provider", () => {
-		expect(() => render(<Probe />)).toThrow(
-			/useApp must be used within <AppProvider>/,
-		);
+	it("falls back to the safe default context when used outside the provider", () => {
+		// useApp deliberately returns DEFAULT_APP_CTX rather than throwing:
+		// dozens of leaf components render outside <AppProvider> in tests and
+		// embedded surfaces. The fallback must stay non-crashing and usable.
+		expect(() => render(<Probe />)).not.toThrow();
 	});
 
 	it("defaults theme from storage, toggles it and persists + reflects on <html>", async () => {
@@ -292,6 +319,130 @@ describe("AppProvider — core behavior", () => {
 		// must never read as "2 posts are live" for a single event.
 		const parts = (screen.getByTestId("notifs").textContent || "").split("|");
 		expect(parts.filter((p) => p.includes("info:Manual"))).toHaveLength(1);
+	});
+
+	it("pings the OS for a critical account notice even while the tab is focused", async () => {
+		const shown: string[] = [];
+		const Ctor = vi.fn(function (this: unknown, title: string) {
+			shown.push(title);
+			return this;
+		}) as unknown as typeof Notification;
+		Object.defineProperty(Ctor, "permission", {
+			value: "granted",
+			configurable: true,
+		});
+		vi.stubGlobal("Notification", Ctor);
+		const user = userEvent.setup();
+		render(
+			<AppProvider>
+				<Probe />
+			</AppProvider>,
+		);
+		await user.click(screen.getByRole("button", { name: "push-warning" }));
+		expect(shown).toEqual(["Warned"]);
+		vi.unstubAllGlobals();
+	});
+
+	it("does not ping for a content notice while the tab is focused", async () => {
+		const shown: string[] = [];
+		const Ctor = vi.fn(function (this: unknown, title: string) {
+			shown.push(title);
+			return this;
+		}) as unknown as typeof Notification;
+		Object.defineProperty(Ctor, "permission", {
+			value: "granted",
+			configurable: true,
+		});
+		vi.stubGlobal("Notification", Ctor);
+		const user = userEvent.setup();
+		render(
+			<AppProvider>
+				<Probe />
+			</AppProvider>,
+		);
+		await user.click(screen.getByRole("button", { name: "push-reply" }));
+		expect(shown).toHaveLength(0);
+		// The in-app notification still landed — only the OS ping is suppressed.
+		expect(screen.getByTestId("notifs").textContent).toContain("Replied");
+		vi.unstubAllGlobals();
+	});
+
+	it("honours the push switch for OS pings", async () => {
+		h.store["vb:notif-prefs"] = { push: false };
+		const shown: string[] = [];
+		const Ctor = vi.fn(function (this: unknown, title: string) {
+			shown.push(title);
+			return this;
+		}) as unknown as typeof Notification;
+		Object.defineProperty(Ctor, "permission", {
+			value: "granted",
+			configurable: true,
+		});
+		vi.stubGlobal("Notification", Ctor);
+		const user = userEvent.setup();
+		render(
+			<AppProvider>
+				<Probe />
+			</AppProvider>,
+		);
+		await user.click(screen.getByRole("button", { name: "push-warning" }));
+		expect(shown).toHaveLength(0);
+		expect(screen.getByTestId("notifs").textContent).toContain("Warned");
+		vi.unstubAllGlobals();
+	});
+
+	it("maps server notices to a deep link (explicit, post, then kind)", async () => {
+		h.get.mockImplementation((url: string) => {
+			if (url.includes("/api/notifications"))
+				return Promise.resolve({
+					notifications: [
+						{
+							id: "notif_warn",
+							type: "warning",
+							title: "Warned",
+							body: "b",
+							post_id: null,
+							read: false,
+							created_at: "2026-08-16T10:00:00.000Z",
+						},
+						{
+							id: "notif_status",
+							type: "status",
+							title: "Solved",
+							body: "b",
+							post_id: "p1",
+							read: false,
+							created_at: "2026-08-16T10:01:00.000Z",
+						},
+						{
+							id: "notif_link",
+							type: "info",
+							title: "Poll",
+							body: "b",
+							post_id: null,
+							link: "/polls",
+							read: false,
+							created_at: "2026-08-16T10:02:00.000Z",
+						},
+					],
+				});
+			if (url.includes("/api/saved")) return Promise.resolve({ saved: [] });
+			if (url.includes("/api/posts")) return Promise.resolve([]);
+			if (url.includes("/api/chat")) return Promise.resolve(null);
+			if (url.includes("/api/polls")) return Promise.resolve([]);
+			return Promise.resolve({});
+		});
+		render(
+			<AppProvider>
+				<Probe />
+			</AppProvider>,
+		);
+		await waitFor(() =>
+			expect(screen.getByTestId("notif-links").textContent).toContain("/polls"),
+		);
+		const links = screen.getByTestId("notif-links").textContent || "";
+		expect(links).toContain("/activity"); // warning → my activity
+		expect(links).toContain("/post/p1"); // post-linked status → the post
 	});
 
 	it("retires notices pointing at a deleted post", async () => {

@@ -44,9 +44,35 @@ function initBackendSentry() {
  * Logging and Sentry happen in the background (fire-and-forget) so they
  * never delay or block the 500 response from reaching the client.
  */
+/**
+ * Describe any thrown value for the logs.
+ *
+ * PostgREST rejections are PLAIN OBJECTS (`{message, details, hint, code}`),
+ * not Errors. The old `String(err)` on those produced "[object Object]" in
+ * every log line, so a failing 500 (e.g. an undefined column on a post
+ * update) arrived with no cause at all and could not be diagnosed from the
+ * server log. This keeps client responses generic while the log stays useful.
+ */
+function describeThrown(err) {
+	if (err instanceof Error) {
+		return { msg: err.message, stack: err.stack || "" };
+	}
+	if (err && typeof err === "object") {
+		const e = err;
+		const parts = [e.message, e.details, e.hint, e.code ? `code=${String(e.code)}` : ""]
+			.filter((p) => typeof p === "string" && p.trim().length > 0);
+		if (parts.length) return { msg: parts.join(" | "), stack: "" };
+		try {
+			return { msg: JSON.stringify(err).slice(0, 800), stack: "" };
+		} catch {
+			return { msg: "[unserializable thrown value]", stack: "" };
+		}
+	}
+	return { msg: String(err), stack: "" };
+}
+
 export function sanitizeError(res, err, context = "api") {
-	const msg = err instanceof Error ? err.message : String(err);
-	const stack = err instanceof Error ? err.stack : "";
+	const { msg, stack } = describeThrown(err);
 
 	// Fire-and-forget: structured logging (async, non-blocking)
 	try {

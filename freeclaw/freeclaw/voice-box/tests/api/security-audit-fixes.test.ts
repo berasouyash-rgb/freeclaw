@@ -155,6 +155,54 @@ describe("Security Audit Fixes Verification", () => {
 			await handler(req as any, res as any);
 			expect(getStatus()).toBe(403);
 		});
+
+		it("does NOT cross-site-block native shell when Origin header is omitted by Electron", async () => {
+			const { req, res, getStatus, getJson } = createMockReqRes({
+				url: "/api/__probe_nonexistent_route",
+				method: "POST",
+				headers: {
+					"sec-fetch-site": "cross-site",
+					"user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) VoiceFlow/2.0.2 Chrome/120.0.0.0 Electron/30.0.0 Safari/537.36",
+				},
+				body: {},
+			});
+
+			await handler(req as any, res as any);
+			expect(getStatus()).toBe(404);
+			expect(getJson().error).toBe("Not found");
+		});
+
+		it("does NOT cross-site-block native shell when x-voiceflow-client header is present", async () => {
+			const { req, res, getStatus, getJson } = createMockReqRes({
+				url: "/api/__probe_nonexistent_route",
+				method: "POST",
+				headers: {
+					"sec-fetch-site": "cross-site",
+					"x-voiceflow-client": "desktop",
+				},
+				body: {},
+			});
+
+			await handler(req as any, res as any);
+			expect(getStatus()).toBe(404);
+			expect(getJson().error).toBe("Not found");
+		});
+
+		it("blocks cross-site request when origin is omitted and user-agent is standard browser", async () => {
+			const { req, res, getStatus, getJson } = createMockReqRes({
+				url: "/api/__probe_nonexistent_route",
+				method: "POST",
+				headers: {
+					"sec-fetch-site": "cross-site",
+					"user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+				},
+				body: {},
+			});
+
+			await handler(req as any, res as any);
+			expect(getStatus()).toBe(403);
+			expect(getJson().error).toMatch(/Cross-site request blocked/);
+		});
 	});
 
 	describe("H1: Prototype pollution defense via Object.hasOwn", () => {

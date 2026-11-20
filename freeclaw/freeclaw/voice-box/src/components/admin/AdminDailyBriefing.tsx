@@ -525,8 +525,8 @@ export default function AdminDailyBriefing({
 								<h2 className="font-display font-bold text-sm tracking-tight text-ink">
 									Executive Community Briefing
 								</h2>
-								<span className="inline-flex items-center gap-1 text-[10px] font-semibold text-good bg-good/10 px-2 py-0.5 rounded-full">
-									<span className="w-1.5 h-1.5 rounded-full bg-good animate-ping" /> Live AI Synthesis
+								<span className="inline-flex items-center gap-1 text-[10px] font-semibold text-ink3 bg-surface2 px-2 py-0.5 rounded-full">
+									Generated from live data on load
 								</span>
 							</div>
 

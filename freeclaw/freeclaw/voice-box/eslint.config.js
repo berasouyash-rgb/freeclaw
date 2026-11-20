@@ -14,6 +14,7 @@ export default defineConfig([
 		// (e.g. android/.../native-bridge.js) that must never be linted.
 		"android",
 		"electron/dist",
+		"VIDEO_PRODUCTION",
 	]),
 	{
 		files: ["**/*.{ts,tsx}"],

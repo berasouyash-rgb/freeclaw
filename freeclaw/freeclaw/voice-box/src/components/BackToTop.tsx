@@ -49,39 +49,23 @@ export default function BackToTop() {
 
 	if (!visible) return null;
 
-	const radius = 15;
-	const circumference = 2 * Math.PI * radius;
-	const strokeDashoffset = circumference - (progress / 100) * circumference;
-
 	return (
 		<button
 			onClick={scrollToTop}
 			aria-label={`Scroll back to top (${progress}%) (t)`}
 			title={`Back to top (${progress}%) — Press 't'`}
-			className="fixed bottom-20 lg:bottom-8 right-6 z-40 w-11 h-11 rounded-full bg-surface/90 hover:bg-surface text-ink2 hover:text-accent border border-border shadow-xl backdrop-blur-md transition-all duration-200 hover:scale-110 active:scale-95 flex items-center justify-center cursor-pointer vb-rise group"
+			style={{
+				background: `conic-gradient(var(--vb-accent) ${progress * 3.6}deg, color-mix(in srgb, var(--vb-border) 70%, transparent) ${progress * 3.6}deg 360deg)`,
+			}}
+			className="fixed bottom-20 lg:bottom-8 right-5 z-40 w-11 h-11 rounded-full p-[2.5px] flex items-center justify-center cursor-pointer vb-rise group select-none shadow-[0_8px_24px_rgba(0,0,0,0.35)] hover:shadow-[0_12px_28px_rgba(118,87,255,0.25)] backdrop-blur-md transition-all duration-200 hover:scale-105 active:scale-95 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
 		>
-			<svg className="absolute inset-0 w-full h-full -rotate-90 pointer-events-none" viewBox="0 0 36 36">
-				<circle
-					cx="18"
-					cy="18"
-					r={radius}
-					className="stroke-border/40"
-					strokeWidth="2.5"
-					fill="none"
+			<div className="w-full h-full rounded-full bg-surface/95 dark:bg-[#121422]/95 flex items-center justify-center text-ink2 group-hover:text-accent transition-colors">
+				<ArrowUp
+					size={16}
+					strokeWidth={2.5}
+					className="group-hover:-translate-y-0.5 transition-transform duration-200"
 				/>
-				<circle
-					cx="18"
-					cy="18"
-					r={radius}
-					className="stroke-accent transition-all duration-75"
-					strokeWidth="2.5"
-					strokeDasharray={circumference}
-					strokeDashoffset={strokeDashoffset}
-					strokeLinecap="round"
-					fill="none"
-				/>
-			</svg>
-			<ArrowUp size={16} strokeWidth={2.4} className="group-hover:-translate-y-0.5 transition-transform duration-200" />
+			</div>
 		</button>
 	);
 }

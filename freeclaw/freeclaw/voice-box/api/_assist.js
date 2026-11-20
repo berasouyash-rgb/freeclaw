@@ -646,26 +646,59 @@ export default async function handler(req, res) {
 						`${m.sender === "admin" ? "Admin" : "Student"}: ${String(m.body || "").slice(0, 300)}`,
 				)
 				.join("\n");
-			// All replies come from the LLM — no keyword fallback; 15s timeout for longer conversations
+			// All replies come from the LLM with situational options for high-craft admin responses
 			try {
 				tChain = Date.now();
+				const promptStyle = req.body.style || "all";
+				const systemPrompt = `You are a helpful, professional school/campus administrator replying to an anonymous student support thread.
+Never ask for personal identity, roll numbers, or student names. Protect campus anonymity.
+Respond with a JSON object:
+{
+  "reply": "Recommended primary reply (1-2 sentences, warm, actionable)",
+  "options": [
+    { "style": "empathy", "label": "Empathy", "text": "Empathetic acknowledgment validating their feelings" },
+    { "style": "investigate", "label": "Details", "text": "Inquiring about neutral specifics like hostel wing, classroom or equipment" },
+    { "style": "resolve", "label": "Resolution", "text": "Action-oriented notice stating the ticket was dispatched or resolved" }
+  ],
+  "sentiment": "concerned|frustrated|neutral|hopeful",
+  "urgency": "high|medium|low"
+}
+Respond strictly with valid JSON.`;
+
 				const result = await withTimeout(
 					callLLMChain(
-						"You are a kind, professional school admin replying to an anonymous student in a support chat. Keep replies short (1-3 sentences), warm, and actionable. Never ask for personal details.",
-						`Conversation:\n${history}\n\nReply directly to the student.`,
+						systemPrompt,
+						`Conversation History:\n${history}\n\nDraft the situational admin response options in valid JSON.`,
 						[],
 						"high",
 					),
 					15000,
 				);
+
 				if (result?.text && result.text.length > 10) {
 					recordAiCall("assist.chat_reply", { ok: true, latencyMs: Date.now() - tChain, lane: "chain" });
-					return res
-						.status(200)
-						.json({
-							engine: `${result.provider}:${result.model}`,
-							reply: result.text.trim(),
-						});
+					let parsed = null;
+					try {
+						const cleaned = result.text.replace(/```json\s*|\s*```/g, "").trim();
+						parsed = JSON.parse(cleaned);
+					} catch {}
+
+					const primaryReply = (parsed?.reply || result.text).trim();
+					const situationalOptions = Array.isArray(parsed?.options) && parsed.options.length > 0
+						? parsed.options
+						: [
+								{ style: "empathy", label: "Empathy", text: primaryReply },
+								{ style: "investigate", label: "Details", text: "Thank you for alerting us. Could you share which floor or wing this is occurring in so facilities can inspect?" },
+								{ style: "resolve", label: "Resolution", text: "We have logged this issue with the operations team and maintenance is currently dispatched." }
+						  ];
+
+					return res.status(200).json({
+						engine: `${result.provider}:${result.model}`,
+						reply: primaryReply,
+						options: situationalOptions,
+						sentiment: parsed?.sentiment || "concerned",
+						urgency: parsed?.urgency || "medium",
+					});
 				}
 			} catch {
 				/* fall through */

@@ -8,7 +8,7 @@ export const LOCAL_PROFILE_COPY =
 	"Display name, avatar, bio, profile photo, bookmarks, and drafts are stored in this browser unless a control explicitly says server-side.";
 
 export const RETENTION_COPY =
-	"Solved or archived posts inactive for 5 days are purged; soft-deleted posts are purged after 14 days; comments, activity logs, and chat messages are purged after 30 days; archived polls are purged after 30 days. Notification contact values remain until you clear or replace them in Settings.";
+	"Solved and archived posts are purged 5 days after their last activity — a comment or reaction resets that countdown; user-deleted posts are hard-deleted with their comments and reactions after an admin-configurable window of 1–168 hours (5 hours by default); comments, reactions, activity logs, chat messages, agent conversations, and archived polls are purged after 30 days; agent runtime history is purged after 90 days. Notification contact values remain until you clear or replace them in Settings.";
 
 export const SERVER_PII_COPY =
 	"Anonymous IDs link public content. Optional alert contact values and Contact-form submissions are server-side personal data; protect exports and logs, and do not place those values in public responses.";

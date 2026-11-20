@@ -283,7 +283,7 @@ export default function PostDetail() {
 
 	const aiValidation = useMemo(
 		() => (p ? validateSchoolProblem(p.title, p.description) : null),
-		[p?.title, p?.description],
+		[p],
 	);
 
 	const [readProgress, setReadProgress] = useState(0);

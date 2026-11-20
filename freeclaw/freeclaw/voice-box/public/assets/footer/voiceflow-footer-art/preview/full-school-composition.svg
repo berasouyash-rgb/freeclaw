@@ -1,0 +1,127 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="600" viewBox="0 0 1600 600">
+<title>Complete VoiceFlow footer artwork preview</title>
+
+<title>Sky background</title>
+
+<defs>
+ <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#eaf8ff"/><stop offset="1" stop-color="#ffffff" stop-opacity="0"/></linearGradient>
+</defs>
+<rect width="1600" height="600" fill="url(#sky)"/>
+<path d="M0 390 Q260 345 500 390 T1000 380 T1600 370" fill="none" stroke="#bfe8ff" stroke-width="2" opacity=".65"/>
+
+
+
+<title>Clouds and sky details</title>
+
+<g fill="#ffffff" stroke="#9bdcff" stroke-width="2" opacity=".85">
+ <path d="M130 145 Q130 120 157 120 Q168 83 211 96 Q232 65 267 89 Q301 88 305 122 Q337 126 335 153 L130 153Z"/>
+ <path d="M1130 105 Q1130 82 1157 82 Q1170 48 1207 62 Q1234 34 1263 58 Q1296 57 1302 88 Q1331 91 1330 116 L1130 116Z"/>
+</g>
+<g fill="none" stroke="#c5eaff" stroke-width="2" stroke-dasharray="3 10" opacity=".8">
+ <path d="M360 180 Q440 145 520 178"/><path d="M980 155 Q1050 120 1110 150"/>
+</g>
+
+
+
+<title>Distant landscape</title>
+
+<path d="M0 410 Q180 330 360 405 Q550 325 730 405 Q940 315 1120 400 Q1360 320 1600 395 L1600 600 L0 600Z" fill="#dff4ff"/>
+<path d="M0 440 Q250 370 480 440 T960 430 T1600 425" fill="none" stroke="#9ddcff" stroke-width="3"/>
+<g fill="none" stroke="#b5e5ff" stroke-width="2" opacity=".9">
+ <path d="M70 405 l22 -25 22 25 M1450 405 l24 -28 24 28"/>
+</g>
+
+
+
+<title>Main school building</title>
+
+<g stroke="#276caa" stroke-width="4" stroke-linejoin="round">
+ <path d="M430 390 L430 215 L800 105 L1170 215 L1170 390Z" fill="#f7fcff"/>
+ <path d="M390 220 L800 85 L1210 220" fill="none" stroke="#145b9b" stroke-width="8"/>
+ <path d="M470 230 L800 125 L1130 230" fill="none" stroke="#8bd3ff" stroke-width="3"/>
+ <rect x="485" y="240" width="630" height="150" rx="3" fill="#e8f7ff"/>
+ <path d="M450 390 H1150" stroke="#145b9b" stroke-width="8"/>
+ <path d="M765 390 V295 Q800 250 835 295 V390" fill="#b9e6ff"/>
+ <path d="M780 390 V300 Q800 275 820 300 V390" fill="#ffffff"/>
+ <path d="M430 215 H1170" stroke="#145b9b" stroke-width="6"/>
+</g>
+<g fill="#ffffff" stroke="#3b8bc7" stroke-width="3">
+ <rect x="520" y="265" width="72" height="72"/><rect x="630" y="265" width="72" height="72"/>
+ <rect x="898" y="265" width="72" height="72"/><rect x="1008" y="265" width="72" height="72"/>
+</g>
+<g stroke="#83cfff" stroke-width="2">
+ <path d="M556 265 V337 M520 301 H592 M666 265 V337 M630 301 H702 M934 265 V337 M898 301 H970 M1044 265 V337 M1008 301 H1080"/>
+</g>
+<g fill="none" stroke="#8fcfff" stroke-width="2" opacity=".8">
+ <path d="M470 230 V390 M1130 230 V390 M800 105 V85"/>
+ <path d="M455 405 H1145"/>
+</g>
+
+
+
+<title>Architectural line details</title>
+
+<g fill="none" stroke="#5ba8dc" stroke-width="2" opacity=".9">
+ <path d="M400 210 H1200 M420 200 H1180 M470 225 H1130"/>
+ <path d="M500 250 V380 M610 250 V380 M720 250 V380 M880 250 V380 M990 250 V380 M1100 250 V380"/>
+ <path d="M750 400 V430 M850 400 V430 M735 430 H865"/>
+ <path d="M780 150 H820 M780 160 H820"/>
+</g>
+<g fill="#1b659f" font-family="monospace" font-size="15" opacity=".8">
+ <text x="800" y="205" text-anchor="middle" letter-spacing="5">VOICEFLOW • LEARNING CAMPUS</text>
+ <text x="800" y="455" text-anchor="middle" font-size="12" letter-spacing="3">EST. • IDEAS • BUILD • CREATE</text>
+</g>
+
+
+
+<title>Trees</title>
+
+<g stroke="#5ba9a0" stroke-width="3" fill="#d9f5ed">
+ <path d="M275 400 V300 M275 325 Q225 300 235 260 Q255 235 275 270 Q295 220 325 255 Q345 290 295 320Z"/>
+ <path d="M1320 405 V300 M1320 330 Q1270 300 1285 265 Q1305 240 1320 275 Q1340 225 1370 260 Q1390 295 1340 325Z"/>
+</g>
+<g fill="none" stroke="#9bd8c8" stroke-width="2">
+ <path d="M275 300 l-24 -22 M275 315 l28 -30 M1320 305 l-24 -25 M1320 320 l28 -28"/>
+</g>
+
+
+
+<title>Foreground path</title>
+
+<path d="M680 600 Q740 490 770 430 L830 430 Q860 490 920 600Z" fill="#f2faff"/>
+<path d="M800 600 L800 450" stroke="#a9ddfa" stroke-width="3" stroke-dasharray="10 14"/>
+<path d="M0 500 Q360 470 650 510 M950 510 Q1270 470 1600 500" fill="none" stroke="#b6e4fb" stroke-width="2"/>
+
+
+
+<title>Particles and fine technical lines</title>
+
+<g fill="#38a9e8" opacity=".75">
+ <circle cx="180" cy="275" r="3"/><circle cx="350" cy="190" r="2"/><circle cx="1260" cy="230" r="3"/>
+ <circle cx="1420" cy="300" r="2"/><circle cx="1080" cy="475" r="2"/><circle cx="520" cy="475" r="2"/>
+</g>
+<g fill="none" stroke="#71c8f4" stroke-width="1.5" stroke-dasharray="4 8" opacity=".8">
+ <path d="M90 330 Q230 280 360 330"/><path d="M1240 350 Q1370 300 1510 345"/>
+ <path d="M100 470 H340 M1260 470 H1500"/>
+</g>
+
+
+
+<title>SOUYASH BERA wordmark</title>
+
+<defs>
+ <linearGradient id="nameFill" x1="0" y1="0" x2="1" y2="0">
+  <stop stop-color="#145b9b"/><stop offset=".48" stop-color="#278fd0"/><stop offset="1" stop-color="#56c7e8"/>
+ </linearGradient>
+ <pattern id="stripes" width="12" height="12" patternUnits="userSpaceOnUse">
+  <path d="M0 12 L12 0" stroke="#ffffff" stroke-width="2" opacity=".45"/>
+ </pattern>
+</defs>
+<g font-family="Arial, Helvetica, sans-serif" font-weight="900" text-anchor="middle" letter-spacing="3">
+ <text x="805" y="555" font-size="94" fill="#0c477c" opacity=".16">SOUYASH BERA.</text>
+ <text x="800" y="545" font-size="94" fill="url(#nameFill)" stroke="#ffffff" stroke-width="2" paint-order="stroke">SOUYASH BERA.</text>
+ <text x="800" y="545" font-size="94" fill="url(#stripes)" opacity=".55">SOUYASH BERA.</text>
+</g>
+
+
+</svg>

@@ -268,11 +268,51 @@ CRITICAL RULES:
 		} else if (lowerContent.includes("sentiment")) {
 			const { data } = await supabase
 				.from("posts")
-				.select("title, description, category, status, created_at, deleted")
+				.select("id, title, description, category, status, created_at")
 				.eq("deleted", false)
 				.order("created_at", { ascending: false })
-				.limit(10);
-			taskResult = `Sentiment Analysis (last 10 posts):\n${(data || []).map((p) => `- [${p.category || "General"}] "${(p.title || p.description || "").slice(0, 60)}..." (Status: ${p.status})`).join("\n") || "No posts to analyze."}`;
+				.limit(20);
+			const sentimentPosts = data || [];
+			if (!sentimentPosts.length) {
+				taskResult = "Sentiment analysis: there are no posts to analyse yet.";
+			} else {
+				// A real model judges the actual text. The previous branch
+				// labelled a plain "last 10 posts" listing as "Sentiment
+				// Analysis" — a fabricated result, which is exactly what an
+				// admin must never be shown.
+				let parsed = null;
+				let engine = "none";
+				try {
+					const ai = await callLLMChain(
+						"You are a sentiment analyst for an anonymous school feedback platform. Judge the EMOTIONAL tone of each item (positive/neutral/negative) from its text. Flag abuse, spam, bullying, self-harm or safety language, and any personal details present (names, phone numbers, addresses, emails). Never invent items.",
+						`Feedback items JSON:\n${JSON.stringify(
+							sentimentPosts.map((p) => ({
+								id: p.id,
+								title: p.title,
+								description: String(p.description || "").slice(0, 240),
+								category: p.category,
+							})),
+						)}\n\nReturn JSON: {"overall":"positive|neutral|negative|mixed","counts":{"positive":number,"neutral":number,"negative":number},"summary":string(max 60 words),"attention":[{"id":string,"reason":string}],"personal_details":[{"id":string,"kind":string}]}`,
+						[],
+						"high",
+						9000,
+					);
+					if (ai?.text) {
+						const match = ai.text.match(/\{[\s\S]*\}/);
+						parsed = match ? JSON.parse(match[0]) : null;
+						engine = `${ai.provider}:${ai.model}`;
+					}
+				} catch {
+					parsed = null;
+				}
+				if (parsed && parsed.summary) {
+					const c = parsed.counts || {};
+					taskResult = `Sentiment Analysis (last ${sentimentPosts.length} posts, model ${engine}):\nOverall: ${parsed.overall || "mixed"}\nPositive ${Number(c.positive) || 0}, neutral ${Number(c.neutral) || 0}, negative ${Number(c.negative) || 0}\n${parsed.summary}\nNeeds attention:\n${(parsed.attention || []).map((a) => `- ${a.id}: ${a.reason}`).join("\n") || "- none flagged"}\nPersonal details detected:\n${(parsed.personal_details || []).map((d) => `- ${d.id}: ${d.kind}`).join("\n") || "- none detected"}`;
+				} else {
+					// Honest degraded answer: no fabricated "analysis".
+					taskResult = `Sentiment analysis unavailable: no AI provider returned an answer, so no sentiment judgement was made.\nFacts that need no model — the ${sentimentPosts.length} most recent post(s) on record:\n${sentimentPosts.slice(0, 10).map((p) => `- [${p.category || "General"}] "${String(p.title || p.description || "").slice(0, 60)}" (${p.status})`).join("\n")}`;
+				}
+			}
 		} else if (lowerContent.includes("trend")) {
 			const { data } = await supabase
 				.from("posts")

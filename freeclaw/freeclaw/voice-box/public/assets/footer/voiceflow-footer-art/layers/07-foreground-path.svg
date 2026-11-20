@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="600" viewBox="0 0 1600 600">
+<title>Foreground path</title>
+
+<path d="M680 600 Q740 490 770 430 L830 430 Q860 490 920 600Z" fill="#f2faff"/>
+<path d="M800 600 L800 450" stroke="#a9ddfa" stroke-width="3" stroke-dasharray="10 14"/>
+<path d="M0 500 Q360 470 650 510 M950 510 Q1270 470 1600 500" fill="none" stroke="#b6e4fb" stroke-width="2"/>
+
+</svg>

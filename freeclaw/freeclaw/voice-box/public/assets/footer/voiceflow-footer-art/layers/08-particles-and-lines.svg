@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="600" viewBox="0 0 1600 600">
+<title>Particles and fine technical lines</title>
+
+<g fill="#38a9e8" opacity=".75">
+ <circle cx="180" cy="275" r="3"/><circle cx="350" cy="190" r="2"/><circle cx="1260" cy="230" r="3"/>
+ <circle cx="1420" cy="300" r="2"/><circle cx="1080" cy="475" r="2"/><circle cx="520" cy="475" r="2"/>
+</g>
+<g fill="none" stroke="#71c8f4" stroke-width="1.5" stroke-dasharray="4 8" opacity=".8">
+ <path d="M90 330 Q230 280 360 330"/><path d="M1240 350 Q1370 300 1510 345"/>
+ <path d="M100 470 H340 M1260 470 H1500"/>
+</g>
+
+</svg>

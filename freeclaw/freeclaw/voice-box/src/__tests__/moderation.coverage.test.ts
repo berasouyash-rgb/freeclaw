@@ -493,8 +493,8 @@ describe("moderation.coverage - masking", () => {
 });
 
 describe("moderation.coverage - block gates", () => {
-	it("should not block medium privacy alone via isBlocked but block via server gate", () => {
-		const r = moderateContent("Contact me at student@school.edu");
+	it("should not block non-critical privacy alone via isBlocked but block via server gate", () => {
+		const r = moderateContent("Follow me on instagram: @studentlife");
 		expect(isBlocked(r)).toBe(false);
 		expect(isBlockedByServer(r)).toBe(true);
 	});

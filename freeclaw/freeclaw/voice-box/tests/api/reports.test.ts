@@ -786,11 +786,17 @@ describe("PUT /api/reports (admin resolve)", () => {
 			verified: true,
 			target_state: "gone",
 		});
-		expect(authMocks.auditLog).toHaveBeenCalledWith(
-			"admin",
-			"resolve_report",
-			expect.stringContaining("verified=true"),
-		);
+		const detail = authMocks.auditLog.mock.calls.find(
+			(c) => c[1] === "resolve_report",
+		)?.[2] as string;
+		expect(JSON.parse(detail)).toMatchObject({
+			report: "r1",
+			from: "open",
+			to: "resolved",
+			target: "post:p-gone",
+			verified: true,
+			target_state: "gone",
+		});
 	});
 
 	it("hides a still-live violating comment on resolve (verification enforces)", async () => {

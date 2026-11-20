@@ -119,9 +119,9 @@ export default function Categories() {
 				</div>
 			) : (
 				<div className="grid grid-cols-2 md:grid-cols-3 gap-2">
-					{cats.map((c) => (
+					{cats.map((c, i) => (
 						<div
-							key={c}
+							key={`${c}-${i}`}
 							className="card !p-3 flex items-center justify-between gap-2"
 						>
 							<span className="text-sm font-medium truncate">

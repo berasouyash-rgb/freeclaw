@@ -42,6 +42,7 @@ import {
 	getSpamConfig,
 	alertAdminThreat,
 } from "./_moderation.js";
+import { hasStalkingSignal } from "./_stalking.js";
 
 const CATEGORIES = [
 	"Academics",
@@ -129,6 +130,12 @@ export function computeAutoPriority(...texts) {
 		.toLowerCase();
 	for (const w of PRIORITY_KEYWORDS.critical)
 		if (hay.includes(w)) return "critical";
+	// Stalking/intimidation is a surveillance claim, not an emergency keyword:
+	// "i know your name" matched NO urgency word and published as "low", at
+	// the bottom of the admin queue. Reuse the moderation detector so a phrase
+	// is only critical when it actually signals stalking ("i know your name is
+	// on the list" stays medium).
+	if (hasStalkingSignal(hay)) return "critical";
 	for (const w of PRIORITY_KEYWORDS.high) if (hay.includes(w)) return "high";
 	for (const w of PRIORITY_KEYWORDS.low) if (hay.includes(w)) return "low";
 	return "medium";
@@ -333,6 +340,38 @@ export async function purgeExpired() {
 	return { purged, skipped: false };
 }
 
+// ── Sentinel quarantine provenance ────────────────────
+// `posts.hidden_by` / `posts.quarantine_reason` are not columns in this
+// schema; the sentinel records who hid a post and why in the audit-tagged
+// admin_notes line. Re-expose that under the field names the admin UI
+// already reads (row filter, PostCard badge, drawer Reason panel) so the
+// quarantine surfaces work without a schema change.
+// Fields that must never reach a non-admin reader. `admin_reply` and
+// `status_history` stay public on purpose (the official response and the
+// public status timeline); `admin_notes` and the internal staff assignment
+// are staff-only. The list/detail maps spread the raw row, so without this
+// the GET response handed both fields to anonymous visitors — an internal
+// note or assignee name became public the moment an admin wrote one.
+function maskAdminOnly(p, admin) {
+	if (admin) return p;
+	return { ...p, admin_notes: null, assigned_to: null };
+}
+
+function quarantineProvenance(p) {
+	if (!p || p.hidden !== true) return {};
+	const notes = typeof p.admin_notes === "string" ? p.admin_notes : "";
+	if (!notes.includes("Auto-Quarantine")) return {};
+	const tag = "Auto-Quarantine]: ";
+	const at = notes.lastIndexOf(tag);
+	const reason = (at >= 0 ? notes.slice(at + tag.length) : "")
+		.split(" (Rule:")[0]
+		.trim();
+	return {
+		hidden_by: "agent",
+		quarantine_reason: reason || "Policy violation detected by safety sentinel.",
+	};
+}
+
 async function attachCounts(posts) {
 	const ids = posts.map((p) => p.id);
 	if (!ids.length) return posts;
@@ -442,7 +481,13 @@ export default async function handler(req, res) {
 				let out = query;
 				if (listFilters.status) {
 					if (listFilters.status === "hidden_by_agent") {
-						out = out.eq("hidden", true).eq("hidden_by", "agent");
+						// Sentinel provenance is the audit line quarantine writes into
+						// admin_notes (the posts.hidden_by column does not exist). Matching
+						// it in SQL keeps paging and the total count correct without a
+						// schema change.
+						out = out
+							.eq("hidden", true)
+							.ilike("admin_notes", "%Auto-Quarantine%");
 					} else if (listFilters.status === "hidden") {
 						out = out.eq("hidden", true);
 					} else {
@@ -493,7 +538,16 @@ export default async function handler(req, res) {
 				return query.eq("type", listType);
 			};
 
-			const admin = all === "1" ? await isAdmin(req) : false;
+			// Admin read access is honored whenever a token is presented, not only
+			// with all=1. A hidden/quarantined post opened BY ID (the moderation
+			// drawer, a notification link) used to 404 for the admin who was
+			// looking straight at the row, because admin defaulted to false and the
+			// public visibility guard then hid it. isAdmin fails closed, and
+			// by-id reads never touch the shared feed cache.
+			const admin =
+				all === "1" || req.headers["x-admin-token"]
+					? await isAdmin(req)
+					: false;
 			const isPaginated = paginate === "1" || paginate === "true";
 			// Clamp on both ends: NaN/0 falls back to 30, negatives would produce
 			// an invalid PostgREST `limit` and surface as a 500. An explicit
@@ -693,7 +747,8 @@ export default async function handler(req, res) {
 				const masked = out.map((p) => {
 					const is_mine = !!viewerId && p.author_id === viewerId;
 					return {
-						...p,
+						...maskAdminOnly(p, admin),
+						...quarantineProvenance(p),
 						is_mine,
 						author_id:
 							admin || is_mine ? p.author_id : p.author_id.slice(0, 9) + "...",
@@ -717,7 +772,8 @@ export default async function handler(req, res) {
 			const masked = out.map((p) => {
 				const is_mine = !!viewerId && p.author_id === viewerId;
 				return {
-					...p,
+					...maskAdminOnly(p, admin),
+					...quarantineProvenance(p),
 					is_mine,
 					author_id:
 						admin || is_mine ? p.author_id : p.author_id.slice(0, 9) + "...",
@@ -1315,16 +1371,12 @@ export default async function handler(req, res) {
 				}
 				for (const f of ["pinned", "featured", "hidden", "locked", "official"])
 					if (typeof b[f] === "boolean") patch[f] = b[f];
-				if (b.hidden === false) {
-					// Admin explicitly unhid/restored: clear agent quarantine flags
-					patch.hidden_by = null;
-					patch.quarantine_reason = null;
-				} else if (b.hidden_by !== undefined) {
-					patch.hidden_by = clean(b.hidden_by, 100) || null;
-				}
-				if (b.quarantine_reason !== undefined) {
-					patch.quarantine_reason = clean(b.quarantine_reason, 500) || null;
-				}
+				// Hidden squash/mixed: `hidden` alone is the stored state. The old
+				// code also cleared hidden_by / quarantine_reason here — columns the
+				// table never had — so every "restore from quarantine" click was
+				// rejected (42703) and surfaced as a bare 500. Sentinel provenance
+				// is read from the audit-tagged admin_notes line, which restore keeps
+				// on purpose: it is the quarantine trail.
 				if (b.admin_reply !== undefined)
 					patch.admin_reply = clean(b.admin_reply, 1000);
 				if (b.admin_notes !== undefined)
@@ -1409,8 +1461,26 @@ export default async function handler(req, res) {
 				.update(patch)
 				.eq("id", id)
 				.select()
-				.single();
-			if (error) throw error;
+				.maybeSingle();
+			// PostgREST rejections are PLAIN OBJECTS, not Errors: throwing one
+			// straight into the 500 handler logged "[object Object]" and the
+			// admin saw a bare "Internal server error" with no cause anywhere.
+			// Map what the caller can act on to real statuses, and rethrow the
+			// rest as an Error so the server log carries the database reason.
+			if (error) {
+				const code = String(error.code || "");
+				if (code === "23505")
+					return res
+						.status(409)
+						.json({ error: "That change conflicts with another post — reload and retry." });
+				throw new Error(
+					`posts update ${id} failed [${code || "no-code"}]: ${error.message || "unknown"}${error.details ? ` — ${error.details}` : ""}`,
+				);
+			}
+			// The row can vanish between the read above and this write (retention
+			// sweep, concurrent permanent delete). An update that matched nothing
+			// is a 404, never a silent success.
+			if (!data) return res.status(404).json({ error: "Post not found" });
 			// Comment-block enforcement: locking comments purges ALL existing
 			// comments on the post (soft-delete: recoverable, audit-preserving).
 			// A lock that leaves old discussion visible is a lie — readers see

@@ -1,6 +1,7 @@
-import { Eye, EyeOff, RefreshCw, Users } from "lucide-react";
+import { Eye, EyeOff, Loader2, RefreshCw, Trash2, Users } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router";
+import { useApp } from "../../contexts/AppContext";
 import { api } from "../../lib/api";
 import { timeAgo } from "../../lib/utils";
 
@@ -22,8 +23,10 @@ interface AdminCommunity {
  * Read-only directory — moderation happens on the community page itself.
  */
 export default function Communities() {
+	const { toast } = useApp();
 	const [rows, setRows] = useState<AdminCommunity[]>([]);
 	const [loading, setLoading] = useState(true);
+	const [busySlug, setBusySlug] = useState<string | null>(null);
 	const [error, setError] = useState("");
 
 	const load = useCallback(async () => {
@@ -43,6 +46,47 @@ export default function Communities() {
 	useEffect(() => {
 		void load();
 	}, [load]);
+
+	const toggleHide = async (slug: string, currentHidden: boolean) => {
+		if (busySlug) return;
+		setBusySlug(slug);
+		try {
+			await api.post("/api/communities", {
+				action: "admin",
+				slug,
+				op: currentHidden ? "unhide" : "hide",
+			});
+			setRows((prev) =>
+				prev.map((r) => (r.slug === slug ? { ...r, hidden: !currentHidden } : r)),
+			);
+			toast(currentHidden ? "Community restored to public list" : "Community hidden from public", "ok");
+		} catch (err) {
+			toast(err instanceof Error ? err.message : "Failed to update community visibility", "err");
+		} finally {
+			setBusySlug(null);
+		}
+	};
+
+	const deleteCommunity = async (slug: string, name: string) => {
+		if (busySlug) return;
+		if (!window.confirm(`Are you sure you want to permanently delete community "${name}"? This action cannot be undone.`)) {
+			return;
+		}
+		setBusySlug(slug);
+		try {
+			await api.post("/api/communities", {
+				action: "admin",
+				slug,
+				op: "delete",
+			});
+			setRows((prev) => prev.filter((r) => r.slug !== slug));
+			toast(`Community "${name}" deleted`, "ok");
+		} catch (err) {
+			toast(err instanceof Error ? err.message : "Failed to delete community", "err");
+		} finally {
+			setBusySlug(null);
+		}
+	};
 
 	const visible = rows.filter((r) => !r.hidden).length;
 
@@ -96,8 +140,8 @@ export default function Communities() {
 			)}
 			{!loading && !error && rows.length > 0 && (
 				<div className="space-y-2" role="list" aria-label="All communities">
-					{rows.map((c) => (
-						<div key={c.slug} role="listitem" className="card p-3.5 flex items-center gap-3">
+					{rows.map((c, i) => (
+						<div key={c.slug ? `${c.slug}-${i}` : `comm-${i}`} role="listitem" className="card p-3.5 flex items-center gap-3">
 							<span className="text-xl shrink-0" aria-hidden>
 								{c.avatar || "🌐"}
 							</span>
@@ -116,13 +160,47 @@ export default function Communities() {
 									{c.created_at ? ` · ${timeAgo(c.created_at)}` : ""}
 								</p>
 							</div>
-							<Link
-								to={`/communities/${c.slug}`}
-								className="btn btn-soft !text-xs !py-1.5 shrink-0 inline-flex items-center gap-1.5"
-								aria-label={`Open ${c.name}`}
-							>
-								<Eye size={12} /> Open
-							</Link>
+							<div className="flex items-center gap-1.5 shrink-0">
+								<Link
+									to={`/communities/${c.slug}`}
+									className="btn btn-soft !text-xs !py-1.5 inline-flex items-center gap-1.5"
+									aria-label={`Open ${c.name}`}
+								>
+									<Eye size={12} /> Open
+								</Link>
+								<button
+									type="button"
+									onClick={() => toggleHide(c.slug, !!c.hidden)}
+									disabled={busySlug === c.slug}
+									className={`btn !text-xs !py-1.5 inline-flex items-center gap-1.5 ${
+										c.hidden
+											? "btn-soft !text-emerald-600 hover:!bg-emerald-500/10"
+											: "btn-ghost !text-amber-600 hover:!bg-amber-500/10"
+									}`}
+									title={c.hidden ? "Unhide community" : "Hide community from public"}
+								>
+									{busySlug === c.slug ? (
+										<Loader2 size={12} className="animate-spin" />
+									) : c.hidden ? (
+										<>
+											<Eye size={12} /> Unhide
+										</>
+									) : (
+										<>
+											<EyeOff size={12} /> Hide
+										</>
+									)}
+								</button>
+								<button
+									type="button"
+									onClick={() => deleteCommunity(c.slug, c.name)}
+									disabled={busySlug === c.slug}
+									className="btn btn-ghost !text-xs !py-1.5 !text-bad hover:!bg-bad/10 inline-flex items-center gap-1"
+									title="Permanently delete community"
+								>
+									<Trash2 size={12} />
+								</button>
+							</div>
 						</div>
 					))}
 				</div>

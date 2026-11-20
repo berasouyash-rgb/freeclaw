@@ -147,10 +147,76 @@ let _aiVerificationCache = null;
 let _aiVerificationExpiresAt = 0;
 
 /**
- * AI System Verification Harness: verifies 100% genuine live LLM connectivity.
- * Tests Groq (openai/gpt-oss-120b) and NVIDIA NIM (nemotron-3-ultra-550b-a55b).
- * Asserts real live tokens; rejects canned/mock demo fallbacks.
+ * AI System Verification Harness: proves a REAL model generated an answer.
+ *
+ * The old probe only checked `res.ok`. That is not evidence: Groq's
+ * gpt-oss-120b is a reasoning model, so a `max_tokens: 15` request returns
+ * HTTP 200 with an EMPTY `content` (the budget was consumed by reasoning) —
+ * the console reported "verified_real_llm: true" while no text was produced.
+ * It also probed nemotron-3-ultra, which answers 503 on the shared free
+ * worker, so the quality lane read as dead even when it was usable.
+ *
+ * This probe therefore asserts non-empty generated content and uses the two
+ * model ids actually live on the configured keys (probed 2026-11-15).
  */
+const GROQ_VERIFY_MODEL = "openai/gpt-oss-120b";
+const NVIDIA_VERIFY_MODEL = "nvidia/nemotron-3.5-bolt-e4b";
+
+async function probeModel({ url, key, model, extraBody = {}, timeoutMs = 8000 }) {
+	const cleanKey = String(key || "").replace(/["']/g, "").trim();
+	if (!cleanKey) return { configured: false, live: false, model, answer: "", status: 0 };
+	const ctrl = new AbortController();
+	const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+	const started = Date.now();
+	try {
+		const res = await fetch(url, {
+			method: "POST",
+			headers: {
+				Authorization: `Bearer ${cleanKey}`,
+				"Content-Type": "application/json",
+			},
+			body: JSON.stringify({
+				model,
+				messages: [
+					{ role: "user", content: 'Reply with exactly this JSON and nothing else: {"pong":true}' },
+				],
+				max_tokens: 512,
+				temperature: 0,
+				...extraBody,
+			}),
+			signal: ctrl.signal,
+		});
+		if (!res.ok) {
+			return { configured: true, live: false, model, answer: "", status: res.status, latency_ms: Date.now() - started };
+		}
+		const data = await res.json().catch(() => null);
+		const answer = String(data?.choices?.[0]?.message?.content ?? "")
+			.replace(/<\/?think>/gi, "")
+			.trim();
+		return {
+			configured: true,
+			// HTTP 200 with empty content is a FAILED verification, not a pass.
+			live: answer.length > 0,
+			model,
+			answer: answer.slice(0, 120),
+			status: res.status,
+			latency_ms: Date.now() - started,
+		};
+	} catch (err) {
+		return {
+			configured: true,
+			live: false,
+			model,
+			answer: "",
+			status: 0,
+			latency_ms: Date.now() - started,
+			error: err?.name === "AbortError" ? "timeout" : String(err?.message || err).slice(0, 120),
+		};
+	} finally {
+		clearTimeout(timer);
+	}
+}
+
 export async function verifyRealLlmConnectivity() {
 	const now = Date.now();
 	if (_aiVerificationCache && _aiVerificationExpiresAt > now) {
@@ -160,74 +226,47 @@ export async function verifyRealLlmConnectivity() {
 	const groqKey = process.env.GROQ_API_KEY || "";
 	const nvidiaKey = process.env.NVIDIA_API_KEY || "";
 
+	const start = Date.now();
+	const [groq, nvidia] = await Promise.all([
+		probeModel({
+			url: "https://api.groq.com/openai/v1/chat/completions",
+			key: groqKey,
+			model: GROQ_VERIFY_MODEL,
+			// Keep reasoning cheap so the answer is not starved of tokens.
+			extraBody: { reasoning_effort: "low" },
+		}),
+		probeModel({
+			url: "https://integrate.api.nvidia.com/v1/chat/completions",
+			key: nvidiaKey,
+			model: NVIDIA_VERIFY_MODEL,
+		}),
+	]);
+
+	const liveModels = [
+		...(groq.live ? [`groq:${groq.model}`] : []),
+		...(nvidia.live ? [`nvidia:${nvidia.model}`] : []),
+	];
+	const verified = liveModels.length > 0;
+
 	const result = {
-		status: "ok",
-		verified_real_llm: false,
-		primary_fast: groqKey ? "groq (openai/gpt-oss-120b)" : "none",
-		primary_quality: nvidiaKey ? "nvidia (nemotron-3-ultra-550b-a55b)" : "none",
-		groq_live: false,
-		nvidia_live: false,
-		latency_ms: 0,
+		status: verified ? "ok" : "warning",
+		verified_real_llm: verified,
+		primary_fast: groq.live ? `groq (${groq.model})` : nvidia.live ? `nvidia (${nvidia.model})` : "none",
+		primary_quality: nvidia.live ? `nvidia (${nvidia.model})` : groq.live ? `groq (${groq.model})` : "none",
+		groq_live: groq.live,
+		nvidia_live: nvidia.live,
+		live_models: liveModels,
+		checked: { groq, nvidia },
+		latency_ms: Date.now() - start,
 		timestamp: new Date().toISOString(),
+		...(verified
+			? {}
+			: {
+					note:
+						"No provider returned generated text. AI features report a degraded state instead of inventing answers.",
+				}),
 	};
 
-	const start = Date.now();
-	if (groqKey) {
-		try {
-			const ctrl = new AbortController();
-			const timer = setTimeout(() => ctrl.abort(), 4000);
-			const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-				method: "POST",
-				headers: {
-					Authorization: `Bearer ${groqKey}`,
-					"Content-Type": "application/json",
-				},
-				body: JSON.stringify({
-					model: "openai/gpt-oss-120b",
-					messages: [{ role: "user", content: "ping" }],
-					max_tokens: 15,
-				}),
-				signal: ctrl.signal,
-			});
-			clearTimeout(timer);
-			if (res.ok) {
-				result.groq_live = true;
-				result.verified_real_llm = true;
-			}
-		} catch {
-			result.groq_live = false;
-		}
-	}
-
-	if (nvidiaKey) {
-		try {
-			const ctrl = new AbortController();
-			const timer = setTimeout(() => ctrl.abort(), 4000);
-			const res = await fetch("https://integrate.api.nvidia.com/v1/chat/completions", {
-				method: "POST",
-				headers: {
-					Authorization: `Bearer ${nvidiaKey}`,
-					"Content-Type": "application/json",
-				},
-				body: JSON.stringify({
-					model: "nvidia/nemotron-3-ultra-550b-a55b",
-					messages: [{ role: "user", content: "ping" }],
-					max_tokens: 15,
-				}),
-				signal: ctrl.signal,
-			});
-			clearTimeout(timer);
-			if (res.ok) {
-				result.nvidia_live = true;
-				result.verified_real_llm = true;
-			}
-		} catch {
-			result.nvidia_live = false;
-		}
-	}
-
-	result.latency_ms = Date.now() - start;
-	result.status = result.verified_real_llm ? "ok" : "warning";
 	_aiVerificationCache = result;
 	_aiVerificationExpiresAt = now + 60_000;
 	return result;

@@ -352,6 +352,7 @@ describe("AdminSettings", () => {
 					agent_conversations: true,
 					archived_polls: true,
 					agent_history: true,
+					solved_posts: true,
 				},
 			});
 		});

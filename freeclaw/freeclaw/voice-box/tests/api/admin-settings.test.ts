@@ -212,6 +212,7 @@ const ALL_ON = {
 	agent_conversations: true,
 	archived_polls: true,
 	agent_history: true,
+	solved_posts: true,
 };
 describe("POST /api/admin user-deleted retention", () => {
 	beforeEach(() => {
@@ -286,6 +287,52 @@ describe("POST /api/admin user-deleted retention", () => {
 		const set = await post("set_retention_config", { user_delete_hours: 5, classes: { comments: false, not_a_class: false } });
 		expect(set.statusCode).toBe(200);
 		expect(set.body.classes).not.toHaveProperty("not_a_class");
+	});
+
+	// Regression: the class whitelist was a literal that omitted `solved_posts`.
+	// Consequence was not just a missing field — storedClasses was rebuilt from
+	// that literal, so a stored `solved_posts: false` was erased on the next
+	// save and closed-post auto-delete silently switched itself back on.
+	it("round-trips a solved_posts toggle through get_retention_config", async () => {
+		const set = await post("set_retention_config", {
+			user_delete_hours: 5,
+			classes: { solved_posts: false },
+		});
+		expect(set.statusCode).toBe(200);
+		expect(set.body.classes.solved_posts).toBe(false);
+
+		const get = await post("get_retention_config");
+		expect(get.body.classes.solved_posts).toBe(false);
+		expect(Object.keys(get.body.classes).sort()).toEqual(
+			[
+				"activity_logs",
+				"agent_conversations",
+				"agent_history",
+				"archived_polls",
+				"chat_messages",
+				"comments",
+				"reactions",
+				"solved_posts",
+			].sort(),
+		);
+	});
+
+	it("preserves a stored solved_posts=false across unrelated saves", async () => {
+		await post("set_retention_config", {
+			user_delete_hours: 5,
+			classes: { solved_posts: false },
+		});
+		// No `classes` at all: hours-only save must not touch the class map.
+		await post("set_retention_config", { user_delete_hours: 12 });
+		expect((await post("get_retention_config")).body.classes.solved_posts).toBe(false);
+		// A different class toggle must merge, not replace.
+		const other = await post("set_retention_config", {
+			user_delete_hours: 12,
+			classes: { comments: false },
+		});
+		expect(other.body.classes.solved_posts).toBe(false);
+		expect(other.body.classes.comments).toBe(false);
+		expect((await post("get_retention_config")).body.classes.solved_posts).toBe(false);
 	});
 
 	it("audit-logs the saved retention", async () => {

@@ -2,7 +2,9 @@ import {
 	ArrowUp,
 	BarChart3,
 	Bookmark,
+	Bot,
 	CheckCircle2,
+	EyeOff,
 	Flag,
 	Flame,
 	Gavel,
@@ -278,6 +280,7 @@ function PostCardInner({ post, myReactions, onReacted, pollData, myPollVote, onP
 	const react = useCallback(
 		async (kind: string) => {
 			if (busy) return;
+			triggerHaptic("medium");
 			setBusy(kind);
 			// Optimistic flip: update locally FIRST so the button feels instant,
 			// then reconcile with the authoritative server response.
@@ -385,6 +388,15 @@ function PostCardInner({ post, myReactions, onReacted, pollData, myPollVote, onP
 								title="Only you, admins and moderators can see this post"
 							>
 								<Lock size={11} /> Private · admins only
+							</span>
+						)}
+						{post.hidden && (
+							<span
+								className="chip !bg-amber-500/15 !text-amber-500 !border-amber-500/30 flex items-center gap-1 font-bold"
+								title={post.quarantine_reason || (post.hidden_by === "agent" ? "Hidden from public by 24/7 AI Safety Agent" : "Hidden from public")}
+							>
+								{post.hidden_by === "agent" ? <Bot size={11} /> : <EyeOff size={11} />}
+								{post.hidden_by === "agent" ? "Hidden by Agent" : "Hidden"}
 							</span>
 						)}
 						<span className="chip">{post.category}</span>
@@ -546,6 +558,7 @@ function PostCardInner({ post, myReactions, onReacted, pollData, myPollVote, onP
 						)}
 						<button
 							onClick={() => {
+								triggerHaptic("selection");
 								toggleBookmark(post.id);
 								toast(
 									bookmarks.includes(post.id)

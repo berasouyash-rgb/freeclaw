@@ -800,18 +800,19 @@ export default function Submit() {
 		toast("Complaint filled in — review and publish", "ok");
 	};
 
-	/** Duplicate detection: word-overlap similarity against open posts in the same category */
+	/** Duplicate detection: title-weighted similarity against open posts in the same category */
 	const checkDuplicates = useCallback(
 		async (titleText: string, descText: string, category: string) => {
-			const words = (t: string) =>
+			const extractWords = (t: string) =>
 				new Set(
 					t
 						.toLowerCase()
 						.split(/\W+/)
 						.filter((w) => w.length > 3),
 				);
-			const mine = words(titleText + " " + descText);
-			if (mine.size < 2) {
+			const myTitleWords = extractWords(titleText);
+			const myFullWords = extractWords(titleText + " " + descText);
+			if (myTitleWords.size < 2 && myFullWords.size < 3) {
 				setDuplicates([]);
 				return;
 			}
@@ -819,22 +820,40 @@ export default function Submit() {
 				if (!allPostsRef.current)
 					allPostsRef.current = await api.get<PostData[]>("/api/posts");
 				const matches = (allPostsRef.current || [])
-					.filter(
-						(p) =>
-							p.category === category &&
-							!["solved", "archived"].includes(p.status),
-					)
+					.filter((p) => !["solved", "archived"].includes(p.status))
 					.map((p) => {
-						const theirs = words(p.title + " " + p.description);
-						const overlap = [...mine].filter((w) => theirs.has(w)).length;
+						const sameCategory = category === "All" || p.category === category;
+						const theirTitleWords = extractWords(p.title);
+						const theirFullWords = extractWords(p.title + " " + p.description);
+
+						// Title similarity (resilient to switching only the description)
+						const titleOverlap = [...myTitleWords].filter((w) => theirTitleWords.has(w)).length;
+						const titleScore = myTitleWords.size > 0 && theirTitleWords.size > 0
+							? titleOverlap / Math.min(myTitleWords.size, theirTitleWords.size)
+							: 0;
+
+						// Full text similarity
+						const fullOverlap = [...myFullWords].filter((w) => theirFullWords.has(w)).length;
+						const fullScore = myFullWords.size > 0 && theirFullWords.size > 0
+							? fullOverlap / Math.max(3, Math.min(myFullWords.size, theirFullWords.size))
+							: 0;
+
+						// In a different category, only strong title matches (>= 0.70) count to prevent cross-category false positives
+						if (!sameCategory && titleScore < 0.70) {
+							return { post: p, score: 0 };
+						}
+
+						// Combined intelligence score: strong title match (>=0.5) OR full text match (>=0.38)
+						const baseScore = Math.max(titleScore * 1.2, fullScore, titleScore * 0.7 + fullScore * 0.5);
+						const score = sameCategory ? baseScore : titleScore;
 						return {
 							post: p,
-							score: overlap / Math.max(3, Math.min(mine.size, theirs.size)),
+							score,
 						};
 					})
-					.filter((m) => m.score >= 0.45)
+					.filter((m) => m.score >= 0.38)
 					.sort((a, b) => b.score - a.score)
-					.slice(0, 2);
+					.slice(0, 3);
 				setDuplicates(matches.map((m) => m.post));
 			} catch {
 				/* non-blocking */
@@ -2504,7 +2523,7 @@ export default function Submit() {
 							>
 								{d.title}{" "}
 								<span className="text-[11px] text-ink3">
-									· {(d.status || "open").replace("_", " ")} ·{" "}
+									· <span className="font-semibold text-accent">{d.category}</span> · {(d.status || "open").replace("_", " ")} ·{" "}
 								{d.reactions?.support || 0}{" "}
 									supports
 								</span>

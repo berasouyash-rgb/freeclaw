@@ -21,6 +21,17 @@ REM VITE_API_BASE (e.g. the dead voice-box.vercel.app domain) must never win
 REM over this, or the build silently points at a server with no API again.
 set VITE_API_BASE=https://voice-box-psi.vercel.app
 echo API address baked in: %VITE_API_BASE%
+REM The version identity the updater compares against the release feed.
+REM Without it the build falls back to a hard-coded constant in
+REM src/lib/appUpdate.ts, so a 2.1.0 installer reports 2.0.2 and nags
+REM "update available" for the exact version it is already running.
+for /f "delims=" %%v in ('node -p "require('./package.json').version"') do set VITE_APP_VERSION=%%v
+if not defined VITE_APP_VERSION (
+  echo ERROR: could not read the version from package.json.
+  pause
+  exit /b 1
+)
+echo App version baked in: %VITE_APP_VERSION%
 REM Realtime needs the Supabase URL + anon key BAKED at build time (vite
 REM inlines import.meta.env at compile time; the EXE cannot read them
 REM later). Without both, src/lib/supabase.ts exports null and NO screen
@@ -79,6 +90,16 @@ set VB_NATIVE_ELECTRON=1
 call npm run build
 if errorlevel 1 (
   echo WEB BUILD FAILED. Scroll up for the first error line.
+  pause
+  exit /b 1
+)
+REM public/downloads/ carries the published APK, and vite copies public/ into
+REM dist/ verbatim - which electron-builder packs into app.asar. Leaving it in
+REM ships the previous APK inside this installer and adds its size every build.
+echo Dropping previously published installers from the bundle...
+call node scripts/strip-published-downloads.mjs Electron
+if errorlevel 1 (
+  echo STRIP STEP FAILED - the installer would carry the previous APK.
   pause
   exit /b 1
 )

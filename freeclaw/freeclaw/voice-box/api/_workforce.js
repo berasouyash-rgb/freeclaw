@@ -2569,21 +2569,31 @@ async function getCleanPostCount() {
 	// the dashboard said 32. A head-count can't express the artifact filter,
 	// so scan titles (bounded) and count the clean set — cached to keep the
 	// 20s poll cheap.
-	const cleanPostCount = await getCleanPostCount();
-	const [pendingReportsRes, usersRes, commentsRes, reactionsRes] =
-		await Promise.all([
-			supabase
-				.from("reports")
-				.select("id", { count: "exact", head: true })
-				.eq("status", "pending"),
-			// Head-only counts return count=null on this database (verified
-			// live), which the widget rendered as 0 while 1446 accounts exist.
-			// Selecting a real row makes the count exact again.
-			supabase.from("users_meta").select("anon_id", { count: "exact" }).limit(1),
-			supabase.from("comments").select("id", { count: "exact", head: true }),
-			supabase.from("reactions").select("id", { count: "exact", head: true }),
-		]);
-	const [recentPostsRes, pollsRes, suggestionCountRes] = await Promise.all([
+	// Every pulse read is independent, so they share ONE wave. These used to
+	// run as three sequential Promise.all groups, which on this database's
+	// round-trip latency (~0.7–1.5s) added seconds to the cold path of an
+	// endpoint the Ops Center polls every 20s.
+	const [
+		cleanPostCount,
+		pendingReportsRes,
+		usersRes,
+		commentsRes,
+		reactionsRes,
+		recentPostsRes,
+		pollsRes,
+		suggestionCountRes,
+	] = await Promise.all([
+		getCleanPostCount(),
+		supabase
+			.from("reports")
+			.select("id", { count: "exact", head: true })
+			.eq("status", "pending"),
+		// Head-only counts return count=null on this database (verified
+		// live), which the widget rendered as 0 while 1446 accounts exist.
+		// Selecting a real row makes the count exact again.
+		supabase.from("users_meta").select("anon_id", { count: "exact" }).limit(1),
+		supabase.from("comments").select("id", { count: "exact", head: true }),
+		supabase.from("reactions").select("id", { count: "exact", head: true }),
 		supabase
 			.from("posts")
 			.select("id,title,category,priority,status,type,created_at")
@@ -2602,6 +2612,10 @@ async function getCleanPostCount() {
 			.eq("type", "suggestion")
 			.eq("deleted", false),
 	]);
+	// Alerts do not depend on the pulse either — start them in the same
+	// window instead of paying a separate round trip after it.
+	const alertsPromise = listAlerts();
+	alertsPromise.catch(() => {});
 	// Full-site zero-fuzz: hide test/fuzz artifacts from the ops pulse, same
 	// as every other content surface ("Load test test-issue …" was surfacing
 	// here in Recent/Trending).
@@ -2681,7 +2695,7 @@ async function getCleanPostCount() {
 
 	// ── Admin alerts: unresolved first (open + seen-pending), then a few
 	//     recent resolved rows so the Ops Center can render all three states ──
-	const alerts = await listAlerts();
+	const alerts = await alertsPromise;
 	// Trim the polled payload — bounded rows + bucket counts, never the full
 	// 100-row history. Counts (open/acknowledged_open/resolved) are always the
 	// true totals; rows are a bounded window.

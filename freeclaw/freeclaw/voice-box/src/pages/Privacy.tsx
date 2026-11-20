@@ -82,7 +82,7 @@ export default function Privacy() {
 			title: "Retention and automatic deletion",
 			body: RETENTION_COPY,
 			tag: "Auto-Purge Engine",
-			guarantee: "Automated 5d / 14d / 30d cleanup sweeps erase inactive data.",
+			guarantee: "Automated sweeps erase data on a published clock: closed posts 5 days after last activity (a reply or reaction resets the countdown), logs and chats after 30 days.",
 		},
 		{
 			id: "profile",
@@ -248,7 +248,7 @@ export default function Privacy() {
 							<tr>
 								<td className="py-3 px-3 font-semibold text-ink">Data Retention</td>
 								<td className="py-3 px-3">Stored indefinitely in centralized spreadsheets</td>
-								<td className="py-3 px-3 font-semibold text-good">Automated 5d/14d/30d deletion cycles</td>
+								<td className="py-3 px-3 font-semibold text-good">Automated 5d closed / 30d log cycles</td>
 							</tr>
 						</tbody>
 					</table>

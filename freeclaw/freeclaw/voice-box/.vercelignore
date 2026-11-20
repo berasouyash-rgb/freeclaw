@@ -19,6 +19,14 @@ release/
 *.exe
 *.blockmap
 
+# ...except the published builds. The release pipeline puts them here and
+# /api/version advertises them, so the download page has something to serve.
+# The Windows installer is ~90 MB, under the 100 MB per-file ceiling; drop it
+# out again (and set LATEST_EXE_URL) if the deployment budget gets tight.
+!public/downloads/
+!public/downloads/*.apk
+!public/downloads/*.exe
+
 # Test output and local dev leftovers.
 test-results/
 playwright-report/

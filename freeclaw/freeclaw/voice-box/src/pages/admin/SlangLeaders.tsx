@@ -122,6 +122,20 @@ export default function SlangLeaders() {
 										{l.terms.length > 8 ? "…" : ""}
 									</p>
 								</div>
+								<button
+									type="button"
+									onClick={() =>
+										window.dispatchEvent(
+											new CustomEvent("vb:admin-tab", {
+												detail: { tab: "users", user: l.anon_id },
+											}),
+										)
+									}
+									className="btn btn-soft !py-1 !px-2.5 !text-xs shrink-0 inline-flex items-center gap-1"
+									title="Open student profile and moderation drawer in Users"
+								>
+									Manage user →
+								</button>
 							</div>
 						</div>
 					))}

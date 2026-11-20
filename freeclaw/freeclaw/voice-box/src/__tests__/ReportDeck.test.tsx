@@ -362,9 +362,12 @@ describe("ReportDeck present-aloud", () => {
 		// waitFor, not bare assert: CI runners attach/deliver the window
 		// keydown on their own schedule. A broken handler still fails (the
 		// update never lands and this times out) — this only absorbs timing.
-		await waitFor(() => {
-			expect(tabs[1]).toHaveAttribute("aria-selected", "true");
-		});
+		await waitFor(
+			() => {
+				expect(tabs[1]).toHaveAttribute("aria-selected", "true");
+			},
+			{ timeout: 3000 },
+		);
 	});
 
 	it("hides Present aloud when speech output is unsupported", async () => {

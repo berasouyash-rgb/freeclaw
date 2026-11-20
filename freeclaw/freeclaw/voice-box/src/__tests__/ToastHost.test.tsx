@@ -64,6 +64,18 @@ describe("ToastHost", () => {
 		).toBeInTheDocument();
 	});
 
+	it("dismisses a toast immediately from its close button", () => {
+		renderHost();
+		fireEvent.click(screen.getByText("fire-ok"));
+		expect(screen.getByText("Saved successfully")).toBeInTheDocument();
+		fireEvent.click(
+			screen.getByRole("button", {
+				name: "Dismiss notification: Saved successfully",
+			}),
+		);
+		expect(screen.queryByText("Saved successfully")).not.toBeInTheDocument();
+	});
+
 	it("host container is a polite live region that never intercepts clicks", () => {
 		renderHost();
 		fireEvent.click(screen.getByText("fire-ok"));

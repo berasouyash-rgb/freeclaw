@@ -173,17 +173,22 @@ afterEach(() => {
 Object.defineProperty(window, "webkitSpeechRecognition", {
 	writable: true,
 	configurable: true,
-	value: vi.fn().mockImplementation(() => ({
-		lang: "",
-		continuous: false,
-		interimResults: false,
-		maxAlternatives: 1,
-		onresult: null,
-		onerror: null,
-		onend: null,
-		start: vi.fn(),
-		stop: vi.fn(),
-	})),
+	// A regular function is required: the hook calls `new SpeechRecognition()`,
+	// and a vi.fn with an arrow implementation is not constructible.
+	value: vi.fn().mockImplementation(function SpeechRecognitionMock() {
+		return {
+			lang: "",
+			continuous: false,
+			interimResults: false,
+			maxAlternatives: 1,
+			onresult: null,
+			onerror: null,
+			onend: null,
+			start: vi.fn(),
+			stop: vi.fn(),
+			abort: vi.fn(),
+		};
+	}),
 });
 
 // ─── Mock Speech Synthesis ────────────────────────────────────────

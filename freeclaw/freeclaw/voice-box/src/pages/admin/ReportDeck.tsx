@@ -24,6 +24,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useApp } from "../../contexts/AppContext";
 import { api } from "../../lib/api";
+import { tablistKeyDown } from "../../lib/tablist";
 import { buildPptx } from "../../lib/deckExport";
 import { readAlong, speechOutputSupported } from "../../lib/speech";
 import {
@@ -821,7 +822,7 @@ export default function ReportDeck() {
 							>
 								← Prev
 							</button>
-							<div className="flex gap-1.5" role="tablist" aria-label="Slides">
+							<div className="flex gap-1.5" role="tablist" aria-label="Slides" onKeyDown={tablistKeyDown}>
 								{slides.map((s, i) => (
 									<button
 										key={s.key}
