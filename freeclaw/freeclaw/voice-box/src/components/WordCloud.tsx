@@ -121,15 +121,15 @@ const WordCloud = memo(function WordCloud({
 			</p>
 		);
 	const max = first[1];
-	// Theme tokens, not literal hexes: these paint TEXT, so they must hold
-	// contrast in both the light and dark palettes (the old literals failed
-	// WCAG AA on both).
+	// These paint small TEXT on tinted surfaces — use the high-contrast ink
+	// token for every word (the old palette failed WCAG AA with seeded data).
+	// Active word still gets the accent color plus an underline.
 	const COLORS = [
-		"var(--vb-accent)",
-		"var(--vb-warn)",
-		"var(--vb-good)",
-		"var(--vb-bad)",
-		"var(--vb-accent2)",
+		"var(--vb-ink)",
+		"var(--vb-ink2)",
+		"var(--vb-ink)",
+		"var(--vb-ink2)",
+		"var(--vb-ink)",
 	];
 
 	return (

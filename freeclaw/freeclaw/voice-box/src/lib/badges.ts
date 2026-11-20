@@ -34,10 +34,10 @@ export const TROPHY_TIER_STYLES = {
 	diamond: {
 		badgeBg: "from-cyan-500/20 via-blue-500/15 to-indigo-500/20",
 		badgeBorder: "border-cyan-400/40 dark:border-cyan-400/30",
-		badgeText: "text-cyan-600 dark:text-cyan-300",
+		badgeText: "text-cyan-800 dark:text-cyan-300",
 		badgeGlow: "shadow-[0_0_16px_rgba(6,182,212,0.3)]",
 		iconGlow: "drop-shadow-[0_2px_8px_rgba(6,182,212,0.6)]",
-		chip: "bg-cyan-500/10 text-cyan-600 dark:text-cyan-400 border-cyan-500/30",
+		chip: "bg-cyan-500/10 text-cyan-800 dark:text-cyan-300 border-cyan-500/30",
 	},
 	gold: {
 		badgeBg: "from-amber-400/25 via-yellow-500/15 to-orange-500/20",
@@ -66,10 +66,10 @@ export const TROPHY_TIER_STYLES = {
 	emerald: {
 		badgeBg: "from-emerald-500/20 via-teal-500/15 to-green-500/20",
 		badgeBorder: "border-emerald-400/40 dark:border-emerald-400/30",
-		badgeText: "text-emerald-600 dark:text-emerald-300",
+		badgeText: "text-emerald-800 dark:text-emerald-300",
 		badgeGlow: "shadow-[0_0_14px_rgba(16,185,129,0.3)]",
 		iconGlow: "drop-shadow-[0_2px_6px_rgba(16,185,129,0.6)]",
-		chip: "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/30",
+		chip: "bg-emerald-500/10 text-emerald-800 dark:text-emerald-300 border-emerald-500/30",
 	},
 };
 

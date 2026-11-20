@@ -126,7 +126,7 @@ export default function Strikes() {
 			<div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
 				<div>
 					<h2 className="text-xl font-display font-bold text-ink flex items-center gap-2">
-						<Gavel size={22} className="text-rose-600 dark:text-rose-400" />
+						<Gavel size={22} className="text-rose-800 dark:text-rose-300" />
 						Strikes & Student Standing
 					</h2>
 					<p className="text-xs text-ink3 mt-1">
@@ -146,7 +146,7 @@ export default function Strikes() {
 			{/* ── Metric Summary Tiles ── */}
 			<div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
 				<div className="card p-4 border border-rose-500/20 bg-rose-500/5">
-					<div className="flex items-center justify-between text-xs text-rose-600 dark:text-rose-400 font-semibold mb-1">
+					<div className="flex items-center justify-between text-xs text-rose-800 dark:text-rose-300 font-semibold mb-1">
 						<span>Active Strikes</span>
 						<ShieldAlert size={14} />
 					</div>

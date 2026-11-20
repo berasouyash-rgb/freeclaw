@@ -178,7 +178,7 @@ export function UserProfileDialog({
 							<UserCheck size={11} /> Your Device
 						</span>
 					)}
-					<span className="chip !bg-emerald-500/10 !text-emerald-600 dark:!text-emerald-400 !border-emerald-500/30 font-medium">
+					<span className="chip !bg-emerald-500/10 !text-emerald-800 dark:!text-emerald-300 !border-emerald-500/30 font-medium">
 						<Sparkles size={11} /> Verified Community
 					</span>
 				</div>
