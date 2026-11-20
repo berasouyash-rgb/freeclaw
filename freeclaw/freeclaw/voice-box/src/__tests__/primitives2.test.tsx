@@ -282,7 +282,9 @@ describe("WordCloud", () => {
 		await user.click(screen.getByText("door"));
 		expect(onWordClick).toHaveBeenLastCalledWith("door");
 		expect(screen.getByText("door")).toHaveClass("underline");
-		expect(screen.getByText("door")).toHaveStyle({ color: "var(--vb-accent)" });
+		// Active word is distinguished by the underline + a high-contrast ink
+		// token (accent on a tinted chip failed WCAG AA with real data).
+		expect(screen.getByText("door").style.color).toMatch(/var\(--vb-ink2?\)/);
 
 		await user.click(screen.getByText("door"));
 		expect(onWordClick).toHaveBeenLastCalledWith("");
