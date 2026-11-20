@@ -1177,10 +1177,10 @@ export default function Home() {
 						>
 							<s.icon size={18} strokeWidth={2.2} />
 						</span>
-						<p className="font-display font-bold text-xs sm:text-sm">
+						<p className="font-display font-bold text-xs sm:text-sm text-ink">
 							{s.n}. {s.title}
 						</p>
-						<p className="text-[10px] sm:text-[11px] text-ink3 mt-0.5">
+						<p className="text-[10px] sm:text-[11px] text-ink2 mt-0.5">
 							{s.sub}
 						</p>
 					</div>
@@ -1231,7 +1231,7 @@ export default function Home() {
 							{hasLoaded ? <CountUp value={value} /> : "–"}
 						</p>
 						<div className="flex items-end justify-between gap-1">
-							<p className="text-[11px] sm:text-xs text-ink3">{label}</p>
+							<p className="text-[11px] sm:text-xs text-ink2">{label}</p>
 							{spark && hasLoaded && (
 								<span className="hidden sm:block">
 									<Sparkline data={spark} width={56} height={18} />
