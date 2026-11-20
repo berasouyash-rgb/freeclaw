@@ -204,6 +204,7 @@ const routes = {
 	agent: protect(agent, "agent"),
 	ai: protect(ai, "ai"),
 	smart: protect(smartFeatures, "smart"),
+	buddy: protect(buddyAgent, "buddy"),
 	assist: protect(assist, "assist"),
 	me: protect(me, "me"),
 	providers: protect(providers, "providers"),

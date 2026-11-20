@@ -85,7 +85,7 @@ export function validateSchoolProblem(title: string, description: string): Probl
 			badge: {
 				text: "Campus Safety & Health Priority",
 				emoji: "🚨",
-				colorClass: "text-rose-600 dark:text-rose-400",
+				colorClass: "text-rose-800 dark:text-rose-300",
 				bgClass: "bg-rose-500/10",
 				borderClass: "border-rose-500/30",
 			},
@@ -102,7 +102,7 @@ export function validateSchoolProblem(title: string, description: string): Probl
 			badge: {
 				text: "Verified Campus Infrastructure Issue",
 				emoji: "🔧",
-				colorClass: "text-emerald-600 dark:text-emerald-400",
+				colorClass: "text-emerald-800 dark:text-emerald-300",
 				bgClass: "bg-emerald-500/10",
 				borderClass: "border-emerald-500/30",
 			},

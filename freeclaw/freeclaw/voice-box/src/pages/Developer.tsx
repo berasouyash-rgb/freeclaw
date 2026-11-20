@@ -85,7 +85,7 @@ export default function Developer() {
 			label: "Software Development",
 			icon: Code2,
 			desc: "Crafting robust, high-performance systems with meticulous code quality.",
-			color: "from-emerald-500/20 to-teal-500/10 text-emerald-600 dark:text-emerald-400",
+			color: "from-emerald-500/20 to-teal-500/10 text-emerald-800 dark:text-emerald-300",
 		},
 		{
 			id: "product",
@@ -337,7 +337,7 @@ export default function Developer() {
 												>
 													<Globe size={12} className="text-emerald-500" /> India 🇮🇳
 												</span>
-												<span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20">
+												<span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-emerald-500/10 text-emerald-800 dark:text-emerald-300 border border-emerald-500/20">
 													<ShieldCheck size={12} /> Founder of VoiceFlow
 												</span>
 											</div>
@@ -408,7 +408,7 @@ export default function Developer() {
 												<p className="text-[10.5px] text-accent font-semibold tracking-wide mt-0.5">
 													Founder & Lead Developer
 												</p>
-												<div className="mt-1.5 flex items-center gap-1.5 text-[9.5px] font-medium text-emerald-600 dark:text-emerald-400">
+												<div className="mt-1.5 flex items-center gap-1.5 text-[9.5px] font-medium text-emerald-800 dark:text-emerald-300">
 													<span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
 													Independent Creator · India 🇮🇳
 												</div>
@@ -611,7 +611,7 @@ export default function Developer() {
 												isWhite ? "bg-white border-slate-200" : "bg-black/30 border-white/10"
 											}`}
 										>
-											<div className="flex items-center gap-2 text-emerald-600 dark:text-emerald-400 font-bold text-xs uppercase mb-1">
+											<div className="flex items-center gap-2 text-emerald-800 dark:text-emerald-300 font-bold text-xs uppercase mb-1">
 												<Brain size={14} /> Intelligent Triage
 											</div>
 											<p className="text-xs text-slate-500 dark:text-white/60">
@@ -827,7 +827,7 @@ export default function Developer() {
 												isWhite ? "bg-slate-50 border-slate-200/80" : "bg-surface border-white/5"
 											}`}
 										>
-											<p className="font-display font-bold text-emerald-600 dark:text-emerald-400 text-lg">
+											<p className="font-display font-bold text-emerald-800 dark:text-emerald-300 text-lg">
 												Reliable
 											</p>
 											<p className="text-[11px] text-slate-500 dark:text-white/60 mt-0.5">

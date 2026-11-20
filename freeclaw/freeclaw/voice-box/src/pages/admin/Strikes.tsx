@@ -164,7 +164,7 @@ export default function Strikes() {
 				</div>
 
 				<div className="card p-4 border border-emerald-500/20 bg-emerald-500/5">
-					<div className="flex items-center justify-between text-xs text-emerald-600 dark:text-emerald-400 font-semibold mb-1">
+					<div className="flex items-center justify-between text-xs text-emerald-800 dark:text-emerald-300 font-semibold mb-1">
 						<span>Pardoned / Cleared</span>
 						<CheckCircle2 size={14} />
 					</div>
@@ -261,7 +261,7 @@ export default function Strikes() {
 											<span
 												className={`chip !text-[10px] !py-0.2 capitalize ${
 													s.severity === "ban"
-														? "!bg-rose-500/15 !text-rose-600 !border-rose-500/30"
+														? "!bg-rose-500/15 !text-rose-800 !border-rose-500/30"
 														: s.severity === "strike"
 															? "!bg-amber-500/15 !text-amber-600 !border-amber-500/30"
 															: "!bg-blue-500/15 !text-blue-600 !border-blue-500/30"
@@ -274,10 +274,10 @@ export default function Strikes() {
 											<span
 												className={`chip !text-[10px] !py-0.2 capitalize ${
 													s.status === "active"
-														? "!bg-rose-500/10 !text-rose-600"
+														? "!bg-rose-500/10 !text-rose-800"
 														: s.status === "appealed"
 															? "!bg-amber-500/10 !text-amber-600"
-															: "!bg-emerald-500/10 !text-emerald-600"
+															: "!bg-emerald-500/10 !text-emerald-800"
 												}`}
 											>
 												{s.status}
@@ -292,7 +292,7 @@ export default function Strikes() {
 													type="button"
 													onClick={() => handlePardon(s.id)}
 													disabled={actionBusy === s.id}
-													className="btn btn-ghost !py-1 !px-2.5 !text-[11px] text-emerald-600 hover:bg-emerald-500/10"
+													className="btn btn-ghost !py-1 !px-2.5 !text-[11px] text-emerald-800 hover:bg-emerald-500/10"
 													title="Pardon strike and restore student standing"
 												>
 													<RotateCcw size={12} className="inline mr-1" />

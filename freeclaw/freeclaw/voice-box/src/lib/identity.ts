@@ -700,9 +700,9 @@ const ANONYMOUS_AVATARS = [
 const ANONYMOUS_STYLES = [
 	{ bg: "bg-blue-500/10 dark:bg-blue-500/20", text: "text-blue-600 dark:text-blue-400", border: "border-blue-500/30" },
 	{ bg: "bg-purple-500/10 dark:bg-purple-500/20", text: "text-purple-600 dark:text-purple-400", border: "border-purple-500/30" },
-	{ bg: "bg-emerald-500/10 dark:bg-emerald-500/20", text: "text-emerald-600 dark:text-emerald-400", border: "border-emerald-500/30" },
+	{ bg: "bg-emerald-500/10 dark:bg-emerald-500/20", text: "text-emerald-800 dark:text-emerald-300", border: "border-emerald-500/30" },
 	{ bg: "bg-amber-500/10 dark:bg-amber-500/20", text: "text-amber-600 dark:text-amber-400", border: "border-amber-500/30" },
-	{ bg: "bg-rose-500/10 dark:bg-rose-500/20", text: "text-rose-600 dark:text-rose-400", border: "border-rose-500/30" },
+	{ bg: "bg-rose-500/10 dark:bg-rose-500/20", text: "text-rose-800 dark:text-rose-300", border: "border-rose-500/30" },
 	{ bg: "bg-indigo-500/10 dark:bg-indigo-500/20", text: "text-indigo-600 dark:text-indigo-400", border: "border-indigo-500/30" },
 	{ bg: "bg-teal-500/10 dark:bg-teal-500/20", text: "text-teal-600 dark:text-teal-400", border: "border-teal-500/30" },
 	{ bg: "bg-fuchsia-500/10 dark:bg-fuchsia-500/20", text: "text-fuchsia-600 dark:text-fuchsia-400", border: "border-fuchsia-500/30" },

@@ -487,7 +487,7 @@ function PostCardInner({ post, myReactions, onReacted, pollData, myPollVote, onP
 							{/* Official Administration Response (Prominent in Feed) */}
 							{post.admin_reply && (
 								<div className="mt-2.5 p-3 rounded-xl bg-emerald-500/10 dark:bg-emerald-950/30 border border-emerald-500/30 text-left">
-									<p className="text-[10px] font-bold uppercase tracking-wider text-emerald-600 dark:text-emerald-400 mb-1 flex items-center gap-1.5">
+									<p className="text-[10px] font-bold uppercase tracking-wider text-emerald-800 dark:text-emerald-300 mb-1 flex items-center gap-1.5">
 										<ShieldCheck size={12} /> Official Administration Response
 									</p>
 									<p className="text-xs text-ink2 leading-relaxed">
@@ -496,7 +496,7 @@ function PostCardInner({ post, myReactions, onReacted, pollData, myPollVote, onP
 								</div>
 							)}
 							{post.status === "solved" && !post.admin_reply && (
-								<div className="mt-2 px-2.5 py-1 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-xs text-emerald-700 dark:text-emerald-400 flex items-center gap-1.5 font-medium">
+								<div className="mt-2 px-2.5 py-1 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-xs text-emerald-700 dark:text-emerald-300 flex items-center gap-1.5 font-medium">
 									<CheckCircle2 size={12} /> Resolved by School Administration
 								</div>
 							)}

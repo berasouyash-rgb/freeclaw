@@ -1379,7 +1379,7 @@ export default function Home() {
 					title="Click to view solved school issues"
 				>
 					<div className="flex items-center gap-2.5 min-w-0">
-						<div className="w-8 h-8 rounded-xl bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 flex items-center justify-center shrink-0 group-hover:scale-105 transition-transform">
+						<div className="w-8 h-8 rounded-xl bg-emerald-500/20 text-emerald-800 dark:text-emerald-300 flex items-center justify-center shrink-0 group-hover:scale-105 transition-transform">
 							<ShieldCheck size={17} />
 						</div>
 						<div className="min-w-0">

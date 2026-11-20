@@ -212,7 +212,7 @@ export function UserProfileDialog({
 							<p className="text-[10px] text-ink3 font-medium mt-0.5">Issues Raised</p>
 						</div>
 						<div className="p-2.5 rounded-xl bg-surface/80 dark:bg-slate-800/60 border border-border">
-							<p className="font-display font-bold text-lg text-emerald-600 dark:text-emerald-400">
+							<p className="font-display font-bold text-lg text-emerald-800 dark:text-emerald-300">
 								{impactMetrics.adminResolutions}
 							</p>
 							<p className="text-[10px] text-ink3 font-medium mt-0.5">Admin Resolutions</p>

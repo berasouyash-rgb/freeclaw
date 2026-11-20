@@ -293,6 +293,11 @@ describe("Overview extra — queue tabs filter the ranked list", () => {
         status: "in_progress",
       }),
     );
+    // Wait for the Solve control to actually render after the Start write —
+    // the mock resolves before React's re-render commits under CI load.
+    await waitFor(() =>
+      expect(trend.getByRole("button", { name: "Solve trending hot-1" })).toBeTruthy(),
+    );
     fireEvent.click(trend.getByRole("button", { name: "Solve trending hot-1" }));
     await waitFor(() =>
       expect(mocks.put).toHaveBeenCalledWith("/api/posts", {

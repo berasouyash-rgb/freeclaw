@@ -209,7 +209,7 @@ export default function About() {
 								<span className="text-xs font-mono font-bold uppercase tracking-wider text-accent">
 									Founder & Architect
 								</span>
-								<span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 font-semibold">
+								<span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-800 dark:text-emerald-300 border border-emerald-500/20 font-semibold">
 									Independent Developer
 								</span>
 							</div>

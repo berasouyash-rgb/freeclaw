@@ -153,7 +153,7 @@ const WordCloud = memo(function WordCloud({
 						className={`vb-rise font-display font-semibold leading-none transition-all hover:scale-110 active:scale-95 ${active ? "underline" : ""}`}
 						style={{
 							fontSize: `${scale}rem`,
-							color: active ? "var(--vb-accent)" : COLORS[i % COLORS.length],
+							color: COLORS[i % COLORS.length],
 							// Frequency is already encoded by font size (redundant, so no
 							// information is lost) — an opacity fade broke AA contrast.
 							animationDelay: `${i * 40}ms`,

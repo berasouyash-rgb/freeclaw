@@ -174,7 +174,7 @@ export default function Communities() {
 									disabled={busySlug === c.slug}
 									className={`btn !text-xs !py-1.5 inline-flex items-center gap-1.5 ${
 										c.hidden
-											? "btn-soft !text-emerald-600 hover:!bg-emerald-500/10"
+											? "btn-soft !text-emerald-800 hover:!bg-emerald-500/10"
 											: "btn-ghost !text-amber-600 hover:!bg-amber-500/10"
 									}`}
 									title={c.hidden ? "Unhide community" : "Hide community from public"}
