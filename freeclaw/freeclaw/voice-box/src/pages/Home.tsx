@@ -1385,7 +1385,7 @@ export default function Home() {
 						<div className="min-w-0">
 							<h3 className="text-xs font-bold text-ink flex items-center gap-1.5 truncate">
 								<span>Administration Activity Pulse</span>
-								<span className="chip !bg-emerald-500/15 !text-emerald-700 dark:!text-emerald-300 !border-transparent !text-[10px] !py-0.2">
+								<span className="chip !bg-emerald-500/15 !text-emerald-900 dark:!text-emerald-200 !border-transparent !text-[10px] !py-0.2">
 									Live School Responses
 								</span>
 							</h3>
@@ -1394,7 +1394,7 @@ export default function Home() {
 							</p>
 						</div>
 					</div>
-					<span className="text-[11px] font-semibold text-emerald-600 dark:text-emerald-400 shrink-0 group-hover:translate-x-0.5 transition-transform">
+					<span className="text-[11px] font-semibold text-emerald-800 dark:text-emerald-300 shrink-0 group-hover:translate-x-0.5 transition-transform">
 						View Solved →
 					</span>
 				</div>

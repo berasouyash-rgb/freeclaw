@@ -227,7 +227,17 @@ async function sweep(
 ) {
 	attachListeners(page, label, width);
 	const started = Date.now();
-	await page.goto(url, { waitUntil: "domcontentloaded" });
+	// "commit" resolves as soon as the response arrives; "domcontentloaded"
+	// regularly exceeded 90s when the dev server was busy with other routes.
+	// A single retry absorbs the cold-start navigation abort.
+	for (let attempt = 0; attempt < 2; attempt++) {
+		try {
+			await page.goto(url, { waitUntil: "commit", timeout: 30_000 });
+			break;
+		} catch (err) {
+			if (attempt === 1) throw err;
+		}
+	}
 	// Let the lazy route chunk, its data, and any realtime subscribe settle.
 	await page.waitForTimeout(2500);
 	visited.push({ route: label, width, ms: Date.now() - started });

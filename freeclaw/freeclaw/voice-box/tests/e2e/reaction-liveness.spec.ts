@@ -70,7 +70,9 @@ test.describe("Reaction liveness", () => {
 		if (count === 0) return;
 
 		const btn = buttons.first();
-		await btn.scrollIntoViewIfNeeded();
+		// The click below is dispatched via evaluate, so scrolling is only a
+		// convenience — never let a stuck scroll consume the whole test budget.
+		await btn.scrollIntoViewIfNeeded({ timeout: 10_000 }).catch(() => undefined);
 
 		const before = parseCount(await btn.getAttribute("aria-label"));
 		const wasActive =

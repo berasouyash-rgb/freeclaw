@@ -12,6 +12,11 @@
 
 import { expect, type Page, test } from "@playwright/test";
 
+// The app's notification worker (public/sw.js) has a fetch handler; requests
+// it handles bypass page.route, so real DB rows leak into the stubbed board.
+// This spec stubs every API row, so disable the worker for this file only.
+test.use({ serviceWorkers: "block" });
+
 const base = {
 	type: "suggestion",
 	description: "A short reason this matters.",
@@ -48,13 +53,16 @@ async function mockBoard(page: Page) {
 			/* storage unavailable */
 		}
 	});
-	await page.route(/\/api\/posts\?type=suggestion/, (route) =>
-		route.fulfill({ json: ideas }),
-	);
-	// A realtime row read must never leak real data into the mocked board.
-	await page.route(/\/api\/posts\?id=/, (route) =>
-		route.fulfill({ json: { post: null } }),
-	);
+	// Match on path only: query strings are occasionally re-ordered by the
+	// client cache layer, and a too-narrow matcher let real DB rows leak in.
+	await page.route(/\/api\/posts/, (route) => {
+		const url = route.request().url();
+		if (url.includes("id="))
+			return route.fulfill({ json: { post: null } });
+		if (url.includes("type=suggestion"))
+			return route.fulfill({ json: ideas });
+		return route.continue();
+	});
 	await page.route(/\/api\/reactions/, (route) =>
 		route.request().method() === "POST"
 			? route.fulfill({
@@ -99,11 +107,11 @@ test("Top ranked glides the voted card up and labels both moves", async ({
 	await expect(
 		page.getByRole("heading", { name: /suggestion board/i }),
 	).toBeVisible();
-	await expect(page.locator("article")).toHaveCount(2);
+	await expect(page.locator("article[data-flip-id]")).toHaveCount(2);
 
 	await page.getByRole("tab", { name: /top ranked/i }).click();
 	// Equal support keeps the served order until a vote breaks the tie.
-	await expect(page.locator("article h3").first()).toHaveText("Dark mode");
+	await expect(page.locator("article[data-flip-id] h3").first()).toHaveText("Dark mode");
 
 	await page
 		.locator('article[data-flip-id="b"]')
@@ -114,7 +122,7 @@ test("Top ranked glides the voted card up and labels both moves", async ({
 	// reorder stays legible (see Suggestions.tsx rank-motion comment).
 	expect(await glideOf(page, "b")).toBe(900);
 
-	await expect(page.locator("article h3").first()).toHaveText(
+	await expect(page.locator("article[data-flip-id] h3").first()).toHaveText(
 		"Keyboard shortcuts",
 	);
 	await expect(
@@ -135,7 +143,7 @@ test.describe("prefers-reduced-motion", () => {
 				() => matchMedia("(prefers-reduced-motion: reduce)").matches,
 			),
 		).toBe(true);
-		await expect(page.locator("article")).toHaveCount(2);
+		await expect(page.locator("article[data-flip-id]")).toHaveCount(2);
 		await page.getByRole("tab", { name: /top ranked/i }).click();
 
 		await page
@@ -143,7 +151,7 @@ test.describe("prefers-reduced-motion", () => {
 			.getByRole("button", { name: /support this idea/i })
 			.click();
 
-		await expect(page.locator("article h3").first()).toHaveText(
+		await expect(page.locator("article[data-flip-id] h3").first()).toHaveText(
 			"Keyboard shortcuts",
 		);
 		expect(await glideOf(page, "b")).toBeNull();
