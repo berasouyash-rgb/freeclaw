@@ -30,7 +30,7 @@ export default defineConfig({
     command: `npm run dev -- --port ${PORT} --strictPort`,
     port: PORT,
     reuseExistingServer: true,
-    timeout: 30_000,
+    timeout: 120_000,
   },
   projects: [
     { name: "chromium", use: { browserName: "chromium" } },

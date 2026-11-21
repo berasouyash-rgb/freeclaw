@@ -4,20 +4,21 @@ import {
 	MessageSquare,
 	Plus,
 	Search,
-	UserCircle2,
+	User,
 } from "lucide-react";
 import { useMemo } from "react";
 import type { ComponentType } from "react";
 import { NavLink, useLocation } from "react-router";
+import { AnimatePresence, motion } from "framer-motion";
 import { triggerHaptic } from "../lib/haptics";
 import { prefetchRouteChunk } from "../lib/routeChunks";
 
 export interface MobileNavItem {
 	to?: string;
 	label: string;
-	icon: ComponentType<{ size?: number | string; strokeWidth?: number | string; className?: string }>;
+	ariaLabel?: string;
+	icon: ComponentType<{ size?: number | string; strokeWidth?: number | string; className?: string; color?: string }>;
 	badge?: number;
-	isHeroAction?: boolean;
 }
 
 interface CurvedMobileNavProps {
@@ -38,11 +39,11 @@ export function CurvedMobileNav({
 
 	const items = useMemo<MobileNavItem[]>(
 		() => [
-			{ to: "/", label: "Feed", icon: Home },
+			{ to: "/", label: "Home", ariaLabel: "Feed", icon: Home },
 			{ to: "/search", label: "Search", icon: Search },
-			{ to: "/submit", label: "Submit", icon: Plus, isHeroAction: true },
+			{ to: "/submit", label: "Submit", icon: Plus },
 			{ to: "/chat", label: "Inbox", icon: MessageSquare, badge: chatUnread },
-			{ to: "/activity", label: "Me", icon: UserCircle2 },
+			{ to: "/activity", label: "Me", icon: User },
 		],
 		[chatUnread],
 	);
@@ -59,127 +60,150 @@ export function CurvedMobileNav({
 	}, [path, moreOpen]);
 
 	return (
-		<div className="lg:hidden fixed bottom-0 inset-x-0 z-40 pointer-events-none pb-[max(env(safe-area-inset-bottom),0.6rem)] px-3 sm:px-4">
+		<div className="lg:hidden fixed bottom-0 inset-x-0 z-40 pointer-events-none pb-[max(env(safe-area-inset-bottom),0.75rem)] px-3 flex justify-center">
 			<nav
-				className="vb-bottomnav max-w-md mx-auto relative pointer-events-auto rounded-[32px] bg-surface/95 dark:bg-[#111422]/95 backdrop-blur-2xl border border-border/80 dark:border-white/10 shadow-[0_16px_40px_-6px_rgba(0,0,0,0.22)] dark:shadow-[0_20px_48px_-6px_rgba(0,0,0,0.75)] transition-all duration-200"
+				className="vb-bottomnav relative pointer-events-auto rounded-full bg-white dark:bg-[#12141c] border border-slate-200/80 dark:border-white/10 shadow-[0_12px_36px_rgba(0,0,0,0.12)] dark:shadow-[0_16px_40px_rgba(0,0,0,0.6)] p-1.5 flex items-center gap-1 sm:gap-1.5 max-w-fit mx-auto transition-all duration-300"
 				aria-label="Mobile navigation"
 			>
-				{/* ── Tab Items Container ── */}
-				<div className="flex items-center justify-between h-16 px-2 relative z-10">
-					{items.map((item, idx) => {
-						const isActive = activeIndex === idx;
-						const Icon = item.icon;
-						const prefetch = () => {
-							if (item.to) {
-								prefetchRouteChunk(
-									item.to === "/"
-										? "Home"
-										: item.to.slice(1).charAt(0).toUpperCase() + item.to.slice(2),
-								);
-							}
-						};
-
-						// Hero center action button (e.g. Create / Submit)
-						if (item.isHeroAction) {
-							return (
-								<NavLink
-									key={item.to}
-									to={item.to!}
-									onMouseEnter={prefetch}
-									onFocus={prefetch}
-									onClick={() => triggerHaptic("medium")}
-									className="relative flex items-center justify-center -mt-6 group focus:outline-hidden"
-									aria-label={item.label}
-								>
-									<div className="w-13 h-13 rounded-full bg-gradient-to-tr from-accent via-[#6366f1] to-[#8b5cf6] p-1 shadow-[0_8px_24px_rgba(99,102,241,0.5)] ring-4 ring-surface dark:ring-[#111422] group-hover:scale-105 group-active:scale-95 transition-all duration-200 flex items-center justify-center text-white">
-										<Icon size={24} strokeWidth={2.6} className="transition-transform group-hover:rotate-90 duration-300" />
-									</div>
-								</NavLink>
+				{items.map((item, idx) => {
+					const isActive = activeIndex === idx;
+					const Icon = item.icon;
+					const prefetch = () => {
+						if (item.to) {
+							prefetchRouteChunk(
+								item.to === "/"
+									? "Home"
+									: item.to.slice(1).charAt(0).toUpperCase() + item.to.slice(2),
 							);
 						}
+					};
 
-						return (
-							<NavLink
-								key={item.to}
-								to={item.to!}
-								end={item.to === "/"}
-								onMouseEnter={prefetch}
-								onFocus={prefetch}
-								onClick={() => triggerHaptic("light")}
-								className={`relative flex items-center justify-center py-2 px-3 rounded-full transition-all duration-300 select-none ${
-									isActive
-										? "bg-surface3/90 dark:bg-white/12 text-accent dark:text-white shadow-xs font-bold scale-[1.03]"
-										: "text-ink3 hover:text-ink active:scale-95"
-								}`}
-								aria-label={
-									item.badge ? `${item.label}, ${item.badge} unread` : item.label
-								}
-							>
-								<div className="flex items-center gap-1.5">
-									<div className="relative">
-										<Icon
-											size={20}
-											strokeWidth={isActive ? 2.4 : 1.8}
-											className="transition-transform duration-200"
-										/>
-										{typeof item.badge === "number" && item.badge > 0 && (
-											<span
-												key={item.badge}
-												className="absolute -top-1 -right-2 min-w-[14px] h-3.5 text-[8px] font-bold grid place-items-center bg-bad text-white rounded-full px-1 shadow-xs"
-												aria-hidden
-											>
-												{item.badge > 99 ? "99+" : item.badge}
-											</span>
-										)}
-									</div>
-									{isActive && (
-										<span className="text-xs font-display tracking-tight leading-none animate-in fade-in duration-200">
-											{item.label}
+					const accessibleLabel = item.badge
+						? `${item.ariaLabel || item.label}, ${item.badge} unread`
+						: (item.ariaLabel || item.label);
+
+					return (
+						<NavLink
+							key={item.to}
+							to={item.to!}
+							end={item.to === "/"}
+							onMouseEnter={prefetch}
+							onFocus={prefetch}
+							onClick={() => triggerHaptic("light")}
+							style={{ color: isActive ? "#ffffff" : undefined }}
+							className={`relative flex items-center justify-center py-2 px-3.5 rounded-full select-none transition-colors duration-200 outline-none focus-visible:ring-2 focus-visible:ring-accent ${
+								isActive
+									? "!text-white text-accent font-semibold"
+									: "text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white"
+							}`}
+							aria-label={accessibleLabel}
+						>
+							{isActive && (
+								<motion.div
+									layoutId="mobile-active-pill"
+									className="absolute inset-0 rounded-full bg-[#5652d6] dark:bg-[#6366f1] shadow-[0_4px_16px_rgba(86,82,214,0.4)]"
+									transition={{ type: "spring", stiffness: 480, damping: 34, mass: 0.8 }}
+								/>
+							)}
+
+							<div className="relative z-10 flex items-center gap-1.5">
+								<div className="relative flex items-center justify-center">
+									<Icon
+										size={20}
+										strokeWidth={isActive ? 2.3 : 1.9}
+										color={isActive ? "#ffffff" : undefined}
+										className="transition-transform duration-200"
+									/>
+									{typeof item.badge === "number" && item.badge > 0 && (
+										<span
+											key={item.badge}
+											className="absolute -top-1 -right-2 min-w-[14px] h-3.5 text-[8px] font-bold grid place-items-center bg-red-500 text-white rounded-full px-1 shadow-xs"
+											aria-hidden
+										>
+											{item.badge > 99 ? "99+" : item.badge}
 										</span>
 									)}
 								</div>
-							</NavLink>
-						);
-					})}
-
-					{/* ── More Action Button ── */}
-					<button
-						type="button"
-						onClick={() => {
-							triggerHaptic("light");
-							onOpenMore();
-						}}
-						aria-label={
-							unreadAlerts > 0
-								? `More pages, ${unreadAlerts} unread alerts`
-								: "More pages"
-						}
-						aria-expanded={moreOpen}
-						className={`relative flex items-center justify-center py-2 px-3 rounded-full transition-all duration-300 select-none ${
-							moreOpen
-								? "bg-surface3/90 dark:bg-white/12 text-accent dark:text-white shadow-xs font-bold scale-[1.03]"
-								: "text-ink3 hover:text-ink active:scale-95"
-						}`}
-					>
-						<div className="flex items-center gap-1.5">
-							<div className="relative">
-								<Ellipsis size={20} strokeWidth={moreOpen ? 2.4 : 1.8} />
-								{unreadAlerts > 0 && (
-									<span
-										key={unreadAlerts}
-										className="absolute -top-1 -right-1.5 w-2 h-2 rounded-full bg-bad ring-2 ring-surface shadow-xs"
-										aria-hidden
-									/>
-								)}
+								<AnimatePresence initial={false} mode="wait">
+									{isActive && (
+										<motion.span
+											key={item.label}
+											initial={{ opacity: 0, width: 0, scale: 0.85 }}
+											animate={{ opacity: 1, width: "auto", scale: 1 }}
+											exit={{ opacity: 0, width: 0, scale: 0.85 }}
+											transition={{ type: "spring", stiffness: 480, damping: 34 }}
+											className="text-xs font-semibold tracking-tight leading-none whitespace-nowrap pl-0.5 !text-white overflow-hidden"
+											style={{ color: "#ffffff" }}
+										>
+											{item.label}
+										</motion.span>
+									)}
+								</AnimatePresence>
 							</div>
-							{moreOpen && (
-								<span className="text-xs font-display tracking-tight leading-none animate-in fade-in duration-200">
-									More
-								</span>
+						</NavLink>
+					);
+				})}
+
+				{/* ── More Action Button ── */}
+				<button
+					type="button"
+					onClick={() => {
+						triggerHaptic("light");
+						onOpenMore();
+					}}
+					aria-label={
+						unreadAlerts > 0
+							? `More pages, ${unreadAlerts} unread alerts`
+							: "More pages"
+					}
+					aria-expanded={moreOpen}
+					style={{ color: moreOpen ? "#ffffff" : undefined }}
+					className={`relative flex items-center justify-center py-2 px-3.5 rounded-full select-none transition-colors duration-200 outline-none focus-visible:ring-2 focus-visible:ring-accent ${
+						moreOpen
+							? "!text-white text-accent font-semibold"
+							: "text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white"
+					}`}
+				>
+					{moreOpen && (
+						<motion.div
+							layoutId="mobile-active-pill"
+							className="absolute inset-0 rounded-full bg-[#5652d6] dark:bg-[#6366f1] shadow-[0_4px_16px_rgba(86,82,214,0.4)]"
+							transition={{ type: "spring", stiffness: 480, damping: 34, mass: 0.8 }}
+						/>
+					)}
+
+					<div className="relative z-10 flex items-center gap-1.5">
+						<div className="relative flex items-center justify-center">
+							<Ellipsis
+								size={20}
+								strokeWidth={moreOpen ? 2.3 : 1.9}
+								color={moreOpen ? "#ffffff" : undefined}
+							/>
+							{unreadAlerts > 0 && (
+								<span
+									key={unreadAlerts}
+									className="absolute -top-1 -right-1.5 w-2 h-2 rounded-full bg-red-500 ring-2 ring-white dark:ring-[#12141c] shadow-xs"
+									aria-hidden
+								/>
 							)}
 						</div>
-					</button>
-				</div>
+						<AnimatePresence initial={false} mode="wait">
+							{moreOpen && (
+								<motion.span
+									key="more"
+									initial={{ opacity: 0, width: 0, scale: 0.85 }}
+									animate={{ opacity: 1, width: "auto", scale: 1 }}
+									exit={{ opacity: 0, width: 0, scale: 0.85 }}
+									transition={{ type: "spring", stiffness: 480, damping: 34 }}
+									className="text-xs font-semibold tracking-tight leading-none whitespace-nowrap pl-0.5 !text-white overflow-hidden"
+									style={{ color: "#ffffff" }}
+								>
+									More
+								</motion.span>
+							)}
+						</AnimatePresence>
+					</div>
+				</button>
 			</nav>
 		</div>
 	);

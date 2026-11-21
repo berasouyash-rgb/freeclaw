@@ -1,26 +1,32 @@
 import {
+	AlertCircle,
 	AlertTriangle,
 	BarChart3,
 	Bell,
 	Bookmark,
+	ChevronRight,
+	Clock,
 	Download,
+	ExternalLink,
 	Eye,
 	FileText,
 	MessageCircle,
 	PlayCircle,
 	RefreshCcw,
-	Settings as SettingsIcon,
 	Save,
-		Scale,
-		Sparkles,
-		Trash2,
-		UserCircle2,
-	} from "lucide-react";
+	Scale,
+	Settings as SettingsIcon,
+	ShieldAlert,
+	Sparkles,
+	Trash2,
+	UserCircle2,
+	X,
+} from "lucide-react";
 import { type ReactNode, useCallback, useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router";
 import { resetTutorial } from "../components/Tutorial";
 import { ConfirmDialog } from "../components/ui";
-import { useApp } from "../contexts/AppContext";
+import { useApp, type Notification } from "../contexts/AppContext";
 import { api } from "../lib/api";
 import { anonCreatedAt, lsGet } from "../lib/identity";
 import { useRealtime } from "../lib/useRealtime";
@@ -174,9 +180,11 @@ export default function MyActivity() {
 		bookmarks,
 		recentlyViewed,
 		retireNotifsForLink,
+		accountStatus,
 	} = useApp();
 	const nav = useNavigate();
 	const [tab, setTab] = useState<Tab>("posts");
+	const [selectedNotif, setSelectedNotif] = useState<Notification | null>(null);
 	const [posts, setPosts] = useState<PostData[]>([]);
 	const [myPolls, setMyPolls] = useState<PollData[]>([]);
 	const [comments, setComments] = useState<CommentData[]>([]);
@@ -886,24 +894,67 @@ export default function MyActivity() {
 				))}
 
 			{tab === "notifications" && (
-				<div className="space-y-2">
+				<div className="space-y-2.5">
 					{notifications.length === 0 && <Empty text="No notifications yet." />}
-					{notifications.map((n) => (
-						<div key={n.id} className="card p-3.5">
-							<p className="text-sm font-medium">{n.title}</p>
-							<p className="text-xs text-ink3">
-								{n.body} · {timeAgo(n.at)}
-							</p>
-							{n.link && (
-								<Link
-									to={n.link}
-									className="text-xs text-accent font-semibold hover:underline"
-								>
-									Open →
-								</Link>
-							)}
-						</div>
-					))}
+					{notifications.map((n) => {
+						const isWarning =
+							n.kind === "warning" ||
+							n.kind === "moderation" ||
+							n.kind === "suspension" ||
+							n.kind === "ban" ||
+							n.title.toLowerCase().includes("warning") ||
+							n.title.toLowerCase().includes("strike") ||
+							n.title.toLowerCase().includes("ban") ||
+							n.title.toLowerCase().includes("moderation");
+						// Never let an admin notice or warning redirect to /chat
+						const safeLink =
+							n.link && !n.link.startsWith("/chat") ? n.link : null;
+
+						return (
+							<div
+								key={n.id}
+								onClick={() => setSelectedNotif(n)}
+								className="card card-hover p-4 cursor-pointer transition-all space-y-2.5"
+							>
+								<div className="flex items-start justify-between gap-3">
+									<div className="flex items-center gap-2.5 min-w-0">
+										<span
+											className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${
+												isWarning
+													? "bg-amber-500/10 text-amber-500"
+													: "bg-accent/10 text-accent"
+											}`}
+										>
+											{isWarning ? <ShieldAlert size={16} /> : <Bell size={16} />}
+										</span>
+										<div className="min-w-0">
+											<p className="text-sm font-semibold text-ink">
+												{n.title}
+											</p>
+											<p className="text-xs text-ink3 mt-0.5">
+												{n.body} · {timeAgo(n.at)}
+											</p>
+										</div>
+									</div>
+									<div className="flex items-center gap-2 shrink-0">
+										{safeLink ? (
+											<Link
+												to={safeLink}
+												onClick={(e) => e.stopPropagation()}
+												className="text-xs text-accent font-semibold hover:underline"
+											>
+												Open →
+											</Link>
+										) : (
+											<span className="text-xs text-accent font-semibold hover:underline flex items-center gap-0.5">
+												View details <ChevronRight size={13} />
+											</span>
+										)}
+									</div>
+								</div>
+							</div>
+						);
+					})}
 				</div>
 			)}
 
@@ -1005,7 +1056,111 @@ export default function MyActivity() {
 				message="Your post will be removed from the feed. You can undo within 30 seconds using the toast at the bottom of the screen."
 				confirmLabel="Delete"
 				danger
-			/>		</div>
+			/>
+
+			{/* Visual Problem Explanation Modal */}
+			{selectedNotif && (
+				<div
+					className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in duration-200"
+					role="dialog"
+					aria-modal="true"
+					aria-labelledby="activity-notif-title"
+				>
+					<div className="bg-surface dark:bg-[#14141c] border border-border/80 dark:border-white/10 rounded-2xl max-w-lg w-full p-6 shadow-2xl space-y-5 animate-in zoom-in-95 duration-200 relative overflow-hidden">
+						{/* Close button */}
+						<button
+							onClick={() => setSelectedNotif(null)}
+							className="absolute top-4 right-4 p-1.5 rounded-full text-ink3 hover:text-ink hover:bg-surface2 transition-colors cursor-pointer"
+							aria-label="Close details"
+						>
+							<X size={18} />
+						</button>
+
+						{/* Badge & Type Header */}
+						<div className="flex items-center gap-3">
+							<div
+								className={`w-11 h-11 rounded-xl flex items-center justify-center shrink-0 ${
+									selectedNotif.kind === "warning" ||
+									selectedNotif.kind === "suspension" ||
+									selectedNotif.kind === "ban" ||
+									selectedNotif.title.toLowerCase().includes("warning") ||
+									selectedNotif.title.toLowerCase().includes("strike")
+										? "bg-amber-500/10 text-amber-500"
+										: "bg-accent/10 text-accent"
+								}`}
+							>
+								{selectedNotif.kind === "warning" ||
+								selectedNotif.kind === "suspension" ||
+								selectedNotif.kind === "ban" ||
+								selectedNotif.title.toLowerCase().includes("warning") ||
+								selectedNotif.title.toLowerCase().includes("strike") ? (
+									<ShieldAlert size={22} />
+								) : (
+									<Bell size={22} />
+								)}
+							</div>
+							<div className="min-w-0 pr-6">
+								<span className="text-[10px] font-bold uppercase tracking-wider text-ink3">
+									Official Administrative Notice
+								</span>
+								<h2 id="activity-notif-title" className="text-base font-bold text-ink leading-tight mt-0.5">
+									{selectedNotif.title}
+								</h2>
+							</div>
+						</div>
+
+						{/* Timestamp & Metadata */}
+						<div className="flex items-center gap-2 text-xs text-ink3 pb-1 border-b border-border/60">
+							<Clock size={13} />
+							<span>{new Date(selectedNotif.at).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })}</span>
+							<span>•</span>
+							<span>{timeAgo(selectedNotif.at)}</span>
+						</div>
+
+						{/* Detailed Problem Explanation Box */}
+						<div className="space-y-3">
+							<div className="p-4 rounded-xl bg-surface2/70 dark:bg-white/[0.04] border border-border/70 space-y-2">
+								<p className="text-xs font-semibold uppercase tracking-wider text-ink3">
+									Notice Reason & Explanation
+								</p>
+								<p className="text-sm text-ink leading-relaxed whitespace-pre-wrap select-text">
+									{selectedNotif.body}
+								</p>
+							</div>
+
+							{/* School policy & strike standing */}
+							<div className="p-3.5 rounded-xl bg-amber-500/10 border border-amber-500/20 text-xs text-amber-800 dark:text-amber-200 space-y-1.5">
+								<p className="font-semibold flex items-center gap-1.5">
+									<AlertCircle size={14} /> School Moderation Notice
+								</p>
+								<p className="leading-relaxed opacity-90">
+									This official notice was issued by campus administration regarding content standards. Your anonymous ID remains fully protected. Current account standing: {accountStatus?.strikes || 0} strike(s).
+								</p>
+							</div>
+						</div>
+
+						{/* Action Buttons */}
+						<div className="flex flex-wrap items-center justify-end gap-2.5 pt-2 border-t border-border/60">
+							{selectedNotif.link && selectedNotif.link.startsWith("/post/") && (
+								<Link
+									to={selectedNotif.link}
+									onClick={() => setSelectedNotif(null)}
+									className="btn btn-primary !text-xs !py-2 !px-4 flex items-center gap-1.5"
+								>
+									<ExternalLink size={14} /> View Affected Post
+								</Link>
+							)}
+							<button
+								onClick={() => setSelectedNotif(null)}
+								className="btn btn-ghost !text-xs !py-2 !px-4 cursor-pointer"
+							>
+								Close
+							</button>
+						</div>
+					</div>
+				</div>
+			)}
+		</div>
 	);
 }
 

@@ -4,7 +4,9 @@
 	Bell,
 	CheckCheck,
 	CheckCircle2,
+	ChevronRight,
 	Clock,
+	ExternalLink,
 	Filter,
 	Info,
 	MessageSquare,
@@ -12,6 +14,7 @@
 	Settings,
 	ShieldAlert,
 	Trash2,
+	X,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router";
@@ -74,10 +77,24 @@ const ALL_KINDS: NotificationKind[] = [
 	"moderation",
 ];
 
+interface NotificationItemData {
+	id: string;
+	kind: NotificationKind;
+	title: string;
+	body: string;
+	link?: string;
+	at: string;
+	read: boolean;
+	_count?: number;
+	_unread?: boolean;
+	_ids?: string[];
+}
+
 export default function Notifications() {
 	const { notifications, markNotifsRead, markNotifRead, clearNotifs } = useApp();
 	const [filter, setFilter] = useState<NotificationKind | "all">("all");
 	const [showUnreadOnly, setShowUnreadOnly] = useState(false);
+	const [selectedNotif, setSelectedNotif] = useState<NotificationItemData | null>(null);
 
 	/* "2m ago" is rendered, not stored — without a tick it freezes at the
 	 * string computed on first paint and a page left open all morning still
@@ -92,25 +109,15 @@ export default function Notifications() {
 		return () => window.clearInterval(id);
 	}, []);
 
-	const filtered = useMemo(() => {
+	const filtered = useMemo<NotificationItemData[]>(() => {
 		let list = [...notifications];
 		if (filter !== "all") list = list.filter((n) => n.kind === filter);
 		if (showUnreadOnly) list = list.filter((n) => !n.read);
 		const sorted = list.sort(
 			(a, b) => new Date(b.at).getTime() - new Date(a.at).getTime(),
 		);
-		/* Group consecutive notifications sharing kind + link (several comments
-		 * on one post). Sorted newest-first, the head of a group IS the newest
-		 * entry, so its body and timestamp stay authoritative — an older
-		 * sibling must never overwrite them. A group reads as unread while ANY
-		 * member is unread, and opening it clears every member; otherwise the
-		 * header badge would keep counting rows the list already showed read. */
-		type Grouped = (typeof sorted)[number] & {
-			_count?: number;
-			_unread?: boolean;
-			_ids?: string[];
-		};
-		const grouped: Grouped[] = [];
+
+		const grouped: NotificationItemData[] = [];
 		for (const n of sorted) {
 			const last = grouped[grouped.length - 1];
 			if (
@@ -138,11 +145,15 @@ export default function Notifications() {
 		return c;
 	}, [notifications]);
 
+	const handleOpenDetail = (n: NotificationItemData) => {
+		const ids = n._ids ?? [n.id];
+		for (const id of ids) markNotifRead(id);
+		setSelectedNotif(n);
+	};
+
 	return (
 		<div className="max-w-3xl mx-auto px-4 py-6 space-y-6 vb-page-enter">
 			{/* Header */}
-			{/* Stacks on phones: title + two action buttons on one row did not fit
-			    a 375px viewport, so the page scrolled sideways. */}
 			<div className="vb-page-header flex flex-col sm:flex-row sm:items-center gap-3 sm:justify-between">
 				<div>
 					<h1 className="flex items-center gap-2">
@@ -214,7 +225,7 @@ export default function Notifications() {
 			</div>
 
 			{/* Notification list */}
-			<div className="space-y-0.5">
+			<div className="space-y-1.5">
 				{filtered.length === 0 && (
 					<div className="text-center py-16" role="status">
 						<div className="vb-empty-icon" aria-hidden>
@@ -233,36 +244,48 @@ export default function Notifications() {
 					</div>
 				)}
 				{filtered.map((n) => {
-					// Belt-and-braces: unknown future kinds render as info
-					// instead of crashing on meta.icon.
 					const meta = KIND_META[n.kind] ?? KIND_META.info;
 					const Icon = meta.icon;
-					const ids = n._ids ?? [n.id];
 					return (
-						<Link
+						<div
 							key={n.id}
-							to={n.link || "#"}
-							onClick={() => {
-								for (const id of ids) markNotifRead(id);
+							role="link"
+							tabIndex={0}
+							onClick={() => handleOpenDetail(n)}
+							onKeyDown={(e) => {
+								if (e.key === "Enter" || e.key === " ") {
+									e.preventDefault();
+									handleOpenDetail(n);
+								}
 							}}
-							className={`vb-notif-item flex items-start gap-3 px-4 py-3 rounded-xl ${n._unread ? "bg-accent-soft/30" : ""}`}
+							className={`vb-notif-item flex items-start gap-3.5 px-4 py-3 rounded-xl border border-transparent hover:border-border/60 transition-all cursor-pointer ${
+								n._unread
+									? "bg-accent-soft/30 dark:bg-white/[0.04]"
+									: "hover:bg-surface2/60 dark:hover:bg-white/[0.02]"
+							}`}
+							aria-label={n.title}
 						>
 							<div className={`mt-0.5 shrink-0 ${meta.color}`} aria-hidden>
-								<Icon size={16} />
+								<Icon size={18} />
 							</div>
 							<div className="flex-1 min-w-0">
-								<p className="text-sm font-medium">
-									{n.title}
+								<div className="flex items-center gap-1.5 flex-wrap">
+									<p className="text-sm font-medium text-ink">
+										{n.title}
+									</p>
 									{(n._count ?? 0) > 1 && (
-										<span className="ml-1.5 text-[10px] font-semibold bg-accent/10 text-accent rounded-full px-1.5 py-0.5">
+										<span className="text-[10px] font-semibold bg-accent/10 text-accent rounded-full px-1.5 py-0.5">
 											×{n._count}
 										</span>
 									)}
 									{n._unread && <span className="sr-only"> (unread)</span>}
+								</div>
+								{/* 2-line preview so users can read the notice explanation */}
+								<p className="text-xs text-ink3 line-clamp-2 mt-1 leading-relaxed">
+									{n.body}
 								</p>
-								<p className="text-xs text-ink3 truncate mt-0.5">{n.body}</p>
 							</div>
-							<div className="flex items-center gap-2 shrink-0">
+							<div className="flex items-center gap-2 shrink-0 self-center">
 								{n._unread && (
 									<span
 										className="w-2 h-2 rounded-full bg-accent"
@@ -272,8 +295,9 @@ export default function Notifications() {
 								<span className="text-[10px] text-ink3 flex items-center gap-1">
 									<Clock size={10} aria-hidden /> {timeAgo(n.at)}
 								</span>
+								<ChevronRight size={14} className="text-ink3/40" aria-hidden />
 							</div>
-						</Link>
+						</div>
 					);
 				})}
 			</div>
@@ -287,6 +311,126 @@ export default function Notifications() {
 					>
 						<Trash2 size={13} /> Clear all notifications
 					</button>
+				</div>
+			)}
+
+			{/* Visual Notification Detail & Problem Explanation Modal */}
+			{selectedNotif && (
+				<div
+					className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in duration-200"
+					role="dialog"
+					aria-modal="true"
+					aria-labelledby="notif-detail-title"
+				>
+					<div
+						className="bg-surface dark:bg-[#14141c] border border-border/80 dark:border-white/10 rounded-2xl max-w-lg w-full p-6 shadow-2xl space-y-5 animate-in zoom-in-95 duration-200 relative overflow-hidden"
+					>
+						{/* Close button */}
+						<button
+							onClick={() => setSelectedNotif(null)}
+							className="absolute top-4 right-4 p-1.5 rounded-full text-ink3 hover:text-ink hover:bg-surface2 transition-colors cursor-pointer"
+							aria-label="Close notification details"
+						>
+							<X size={18} />
+						</button>
+
+						{/* Badge & Type Header */}
+						<div className="flex items-center gap-3">
+							<div
+								className={`w-11 h-11 rounded-xl flex items-center justify-center shrink-0 ${
+									selectedNotif.kind === "warning" || selectedNotif.kind === "suspension" || selectedNotif.kind === "ban"
+										? "bg-amber-500/10 text-amber-500"
+										: selectedNotif.kind === "moderation"
+											? "bg-purple-500/10 text-purple-500"
+											: selectedNotif.kind === "status" || selectedNotif.kind === "success"
+												? "bg-emerald-500/10 text-emerald-500"
+												: "bg-accent/10 text-accent"
+								}`}
+							>
+								{selectedNotif.kind === "warning" || selectedNotif.kind === "suspension" || selectedNotif.kind === "ban" ? (
+									<ShieldAlert size={22} />
+								) : selectedNotif.kind === "status" ? (
+									<CheckCircle2 size={22} />
+								) : (
+									<Info size={22} />
+								)}
+							</div>
+							<div className="min-w-0 pr-6">
+								<span className="text-[10px] font-bold uppercase tracking-wider text-ink3">
+									{KIND_META[selectedNotif.kind]?.label || "Official Notice"}
+								</span>
+								<h2 id="notif-detail-title" className="text-base font-bold text-ink leading-tight mt-0.5">
+									{selectedNotif.title}
+								</h2>
+							</div>
+						</div>
+
+						{/* Timestamp & Metadata */}
+						<div className="flex items-center gap-2 text-xs text-ink3 pb-1 border-b border-border/60">
+							<Clock size={13} />
+							<span>{new Date(selectedNotif.at).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })}</span>
+							<span>•</span>
+							<span>{timeAgo(selectedNotif.at)}</span>
+						</div>
+
+						{/* Detailed Problem Explanation Box */}
+						<div className="space-y-3">
+							<div className="p-4 rounded-xl bg-surface2/70 dark:bg-white/[0.04] border border-border/70 space-y-2">
+								<p className="text-xs font-semibold uppercase tracking-wider text-ink3">
+									Notice Explanation & Details
+								</p>
+								<p className="text-sm text-ink leading-relaxed whitespace-pre-wrap select-text">
+									{selectedNotif.body || "No additional description provided."}
+								</p>
+							</div>
+
+							{/* Helpful context for moderation notices */}
+							{(selectedNotif.kind === "warning" ||
+								selectedNotif.kind === "suspension" ||
+								selectedNotif.kind === "ban" ||
+								selectedNotif.kind === "moderation") && (
+								<div className="p-3.5 rounded-xl bg-amber-500/10 border border-amber-500/20 text-xs text-amber-800 dark:text-amber-200 space-y-1">
+									<p className="font-semibold flex items-center gap-1.5">
+										<AlertCircle size={14} /> School Moderation & Guidelines
+									</p>
+									<p className="leading-relaxed opacity-90">
+										This action was issued regarding school safety standards. Your anonymous ID remains fully protected. You can inspect all active strikes, account privileges, and resolution options on the My Activity page.
+									</p>
+								</div>
+							)}
+						</div>
+
+						{/* Action Buttons */}
+						<div className="flex flex-wrap items-center justify-end gap-2.5 pt-2 border-t border-border/60">
+							{selectedNotif.link && selectedNotif.link.startsWith("/post/") && (
+								<Link
+									to={selectedNotif.link}
+									onClick={() => setSelectedNotif(null)}
+									className="btn btn-primary !text-xs !py-2 !px-4 flex items-center gap-1.5"
+								>
+									<ExternalLink size={14} /> View Affected Post
+								</Link>
+							)}
+							{(selectedNotif.kind === "warning" ||
+								selectedNotif.kind === "suspension" ||
+								selectedNotif.kind === "ban" ||
+								selectedNotif.kind === "moderation") && (
+								<Link
+									to="/activity"
+									onClick={() => setSelectedNotif(null)}
+									className="btn btn-secondary !text-xs !py-2 !px-4 flex items-center gap-1.5"
+								>
+									<ShieldAlert size={14} /> View My Activity & Strikes
+								</Link>
+							)}
+							<button
+								onClick={() => setSelectedNotif(null)}
+								className="btn btn-ghost !text-xs !py-2 !px-4 cursor-pointer"
+							>
+								Close
+							</button>
+						</div>
+					</div>
 				</div>
 			)}
 		</div>

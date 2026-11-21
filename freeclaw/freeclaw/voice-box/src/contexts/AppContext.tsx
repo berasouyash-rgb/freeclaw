@@ -78,7 +78,22 @@ interface ServerNotif {
  */
 function serverNotifLink(n: ServerNotif): string | undefined {
 	const explicit = typeof n.link === "string" ? n.link.trim() : "";
-	if (explicit.startsWith("/") && !explicit.startsWith("//")) return explicit;
+	if (explicit.startsWith("/") && !explicit.startsWith("//")) {
+		// Never send admin warnings, suspensions or strikes to /chat (inbox AI)
+		if (
+			explicit === "/chat" &&
+			(n.type === "warning" ||
+				n.type === "suspension" ||
+				n.type === "suspension_lifted" ||
+				n.type === "ban" ||
+				n.type === "unban" ||
+				n.type === "moderation" ||
+				n.type === "pardon")
+		) {
+			return n.post_id ? `/post/${encodeURIComponent(String(n.post_id))}` : "/activity";
+		}
+		return explicit;
+	}
 	if (n.post_id) return `/post/${encodeURIComponent(String(n.post_id))}`;
 	const type = String(n.type || "");
 	if (
@@ -87,11 +102,14 @@ function serverNotifLink(n: ServerNotif): string | undefined {
 		type === "suspension_lifted" ||
 		type === "ban" ||
 		type === "unban" ||
-		type === "moderation"
+		type === "moderation" ||
+		type === "pardon"
 	)
-		return type === "warning" ? "/activity" : "/chat";
+		return "/activity";
 	if (type === "status" || type === "reply" || type === "comment" || type === "mention")
 		return "/activity";
+	if (type === "chat")
+		return "/chat";
 	return undefined;
 }
 
@@ -291,12 +309,30 @@ export const useApp = (): AppCtx => {
 let toastSeq = 1;
 
 /* v8 ignore start -- @preserve */
-// Toast action callback — never exercised in unit tests because the
-// toast UI button renders outside <AppProvider>.
+// Toast action callback — routes to My Activity for account status and strike details.
 const _toastAction = () => {
-	navigateTo("/chat");
+	navigateTo("/activity");
 };
 /* v8 ignore stop -- @preserve */
+
+function sanitizeStoredNotifs(raw: Notification[]): Notification[] {
+	return (raw || []).map((n) => {
+		if (
+			n &&
+			n.link === "/chat" &&
+			(n.kind === "warning" ||
+				n.kind === "moderation" ||
+				n.kind === "suspension" ||
+				n.kind === "ban" ||
+				n.title?.toLowerCase().includes("warning") ||
+				n.title?.toLowerCase().includes("strike") ||
+				n.title?.toLowerCase().includes("ban"))
+		) {
+			return { ...n, link: "/activity" };
+		}
+		return n;
+	});
+}
 
 export function AppProvider({ children }: { children: ReactNode }) {
 	const [anonId, setAnonId] = useState(getAnonId);
@@ -349,7 +385,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 		lsGet("vb:bookmarks", []),
 	);
 	const [notifications, setNotifications] = useState<Notification[]>(() =>
-		lsGet("vb:notifications", []),
+		sanitizeStoredNotifs(lsGet("vb:notifications", [])),
 	);
 	const [recentlyViewed, setRecentlyViewed] = useState<string[]>(() =>
 		lsGet("vb:recentlyViewed", []),
@@ -632,10 +668,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
 				const newlyBanned = !prev.banned && !!s.banned;
 				if (newlyBanned) {
 					pushNotif({
-						kind: "info",
+						kind: "ban",
 						title: "🚫 Your account has been banned",
 						body: "This anonymous ID can no longer post, comment, or vote. Contact an admin if you believe this is a mistake.",
-						link: "/chat",
+						link: "/activity",
 					});
 					toast("🚫 Your anonymous ID has been permanently banned", "err", {
 						label: "Details",
@@ -644,12 +680,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
 				} else if (newStrikes > prevStrikes && !s.banned) {
 					const warningText = s.latest_warning || "";
 					pushNotif({
-						kind: "info",
+						kind: "warning",
 						title: "⚠️ You received a warning from admin",
 						body: warningText
 							? `"${warningText}"`
 							: `Strike ${newStrikes} of 3. Too many strikes may result in a ban.`,
-						link: "/chat",
+						link: "/activity",
 					});
 					// Also show as toast (auto-dismissed after 30s)
 					toast(
@@ -709,7 +745,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 	const refreshIdentity = useCallback(() => {
 		setAnonId(getAnonId());
 		setBookmarks(lsGet("vb:bookmarks", []));
-		setNotifications(lsGet("vb:notifications", []));
+		setNotifications(sanitizeStoredNotifs(lsGet("vb:notifications", [])));
 		setRecentlyViewed(lsGet("vb:recentlyViewed", []));
 	}, []);
 

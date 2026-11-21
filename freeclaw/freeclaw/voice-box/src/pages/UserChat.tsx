@@ -5,6 +5,7 @@ import {
 	Clock,
 	Heart,
 	ImagePlus,
+	Info,
 	Loader2,
 	MessageSquare,
 	Send,
@@ -16,10 +17,10 @@ import {
 	VolumeX,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { Link } from "react-router";
 import {
 	LoadingSpinner,
 	prefersReducedMotion,
-	VB_FULL_CYCLE_MS,
 } from "../components/ErrorBoundary";
 import TypingIndicator from "../components/TypingIndicator";
 import Typewriter from "../components/Typewriter";
@@ -727,12 +728,22 @@ export default function UserChat() {
 				</div>
 			)}
 
-			{/* Human counselor takeover banner */}
-			{messages.some((m) => m.sender === "admin") && (
+			{/* Human counselor takeover or notices banner */}
+			{messages.some((m) => m.sender === "admin") ? (
 				<div className="flex items-center gap-2 px-3 py-2 rounded-xl bg-good/10 border border-good/30 text-xs text-good mb-3 animate-in fade-in">
 					<UserCheck size={14} className="shrink-0" />
 					<span className="font-semibold">Campus Counselor Active</span>
 					<span className="text-[11px] text-ink3 ml-auto">Direct human support</span>
+				</div>
+			) : (
+				<div className="flex items-center justify-between gap-2 px-3.5 py-2 rounded-xl bg-surface2/60 dark:bg-white/[0.03] border border-border/60 text-xs text-ink3 mb-3">
+					<span className="flex items-center gap-1.5">
+						<Info size={13} className="text-accent shrink-0" />
+						<span>Looking for school administrative notices?</span>
+					</span>
+					<Link to="/notifications" className="font-semibold text-accent hover:underline shrink-0">
+						View Notifications
+					</Link>
 				</div>
 			)}
 
@@ -745,10 +756,7 @@ export default function UserChat() {
 				{loading && (
 					<LoadingSpinner
 						text="Opening your anonymous inbox…"
-						// The SPLASH length is the full story, so a genuinely slow
-						// load still gets the animation. It is not a gate: the
-						// component unmounts the moment data lands.
-						durationMs={VB_FULL_CYCLE_MS}
+						motiveOff
 					/>
 				)}
 				{!loading && messages.length === 0 && (

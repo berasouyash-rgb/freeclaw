@@ -42,7 +42,6 @@ export const ROUTE_MATRIX = {
 	"event-agents": ROUTE_CLASS.ADMIN_ONLY,
 	"agent-executions": ROUTE_CLASS.ADMIN_ONLY,
 	smart: ROUTE_CLASS.ADMIN_ONLY,
-	buddy: ROUTE_CLASS.ADMIN_ONLY,
 	"tool-registry": ROUTE_CLASS.ADMIN_ONLY,
 	"email-templates": ROUTE_CLASS.ADMIN_ONLY,
 	"v3/audit": ROUTE_CLASS.ADMIN_ONLY,

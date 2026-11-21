@@ -13,8 +13,11 @@
 --
 -- Idempotent: DROP IF EXISTS + ADD makes it safe to run more than once.
 
-ALTER TABLE posts DROP CONSTRAINT IF EXISTS posts_status_check;
+DO $$
+BEGIN
+  ALTER TABLE posts DROP CONSTRAINT IF EXISTS posts_status_check;
 
-ALTER TABLE posts ADD CONSTRAINT posts_status_check CHECK (
-  status IN ('reported', 'verified', 'in_progress', 'waiting', 'solved', 'archived', 'pending_review')
-);
+  ALTER TABLE posts ADD CONSTRAINT posts_status_check CHECK (
+    status IN ('reported', 'verified', 'in_progress', 'waiting', 'solved', 'archived', 'pending_review')
+  );
+END $$;

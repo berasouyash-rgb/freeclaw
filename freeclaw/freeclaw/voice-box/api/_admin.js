@@ -619,7 +619,7 @@ export default async function handler(req, res) {
 					reason
 						? `A moderator applied ${LEVEL_LABELS[row.level] || row.level}. Reason: ${reason}`
 						: `A moderator applied ${LEVEL_LABELS[row.level] || row.level}.`,
-					{ link: "/chat" },
+					{ link: "/activity" },
 				);
 			}
 			return res.status(200).json({
@@ -652,7 +652,7 @@ export default async function handler(req, res) {
 					"moderation",
 					"Restriction lifted",
 					"Your account restriction has been lifted. Welcome back.",
-					{ link: "/chat" },
+					{ link: "/activity" },
 				);
 			}
 			const esc = await getEscalation(anonId);
@@ -741,7 +741,7 @@ export default async function handler(req, res) {
 					"pardon",
 					"Strike pardoned",
 					"Your moderation strike has been pardoned and your campus standing is fully restored.",
-					{ link: "/chat" },
+					{ link: "/activity" },
 				);
 			}
 
@@ -1166,7 +1166,7 @@ export default async function handler(req, res) {
 					"warning",
 					"Official warning issued",
 					clean(b.warn, 300),
-					{ link: "/chat" },
+					{ link: "/activity" },
 				);
 			if (b.suspend_days !== undefined && b.suspend_days > 0)
 				await notifyUser(
@@ -1174,7 +1174,7 @@ export default async function handler(req, res) {
 					"suspension",
 					"Account temporarily suspended",
 					`Your anonymous ID is suspended for ${b.suspend_days} day(s).`,
-					{ link: "/chat" },
+					{ link: "/activity" },
 				);
 			if (b.suspend_days === 0 && existing?.suspended_until)
 				await notifyUser(
@@ -1182,7 +1182,7 @@ export default async function handler(req, res) {
 					"suspension_lifted",
 					"Suspension lifted",
 					"Your account is active again.",
-					{ link: "/chat" },
+					{ link: "/activity" },
 				);
 			if (b.banned === true && !existing?.banned)
 				await notifyUser(
@@ -1190,7 +1190,7 @@ export default async function handler(req, res) {
 					"ban",
 					"Account permanently banned",
 					"This anonymous ID has been permanently banned from posting.",
-					{ link: "/chat" },
+					{ link: "/activity" },
 				);
 			if (b.banned === false && existing?.banned)
 				await notifyUser(
@@ -1198,7 +1198,7 @@ export default async function handler(req, res) {
 					"unban",
 					"Ban lifted",
 					"Your anonymous ID is active again.",
-					{ link: "/chat" },
+					{ link: "/activity" },
 				);
 			return res.status(200).json(data);
 		}

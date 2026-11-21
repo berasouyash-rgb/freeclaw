@@ -1,349 +1,228 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <link rel="manifest" href="/manifest.webmanifest" />
-    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>Voice Flow — Anonymous School Feedback Platform</title>
     <meta name="description" content="Voice Flow lets students share anonymous feedback, report issues, and track solutions. Voice matters — speak up and watch real change happen at your school." />
-    <meta name="theme-color" content="#5652d6" />
+    <meta name="theme-color" content="#0B0B0E" />
     <link rel="canonical" href="https://voice-box-psi.vercel.app/" />
 
     <!-- Open Graph / Twitter -->
     <meta property="og:type" content="website" />
-    <meta property="og:site_name" content="Voice Flow" />
-    <meta property="og:title" content="Voice Flow — Anonymous School Feedback Platform" />
-    <meta property="og:description" content="Voice Flow lets students share anonymous feedback, report issues, and track solutions. Voice matters — speak up and watch real change happen at your school." />
     <meta property="og:url" content="https://voice-box-psi.vercel.app/" />
-    <meta property="og:image" content="https://voice-box-psi.vercel.app/icons/apple-touch-icon.png" />
-    <meta name="twitter:card" content="summary" />
+    <meta property="og:title" content="Voice Flow — Anonymous School Feedback Platform" />
+    <meta property="og:description" content="Empowering student voices through anonymous feedback, polls, and verified school actions." />
+    <meta property="og:image" content="https://voice-box-psi.vercel.app/og-image.png" />
+    <meta name="twitter:card" content="summary_large_image" />
     <meta name="twitter:title" content="Voice Flow — Anonymous School Feedback Platform" />
-    <meta name="twitter:description" content="Anonymous school feedback that gets fixed. Report problems, vote in polls, track solutions — no names, no emails, no tracking." />
+    <meta name="twitter:description" content="Empowering student voices through anonymous feedback, polls, and verified school actions." />
+    <meta name="twitter:image" content="https://voice-box-psi.vercel.app/og-image.png" />
 
-    <!-- Structured data: WebSite + Organization -->
-    <script type="application/ld+json">
-      {
-        "@context": "https://schema.org",
-        "@graph": [
-          {
-            "@type": "WebSite",
-            "name": "Voice Flow",
-            "alternateName": "Voice Flow Anonymous School Feedback",
-            "url": "https://voice-box-psi.vercel.app/",
-            "description": "Anonymous school feedback platform: students report problems, share ideas, vote in polls, and track issues from reported to solved.",
-            "inLanguage": "en"
-          },
-          {
-            "@type": "Organization",
-            "name": "Voice Flow",
-            "url": "https://voice-box-psi.vercel.app/",
-            "slogan": "Speak up. Stay invisible. Get things fixed."
-          }
-        ]
-      }
-    </script>
+    <!-- Security & Performance Meta Tags -->
+    <meta http-equiv="X-Content-Type-Options" content="nosniff" />
+    <meta name="referrer" content="strict-origin-when-cross-origin" />
 
-    <!-- Fonts: preconnect + preload for zero FOIT -->
+    <!-- PWA Manifest -->
+    <link rel="manifest" href="/manifest.webmanifest" />
+
+    <!-- Google Fonts: Albert Sans & JetBrains Mono -->
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=Albert+Sans:wght@400;500;600;700&family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+    <link href="https://fonts.googleapis.com/css2?family=Albert+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
 
-    <!-- Google Model Viewer for 3D Robot Pet (.glb) -->
-    <script type="module" src="https://ajax.googleapis.com/ajax/libs/model-viewer/4.0.0/model-viewer.min.js"></script>
-    <!-- Official Spline Viewer for 3D Coworker Scene -->
-    <script type="module" src="https://cdn.spline.design/@splinetool/viewer@2.0.184/build/spline-viewer.js"></script>
-
-    <!-- Splash screen v3 "INTERACTIVE HARMONIC VOICE ORB" — shown instantly before React mounts -->
+    <!-- Clean, Professional Loading Screen (Zero AI Slop) -->
     <style>
-      /* Theme tokens — mirror the app palette; the splash renders before
-         src/index.css is loaded, so it ships its own copies. */
       :root {
-        --vb-a: #5652d6;            /* brand violet — mirrors --vb-accent */
-        --vb-a2: #7a6ff0;           /* violet 2 — mirrors --vb-accent2 */
-        --vb-cyan: #38e1ff;         /* sky cyan — mirrors the aurora cyan */
-        --vb-word: #171724;
-        --vb-tag: #73738c;
-        --vb-pill-bg: rgba(86, 82, 214, 0.08);
-        --vb-pill-border: rgba(86, 82, 214, 0.18);
-        --vb-pill-text: #5652d6;
-        --vb-dot: #10b981;
+        --spl-bg: #0b0b0e;
+        --vb-card: #14141a;
+        --spl-fg: #f4f2ec;
+        --spl-muted: #8c8c95;
+        --vb-border: rgba(244, 242, 236, 0.08);
+        --spl-accent: #6366f1;
+        --spl-accent-glow: rgba(99, 102, 241, 0.25);
       }
+      @media (prefers-color-scheme: light) {
+        :root {
+          --spl-bg: #f8f8fb;
+          --vb-card: #ffffff;
+          --spl-fg: #14141a;
+          --spl-muted: #6d6d78;
+          --vb-border: rgba(20, 20, 26, 0.08);
+          --spl-accent: #5652d6;
+          --spl-accent-glow: rgba(86, 82, 214, 0.2);
+        }
+      }
+      [data-theme="dark"] {
+        --spl-bg: #0b0b0e;
+        --vb-card: #14141a;
+        --spl-fg: #f4f2ec;
+        --spl-muted: #8c8c95;
+        --vb-border: rgba(244, 242, 236, 0.08);
+        --spl-accent: #6366f1;
+        --spl-accent-glow: rgba(99, 102, 241, 0.25);
+      }
+      [data-theme="light"] {
+        --spl-bg: #f8f8fb;
+        --vb-card: #ffffff;
+        --spl-fg: #14141a;
+        --spl-muted: #6d6d78;
+        --vb-border: rgba(20, 20, 26, 0.08);
+        --spl-accent: #5652d6;
+        --spl-accent-glow: rgba(86, 82, 214, 0.2);
+      }
+
       #vb-splash {
-        position: fixed; inset: 0; z-index: 99999;
-        display: flex; flex-direction: column; align-items: center; justify-content: center;
-        background:
-          radial-gradient(90% 70% at 50% 40%, rgba(86,82,214,0.05) 0%, transparent 62%),
-          #f6f6fb;
-        color: var(--vb-word);
-        font-family: 'Albert Sans', system-ui, sans-serif;
+        position: fixed;
+        inset: 0;
+        z-index: 99999;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        background: var(--spl-bg);
+        color: var(--spl-fg);
+        font-family: "Albert Sans", system-ui, -apple-system, sans-serif;
         overflow: hidden;
         user-select: none;
-        cursor: pointer;
-        transition: opacity .30s cubic-bezier(.16,1,.3,1), transform .30s cubic-bezier(.16,1,.3,1), visibility 0s linear .30s;
+        transition: opacity 0.3s cubic-bezier(0.16, 1, 0.3, 1), transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);
       }
-      #vb-splash.vb-hide { opacity: 0; transform: scale(1.02); pointer-events: none; visibility: hidden; }
-      /* Normal boot: the splash dissolves into the app (main.tsx). */
-      #vb-splash.vb-morph-out { opacity: 0; transform: scale(1.01); pointer-events: none; visibility: hidden; }
-
-      /* ── MESH STAGE — soft blurred orbs drifting behind the wordmark ── */
-      .vb-splash-mesh { position: absolute; inset: 0; pointer-events: none; }
-      .vb-mesh-orb {
-        position: absolute; border-radius: 50%; filter: blur(64px);
-        opacity: .55; pointer-events: none;
-      }
-      .vb-mesh-orb--1 {
-        width: 480px; height: 300px; left: -90px; top: 10%;
-        background: radial-gradient(circle, rgba(86,82,214,.38) 0%, rgba(122,111,240,.16) 55%, transparent 78%);
-        animation: vb-mesh-drift1 15s cubic-bezier(.42,0,.58,1) infinite alternate;
-      }
-      .vb-mesh-orb--2 {
-        width: 420px; height: 420px; right: -60px; top: 22%;
-        background: radial-gradient(circle, rgba(56,225,255,.22) 0%, rgba(86,150,214,.07) 60%, transparent 80%);
-        animation: vb-mesh-drift2 19s cubic-bezier(.42,0,.58,1) infinite alternate-reverse;
-      }
-      .vb-mesh-orb--3 {
-        width: 320px; height: 300px; left: 20%; bottom: 5%;
-        background: radial-gradient(circle, rgba(122,111,240,.26) 0%, rgba(86,82,214,.10) 65%, transparent 85%);
-        animation: vb-mesh-drift3 23s cubic-bezier(.42,0,.58,1) infinite alternate;
-      }
-      @keyframes vb-mesh-drift1 { from { transform: translate(-40px, 60px); } to { transform: translate(40px, -30px); } }
-      @keyframes vb-mesh-drift2 { from { transform: translate(30px, -50px); } to { transform: translate(-30px, 60px); } }
-      @keyframes vb-mesh-drift3 { from { transform: translate(0px, 40px); } to { transform: translate(-30px, -20px); } }
-
-      /* ── THE VOICE ORB ─────────────────────────────────────────── */
-      .vb-orb {
-        position: relative; width: 176px; height: 176px; margin-bottom: 24px;
-        display: flex; align-items: center; justify-content: center;
-      }
-      /* Soft core halo — light thrown by the voice tile onto the mesh */
-      .vb-orb::before {
-        content: ""; position: absolute; width: 240px; height: 240px; border-radius: 50%;
-        background: radial-gradient(circle, rgba(86,82,214,.22) 0%, transparent 68%);
-        filter: blur(12px); pointer-events: none;
-      }
-      /* Concentric acoustic ripple rings */
-      .vb-orb i {
-        position: absolute; inset: 0; margin: auto;
-        width: 52px; height: 52px; border-radius: 50%;
-        border: 1.5px solid rgba(86,82,214,.45);
-        opacity: 0; pointer-events: none;
-        animation: vb-ripple 2.6s cubic-bezier(.16,1,.3,1) infinite;
-      }
-      .vb-orb i:nth-child(2) { animation-delay: .85s; border-color: rgba(122,111,240,.4); }
-      .vb-orb i:nth-child(3) { animation-delay: 1.7s; border-color: rgba(56,225,255,.35); }
-      @keyframes vb-ripple {
-        0%   { transform: scale(.55); opacity: 0; }
-        22%  { opacity: .9; }
-        100% { transform: scale(2.8); opacity: 0; }
+      #vb-splash.vb-hide,
+      #vb-splash.vb-morph-out {
+        opacity: 0;
+        transform: scale(0.99);
+        pointer-events: none;
+        visibility: hidden;
       }
 
-      /* Central 3D Luminous Core */
-      .vb-core {
-        position: relative; width: 76px; height: 76px; border-radius: 24px;
-        background: linear-gradient(135deg, #7a6ff0 0%, #5652d6 50%, #3b36bd 100%);
-        box-shadow:
-          0 10px 30px -5px rgba(86,82,214,0.65),
-          0 0 20px 2px rgba(122,111,240,0.4),
-          inset 0 1px 2px rgba(255,255,255,0.4);
-        display: flex; align-items: center; justify-content: center;
-        transition: transform .2s ease;
-      }
-      #vb-splash:hover .vb-core { transform: scale(1.06); }
-      #vb-splash:active .vb-core { transform: scale(0.96); }
-
-      /* Equalizer sound bars inside core */
-      .vb-eq {
-        display: flex; align-items: center; gap: 3.5px; height: 26px;
-      }
-      .vb-eq span {
-        width: 3.5px; border-radius: 2px; background: #ffffff;
-        animation: vb-eq-dance 1.2s ease-in-out infinite alternate;
-      }
-      .vb-eq span:nth-child(1) { height: 10px; animation-delay: 0.1s; }
-      .vb-eq span:nth-child(2) { height: 18px; animation-delay: 0.25s; }
-      .vb-eq span:nth-child(3) { height: 26px; animation-delay: 0.4s; }
-      .vb-eq span:nth-child(4) { height: 16px; animation-delay: 0.15s; }
-      .vb-eq span:nth-child(5) { height: 11px; animation-delay: 0.3s; }
-      @keyframes vb-eq-dance {
-        0%   { transform: scaleY(0.35); opacity: 0.6; }
-        100% { transform: scaleY(1); opacity: 1; }
+      .vb-splash-container {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        text-align: center;
+        max-width: 320px;
+        padding: 24px;
       }
 
-      /* Orbiting satellite nodes */
-      .vb-orb u {
-        position: absolute; inset: -10px; border-radius: 50%;
-        animation: vb-spin 5.5s linear infinite; pointer-events: none;
-      }
-      .vb-orb u:nth-of-type(2) { inset: 12px; animation-duration: 3.8s; animation-direction: reverse; }
-      .vb-orb u::before {
-        content: ""; position: absolute; top: -3px; left: 50%;
-        width: 7px; height: 7px; margin-left: -3.5px; border-radius: 50%;
-        background: #7a6ff0; box-shadow: 0 0 12px 2px rgba(122,111,240,.9);
-      }
-      .vb-orb u:nth-of-type(2)::before {
-        width: 5px; height: 5px; margin-left: -2.5px;
-        background: #38e1ff; box-shadow: 0 0 10px 2px rgba(56,225,255,.9);
-      }
-      @keyframes vb-spin { to { transform: rotate(360deg); } }
-
-      /* ── WORDMARK & TYPOGRAPHY ─────────────────────────────────── */
-      .vb-word {
-        display: flex; font-family: 'Fraunces', serif; font-size: clamp(34px, 5vw, 46px); font-weight: 700;
-        letter-spacing: -0.025em; margin-bottom: 6px;
-      }
-      .vb-word span {
-        display: inline-block; opacity: 0; transform: translateY(12px) rotateX(30deg);
-        animation: vb-letter .55s cubic-bezier(.16,1,.3,1) forwards;
-      }
-      @keyframes vb-letter { to { opacity: 1; transform: none; } }
-
-      .vb-tag {
-        font-size: 13.5px; font-weight: 600; color: var(--vb-tag); letter-spacing: .06em;
-        text-transform: uppercase; opacity: 0; animation: vb-fade .35s cubic-bezier(.16,1,.3,1) .35s forwards;
-      }
-      @keyframes vb-fade { to { opacity: 1; } }
-
-      /* Dynamic Interactive Status Pill */
-      .vb-status-pill {
-        margin-top: 22px; padding: 6px 16px; border-radius: 9999px;
-        background: var(--vb-pill-bg); border: 1px solid var(--vb-pill-border);
-        display: flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 600;
-        color: var(--vb-pill-text); letter-spacing: 0.02em;
-        box-shadow: 0 4px 14px rgba(86,82,214,0.08);
-        transition: all .2s ease;
-      }
-      .vb-status-dot {
-        width: 6px; height: 6px; border-radius: 50%; background: #10b981;
-        box-shadow: 0 0 8px #10b981; animation: vb-pulse-dot 1.4s infinite;
-      }
-      @keyframes vb-pulse-dot {
-        0%,100% { opacity: 1; transform: scale(1); }
-        50%     { opacity: 0.4; transform: scale(0.8); }
+      .vb-splash-logo {
+        position: relative;
+        width: 56px;
+        height: 56px;
+        border-radius: 16px;
+        background: linear-gradient(135deg, #6366f1 0%, #4338ca 100%);
+        box-shadow: 0 8px 24px var(--spl-accent-glow);
+        display: grid;
+        place-items: center;
+        margin-bottom: 20px;
       }
 
-      /* Click ripple effect */
-      .vb-click-ripple {
-        position: absolute; border-radius: 50%; pointer-events: none;
-        border: 2px solid rgba(122,111,240,0.6);
-        animation: vb-burst 0.7s cubic-bezier(0.1, 0.8, 0.3, 1) forwards;
-      }
-      @keyframes vb-burst {
-        0%   { width: 0; height: 0; opacity: 0.9; transform: translate(-50%, -50%) scale(0); }
-        100% { width: 320px; height: 320px; opacity: 0; transform: translate(-50%, -50%) scale(1); }
+      .vb-splash-logo svg {
+        width: 28px;
+        height: 28px;
+        color: #ffffff;
       }
 
-      /* Dark mode adaptation — mesh lifts tones for depth on lacquer */
-      @media (prefers-color-scheme: dark) {
-        :root {
-          --vb-word: #f0f0f7;
-          --vb-tag: #8d8da2;
-          --vb-pill-bg: rgba(139, 133, 245, 0.14);
-          --vb-pill-border: rgba(139, 133, 245, 0.26);
-          --vb-pill-text: #c4b5fd;
-        }
-        #vb-splash { background: #0b0c13; }
-        .vb-mesh-orb--1 { background: radial-gradient(circle, rgba(139,133,245,.42) 0%, rgba(122,111,240,.20) 55%, transparent 78%); }
-        .vb-mesh-orb--2 { background: radial-gradient(circle, rgba(74,217,238,.16) 0%, rgba(86,150,214,.06) 60%, transparent 80%); }
-        .vb-mesh-orb--3 { background: radial-gradient(circle, rgba(167,157,255,.30) 0%, rgba(86,82,214,.10) 65%, transparent 85%); }
+      .vb-splash-title {
+        font-size: 19px;
+        font-weight: 700;
+        letter-spacing: -0.025em;
+        margin: 0 0 6px 0;
+        color: var(--spl-fg);
       }
-      .dark #vb-splash, [data-theme="dark"] #vb-splash {
-        background: #0b0c13 !important;
-        color: #f0f0f7 !important;
+
+      .vb-splash-desc {
+        font-size: 13px;
+        color: var(--spl-muted);
+        margin: 0 0 24px 0;
+        font-weight: 400;
       }
-      .dark #vb-splash .vb-mesh-orb, [data-theme="dark"] #vb-splash .vb-mesh-orb { opacity: .65; }
-      .dark #vb-splash .vb-status-pill, [data-theme="dark"] #vb-splash .vb-status-pill {
-        background: rgba(139,133,245,0.14) !important; border-color: rgba(139,133,245,0.26) !important; color: #c4b5fd !important;
+
+      .vb-progress-track {
+        width: 180px;
+        height: 3px;
+        border-radius: 9999px;
+        background: var(--vb-border);
+        overflow: hidden;
+        position: relative;
+        margin-bottom: 14px;
+      }
+
+      .vb-progress-fill {
+        display: block;
+        height: 100%;
+        width: 100%;
+        background: var(--spl-accent);
+        border-radius: 9999px;
+        transform: scaleX(var(--vb-progress, 0.15));
+        transform-origin: left;
+        transition: transform 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+      }
+
+      .vb-status-meta {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-family: "JetBrains Mono", ui-monospace, monospace;
+        font-size: 11px;
+        color: var(--spl-muted);
+      }
+
+      .vb-status-index {
+        color: var(--spl-accent);
+        font-weight: 600;
       }
 
       @media (prefers-reduced-motion: reduce) {
-        .vb-orb i, .vb-orb u, .vb-mesh-orb, .vb-eq span { animation: none !important; }
-        .vb-orb i { opacity: .25 !important; transform: scale(1.4); }
-        .vb-mesh-orb { opacity: .14; transform: none !important; }
-        .vb-word span, .vb-tag { animation-duration: .01s; }
+        #vb-splash {
+          transition: opacity 0.15s ease;
+        }
+        .vb-progress-fill {
+          transition: none;
+        }
       }
     </style>
   </head>
   <body>
-    <!-- Interactive Splash screen DOM — removed by main.tsx once React mounts -->
-    <div id="vb-splash" role="status" aria-label="Voice Flow is loading" title="Click anywhere to trigger soundwaves">
-      <div class="vb-splash-mesh" aria-hidden="true">
-        <span class="vb-mesh-orb vb-mesh-orb--1"></span>
-        <span class="vb-mesh-orb vb-mesh-orb--2"></span>
-        <span class="vb-mesh-orb vb-mesh-orb--3"></span>
-      </div>
-
-      <div class="vb-orb" aria-hidden="true">
-        <i></i><i></i><i></i>
-        <div class="vb-core">
-          <div class="vb-eq">
-            <span></span><span></span><span></span><span></span><span></span>
-          </div>
+    <div id="vb-splash" role="status" aria-label="Loading Voice Flow">
+      <div class="vb-splash-container">
+        <div class="vb-splash-logo" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z" />
+            <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+            <line x1="12" x2="12" y1="19" y2="22" />
+          </svg>
         </div>
-        <u></u><u></u>
-      </div>
-
-      <div class="vb-word" aria-label="Voice Flow">
-        <span style="animation-delay:.04s">V</span><span style="animation-delay:.07s">o</span><span style="animation-delay:.10s">i</span><span style="animation-delay:.13s">c</span><span style="animation-delay:.16s">e</span><span style="animation-delay:.19s">&nbsp;</span><span style="animation-delay:.22s">F</span><span style="animation-delay:.25s">l</span><span style="animation-delay:.28s">o</span><span style="animation-delay:.31s">w</span>
-      </div>
-
-      <div class="vb-tag">Anonymous School Feedback Platform</div>
-
-      <div class="vb-status-pill" id="vb-status-text">
-        <span class="vb-status-dot"></span>
-        <span id="vb-stage-label">Connecting 24/7 AI Sentinel…</span>
+        <h1 class="vb-splash-title">Voice Flow</h1>
+        <p class="vb-splash-desc">Anonymous Student Platform</p>
+        <div class="vb-progress-track" aria-hidden="true">
+          <span class="vb-progress-fill" id="vb-progress-bar"></span>
+        </div>
+        <div class="vb-status-meta">
+          <span class="vb-status-index" id="vb-stage-index">01</span>
+          <span id="vb-stage-label">Loading...</span>
+        </div>
       </div>
 
       <script>
-        // Interactive ripple effect & dynamic stage progression
-        (function() {
-          const splash = document.getElementById("vb-splash");
-          if (!splash) return;
-
-          // Check stored dark/light theme
+        (function () {
           try {
-            const saved = localStorage.getItem("vb_theme") || localStorage.getItem("theme");
-            if (saved === "dark" || (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches && saved !== "light")) {
-              splash.setAttribute("data-theme", "dark");
-            } else if (saved === "light") {
-              splash.setAttribute("data-theme", "light");
-            }
-          } catch(e) {}
+            var saved = localStorage.getItem("vb_theme") || localStorage.getItem("theme");
+            var prefersDark = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
+            if (saved === "dark" || (prefersDark && saved !== "light")) document.documentElement.setAttribute("data-theme", "dark");
+            else if (saved === "light") document.documentElement.setAttribute("data-theme", "light");
+          } catch (e) {}
 
-          // Interactive click / touch soundwave burst
-          function createRipple(x, y) {
-            const ripple = document.createElement("div");
-            ripple.className = "vb-click-ripple";
-            ripple.style.left = x + "px";
-            ripple.style.top = y + "px";
-            splash.appendChild(ripple);
-            setTimeout(() => ripple.remove(), 700);
-          }
-          splash.addEventListener("pointerdown", function(e) {
-            createRipple(e.clientX, e.clientY);
+          window.addEventListener("vb:boot-stage", function (event) {
+            var detail = event.detail || {};
+            var label = document.getElementById("vb-stage-label");
+            var index = document.getElementById("vb-stage-index");
+            var bar = document.getElementById("vb-progress-bar");
+            if (label && typeof detail.label === "string") label.textContent = detail.label;
+            if (index && typeof detail.index === "number") index.textContent = String(detail.index).padStart(2, "0");
+            if (bar && typeof detail.index === "number") bar.style.setProperty("--vb-progress", String(Math.min(1, Math.max(0.15, detail.index / 3))));
           });
-
-          // Dynamic stage progression text
-          const label = document.getElementById("vb-stage-label");
-          if (label) {
-            const stages = [
-              "Connecting 24/7 AI Sentinel…",
-              "Verifying zero-trace privacy…",
-              "Synchronizing live feedback…",
-              "Reading your feed…",
-            "Voice Flow Ready"
-            ];
-            let idx = 0;
-            const timer = setInterval(() => {
-              idx++;
-              if (idx < stages.length) {
-                label.textContent = stages[idx];
-              } else {
-                clearInterval(timer);
-              }
-            }, 550);
-          }
         })();
       </script>
     </div>

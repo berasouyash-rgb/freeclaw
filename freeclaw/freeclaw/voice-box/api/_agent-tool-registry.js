@@ -1447,7 +1447,7 @@ const TOOLS = [
 
 	// ── Computer Use / Navigation (Admin only) ──────────────────────
 	// This tool does not navigate on the server. It returns a client action
-	// that Buddy executes through the real in-app navigation adapter, then
+	// that the application executes through the real in-app navigation adapter, then
 	// verifies by observing the resulting UI state.
 	{
 		name: "navigate_admin_page",

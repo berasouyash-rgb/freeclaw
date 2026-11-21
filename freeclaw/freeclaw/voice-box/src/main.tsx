@@ -31,6 +31,19 @@ initVitals();
 // Capture real JS errors and send to backend for admin visibility
 initErrorCapture();
 
+/** Advance the splash's progress line only when a real boot milestone
+ *  completes. The inline splash script listens for this event; the direct DOM
+ *  writes are a fallback in case the listener has not attached yet. */
+function bootStage(index: number, label: string): void {
+	const labelEl = document.getElementById("vb-stage-label");
+	const indexEl = document.getElementById("vb-stage-index");
+	const bar = document.getElementById("vb-progress-bar");
+	if (labelEl) labelEl.textContent = label;
+	if (indexEl) indexEl.textContent = String(index).padStart(2, "0");
+	if (bar) bar.style.setProperty("--vb-progress", String(Math.min(1, index / 3)));
+	window.dispatchEvent(new CustomEvent("vb:boot-stage", { detail: { index, label } }));
+}
+
 /** Remove the HTML splash. Safe to call multiple times. Skips the element
  *  while the boot morph owns it — the morph itself removes it. */
 function killSplash() {
@@ -41,7 +54,7 @@ function killSplash() {
 		splash.isConnected
 	) {
 		splash.classList.add("vb-hide");
-		setTimeout(() => splash.remove(), 260);
+		setTimeout(() => splash.remove(), 650);
 	}
 }
 
@@ -66,12 +79,12 @@ function showFatal(message: string) {
 
 	const title = document.createElement("h1");
 	title.style.cssText =
-		"font-size:17px;font-weight:700;margin:0 0 6px;color:#171724";
+		"font-size:17px;font-weight:700;margin:0 0 6px;color:var(--spl-fg)";
 	title.textContent = "Voice Flow couldn't start";
 
 	const detail = document.createElement("p");
 	detail.style.cssText =
-		"font-size:13px;line-height:1.55;color:#8e8ea5;margin:0 0 20px;word-break:break-word";
+		"font-size:13px;line-height:1.55;color:var(--spl-muted);margin:0 0 20px;word-break:break-word";
 	detail.textContent = (message || "Unknown startup error").slice(0, 200);
 
 	const actions = document.createElement("div");
@@ -80,13 +93,13 @@ function showFatal(message: string) {
 
 	const reload = document.createElement("button");
 	reload.style.cssText =
-		"padding:10px 22px;border-radius:10px;border:0;background:#5652d6;color:#fff;font-size:13px;font-weight:600;cursor:pointer";
+		"padding:10px 22px;border-radius:10px;border:0;background:var(--spl-accent);color:var(--spl-accent-ink);font-size:13px;font-weight:600;cursor:pointer";
 	reload.textContent = "Reload";
 	reload.addEventListener("click", () => location.reload());
 
 	const hardReload = document.createElement("button");
 	hardReload.style.cssText =
-		"padding:10px 16px;border-radius:10px;border:1px solid #e2e2ee;background:transparent;color:#5652d6;font-size:13px;font-weight:600;cursor:pointer";
+		"padding:10px 16px;border-radius:10px;border:1px solid var(--spl-line);background:transparent;color:var(--spl-fg);font-size:13px;font-weight:600;cursor:pointer";
 	hardReload.textContent = "Clear cache + reload";
 	hardReload.addEventListener("click", () => {
 		try {
@@ -119,21 +132,22 @@ async function boot(): Promise<void> {
 	// registration, and `navigator.serviceWorker.ready` never resolves
 	// until one exists.
 	registerNotifyServiceWorker();
+	bootStage(1, "Initializing platform…");
 	await syncIdentityVault();
+	bootStage(2, "Loading preferences…");
 	await hydrateStore();
 	createRoot(document.getElementById("root")!).render(
 		<StrictMode>
 			<App />
 		</StrictMode>,
 	);
-	// Premium boot morph: the static splash dissolves into the mounted app —
-	// a transition between two real states, not a fake progress bar. The 3s
-	// killSplash ceiling above still applies as the hard backup.
+	bootStage(3, "Ready");
+	// Smooth fade out into mounted app
 	requestAnimationFrame(() => {
 		const splash = document.getElementById("vb-splash");
 		if (splash) {
 			splash.classList.add("vb-morph-out");
-			setTimeout(() => splash.remove(), 320);
+			setTimeout(() => splash.remove(), 280);
 		}
 	});
 	// Warm core routes during idle so all subsequent page navigations complete in < 300ms
