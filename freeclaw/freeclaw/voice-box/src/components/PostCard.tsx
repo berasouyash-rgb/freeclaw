@@ -23,6 +23,7 @@ import { api } from "../lib/api";
 import { hasAdminSession, subscribeAdminSession } from "../lib/adminSession";
 import { prefetchRouteChunk } from "../lib/routeChunks";
 import { triggerHaptic } from "../lib/haptics";
+import { celebrate } from "../lib/joy";
 import PostCardAdminBar from "./PostCardAdminBar";
 import {
 	CAT_EMOJI,
@@ -314,6 +315,8 @@ function PostCardInner({ post, myReactions, onReacted, pollData, myPollVote, onP
 				setLocalCounts(res.counts);
 				setLocalMine(res.mine ?? []);
 				postedRef.current = true;
+				// Server-confirmed support gets a small, accessible celebration.
+				if (res.toggled) celebrate("support");
 				// Hand the authoritative result to the parent so the list and the
 				// my-map converge immediately (not on the next full refresh).
 				// The 5th arg is the server mine list; callers that ignore args

@@ -13,6 +13,7 @@ import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { useApp } from "../contexts/AppContext";
 import { api, hasAdminSession } from "../lib/api";
 import { triggerHaptic } from "../lib/haptics";
+import { celebrate, JOY_COPY } from "../lib/joy";
 import { errorText } from "../lib/utils";
 import type { PollData } from "../types";
 import { ConfirmDialog } from "./ui";
@@ -240,14 +241,11 @@ const PollCard = memo(function PollCard({
 			setVoted(true);
 			setChangingVote(false);
 			setFreshFill(true);
-			triggerHaptic("medium");
+			// Only after the server confirms the vote — never celebrate an
+			// optimistic guess that might roll back.
+			celebrate("vote");
 			onVoted?.(res);
-			toast(
-				voted
-					? "Vote updated — anonymously 🔒"
-					: "Vote recorded — anonymously 🔒",
-				"ok",
-			);
+			toast(JOY_COPY.vote, "ok");
 		} catch (e: unknown) {
 			toast(e instanceof Error ? e.message : "Failed to record vote", "err");
 		}

@@ -18,7 +18,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router";
-import { fireConfetti } from "../components/Confetti";
+import { celebrate } from "../lib/joy";
 import RelevanceNote from "../components/RelevanceNote";
 import AppealPanel, { type AppealSurface } from "../components/AppealPanel";
 import { useApp } from "../contexts/AppContext";
@@ -1052,7 +1052,7 @@ export default function Submit() {
 				});
 				stampCooldown("post");
 				lsSet(DRAFT_KEY, null);
-				fireConfetti();
+				celebrate("poll_publish");
 				toast("Poll published anonymously", "ok");
 				nav("/polls");
 			} catch (e: unknown) {
@@ -1205,7 +1205,7 @@ export default function Submit() {
 			});
 			// Celebration only for actually-published posts — a held post is
 			// not live, and confetti would teach users that review == posted.
-			if (!held) fireConfetti();
+			if (!held) celebrate("publish");
 			if (post.deduped) {
 				toast("Already published — opened your existing post", "ok");
 			} else {

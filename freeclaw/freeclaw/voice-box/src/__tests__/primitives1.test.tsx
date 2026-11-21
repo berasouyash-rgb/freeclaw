@@ -186,6 +186,39 @@ describe("LoadingSpinner", () => {
 // ─── Confetti ────────────────────────────────────────────────────────
 
 describe("Confetti", () => {
+	it("does not create a canvas when the user prefers reduced motion", () => {
+		// stubGlobal is restored by the afterEach `vi.unstubAllGlobals()` below;
+		// matchMedia is a non-configurable window property, so spyOn leaks.
+		vi.stubGlobal(
+			"matchMedia",
+			vi.fn((query: string) => ({
+				matches: query.includes("prefers-reduced-motion"),
+				media: query,
+				onchange: null,
+				addListener: vi.fn(),
+				removeListener: vi.fn(),
+				addEventListener: vi.fn(),
+				removeEventListener: vi.fn(),
+				dispatchEvent: vi.fn(),
+			})),
+		);
+		fireConfetti();
+		expect(document.querySelector("canvas")).not.toBeInTheDocument();
+	});
+
+	it("supports a small burst for everyday wins", () => {
+		vi.spyOn(Math, "random").mockReturnValue(0.5);
+		fireConfetti("small");
+		expect(document.querySelector("canvas")).toBeInTheDocument();
+		let guard = 0;
+		while (frames.length && guard < 120) {
+			const cb = frames.shift();
+			cb?.(Date.now());
+			guard++;
+		}
+		expect(ctxMock.fill).toHaveBeenCalled();
+	});
+
 	it("fireConfetti appends a fixed full-screen canvas and draws particles", () => {
 		vi.spyOn(Math, "random").mockReturnValue(0.5);
 		fireConfetti();
