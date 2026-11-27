@@ -730,7 +730,7 @@ export default function Home() {
 		if (rowFlushTimer.current !== null) return;
 		rowFlushTimer.current = window.setTimeout(() => {
 			void flushPostRows();
-		}, 400);
+		}, 120);
 	}, [flushPostRows]);
 
 	// Real-time immediate post hide across all open tabs
@@ -864,8 +864,8 @@ export default function Home() {
 			// never refetched twice.
 			markUpdatesAvailable();
 		},
-		250, // short debounce: bursts coalesce in pendingRowIds + the 400ms
-		// row flush, so reaction deltas land in ~250ms instead of 1.5s.
+		60, // near-instant: bursts still coalesce in pendingRowIds + the
+		// 120ms row flush, so another user's like lands in ~200ms.
 	);
 
 	const showPending = () => {

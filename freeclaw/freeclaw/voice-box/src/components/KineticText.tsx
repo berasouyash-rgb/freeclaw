@@ -29,43 +29,34 @@ function hash(text: string): number {
 	}
 	return h >>> 0;
 }
-function unit(seed: number, salt: number): number {
-	let x = (seed ^ Math.imul(salt + 1, 2654435761)) >>> 0;
-	x ^= x >>> 16;
-	x = Math.imul(x, 2246822519) >>> 0;
-	x ^= x >>> 13;
-	return (x >>> 0) / 4294967296;
-}
 const clean = (word: string) => word.toLowerCase().replace(/[^a-z0-9]/g, "");
 
 /** Static fallback (tests / reduced motion): semantic text, no GSAP. */
 function renderWords(
-	tokens: string[],
+	words: string[],
 	gradientSet: Set<string> | null,
+	highlightSet: Set<string>,
 	wordClassName?: string,
 ) {
-	let wordIndex = -1;
-	return tokens.map((token, i) => {
-		// Explicit space elements guarantee stable gap width even while words
-		// are scaled / translated — raw whitespace text nodes can visually
-		// collapse and make adjacent words touch.
-		if (/^\s+$/.test(token)) {
-			return <span key={`space-${i}`} className="kt-space" aria-hidden="true"> </span>;
-		}
-		wordIndex += 1;
-		const h = hash(token.toLowerCase());
-		const gradient = gradientSet
-			? gradientSet.has(clean(token))
-			: unit(h, 7) > 0.84;
+	return words.map((word, i) => {
+		const h = hash(word.toLowerCase());
+		const cleaned = clean(word);
+		const gradient = gradientSet ? gradientSet.has(cleaned) : false;
+		const highlighted = highlightSet.has(cleaned);
 		return (
 			<span
-				key={`${token}-${i}`}
-				className={cn("kt-word", gradient && "kt-word--gradient", wordClassName)}
+				key={`${word}-${i}`}
+				className={cn(
+					"kt-word",
+					gradient && "kt-word--gradient",
+					highlighted && !gradient && "kt-word--highlight",
+					wordClassName,
+				)}
 				data-kt-word=""
 				data-kt-seed={h}
-				style={{ "--i": wordIndex } as CSSProperties}
+				style={{ "--i": i } as CSSProperties}
 			>
-				{token}
+				{word}
 			</span>
 		);
 	});
@@ -73,8 +64,8 @@ function renderWords(
 
 /**
  * Studio-grade word engine: every word is its own GSAP object with a
- * scroll-scrubbed A→B→D lifecycle (small/muted → expanding → oversized,
- * elastic settle), distinct scale/colour/rotation/letter-spacing per word.
+ * scroll-scrubbed physical emergence (opacity + vertical rise + subtle 3D flip).
+ * Strictly immune to word overlap via deterministic CSS margin boxes.
  * Reduced-motion users and unit tests get untouched semantic text.
  */
 export default function KineticText({
@@ -87,7 +78,8 @@ export default function KineticText({
 	highlightWords,
 }: KineticTextProps) {
 	const ref = useRef<HTMLElement>(null);
-	const tokens = useMemo(() => text.split(/(\s+)/).filter((t) => t.length > 0), [text]);
+	// Clean whitespace tokenization — guaranteed non-empty words
+	const words = useMemo(() => text.trim().split(/\s+/).filter(Boolean), [text]);
 	const gradientSet = useMemo(
 		() => (gradientWords ? new Set(gradientWords.map(clean)) : null),
 		[gradientWords],
@@ -103,128 +95,45 @@ export default function KineticText({
 		// Unit tests assert content, not motion; keep the semantic DOM static.
 		if (import.meta.env.MODE === "test") return;
 		if (window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return;
-		const words = Array.from(root.querySelectorAll<HTMLElement>("[data-kt-word]"));
-		if (!words.length) return;
-		const variantName = root.getAttribute("data-kinetic-variant") ?? "body";
+		const wordElements = Array.from(root.querySelectorAll<HTMLElement>("[data-kt-word]"));
+		if (!wordElements.length) return;
 
 		const mm = gsap.matchMedia();
 		const build = (mobile: boolean) => {
-			const isDark = typeof document !== "undefined" && document.documentElement.classList.contains("dark");
-			const activePalette = {
-				ink: isDark ? "#f8fafc" : "#0f172a",
-				slate: isDark ? "#cbd5e1" : "#334155",
-				graphite: isDark ? "#94a3b8" : "#475569",
-				grey: isDark ? "#64748b" : "#475569",
-				blue: isDark ? "#60a5fa" : "#2563eb",
-				violet: isDark ? "#a78bfa" : "#7c3aed",
-				purple: isDark ? "#c084fc" : "#5652d6",
-			};
-
-			const maxScale =
-				variantName === "display" ? (mobile ? 1.06 : 1.12)
-				: variantName === "quote" ? (mobile ? 1.04 : 1.1)
-				: variantName === "eyebrow" ? (mobile ? 1.04 : 1.08)
-				: 1; // body copy never scales past its natural width — no collisions
-			const minScale = mobile ? 0.9 : variantName === "body" ? 0.86 : 0.88;
-			// Words keep their line grid: scale / colour / gradient carry the
-			// drama, drift is deliberately tiny so nothing collides or clips.
-			const xRange = mobile ? 0 : variantName === "body" ? 0 : 2;
-			const yRange = mobile ? 2 : variantName === "body" ? 2 : 4;
-			const rotation = mobile ? 0 : variantName === "body" ? 0.3 : 1.2;
-
 			const timeline = gsap.timeline({
 				defaults: { overwrite: "auto" },
 				scrollTrigger: {
 					trigger: root,
 					start: "top 88%",
-					end: "bottom 24%",
-					scrub: 1,
+					end: "bottom 30%",
+					scrub: 0.7,
 					invalidateOnRefresh: true,
 				},
 			});
 
-			words.forEach((word, i) => {
-				const seed = Number(word.dataset.ktSeed) || hash(word.textContent ?? "");
-				const hero = unit(seed, 11) > 0.72;
-				const gradient = word.classList.contains("kt-word--gradient");
-				const highlighted = highlightSet.has(clean(word.textContent ?? ""));
-				const a = unit(seed, 13);
-				const b = unit(seed, 17);
-				const c = unit(seed, 23);
-				const targetScale = hero || highlighted
-					? maxScale
-					: minScale + (maxScale - minScale) * (0.22 + b * 0.4);
-				const midScale = minScale + (targetScale - minScale) * 0.55;
-				const targetColor = gradient
-					? activePalette.purple
-					: highlighted
-						? activePalette.purple
-						: c > 0.88
-							? activePalette.blue
-							: c > 0.7
-								? activePalette.violet
-								: c > 0.48
-									? activePalette.ink
-									: activePalette.slate;
-				const x = (a - 0.5) * 2 * xRange * (hero ? 1 : 0.5);
-				const y = (b - 0.5) * 2 * yRange * (hero ? 0.7 : 0.3) - (hero ? (variantName === "body" ? 2 : 6) : 0);
-				const rotate = (c - 0.5) * 2 * rotation * (hero ? 1 : 0.4);
-				const skew = (a - 0.5) * (mobile ? 0 : variantName === "body" ? 0.5 : 1.5);
-
+			wordElements.forEach((word, i) => {
+				// 3D physical rise: emerges from subtle perspective depth, zero horizontal collision
 				gsap.set(word, {
-					transformOrigin: hero ? "50% 100%" : "50% 70%",
-					color: gradient ? "transparent" : activePalette.graphite,
-					opacity: 0.76,
-					scale: minScale * (0.92 + a * 0.12),
-					x: 0,
-					y: mobile ? 4 : 8,
-					rotation: 0,
-					skewX: 0,
+					opacity: 0.25,
+					y: mobile ? 10 : 16,
+					rotateX: mobile ? -10 : -16,
+					transformPerspective: 800,
+					transformOrigin: "50% 100%",
 				});
-				if (gradient) {
-					const gradStr = isDark
-						? `linear-gradient(100deg, ${activePalette.blue} 0%, ${activePalette.violet} 35%, ${activePalette.purple} 65%, ${activePalette.blue} 100%)`
-						: `linear-gradient(100deg, #2563eb 0%, #7c3aed 35%, #5652d6 65%, #2563eb 100%)`;
-					gsap.set(word, {
-						backgroundImage: gradStr,
-						backgroundSize: "240% 100%",
-						backgroundPosition: "0% 0%",
-						WebkitBackgroundClip: "text",
-						backgroundClip: "text",
-					});
-				}
 
-				const keyframes: gsap.TweenVars[] = [
+				const pos = (i / Math.max(wordElements.length - 1, 1)) * 0.85;
+
+				timeline.to(
+					word,
 					{
-						scale: midScale,
-						...(gradient ? {} : { color: activePalette.slate }),
-						y: -yRange * 0.18 * (0.5 + b),
-						opacity: 0.92,
-						ease: "power2.out",
-						duration: 0.42,
-					},
-					{
-						scale: targetScale,
-						x,
-						y,
-						rotation: rotate,
-						skewX: skew,
-						...(gradient ? {} : { color: targetColor }),
-						letterSpacing:
-							variantName === "body" ? "0em" : hero ? (mobile ? "-0.01em" : "-0.028em") : "0em",
 						opacity: 1,
-						ease: "elastic.out(1, 0.7)",
-						duration: 0.58,
+						y: 0,
+						rotateX: 0,
+						duration: 0.45,
+						ease: "power2.out",
 					},
-				];
-				timeline.to(word, { keyframes }, i * (mobile ? 0.03 : 0.05));
-				if (gradient) {
-					timeline.to(
-						word,
-						{ backgroundPosition: "100% 0%", ease: "none", duration: 1 },
-						i * 0.05,
-					);
-				}
+					pos,
+				);
 			});
 		};
 
@@ -233,7 +142,7 @@ export default function KineticText({
 		document.fonts?.ready.then(() => ScrollTrigger.refresh()).catch(() => undefined);
 
 		return () => mm.revert();
-	}, [tokens, gradientSet, highlightSet, variant]);
+	}, [words, gradientSet, highlightSet, variant]);
 
 	return createElement(
 		as,
@@ -242,7 +151,7 @@ export default function KineticText({
 			className: cn("kt-text", className),
 			"data-kinetic-variant": variant,
 		},
-		renderWords(tokens, gradientSet, wordClassName),
+		renderWords(words, gradientSet, highlightSet, wordClassName),
 	);
 }
 
@@ -269,68 +178,90 @@ export function SignatureName({ className }: SignatureNameProps) {
 		if (window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return;
 
 		const all = Array.from(tiltEl.querySelectorAll<HTMLElement>("[data-sig-letter]"));
-		const gradientLetters = Array.from(
-			tiltEl.querySelectorAll<HTMLElement>("[data-sig-gradient] [data-sig-letter]"),
-		);
 
 		const ctx = gsap.context(() => {
 			gsap.set(all, {
 				display: "inline-block",
 				transformOrigin: "50% 100%",
-				yPercent: 68,
-				scaleY: 0.4,
-				rotateX: -82,
+				y: 36,
+				rotateX: -40,
 				opacity: 0,
-				filter: "blur(10px)",
+				scale: 0.88,
 			});
-			gsap.timeline({ delay: 0.12 }).to(all, {
-				yPercent: 0,
-				scaleY: 1,
+			gsap.timeline({ delay: 0.08 }).to(all, {
+				y: 0,
 				rotateX: 0,
 				opacity: 1,
-				filter: "blur(0px)",
-				duration: 1.2,
-				ease: "elastic.out(1, 0.62)",
-				stagger: { each: 0.055, from: "start" },
-			});
-			if (gradientLetters.length) {
-				gsap.to(gradientLetters, {
-					backgroundPosition: "100% 0%",
-					ease: "none",
-					duration: 6,
-					repeat: -1,
-					yoyo: true,
-				});
-			}
-
-			// Scroll response: the signature recedes as the hero leaves.
-			gsap.to(scrollEl, {
-				yPercent: -18,
-				scale: 0.9,
-				ease: "none",
-				scrollTrigger: {
-					trigger: scrollEl,
-					start: "top top",
-					end: "bottom top+=320",
-					scrub: 1,
-				},
+				scale: 1,
+				duration: 0.8,
+				ease: "back.out(2)",
+				stagger: { each: 0.035, from: "start" },
 			});
 		}, scrollEl);
 
-		const rx = gsap.quickTo(tiltEl, "rotationX", { duration: 0.6, ease: "power3.out" });
-		const ry = gsap.quickTo(tiltEl, "rotationY", { duration: 0.6, ease: "power3.out" });
-		const onPointer = (e: PointerEvent) => {
-			const nx = e.clientX / window.innerWidth - 0.5;
-			const ny = e.clientY / window.innerHeight - 0.5;
-			ry(nx * 8);
-			rx(-ny * 6);
+		// Dynamic 3D perspective response on cursor movement
+		const onMouseMove = (e: MouseEvent) => {
+			const rect = scrollEl.getBoundingClientRect();
+			const px = (e.clientX - rect.left) / rect.width - 0.5;
+			const py = (e.clientY - rect.top) / rect.height - 0.5;
+			gsap.to(tiltEl, {
+				rotateY: px * 12,
+				rotateX: -py * 12,
+				duration: 0.35,
+				ease: "power2.out",
+				overwrite: "auto",
+			});
 		};
-		window.addEventListener("pointermove", onPointer, { passive: true });
+		const onMouseLeave = () => {
+			gsap.to(tiltEl, {
+				rotateY: 0,
+				rotateX: 0,
+				duration: 0.7,
+				ease: "elastic.out(1, 0.6)",
+				overwrite: "auto",
+			});
+		};
+		scrollEl.addEventListener("mousemove", onMouseMove);
+		scrollEl.addEventListener("mouseleave", onMouseLeave);
+
+		// Individual character tactile elastic reaction on hover
+		const cleanups: (() => void)[] = [];
+		all.forEach((letterEl) => {
+			const onEnter = () => {
+				gsap.to(letterEl, {
+					y: -10,
+					scaleY: 1.16,
+					scaleX: 1.08,
+					duration: 0.2,
+					ease: "elastic.out(1.2, 0.4)",
+					overwrite: "auto",
+				});
+			};
+			const onLeave = () => {
+				gsap.to(letterEl, {
+					y: 0,
+					scaleY: 1,
+					scaleX: 1,
+					duration: 0.45,
+					ease: "elastic.out(1, 0.5)",
+					overwrite: "auto",
+				});
+			};
+			letterEl.addEventListener("mouseenter", onEnter);
+			letterEl.addEventListener("mouseleave", onLeave);
+			cleanups.push(() => {
+				letterEl.removeEventListener("mouseenter", onEnter);
+				letterEl.removeEventListener("mouseleave", onLeave);
+			});
+		});
+
 		document.fonts?.ready.then(() => ScrollTrigger.refresh()).catch(() => undefined);
 
 		return () => {
-			window.removeEventListener("pointermove", onPointer);
 			ctx.revert();
+			scrollEl.removeEventListener("mousemove", onMouseMove);
+			scrollEl.removeEventListener("mouseleave", onMouseLeave);
+			cleanups.forEach((c) => c());
 		};
 	}, []);
 

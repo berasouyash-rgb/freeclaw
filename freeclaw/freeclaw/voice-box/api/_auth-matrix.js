@@ -250,7 +250,11 @@ export async function verifyRouteAccess(endpoint, req) {
 		if (endpoint === "reports") {
 			// POST is public user reporting
 			if (method === "POST") return { authorized: true };
-			// GET, PUT, DELETE are admin only
+			// GET with author filter allows users to fetch their own reports (delegates to handler's verifyCallerIdentity)
+			if (method === "GET" && (req.query?.author || req.headers?.["x-anon-id"])) {
+				return { authorized: true };
+			}
+			// Global GET, PUT, DELETE are admin only
 			if (adminVerdict) return { authorized: true };
 			return {
 				authorized: false,

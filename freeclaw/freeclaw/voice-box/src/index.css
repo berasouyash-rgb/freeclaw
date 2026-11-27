@@ -1,6 +1,8 @@
 /* Fonts are loaded via <link> in index.html (lightningcss cannot resolve remote @imports) */
 @import "tailwindcss";
 
+@custom-variant dark (&:where(.dark, .dark *));
+
 @theme {
   --font-display: "Fraunces", Georgia, "Times New Roman", serif;
   --font-body: "Albert Sans", ui-sans-serif, system-ui, sans-serif;
@@ -1252,58 +1254,8 @@ textarea.moderation-ok {
   .ambient-dust { display: none; }
 }
 
-/* ─── Kinetic typography engine ─────────────────────────────────
-   Every word is an independent GSAP object. No CSS hidden state here:
-   reduced-motion / no-JS visitors get the original semantic text. */
-.kt-word {
-  display: inline-block;
-  position: relative;
-  backface-visibility: hidden;
-}
-.kt-space { display: inline-block; width: .32em; }
-.kt-text[data-kinetic-variant="display"] .kt-space,
-.kt-text[data-kinetic-variant="quote"] .kt-space { width: .75em; }
-.kt-word--gradient {
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
-}
-.kt-text { max-width: 100%; }
+/* ─── Kinetic typography & signature styling are unified at the bottom of this file ── */
 .creator-page { overflow-x: clip; }
-
-/* ─── SOUYASH BERA signature — character-level kinetic identity ── */
-.signature-scroll {
-  display: block;
-  perspective: 900px;
-  transform-origin: 50% 40%;
-  will-change: transform;
-}
-.signature-tilt {
-  display: block;
-  transform-style: preserve-3d;
-  transform-origin: 50% 50%;
-  will-change: transform;
-}
-.signature-line { display: block; white-space: nowrap; }
-.signature-line--solid { color: #14141a; }
-.dark .signature-line--solid { color: #fff; }
-.signature-line--gradient [data-sig-letter] {
-  background-image: linear-gradient(100deg, #4f7cff 0%, #8b5cf6 35%, #4b39d6 65%, #ec4899 100%);
-  background-size: 260% 100%;
-  background-position: 0% 0%;
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
-}
-[data-sig-letter] {
-  display: inline-block;
-  transform-origin: 50% 100%;
-  backface-visibility: hidden;
-  will-change: transform, opacity, filter;
-}
-@media (prefers-reduced-motion: reduce) {
-  .signature-scroll, .signature-tilt, [data-sig-letter] { transform: none !important; will-change: auto; }
-}
 
 /* ─── Creator hero intro — one-time word / letter choreography ── */
 .ci-word, .ci-letter {
@@ -3275,4 +3227,290 @@ html[data-scale="110"] { font-size: 110%; }
   a[href]::after { content: ""; }
 
   @page { margin: 14mm; }
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   STUDIO AMBIENT ENVIRONMENT & PARTICLES
+   ───────────────────────────────────────────────────────────────────────────── */
+.ambient-field {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+  z-index: 0;
+}
+
+.ambient-glow {
+  position: absolute;
+  border-radius: 9999px;
+  filter: blur(100px);
+  opacity: 0.6;
+  will-change: transform;
+}
+
+.ambient-glow--one {
+  top: -15%;
+  left: 15%;
+  width: 650px;
+  height: 480px;
+  background: radial-gradient(circle, rgba(86, 82, 214, 0.28) 0%, rgba(99, 102, 241, 0.12) 60%, transparent 80%);
+  animation: ambientFloat1 20s ease-in-out infinite alternate;
+}
+
+.ambient-glow--two {
+  top: 40%;
+  right: -10%;
+  width: 600px;
+  height: 550px;
+  background: radial-gradient(circle, rgba(236, 72, 153, 0.22) 0%, rgba(139, 92, 246, 0.14) 50%, transparent 80%);
+  animation: ambientFloat2 24s ease-in-out infinite alternate;
+}
+
+.ambient-glow--pointer {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 450px;
+  height: 450px;
+  transform: translate(calc(var(--light-x, 50vw) - 225px), calc(var(--light-y, 40vh) - 225px));
+  background: radial-gradient(circle, rgba(56, 189, 248, 0.16) 0%, rgba(124, 58, 237, 0.08) 50%, transparent 75%);
+  transition: transform 0.18s cubic-bezier(0.1, 0.9, 0.2, 1);
+  opacity: 0.7;
+}
+
+.ambient-grain {
+  position: absolute;
+  inset: 0;
+  background-image: radial-gradient(rgba(0, 0, 0, 0.04) 1px, transparent 0);
+  background-size: 24px 24px;
+  opacity: 0.8;
+  mask-image: radial-gradient(circle at center, black 40%, transparent 90%);
+}
+
+.dark .ambient-grain {
+  background-image: radial-gradient(rgba(255, 255, 255, 0.05) 1px, transparent 0);
+  opacity: 0.9;
+}
+
+.ambient-dust {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+@keyframes ambientFloat1 {
+  0% { transform: translate(0, 0) scale(1); }
+  50% { transform: translate(40px, 30px) scale(1.08); }
+  100% { transform: translate(-30px, 50px) scale(0.95); }
+}
+
+@keyframes ambientFloat2 {
+  0% { transform: translate(0, 0) scale(1); }
+  50% { transform: translate(-50px, -30px) scale(1.1); }
+  100% { transform: translate(20px, -40px) scale(0.92); }
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   MONUMENTAL SOUYASH BERA KINETIC SIGNATURE
+   ───────────────────────────────────────────────────────────────────────────── */
+.signature-scroll {
+  display: block;
+  perspective: 1200px;
+  transform-style: preserve-3d;
+  width: 100%;
+}
+
+.signature-tilt {
+  display: flex;
+  flex-direction: column;
+  gap: 0.06em;
+  transform-style: preserve-3d;
+  will-change: transform;
+}
+
+.signature-line {
+  display: flex;
+  flex-wrap: nowrap;
+  line-height: 1;
+  letter-spacing: -0.02em;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.signature-line--solid {
+  color: var(--vb-ink);
+  font-family: 'Manrope', 'Albert Sans', ui-sans-serif, system-ui, sans-serif;
+  font-weight: 800;
+  letter-spacing: -0.05em;
+  font-size: clamp(2.4rem, 8.5vw, 7.5rem);
+}
+
+.dark .signature-line--solid {
+  color: #ffffff;
+}
+
+.signature-line--gradient {
+  font-family: 'Manrope', 'Albert Sans', ui-sans-serif, system-ui, sans-serif;
+  font-weight: 800;
+  letter-spacing: -0.05em;
+  font-size: clamp(2.4rem, 8.5vw, 7.5rem);
+  color: #4338ca;
+}
+
+.dark .signature-line--gradient {
+  color: #a5b4fc;
+}
+
+.signature-line span[data-sig-letter] {
+  display: inline-block;
+  transform-origin: 50% 100%;
+  cursor: default;
+  user-select: none;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   FULL-PARAGRAPH KINETIC WORD ENGINE (ZERO COLLISION / BULLETPROOF SPACING)
+   ───────────────────────────────────────────────────────────────────────────── */
+.kt-text {
+  position: relative;
+  line-height: 1.75;
+  display: block;
+  max-width: 100%;
+}
+
+.kt-word {
+  display: inline-block;
+  position: relative;
+  white-space: nowrap;
+  backface-visibility: hidden;
+  will-change: transform, opacity;
+  margin-right: 0.32em;
+  margin-left: 0;
+  letter-spacing: -0.01em;
+}
+
+.kt-word:last-child {
+  margin-right: 0;
+}
+
+.kt-space {
+  display: inline-block;
+  width: 0.32em;
+  min-width: 0.32em;
+}
+
+.kt-text[data-kinetic-variant="display"] .kt-word {
+  margin-right: 0.28em;
+}
+
+.kt-text[data-kinetic-variant="quote"] .kt-word {
+  margin-right: 0.35em;
+}
+
+.kt-word--highlight,
+.kt-word--gradient {
+  color: #4338ca;
+  font-weight: 600;
+  margin-right: 0.36em;
+}
+.dark .kt-word--highlight,
+.dark .kt-word--gradient {
+  color: #a5b4fc;
+  font-weight: 600;
+  margin-right: 0.36em;
+}
+
+/* Editorial Swiss-Inspired Typography & Theme */
+.font-serif-editorial {
+  font-family: 'Instrument Serif', Georgia, serif;
+}
+
+.font-sans-editorial {
+  font-family: 'Manrope', -apple-system, BlinkMacSystemFont, sans-serif;
+}
+
+.editorial-ease {
+  transition-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@keyframes wave-slow {
+  0% { transform: translateX(0); }
+  50% { transform: translateX(-15px); }
+  100% { transform: translateX(0); }
+}
+
+.animate-editorial-wave {
+  animation: wave-slow 12s ease-in-out infinite;
+}
+
+/* ─── City Mode — minimal glassy night-city visual language ───────
+   Dark ink, hairline structure, thin light fields and motion. No
+   paper, no serif editorial texture. Applied to /developer only. */
+.font-city-display {
+  font-family: 'Manrope', 'Albert Sans', ui-sans-serif, system-ui, sans-serif;
+  font-weight: 800;
+  letter-spacing: -0.045em;
+  line-height: 0.98;
+}
+.city-shell {
+  position: relative;
+  isolation: isolate;
+  background:
+    radial-gradient(1200px 620px at 78% -10%, rgba(110,92,255,0.16), transparent 60%),
+    radial-gradient(900px 560px at 8% 18%, rgba(56,132,255,0.12), transparent 62%),
+    linear-gradient(180deg, #070910 0%, #080A12 55%, #06070D 100%);
+}
+.city-shell::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background-image:
+    linear-gradient(rgba(150,170,255,0.045) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(150,170,255,0.045) 1px, transparent 1px);
+  background-size: 72px 72px;
+  mask-image: linear-gradient(180deg, rgba(0,0,0,0.9), transparent 78%);
+  -webkit-mask-image: linear-gradient(180deg, rgba(0,0,0,0.9), transparent 78%);
+}
+.city-shell::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background: linear-gradient(180deg, transparent 0%, rgba(110,92,255,0.06) 50%, transparent 100%);
+  animation: city-breathe 14s ease-in-out infinite alternate;
+}
+@keyframes city-breathe { to { opacity: 0.35; } }
+.city-glass {
+  background: linear-gradient(160deg, rgba(255,255,255,0.062), rgba(255,255,255,0.018));
+  -webkit-backdrop-filter: blur(22px) saturate(150%);
+  backdrop-filter: blur(22px) saturate(150%);
+  border: 1px solid rgba(180,195,255,0.14);
+  box-shadow: 0 18px 50px -20px rgba(0,0,0,0.75), inset 0 1px 0 rgba(255,255,255,0.06);
+}
+.city-hairline { border-color: rgba(180,195,255,0.14) !important; }
+.city-eyebrow {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  letter-spacing: 0.24em;
+  text-transform: uppercase;
+}
+@media (prefers-reduced-motion: reduce) {
+  .city-shell::after { animation: none; }
+  /* Pinned layers would overlap with no scrub — fall back to a readable
+     vertical story for reduced-motion users and automated browsers. */
+  .story-root .story-stage { height: auto; min-height: 0; overflow: visible; }
+  .story-root [data-story-act] {
+    position: relative;
+    inset: auto;
+    min-height: 0;
+    padding-block: 4rem;
+    opacity: 1 !important;
+    transform: none !important;
+    border-bottom: 1px solid rgba(180,195,255,0.12);
+  }
+  .story-root [data-story-ghost] { opacity: 0.03 !important; }
 }

@@ -1,6 +1,6 @@
 /** Thin fetch wrapper for Voice Flow API routes with offline queue for failed writes. */
 
-import { getAnonId, getSessionToken, markIdentityUsed, setSessionToken } from "./identity";
+import { clearSessionToken, getAnonId, getSessionToken, markIdentityUsed, setSessionToken } from "./identity";
 import { apiBase, isMobileApp, isNativeShell } from "./platform";
 import { flushQueue, queueAction, queuedCount } from "./offline";
 import { errorText } from "./utils";
@@ -296,6 +296,10 @@ async function request<T = unknown>(
 
 	const ctrl = new AbortController();
 	let timer = setTimeout(() => ctrl.abort(), timeoutMs);
+	// A dead session is a lost proof, not a lost identity: heal it once by
+	// dropping the stale token and replaying with the SAME anon id, so no
+	// "session not recognised" error ever reaches the UI spontaneously.
+	let sessionHealed = false;
 
 	const reqStart = Date.now();
 	const priority: RequestPriority =
@@ -429,6 +433,19 @@ async function request<T = unknown>(
 				err instanceof Error &&
 				(err.name === "AbortError" || err.message.includes("timed out"));
 			const transient = !aborted && isTransientError(err);
+			const sessionDead =
+				err instanceof ApiError &&
+				err.code !== undefined &&
+				SESSION_DEAD_CODES.has(err.code);
+			if (sessionDead && !sessionHealed) {
+				sessionHealed = true;
+				try {
+					clearSessionToken();
+				} catch {
+					/* best effort */
+				}
+				return doFetch(attempt + 1);
+			}
 			if (
 				transient &&
 				method !== "GET" &&

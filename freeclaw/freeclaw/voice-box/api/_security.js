@@ -167,9 +167,7 @@ function _rateLimitKey(ip, identity) {
  * @param {string|null} identity - User identity (anon_id / author_id) when available
  * Returns { allowed: boolean, reason: string, retryAfter: number }
  */
-export function checkAbuse(ip, identity = null) {
-	const now = Date.now();
-	const key = _rateLimitKey(ip, identity);
+function _checkKey(key, ip, identity, now) {
 	const tracker = _abuseTracker.get(key);
 
 	// Check if currently blocked
@@ -250,23 +248,44 @@ export function checkAbuse(ip, identity = null) {
 }
 
 /**
- * Record an error for abuse tracking.
+ * Check abuse for the IP bucket AND, when an identity is supplied, the
+ * identity bucket. The IP bucket is deliberately checked even for identified
+ * requests: `x-anon-id` is client-supplied and unauthenticated at this layer,
+ * so trusting only the identity key lets a caller rotate the header and bypass
+ * the limiter entirely (confirmed: 130 rotating IDs produced zero 429s).
+ */
+export function checkAbuse(ip, identity = null) {
+	const now = Date.now();
+	const ipResult = _checkKey(_rateLimitKey(ip, null), ip, null, now);
+	if (!ipResult.allowed) return ipResult;
+	if (identity)
+		return _checkKey(_rateLimitKey(ip, identity), ip, identity, now);
+	return { allowed: true, reason: null, retryAfter: 0 };
+}
+
+/**
+ * Record an error for abuse tracking on both the IP and identity buckets.
  */
 export function recordError(ip, identity = null) {
-	const key = _rateLimitKey(ip, identity);
-	const t = _abuseTracker.get(key);
-	if (!t) return;
-	t.errors.push(Date.now());
+	const keys = [_rateLimitKey(ip, null)];
+	if (identity) keys.push(_rateLimitKey(ip, identity));
+	for (const key of keys) {
+		const t = _abuseTracker.get(key);
+		if (!t) continue;
+		t.errors.push(Date.now());
 
-	const lastMinute = t.errors.filter((ts) => Date.now() - ts < 60000).length;
-	if (lastMinute > ABUSE_LIMITS.maxErrorsPerMinute) {
-		t.blocked = true;
-		t.blockedUntil = Date.now() + ABUSE_LIMITS.blockDurationMs;
-		log.security("error_abuse", {
-			ip,
-			identity: identity || null,
-			errors_per_minute: lastMinute,
-		});
+		const lastMinute = t.errors.filter(
+			(ts) => Date.now() - ts < 60000,
+		).length;
+		if (lastMinute > ABUSE_LIMITS.maxErrorsPerMinute) {
+			t.blocked = true;
+			t.blockedUntil = Date.now() + ABUSE_LIMITS.blockDurationMs;
+			log.security("error_abuse", {
+				ip,
+				identity: identity || null,
+				errors_per_minute: lastMinute,
+			});
+		}
 	}
 }
 

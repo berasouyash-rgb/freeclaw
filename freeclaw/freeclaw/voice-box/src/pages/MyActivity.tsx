@@ -11,6 +11,7 @@ import {
 	Eye,
 	FileText,
 	MessageCircle,
+	MessageSquare,
 	PlayCircle,
 	RefreshCcw,
 	Save,
@@ -29,6 +30,7 @@ import { ConfirmDialog } from "../components/ui";
 import { useApp, type Notification } from "../contexts/AppContext";
 import { api } from "../lib/api";
 import { anonCreatedAt, lsGet } from "../lib/identity";
+import { triggerHaptic } from "../lib/haptics";
 import { useRealtime } from "../lib/useRealtime";
 import { downloadFile, safeStringify, timeAgo } from "../lib/utils";
 import { SERVER_PII_COPY } from "../lib/privacyCopy";
@@ -49,7 +51,19 @@ type Tab =
 	| "drafts"
 	| "notifications"
 	| "viewed"
-	| "appeals";
+	| "appeals"
+	| "reports";
+
+interface UserReport {
+	id: string;
+	target_id?: string;
+	target_type?: string;
+	reason?: string;
+	title?: string;
+	status: string;
+	created_at: string;
+	updated_at?: string;
+}
 
 interface AppealRow {
 	id: string;
@@ -68,7 +82,8 @@ type ActivitySection =
 	| "comments"
 	| "votes"
 	| "bookmarks"
-	| "appeals";
+	| "appeals"
+	| "reports";
 
 type SectionStatus = "loading" | "ready" | "error";
 
@@ -79,6 +94,7 @@ const ACTIVITY_SECTIONS: ActivitySection[] = [
 	"votes",
 	"bookmarks",
 	"appeals",
+	"reports",
 ];
 
 function SectionBoundary({
@@ -193,6 +209,7 @@ export default function MyActivity() {
 	const [bookmarkPosts, setBookmarkPosts] = useState<PostData[]>([]);
 	const [viewedPosts, setViewedPosts] = useState<PostData[]>([]);
 	const [appeals, setAppeals] = useState<AppealRow[]>([]);
+	const [reports, setReports] = useState<UserReport[]>([]);
 	const [sectionStatus, setSectionStatus] = useState<
 		Record<ActivitySection, SectionStatus>
 	>({
@@ -202,6 +219,7 @@ export default function MyActivity() {
 		votes: "loading",
 		bookmarks: "loading",
 		appeals: "loading",
+		reports: "loading",
 	});
 	const [sectionErrors, setSectionErrors] = useState<
 		Partial<Record<ActivitySection, string>>
@@ -300,6 +318,14 @@ export default function MyActivity() {
 						);
 						break;
 					}
+					case "reports": {
+						const result = await api.get<UserReport[] | { items?: UserReport[] }>(
+							`/api/reports?author=${anonId}`,
+						);
+						const items = Array.isArray(result) ? result : (result?.items ?? []);
+						setReports(items);
+						break;
+					}
 				}
 				setSectionUpdatedAt((current) => ({
 					...current,
@@ -345,7 +371,9 @@ export default function MyActivity() {
 	// ── Realtime: my posts/comments/polls change elsewhere (status flips,
 	// new comments on my post, poll closures) — refresh silently so the
 	// sections stay current without skeleton-flashing the whole page.
-	// Debounced 2s so a burst coalesces into one refresh.
+	// Debounced 2s so a burst coalesces into one refresh. `reports` is outside
+	// the anon realtime publication — subscribing to it silently never delivers
+	// and breaks the documented contract, so keep this list exactly in-contract.
 	useRealtime(["posts", "comments", "polls"], () => void loadAll(true), 2_000);
 
 	const bookmarkKey = bookmarks.join(",");
@@ -530,6 +558,12 @@ export default function MyActivity() {
 			icon: Scale,
 			count: appeals.length,
 		},
+		{
+			key: "reports",
+			label: "Reports & Inbox",
+			icon: AlertCircle,
+			count: reports.length,
+		},
 	];
 
 	const sectionHasData = (section: ActivitySection) => {
@@ -546,6 +580,8 @@ export default function MyActivity() {
 				return bookmarkPosts.length > 0;
 			case "appeals":
 				return appeals.length > 0;
+			case "reports":
+				return reports.length > 0;
 		}
 	};
 
@@ -593,7 +629,10 @@ export default function MyActivity() {
 				<div className="flex flex-wrap gap-2 mt-4">
 					<button
 						className="btn btn-ghost !text-xs"
-						onClick={exportData}
+						onClick={() => {
+							triggerHaptic("selection");
+							void exportData();
+						}}
 						disabled={exporting}
 					>
 						<Download size={13} /> {exporting ? "Exporting…" : "Export my data"}
@@ -601,6 +640,7 @@ export default function MyActivity() {
 					<button
 						className="btn btn-ghost !text-xs"
 						onClick={() => {
+							triggerHaptic("selection");
 							resetTutorial();
 							nav("/");
 						}}
@@ -652,7 +692,10 @@ export default function MyActivity() {
 				{TABS.map(({ key, label, icon: Icon, count }) => (
 					<button
 						key={key}
-						onClick={() => setTab(key)}
+						onClick={() => {
+							triggerHaptic("selection");
+							setTab(key);
+						}}
 						className={`btn !py-1.5 !px-3 !text-xs shrink-0 ${tab === key ? "btn-primary" : "btn-ghost"}`}
 					>
 						<Icon size={13} /> {label}{" "}
@@ -696,6 +739,33 @@ export default function MyActivity() {
 					onRetry={() => retrySection("posts")}
 				>
 					<div className="space-y-2.5">
+					{posts.length === 0 && reports.length > 0 && (
+						<div className="card border-accent/30 bg-accent/[0.06] p-4 mb-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3 animate-in fade-in">
+							<div className="flex items-center gap-2.5">
+								<span className="w-8 h-8 rounded-lg bg-accent/15 text-accent grid place-items-center shrink-0">
+									<AlertCircle size={16} />
+								</span>
+								<div>
+									<p className="text-xs font-semibold text-ink">
+										{reports.length} report{reports.length > 1 ? "s" : ""} / inbox complaint{reports.length > 1 ? "s" : ""} in process
+									</p>
+									<p className="text-[11px] text-ink3 mt-0.5">
+										Complaints filed through the Anonymous Inbox are tracked in the Reports tab, separate from public feed posts.
+									</p>
+								</div>
+							</div>
+							<button
+								type="button"
+								onClick={() => {
+									triggerHaptic("selection");
+									setTab("reports");
+								}}
+								className="btn btn-primary !text-xs shrink-0 self-start sm:self-auto"
+							>
+								View Reports ({reports.length})
+							</button>
+						</div>
+					)}
 					{posts.length === 0 && (
 						<Empty text="You haven't posted anything yet." />
 					)}
@@ -1035,6 +1105,102 @@ export default function MyActivity() {
 				</SectionBoundary>
 			)}
 
+			{!allSectionsUnavailable && tab === "reports" && (
+				<SectionBoundary
+					status={sectionStatus.reports}
+					error={sectionErrors.reports}
+					hasData={sectionHasData("reports")}
+					label="reports"
+					lastUpdatedAt={sectionUpdatedAt.reports}
+					onRetry={() => retrySection("reports")}
+				>
+					<div className="space-y-2.5">
+						{reports.length === 0 && (
+							<div className="text-center py-10 card p-6">
+								<div className="vb-empty-icon mx-auto mb-2">
+									<AlertCircle size={22} />
+								</div>
+								<p className="font-display font-semibold text-sm">No reports on file</p>
+								<p className="text-xs text-ink3 mt-1 max-w-sm mx-auto">
+									You haven&apos;t filed any complaints or reports. When you share issues with the Anonymous Inbox or report inappropriate content, you can track their status here.
+								</p>
+								<Link
+									to="/chat"
+									onClick={() => triggerHaptic("light")}
+									className="btn btn-primary !text-xs mt-4 inline-flex items-center gap-1.5"
+								>
+									<MessageSquare size={13} /> Open Anonymous Inbox
+								</Link>
+							</div>
+						)}
+						{reports.map((r) => {
+							const isInProcess =
+								r.status === "open" ||
+								r.status === "pending" ||
+								r.status === "in_process" ||
+								r.status === "investigating" ||
+								r.status === "reported";
+							const isResolved =
+								r.status === "resolved" ||
+								r.status === "closed" ||
+								r.status === "addressed";
+							return (
+								<div key={r.id} className="card p-4 space-y-2">
+									<div className="flex items-start justify-between gap-3">
+										<div className="min-w-0">
+											<div className="flex items-center gap-2 flex-wrap mb-1">
+												<span
+													className={`chip text-[10px] font-semibold uppercase tracking-wider ${
+														r.target_type === "inbox"
+															? "bg-accent/15 text-accent border-accent/20"
+															: "bg-surface2 text-ink2 border-border"
+													}`}
+												>
+													{r.target_type === "inbox" ? "Inbox Issue" : `Report: ${r.target_type || "Content"}`}
+												</span>
+												<span
+													className={`chip text-[10px] font-semibold ${
+														isInProcess
+															? "bg-amber-500/15 text-amber-600 dark:text-amber-400 border-amber-500/20"
+															: isResolved
+																? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border-emerald-500/20"
+																: "bg-surface2 text-ink3 border-border"
+													}`}
+												>
+													{isInProcess
+														? "⏳ In Process / Under Review"
+														: isResolved
+															? "✅ Resolved"
+															: r.status}
+												</span>
+											</div>
+											<p className="text-sm font-medium text-ink leading-relaxed">
+												{r.reason || r.title || "Report filed"}
+											</p>
+											<p className="text-xs text-ink3 mt-1">
+												Filed {timeAgo(r.created_at)} · ID:{" "}
+												<code className="font-mono text-[10px]">
+													{r.id.slice(0, 12)}
+												</code>
+											</p>
+										</div>
+										{r.target_type === "inbox" && (
+											<Link
+												to="/chat"
+												onClick={() => triggerHaptic("light")}
+												className="btn btn-ghost !text-xs shrink-0 flex items-center gap-1"
+											>
+												<MessageSquare size={13} /> Chat →
+											</Link>
+										)}
+									</div>
+								</div>
+							);
+						})}
+					</div>
+				</SectionBoundary>
+			)}
+
 			<ConfirmDialog
 				open={dialog?.kind === "deletePoll"}
 				onClose={() => setDialog(null)}
@@ -1066,11 +1232,11 @@ export default function MyActivity() {
 					aria-modal="true"
 					aria-labelledby="activity-notif-title"
 				>
-					<div className="bg-surface dark:bg-[#14141c] border border-border/80 dark:border-white/10 rounded-2xl max-w-lg w-full p-6 shadow-2xl space-y-5 animate-in zoom-in-95 duration-200 relative overflow-hidden">
+					<div className="bg-white dark:bg-[#14141c] text-slate-900 dark:text-white border border-slate-200 dark:border-white/10 rounded-2xl max-w-lg w-full p-6 shadow-2xl space-y-5 animate-in zoom-in-95 duration-200 relative overflow-hidden">
 						{/* Close button */}
 						<button
 							onClick={() => setSelectedNotif(null)}
-							className="absolute top-4 right-4 p-1.5 rounded-full text-ink3 hover:text-ink hover:bg-surface2 transition-colors cursor-pointer"
+							className="absolute top-4 right-4 p-1.5 rounded-full text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-white/10 transition-colors cursor-pointer"
 							aria-label="Close details"
 						>
 							<X size={18} />
@@ -1100,17 +1266,17 @@ export default function MyActivity() {
 								)}
 							</div>
 							<div className="min-w-0 pr-6">
-								<span className="text-[10px] font-bold uppercase tracking-wider text-ink3">
+								<span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
 									Official Administrative Notice
 								</span>
-								<h2 id="activity-notif-title" className="text-base font-bold text-ink leading-tight mt-0.5">
+								<h2 id="activity-notif-title" className="text-base font-bold text-slate-900 dark:text-white leading-tight mt-0.5">
 									{selectedNotif.title}
 								</h2>
 							</div>
 						</div>
 
 						{/* Timestamp & Metadata */}
-						<div className="flex items-center gap-2 text-xs text-ink3 pb-1 border-b border-border/60">
+						<div className="flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400 pb-1 border-b border-slate-200/80 dark:border-white/10">
 							<Clock size={13} />
 							<span>{new Date(selectedNotif.at).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })}</span>
 							<span>•</span>
@@ -1119,17 +1285,17 @@ export default function MyActivity() {
 
 						{/* Detailed Problem Explanation Box */}
 						<div className="space-y-3">
-							<div className="p-4 rounded-xl bg-surface2/70 dark:bg-white/[0.04] border border-border/70 space-y-2">
-								<p className="text-xs font-semibold uppercase tracking-wider text-ink3">
+							<div className="p-4 rounded-xl bg-slate-100/90 dark:bg-white/[0.05] border border-slate-200 dark:border-white/10 space-y-2">
+								<p className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">
 									Notice Reason & Explanation
 								</p>
-								<p className="text-sm text-ink leading-relaxed whitespace-pre-wrap select-text">
+								<p className="text-sm font-medium text-slate-800 dark:text-slate-200 leading-relaxed whitespace-pre-wrap select-text">
 									{selectedNotif.body}
 								</p>
 							</div>
 
 							{/* School policy & strike standing */}
-							<div className="p-3.5 rounded-xl bg-amber-500/10 border border-amber-500/20 text-xs text-amber-800 dark:text-amber-200 space-y-1.5">
+							<div className="p-3.5 rounded-xl bg-amber-500/10 border border-amber-500/20 text-xs text-amber-900 dark:text-amber-200 space-y-1.5">
 								<p className="font-semibold flex items-center gap-1.5">
 									<AlertCircle size={14} /> School Moderation Notice
 								</p>
@@ -1140,7 +1306,7 @@ export default function MyActivity() {
 						</div>
 
 						{/* Action Buttons */}
-						<div className="flex flex-wrap items-center justify-end gap-2.5 pt-2 border-t border-border/60">
+						<div className="flex flex-wrap items-center justify-end gap-2.5 pt-2 border-t border-slate-200/80 dark:border-white/10">
 							{selectedNotif.link && selectedNotif.link.startsWith("/post/") && (
 								<Link
 									to={selectedNotif.link}
@@ -1152,7 +1318,7 @@ export default function MyActivity() {
 							)}
 							<button
 								onClick={() => setSelectedNotif(null)}
-								className="btn btn-ghost !text-xs !py-2 !px-4 cursor-pointer"
+								className="btn btn-ghost !text-xs !py-2 !px-4 cursor-pointer text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-white/10"
 							>
 								Close
 							</button>

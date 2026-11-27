@@ -8,6 +8,7 @@ import { initVitals } from "./lib/vitals";
 import { initErrorCapture } from "./lib/errors";
 import { hydrateStore } from "./lib/storage";
 import { syncIdentityVault } from "./lib/identityVault";
+import { restoreVaultIdentity } from "./lib/identity";
 import { preloadCoreRoutes } from "./lib/routeChunks";
 import { registerNotifyServiceWorker } from "./lib/browserNotify";
 
@@ -136,6 +137,7 @@ async function boot(): Promise<void> {
 	await syncIdentityVault();
 	bootStage(2, "Loading preferences…");
 	await hydrateStore();
+	restoreVaultIdentity();
 	createRoot(document.getElementById("root")!).render(
 		<StrictMode>
 			<App />

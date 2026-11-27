@@ -228,6 +228,9 @@ describe("MyActivity — profile card and tabs", () => {
 		expect(
 			screen.getByRole("button", { name: /My appeals/ }),
 		).toHaveTextContent("(1)");
+		expect(
+			screen.getByRole("button", { name: /Reports & Inbox/ }),
+		).toHaveTextContent("(1)");
 	});
 });
 
@@ -878,5 +881,88 @@ describe("MyActivity — notifications and recently viewed", () => {
 			screen.queryByText("You haven't posted anything yet."),
 		).not.toBeInTheDocument();
 		expect(screen.getByRole("button", { name: /try again/i })).toBeInTheDocument();
+	});
+});
+
+describe("MyActivity — Reports & Inbox tab", () => {
+	it("renders user-filed reports with status chips and links", async () => {
+		const user = userEvent.setup();
+		mocks.get.mockImplementation((url: string) => {
+			if (url.includes("/api/reports?author=")) {
+				return Promise.resolve([
+					{
+						id: "rep-101",
+						target_id: "inbox-1",
+						target_type: "inbox",
+						reason: "Water leaking in second floor restroom",
+						status: "in_process",
+						created_at: "2026-07-01T10:00:00.000Z",
+					},
+				]);
+			}
+			return defaultGet(url);
+		});
+
+		renderPage();
+		await screen.findByText("Anonymous profile");
+
+		const reportsTab = await screen.findByRole("button", {
+			name: /Reports & Inbox/i,
+		});
+		await user.click(reportsTab);
+
+		expect(
+			await screen.findByText("Water leaking in second floor restroom"),
+		).toBeInTheDocument();
+		expect(screen.getByText("Inbox Issue")).toBeInTheDocument();
+		expect(
+			screen.getByText(/In Process \/ Under Review/i),
+		).toBeInTheDocument();
+		expect(screen.getByRole("link", { name: /Chat →/i })).toHaveAttribute(
+			"href",
+			"/chat",
+		);
+	});
+
+	it("shows the report banner in the Posts tab when posts are empty but reports exist", async () => {
+		const user = userEvent.setup();
+		mocks.get.mockImplementation((url: string) => {
+			if (url.includes("/api/posts?author=")) {
+				return Promise.resolve([]);
+			}
+			if (url.includes("/api/reports?author=")) {
+				return Promise.resolve([
+					{
+						id: "rep-202",
+						target_id: "inbox-2",
+						target_type: "inbox",
+						reason: "Broken bench in courtyard",
+						status: "in_process",
+						created_at: "2026-07-01T10:00:00.000Z",
+					},
+				]);
+			}
+			return defaultGet(url);
+		});
+
+		renderPage();
+		await screen.findByText("Anonymous profile");
+
+		// In the Posts tab, notice the banner guiding the student to their filed reports
+		expect(
+			await screen.findByText(/1 report \/ inbox complaint in process/i),
+		).toBeInTheDocument();
+		expect(
+			screen.getByText("You haven't posted anything yet."),
+		).toBeInTheDocument();
+
+		const viewReportsBtn = screen.getByRole("button", {
+			name: /View Reports \(1\)/i,
+		});
+		await user.click(viewReportsBtn);
+
+		expect(
+			await screen.findByText("Broken bench in courtyard"),
+		).toBeInTheDocument();
 	});
 });

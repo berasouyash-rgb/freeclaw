@@ -88,26 +88,27 @@ describe("Developer — Full Interactive Experience Showcase", () => {
 		fireEvent.click(clearChip);
 	});
 
-	it("allows switching milestone chapters in the journey story", async () => {
-		render(
+	it("presents the corrected scroll-based story with the real dates", () => {
+		const { container } = render(
 			<MemoryRouter>
 				<Developer />
 			</MemoryRouter>,
 		);
 
-		// Chapter 2: The Motivation
-		const chapter2Btn = screen.getByRole("button", { name: /The Motivation/i });
-		fireEvent.click(chapter2Btn);
+		// The journey is now a pinned, scroll-scrubbed story rather than a
+		// year-filtered button list. All acts are present in the semantic DOM.
+		expect(document.getElementById("journey")).toBeInTheDocument();
+		expect(container.querySelectorAll("[data-story-act]")).toHaveLength(6);
 
-		await waitFor(() => {
-			expect(
-				screen.getByRole("heading", { name: "Why I Built VoiceFlow", level: 3 }),
-			).toBeInTheDocument();
-		});
-
-		expect(
-			screen.getByText(/Schools are where young minds spend formative years/i),
-		).toBeInTheDocument();
+		const copy = document.body.textContent ?? "";
+		expect(copy).toContain("July 2023");
+		// KineticText splits words into individual spans, so sentence text has
+		// no literal spaces; tags remain plain text.
+		expect(copy).toContain("Tuition Teacher");
+		expect(copy).toContain("Istartedbuildingin2025");
+		expect(copy).toContain("Class 7B");
+		// The old, incorrect multi-year timeline must be gone.
+		expect(copy).not.toContain("From Class 7B to Shipping VoiceFlow");
 	});
 
 	it("allows filtering technical stack items", () => {

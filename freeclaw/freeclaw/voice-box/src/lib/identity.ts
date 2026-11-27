@@ -131,10 +131,38 @@ function writeItem(key: string, value: string) {
 	void backupToVault(key, value);
 }
 
+function lsDirectRemove(key: string): void {
+	try {
+		if (typeof window !== "undefined" && window.localStorage) {
+			window.localStorage.removeItem(key);
+		}
+	} catch {
+		/* ignore */
+	}
+}
+
 function removeItem(key: string) {
 	storeRemove(key);
 	deleteCookie(key);
+	// On a device backend the durable store is authoritative, but a stale
+	// localStorage copy could otherwise be re-read as a live identity.
+	lsDirectRemove(key);
 	mem.delete(key);
+}
+
+/**
+ * Boot-time bridge: the IndexedDB vault is async, so syncIdentityVault() can
+ * only restore into localStorage before React mounts. Native shells read the
+ * device store, not localStorage — copy a recovered id into the authoritative
+ * store here so a returned user never appears to have lost their ID.
+ */
+export function restoreVaultIdentity(): void {
+	const recovered = lsDirectRead(ID_KEY);
+	if (!recovered || recovered.trim() === "") return;
+	if (storeGet(ID_KEY) !== null) return;
+	storeSet(ID_KEY, recovered);
+	writeCookie(ID_KEY, recovered);
+	mem.set(ID_KEY, recovered);
 }
 
 /** Read WITHOUT cookie fallback — for non-critical JSON (queues, prefs). */

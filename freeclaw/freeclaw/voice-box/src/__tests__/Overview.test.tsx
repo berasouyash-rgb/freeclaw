@@ -73,6 +73,15 @@ vi.mock("../pages/admin/ActionCenter", () => ({
 	default: () => <div data-testid="action-center-stub" />,
 }));
 
+// Dashboard tests use a mocked API snapshot; they must not open a real
+// Supabase Realtime socket. Under jsdom, undici dispatches a Node Event into
+// a WebSocket that expects jsdom's Event and throws ERR_INVALID_ARG_TYPE after
+// the test, which Vitest reports as an unhandled error for the whole run.
+vi.mock("../lib/useRealtime", () => ({
+	useRealtime: () => {},
+	REALTIME_TABLES: new Set<string>(),
+}));
+
 // ── Fixtures ───────────────────────────────────────────────────────
 const now = () => new Date().toISOString();
 const MIN = 60_000;

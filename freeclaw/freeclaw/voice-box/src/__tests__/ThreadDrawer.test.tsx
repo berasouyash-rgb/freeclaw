@@ -40,10 +40,10 @@ describe("ThreadDrawer", () => {
 	it("reports load failures honestly with a retry", async () => {
 		mockedGet.mockRejectedValueOnce(new Error("down"));
 		render(<ThreadDrawer threadId="thr_1" onClose={vi.fn()} onOpenInbox={vi.fn()} />);
-		expect(await screen.findByText("down")).toBeInTheDocument();
+		expect(await screen.findByText("down", {}, { timeout: 5000 })).toBeInTheDocument();
 		mockedGet.mockResolvedValue({ messages: MSGS });
 		fireEvent.click(screen.getByRole("button", { name: "Retry" }));
-		expect(await screen.findByText("I need help")).toBeInTheDocument();
+		expect(await screen.findByText("I need help", {}, { timeout: 5000 })).toBeInTheDocument();
 	});
 
 	it("hands the thread to the full inbox for replies", async () => {

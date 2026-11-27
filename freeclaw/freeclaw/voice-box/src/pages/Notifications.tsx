@@ -323,12 +323,12 @@ export default function Notifications() {
 					aria-labelledby="notif-detail-title"
 				>
 					<div
-						className="bg-surface dark:bg-[#14141c] border border-border/80 dark:border-white/10 rounded-2xl max-w-lg w-full p-6 shadow-2xl space-y-5 animate-in zoom-in-95 duration-200 relative overflow-hidden"
+						className="bg-white dark:bg-[#14141c] text-slate-900 dark:text-white border border-slate-200 dark:border-white/10 rounded-2xl max-w-lg w-full p-6 shadow-2xl space-y-5 animate-in zoom-in-95 duration-200 relative overflow-hidden"
 					>
 						{/* Close button */}
 						<button
 							onClick={() => setSelectedNotif(null)}
-							className="absolute top-4 right-4 p-1.5 rounded-full text-ink3 hover:text-ink hover:bg-surface2 transition-colors cursor-pointer"
+							className="absolute top-4 right-4 p-1.5 rounded-full text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-white/10 transition-colors cursor-pointer"
 							aria-label="Close notification details"
 						>
 							<X size={18} />
@@ -356,17 +356,17 @@ export default function Notifications() {
 								)}
 							</div>
 							<div className="min-w-0 pr-6">
-								<span className="text-[10px] font-bold uppercase tracking-wider text-ink3">
+								<span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
 									{KIND_META[selectedNotif.kind]?.label || "Official Notice"}
 								</span>
-								<h2 id="notif-detail-title" className="text-base font-bold text-ink leading-tight mt-0.5">
+								<h2 id="notif-detail-title" className="text-base font-bold text-slate-900 dark:text-white leading-tight mt-0.5">
 									{selectedNotif.title}
 								</h2>
 							</div>
 						</div>
 
 						{/* Timestamp & Metadata */}
-						<div className="flex items-center gap-2 text-xs text-ink3 pb-1 border-b border-border/60">
+						<div className="flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400 pb-1 border-b border-slate-200/80 dark:border-white/10">
 							<Clock size={13} />
 							<span>{new Date(selectedNotif.at).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })}</span>
 							<span>•</span>
@@ -375,11 +375,11 @@ export default function Notifications() {
 
 						{/* Detailed Problem Explanation Box */}
 						<div className="space-y-3">
-							<div className="p-4 rounded-xl bg-surface2/70 dark:bg-white/[0.04] border border-border/70 space-y-2">
-								<p className="text-xs font-semibold uppercase tracking-wider text-ink3">
+							<div className="p-4 rounded-xl bg-slate-100/90 dark:bg-white/[0.05] border border-slate-200 dark:border-white/10 space-y-2">
+								<p className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">
 									Notice Explanation & Details
 								</p>
-								<p className="text-sm text-ink leading-relaxed whitespace-pre-wrap select-text">
+								<p className="text-sm font-medium text-slate-800 dark:text-slate-200 leading-relaxed whitespace-pre-wrap select-text">
 									{selectedNotif.body || "No additional description provided."}
 								</p>
 							</div>
@@ -389,7 +389,7 @@ export default function Notifications() {
 								selectedNotif.kind === "suspension" ||
 								selectedNotif.kind === "ban" ||
 								selectedNotif.kind === "moderation") && (
-								<div className="p-3.5 rounded-xl bg-amber-500/10 border border-amber-500/20 text-xs text-amber-800 dark:text-amber-200 space-y-1">
+								<div className="p-3.5 rounded-xl bg-amber-500/10 border border-amber-500/20 text-xs text-amber-900 dark:text-amber-200 space-y-1">
 									<p className="font-semibold flex items-center gap-1.5">
 										<AlertCircle size={14} /> School Moderation & Guidelines
 									</p>
@@ -401,7 +401,7 @@ export default function Notifications() {
 						</div>
 
 						{/* Action Buttons */}
-						<div className="flex flex-wrap items-center justify-end gap-2.5 pt-2 border-t border-border/60">
+						<div className="flex flex-wrap items-center justify-end gap-2.5 pt-2 border-t border-slate-200/80 dark:border-white/10">
 							{selectedNotif.link && selectedNotif.link.startsWith("/post/") && (
 								<Link
 									to={selectedNotif.link}

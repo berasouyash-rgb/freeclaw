@@ -614,8 +614,29 @@ export default async function handler(req, res) {
 
 	try {
 		if (req.method === "GET") {
-			if (!(await isAdmin(req)))
-				return res.status(403).json({ error: "Admin only" });
+			const admin = await isAdmin(req);
+			const headerId = clean(req.headers["x-anon-id"] || "", 40);
+			const authorParam = req.query?.author ? clean(req.query.author, 40) : null;
+
+			if (!admin) {
+				// Non-admins can fetch their own submitted/filed reports
+				const targetAuthor = authorParam || headerId;
+				if (!targetAuthor) {
+					return res.status(403).json({ error: "Admin only or author ID required" });
+				}
+				if (headerId && headerId !== "ADMIN" && headerId !== targetAuthor) {
+					return res.status(403).json({ error: "Forbidden: cannot view reports for another identity" });
+				}
+				const { data, error } = await supabase
+					.from("reports")
+					.select("id, target_id, target_type, reason, status, created_at")
+					.eq("author_id", targetAuthor)
+					.order("created_at", { ascending: false })
+					.limit(100);
+				if (error) throw error;
+				return res.status(200).json(data || []);
+			}
+
 			const { data, error } = await supabase
 				.from("reports")
 				.select("*")

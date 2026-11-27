@@ -682,6 +682,11 @@ export default async function handler(req, res) {
 			// Keep responses bounded: only the most recent clean rows matter.
 			if (!isPaginated && rows.length > (author ? 200 : 300))
 				rows = rows.slice(0, author ? 200 : 300);
+			// An explicit `limit` is a response-size contract on every path, not
+			// only on paginated requests. Previously limit=1 returned the full
+			// 300-row feed because the clamp only ran inside the paginated branch.
+			if (!isPaginated && limitParam && rows.length > PAGE_LIMIT)
+				rows = rows.slice(0, PAGE_LIMIT);
 
 			// Visibility guard for direct-by-id fetches: non-admins may only view
 			// hidden/deleted/pending_review/private posts they own. Prevents

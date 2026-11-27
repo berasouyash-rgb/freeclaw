@@ -46,6 +46,7 @@ import type { ChatMessage } from "../types";
 // so the AI gets engaged instead of facing a blank box.
 const STARTER_CHIPS = [
 	{ label: "Help me write a complaint", fill: "I need help writing a complaint about " },
+	{ label: "Status of my reports", fill: "What is the status of my recent complaints or reports?" },
 	{ label: "What can you help with?", fill: "What can you help me with?" },
 	{ label: "I feel unsafe", fill: "I feel unsafe and need help" },
 ];
@@ -164,6 +165,7 @@ export default function UserChat() {
 	const draftDismissedRef = useRef(false);
 	const acceptDraftCard = async () => {
 		if (!pendingDraft || draftBusy) return;
+		triggerHaptic("success");
 		setDraftBusy(true);
 		try {
 			const res = await api.postInbox<{ status?: string }>("/api/inbox", {
@@ -193,6 +195,7 @@ export default function UserChat() {
 	// surface honestly and the next load converges from server truth.
 	const generateFromNudge = async () => {
 		if (nudgeBusy) return;
+		triggerHaptic("selection");
 		setNudgeBusy(true);
 		try {
 			const res = await api.postInbox<{
@@ -221,6 +224,7 @@ export default function UserChat() {
 	};
 	const dismissNudge = async () => {
 		if (nudgeBusy) return;
+		triggerHaptic("light");
 		setNudgeBusy(true);
 		setShowNudge(false);
 		try {
@@ -419,6 +423,7 @@ export default function UserChat() {
 
 	const toggleAi = async () => {
 		if (aiBusy) return;
+		triggerHaptic("selection");
 		const next = !aiEnabled;
 		setAiBusy(true);
 		try {
@@ -699,7 +704,7 @@ export default function UserChat() {
 					)}
 					<span className="hidden sm:inline">AI {aiEnabled ? "ON" : "OFF"}</span>
 				</button>
-				<button type="button" onClick={() => setConfirmDelete(true)} disabled={deleting} title="Delete conversation" aria-label="Delete conversation" className="shrink-0 inline-flex items-center rounded-full border border-border px-2.5 py-1.5 text-ink3 hover:text-bad hover:border-bad/40 disabled:opacity-50">
+				<button type="button" onClick={() => { triggerHaptic("warning"); setConfirmDelete(true); }} disabled={deleting} title="Delete conversation" aria-label="Delete conversation" className="shrink-0 inline-flex items-center rounded-full border border-border px-2.5 py-1.5 text-ink3 hover:text-bad hover:border-bad/40 disabled:opacity-50">
 					<Trash2 size={12} />
 				</button>
 			</div>
@@ -778,7 +783,10 @@ export default function UserChat() {
 								<button
 									key={chip.label}
 									type="button"
-									onClick={() => setText(chip.fill)}
+									onClick={() => {
+										triggerHaptic("selection");
+										setText(chip.fill);
+									}}
 									className="btn btn-ghost !text-xs !rounded-full vb-pop"
 								>
 									{chip.label}
@@ -922,7 +930,10 @@ export default function UserChat() {
 								role="radio"
 								aria-checked={draftVisibility === v}
 								disabled={draftBusy}
-								onClick={() => setDraftVisibility(v)}
+								onClick={() => {
+									triggerHaptic("selection");
+									setDraftVisibility(v);
+								}}
 								className={`flex-1 px-3 py-2 rounded-lg text-xs font-semibold border transition-all disabled:opacity-40 ${
 									draftVisibility === v
 										? "border-accent bg-accent-soft text-accent"
@@ -940,7 +951,7 @@ export default function UserChat() {
 					)}
 					<div className="flex gap-2 mt-3">
 						<button type="button" disabled={draftBusy} onClick={() => void acceptDraftCard()} className="btn btn-primary !text-xs flex-1">{draftBusy ? "Posting…" : draftVisibility === "private" ? "Post privately" : "Send for review"}</button>
-						<button type="button" disabled={draftBusy} onClick={() => { setPendingDraft(null); draftDismissedRef.current = true; setDraftVisibility("private"); }} className="btn btn-ghost !text-xs">Dismiss</button>
+						<button type="button" disabled={draftBusy} onClick={() => { triggerHaptic("light"); setPendingDraft(null); draftDismissedRef.current = true; setDraftVisibility("private"); }} className="btn btn-ghost !text-xs">Dismiss</button>
 					</div>
 				</div>
 			)}
@@ -1009,7 +1020,7 @@ export default function UserChat() {
 			</div>
 		<div className="mt-1.5 flex items-center justify-between text-[10px] text-ink3">
 			<span>Replies can be read back in your device voice.</span>
-			<button type="button" onClick={() => { const next = !readBack; setReadBack(next); lsSet("vb:readaloud", next); if (!next) stopReading(); }} aria-pressed={readBack} aria-label="Read AI replies aloud" title="Hear AI replies in your device voice" className="font-bold text-accent/80 hover:text-accent">🔊 Voice: {readBack ? "on" : "off"}</button>
+			<button type="button" onClick={() => { triggerHaptic("selection"); const next = !readBack; setReadBack(next); lsSet("vb:readaloud", next); if (!next) stopReading(); }} aria-pressed={readBack} aria-label="Read AI replies aloud" title="Hear AI replies in your device voice" className="font-bold text-accent/80 hover:text-accent">🔊 Voice: {readBack ? "on" : "off"}</button>
 		</div>
 	<ConfirmDialog
 		open={confirmDelete}

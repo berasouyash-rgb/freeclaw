@@ -62,7 +62,7 @@ export function CurvedMobileNav({
 	return (
 		<div className="lg:hidden fixed bottom-0 inset-x-0 z-40 pointer-events-none pb-[max(env(safe-area-inset-bottom),0.75rem)] px-3 flex justify-center">
 			<nav
-				className="vb-bottomnav relative pointer-events-auto rounded-full bg-white dark:bg-[#12141c] border border-slate-200/80 dark:border-white/10 shadow-[0_12px_36px_rgba(0,0,0,0.12)] dark:shadow-[0_16px_40px_rgba(0,0,0,0.6)] p-1.5 flex items-center gap-1 sm:gap-1.5 max-w-fit mx-auto transition-all duration-300"
+				className="vb-bottomnav relative pointer-events-auto rounded-full bg-white/95 dark:bg-[#12141c]/95 backdrop-blur-xl border border-slate-200/80 dark:border-white/10 shadow-[0_14px_40px_rgba(0,0,0,0.14)] dark:shadow-[0_18px_44px_rgba(0,0,0,0.65)] p-1.5 flex items-center gap-1 sm:gap-1.5 max-w-fit mx-auto"
 				aria-label="Mobile navigation"
 			>
 				{items.map((item, idx) => {
@@ -101,8 +101,8 @@ export function CurvedMobileNav({
 							{isActive && (
 								<motion.div
 									layoutId="mobile-active-pill"
-									className="absolute inset-0 rounded-full bg-[#5652d6] dark:bg-[#6366f1] shadow-[0_4px_16px_rgba(86,82,214,0.4)]"
-									transition={{ type: "spring", stiffness: 480, damping: 34, mass: 0.8 }}
+									className="absolute inset-0 rounded-full bg-[#5652d6] dark:bg-[#6366f1] shadow-[0_4px_18px_rgba(86,82,214,0.45)]"
+									transition={{ type: "spring", stiffness: 380, damping: 28, mass: 0.7 }}
 								/>
 							)}
 
@@ -124,14 +124,14 @@ export function CurvedMobileNav({
 										</span>
 									)}
 								</div>
-								<AnimatePresence initial={false} mode="wait">
+								<AnimatePresence initial={false}>
 									{isActive && (
 										<motion.span
 											key={item.label}
 											initial={{ opacity: 0, width: 0, scale: 0.85 }}
 											animate={{ opacity: 1, width: "auto", scale: 1 }}
 											exit={{ opacity: 0, width: 0, scale: 0.85 }}
-											transition={{ type: "spring", stiffness: 480, damping: 34 }}
+											transition={{ type: "spring", stiffness: 420, damping: 30 }}
 											className="text-xs font-semibold tracking-tight leading-none whitespace-nowrap pl-0.5 !text-white overflow-hidden"
 											style={{ color: "#ffffff" }}
 										>

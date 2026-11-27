@@ -58,16 +58,14 @@ describe("Rate limiter — per-identity keying", () => {
 		expect(blocked.retryAfter).toBeGreaterThan(0);
 	});
 
-	it("does NOT block a different identity on the same IP", () => {
+	it("blocks identity rotation on the same IP after the IP budget is spent", () => {
 		const ip = "10.0.0.3";
-		// Identity A hits the limit
+		// Rotating the client-supplied x-anon-id must not reset the limit:
+		// the shared IP bucket is exhausted alongside the per-identity bucket.
 		for (let i = 0; i <= ABUSE_LIMITS.maxRequestsPerMinute; i++) {
-			checkAbuse(ip, "identityA");
+			checkAbuse(ip, `identity-${i}`);
 		}
-		expect(checkAbuse(ip, "identityA").allowed).toBe(false);
-
-		// Identity B on the SAME IP is still allowed
-		expect(checkAbuse(ip, "identityB").allowed).toBe(true);
+		expect(checkAbuse(ip, "identity-after").allowed).toBe(false);
 	});
 
 	it("falls back to IP-only keying when identity is null", () => {

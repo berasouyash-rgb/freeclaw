@@ -51,16 +51,38 @@ export default function AmbientField() {
 				return;
 			}
 			ctx.clearRect(0, 0, w, h);
-			for (const p of particles) {
+
+			// Render organic atmospheric particles & subtle proximity links
+			for (let i = 0; i < particles.length; i++) {
+				const p = particles[i];
+				if (!p) continue;
 				p.x += p.vx;
 				p.y += p.vy;
 				if (p.y < -5) p.y = h + 5;
 				if (p.x < -5) p.x = w + 5;
 				if (p.x > w + 5) p.x = -5;
+
 				ctx.beginPath();
 				ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
-				ctx.fillStyle = `rgba(79,124,255,${p.a})`;
+				ctx.fillStyle = `rgba(99, 102, 241, ${p.a * 0.5})`;
 				ctx.fill();
+
+				// Delicate constellation strands
+				for (let j = i + 1; j < particles.length; j++) {
+					const p2 = particles[j];
+					if (!p2) continue;
+					const dx = p.x - p2.x;
+					const dy = p.y - p2.y;
+					const dist = Math.sqrt(dx * dx + dy * dy);
+					if (dist < 65) {
+						ctx.beginPath();
+						ctx.moveTo(p.x, p.y);
+						ctx.lineTo(p2.x, p2.y);
+						ctx.strokeStyle = `rgba(99, 102, 241, ${(1 - dist / 65) * 0.1})`;
+						ctx.lineWidth = 0.6;
+						ctx.stroke();
+					}
+				}
 			}
 			frame = requestAnimationFrame(tick);
 		};

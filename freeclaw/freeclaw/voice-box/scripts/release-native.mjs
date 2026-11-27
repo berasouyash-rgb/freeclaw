@@ -46,6 +46,7 @@ import {
 	mkdirSync,
 	readFileSync,
 	readdirSync,
+	rmSync,
 	statSync,
 	writeFileSync,
 } from "node:fs";
@@ -96,6 +97,15 @@ function run(command, argv, { cwd = ROOT, env = {}, label } = {}) {
 function javaHome() {
 	if (process.env.JAVA_HOME && existsSync(process.env.JAVA_HOME)) {
 		return process.env.JAVA_HOME;
+	}
+	// Android Studio / the checked-in local.properties already records the
+	// machine's JDK. Read it before falling back to hard-coded drive paths.
+	try {
+		const localProps = readFileSync(join(ROOT, "android", "local.properties"), "utf8");
+		const match = localProps.match(/^java\.home=(.+)$/m);
+		if (match && existsSync(match[1].trim())) return match[1].trim();
+	} catch {
+		/* no local.properties — fall through */
 	}
 	for (const candidate of ["D:/jdk21", "D:/jdk17", "C:/Program Files/Java/latest"]) {
 		if (existsSync(candidate)) return candidate;
@@ -316,9 +326,34 @@ if (wantAndroid) {
 	// (measured: 7.7 MB of content in a 21.9 MB file). Students download that
 	// difference on mobile data for nothing.
 	step("Building debug APK (Gradle, clean)");
-	run(IS_WIN ? "gradlew.bat" : "./gradlew", ["clean", "assembleDebug", "--no-daemon"], {
+	// A bare `gradlew.bat` is not resolved reliably by cmd.exe from a
+	// spawnSync shell (observed: "not recognized"). Use the absolute path.
+	const gradlew = IS_WIN
+		? join(ROOT, "android", "gradlew.bat")
+		: "./gradlew";
+	const gradleEnv = {
+		JAVA_HOME: home,
+		PATH: `${home}${IS_WIN ? ";" : ":"}${process.env.PATH}`,
+	};
+	// `clean` is correctness (a stale, larger APK leaves padding), but the
+	// Gradle clean task intermittently cannot delete a locked capacitor/build
+	// directory on Windows. Stop the daemon, delete the generated build dirs
+	// ourselves (same effect), then assemble without the clean task.
+	run(gradlew, ["--stop"], { cwd: join(ROOT, "android"), env: gradleEnv });
+	for (const dir of [
+		join(ROOT, "android", "app", "build"),
+		join(ROOT, "android", "capacitor", "build"),
+		join(ROOT, "android", "capacitor-cordova-android-plugins", "build"),
+	]) {
+		try {
+			rmSync(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 200 });
+		} catch (err) {
+			warn(`could not remove ${dir}: ${err.message}`);
+		}
+	}
+	run(gradlew, ["assembleDebug", "--no-daemon"], {
 		cwd: join(ROOT, "android"),
-		env: { JAVA_HOME: home, PATH: `${home}${IS_WIN ? ";" : ":"}${process.env.PATH}` },
+		env: gradleEnv,
 	});
 
 	const builtApk = join(ROOT, "android", "app", "build", "outputs", "apk", "debug", "app-debug.apk");

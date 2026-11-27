@@ -262,6 +262,18 @@ export default async function handler(req, res) {
 	try {
 		const { task, posts, text, poll } = req.body || {};
 
+		// Public LLM tasks are reachable without a session. Keep a conservative
+		// per-IP budget on each so a scripted caller cannot burn provider quota.
+		if (["moderate", "summarize", "poll_insight"].includes(task)) {
+			const wait = await rateLimited(`ai_${task}`, clientIp(req), 60, 20);
+			if (wait)
+				return rateLimitResponse(
+					res,
+					wait,
+					"Too many AI requests — slow down.",
+				);
+		}
+
 		if (task === "moderate") {
 			const rawText = String(text || "");
 			const ai = await callLLMJson(
