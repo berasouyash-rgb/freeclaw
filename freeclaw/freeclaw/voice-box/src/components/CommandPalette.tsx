@@ -21,7 +21,8 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router";
 import { useApp } from "../contexts/AppContext";
-import { api } from "../lib/api";
+import { api, hasAdminSession } from "../lib/api";
+import { ADMIN_TABS, adminTabHref } from "../lib/adminTabs";
 import type { PostData } from "../types";
 
 interface Cmd {
@@ -66,6 +67,7 @@ function clearRecentSearches() {
 export default function CommandPalette() {
 	const nav = useNavigate();
 	const { theme, toggleTheme } = useApp();
+	const isAdmin = hasAdminSession();
 	const [open, setOpen] = useState(false);
 	const [query, setQuery] = useState("");
 	const [active, setActive] = useState(0);
@@ -155,8 +157,8 @@ export default function CommandPalette() {
 		[nav],
 	);
 
-	const commands: Cmd[] = useMemo(
-		() => [
+	const commands: Cmd[] = useMemo(() => {
+		const baseCommands: Cmd[] = [
 			{
 				id: "home",
 				label: "Go to Feed",
@@ -227,9 +229,22 @@ export default function CommandPalette() {
 				},
 				section: "Actions",
 			},
-		],
-		[go, theme, toggleTheme],
-	);
+		];
+		if (!isAdmin) return baseCommands;
+		return [
+			...baseCommands,
+			...ADMIN_TABS.map(
+				(tab): Cmd => ({
+					id: `admin-${tab.key}`,
+					label: tab.label,
+					hint: "Admin",
+					icon: tab.icon,
+					run: () => go(adminTabHref(tab.key)),
+					section: "Admin",
+				}),
+			),
+		];
+	}, [go, isAdmin, theme, toggleTheme]);
 
 	const results = useMemo(() => {
 		const q = query.trim().toLowerCase();
@@ -462,7 +477,7 @@ export default function CommandPalette() {
 					{typeFilter !== "All" && (
 						<span className="text-accent">{typeFilter}</span>
 					)}
-					<span className="ml-auto">Voice Box ⌘K</span>
+					<span className="ml-auto">Voice Flow ⌘K</span>
 				</div>
 			</div>
 		</div>

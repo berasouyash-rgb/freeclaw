@@ -1,16 +1,38 @@
 // ─── V3 Enterprise Streaming (SSE) ───────────────────────────────
 // Reusable SSE streaming utilities for real-time AI responses.
 // Supports authentication, heartbeat, reconnection hints, and error recovery.
+import { isAllowedOrigin } from "./_auth.js";
 import supabase from "./_db-client.js";
 import { callLLMChain, callProviderStream } from "./_providers.js";
 
 // ─── SSE Helpers ─────────────────────────────────────────────────
-export function createSSEWriter(res) {
+// SSE used to keep its OWN origin list, separate from cors(). It was missing
+// every native-shell origin (Electron sends `Origin: null`, Capacitor 7 sends
+// `https://localhost`) and fell back to advertising the psi deployment for any
+// origin it did not recognise — so the stream's Allow-Origin could never match
+// the page that opened it, the browser/WebView dropped the whole response, and
+// the AI read as "busy" in exactly the APK and EXE while working fine on web.
+// There is one allowlist now: the same predicate cors() uses, so the two can
+// never disagree again.
+function sseAllowOrigin(req) {
+	const origin = req?.headers?.origin || "";
+	if (!origin) return "null"; // Electron file:// / curl: no Origin header
+	return isAllowedOrigin(origin, req) ? origin : null;
+}
+
+export function createSSEWriter(res, req) {
 	res.setHeader("Content-Type", "text/event-stream");
 	res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
 	res.setHeader("Connection", "keep-alive");
 	res.setHeader("X-Accel-Buffering", "no");
-	res.setHeader("Access-Control-Allow-Origin", "*");
+	// Authenticated SSE must never use a wildcard origin. Reflect the
+	// allowlisted origin so credentialed dashboard clients work and
+	// arbitrary origins do not get a stream. An unmatched origin gets NO
+	// header at all — answering with some other deployment's origin (the old
+	// behaviour) guaranteed the block it was trying to avoid.
+	const allowOrigin = sseAllowOrigin(req);
+	if (allowOrigin) res.setHeader("Access-Control-Allow-Origin", allowOrigin);
+	res.setHeader("Vary", "Origin");
 	res.status(200);
 
 	const write = (event, data) => {

@@ -19,6 +19,13 @@ const mocks = vi.hoisted(() => ({
 	toast: vi.fn(),
 }));
 
+// The page subscribes for realtime updates; without this mock jsdom would
+// open a real production supabase WebSocket. Wiring assertions live in
+// DerivedPages.realtime.test.tsx.
+vi.mock("../lib/useRealtime", () => ({
+	useRealtime: () => {},
+}));
+
 vi.mock("../lib/api", () => ({
 	api: { getSlow: mocks.getSlow },
 }));
@@ -94,11 +101,21 @@ describe("Insights — stats", () => {
 		expect(screen.getByText("Facilities")).toBeInTheDocument();
 	});
 
-	it("renders the trend with all 15 day buckets", async () => {
+	it("renders every trend bucket, but thins the axis labels", () => {
 		renderPage();
-		await screen.findByText("Academics");
-		// One labeled day per trend entry
-		expect(screen.getAllByText(/jul/i).length).toBeGreaterThanOrEqual(15);
+		return screen.findByText("Academics").then(() => {
+			// Every day still gets a bar — each carries its own title with the
+			// day's real numbers, so the chart loses no information.
+			const bars = document.querySelectorAll("[title*='posts']");
+			expect(bars.length).toBe(15);
+
+			// REGRESSION: the axis used to label all 15 days. At 8px each label
+			// needs ~28px, so 15 of them forced the page 66px wider than a 375px
+			// phone. Labels are now every 3rd day plus the last.
+			const labels = screen.getAllByText(/jul/i);
+			expect(labels.length).toBeGreaterThanOrEqual(3);
+			expect(labels.length).toBeLessThan(15);
+		});
 	});
 
 	it("falls back to the raw date string for unparseable dates", async () => {
@@ -122,5 +139,19 @@ describe("Insights — error state", () => {
 		mocks.getSlow.mockResolvedValueOnce(PAYLOAD);
 		await user.click(retry);
 		await screen.findByText("Academics");
+	});
+
+	it("coerces string counts instead of rendering NaN bars", async () => {
+		mocks.getSlow.mockResolvedValue({
+			...PAYLOAD,
+			totals: { ...PAYLOAD.totals, posts: "120", comments: "340" },
+			by_category: [{ category: "Academics", count: "40", solved: "30" }],
+			trend: [{ date: "2026-07-01", posts: "3", comments: "4" }],
+		});
+		const { container } = renderPage();
+		await screen.findByText("Academics");
+		// No NaN anywhere: tiles coerce, bars get numeric widths.
+		expect(container.textContent).not.toMatch(/NaN/);
+		expect(screen.getByText("120")).toBeInTheDocument();
 	});
 });

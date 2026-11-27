@@ -1,27 +1,30 @@
-﻿import {
-	AlertCircle,
-	Angry,
+import {
+	ArrowUp,
 	BarChart3,
 	Bookmark,
+	Bot,
 	CheckCircle2,
 	EyeOff,
 	Flag,
 	Flame,
 	Gavel,
-	Heart,
 	Lock,
 	MessageCircle,
 	Pin,
-	Play,
-	Send,
 	ShieldCheck,
 	Sparkles,
 	ThumbsUp,
 } from "lucide-react";
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import type { ComponentType, CSSProperties } from "react";
 import { Link } from "react-router";
 import { useApp } from "../contexts/AppContext";
-import { api, hasAdminSession } from "../lib/api";
+import { api } from "../lib/api";
+import { hasAdminSession, subscribeAdminSession } from "../lib/adminSession";
+import { prefetchRouteChunk } from "../lib/routeChunks";
+import { triggerHaptic } from "../lib/haptics";
+import { celebrate } from "../lib/joy";
+import PostCardAdminBar from "./PostCardAdminBar";
 import {
 	CAT_EMOJI,
 	PRIORITY_META,
@@ -29,25 +32,147 @@ import {
 	timeAgo,
 	trendingScore,
 } from "../lib/utils";
-import type { PostData, ReactionMeta } from "../types";
+import type { PollData, PostData, ReactionMeta } from "../types";
+import PollCard from "./PollCard";
 import { ReportDialog } from "./ui";
+import { UserProfileDialog, type UserProfileMeta } from "./UserProfileDialog";
+import { resolveAuthorProfile } from "../lib/identity";
+import { validateSchoolProblem } from "../lib/schoolIssueAI";
 
-export const REACTION_META: ReactionMeta[] = [
+// Support-only voting: problems get thumbs-up Support, suggestions get
+// arrow Upvote. There is deliberately no negative feedback UI — no Against,
+// no Downvote. Historical disagree/downvote rows still count server-side
+// (ranking stability), but no button offers them anymore.
+const PROBLEM_REACTIONS: ReactionMeta[] = [
 	{
 		kind: "support",
 		label: "Support",
 		icon: ThumbsUp,
 		color: "var(--vb-accent)",
 	},
-	{
-		kind: "concerned",
-		label: "Concerned",
-		icon: AlertCircle,
-		color: "#d98a0b",
-	},
-	{ kind: "frustrated", label: "Frustrated", icon: Angry, color: "#dc4b4b" },
-	{ kind: "appreciate", label: "Appreciate", icon: Heart, color: "#16a06a" },
 ];
+const SUGGESTION_REACTIONS: ReactionMeta[] = [
+	{
+		kind: "upvote",
+		label: "Upvote",
+		icon: ArrowUp,
+		color: "var(--vb-accent)",
+	},
+];
+export const REACTION_META: ReactionMeta[] = PROBLEM_REACTIONS;
+export function getReactionMeta(type?: string): ReactionMeta[] {
+	return type === "suggestion" ? SUGGESTION_REACTIONS : PROBLEM_REACTIONS;
+}
+
+/** Support-style vote button with a YouTube-like burst on activation: an
+ *  expanding ring plus eight radiating particles (transform/opacity only,
+ *  GPU-cheap), then the element unmounts itself. Fires on activating taps
+ *  only — toggling off just unfills. Under prefers-reduced-motion the burst
+ *  stays invisible (base opacity 0 + animation killed globally) while the
+ *  count pop (existing vb-pop) still confirms the tap. */
+export function ReactionButton({
+	kind,
+	label,
+	icon: Icon,
+	color,
+	active,
+	count,
+	disabled,
+	onReact,
+	inactiveClassName,
+}: {
+	kind: string;
+	label: string;
+	icon: ComponentType<{
+		size?: number | string;
+		fill?: string;
+		className?: string;
+	}>;
+	color: string;
+	active: boolean;
+	count: number;
+	disabled: boolean;
+	onReact: (kind: string) => void;
+	inactiveClassName: string;
+}) {
+	const [burst, setBurst] = useState(0);
+	const timer = useRef<number | null>(null);
+	useEffect(
+		() => () => {
+			if (timer.current !== null) window.clearTimeout(timer.current);
+		},
+		[],
+	);
+	const click = () => {
+		triggerHaptic("light");
+		if (!active) {
+			setBurst((b) => b + 1);
+			if (timer.current !== null) window.clearTimeout(timer.current);
+			timer.current = window.setTimeout(() => setBurst(0), 650);
+		}
+		onReact(kind);
+	};
+	return (
+		<button
+			onClick={click}
+			disabled={disabled}
+			aria-label={`${label} (${count})`}
+			aria-pressed={active}
+			title={label}
+			className={`relative flex items-center gap-1 px-2.5 py-2 sm:py-1.5 rounded-lg text-xs font-semibold transition-all duration-200 ${
+				active ? "vb-pop ring-1" : inactiveClassName
+			}`}
+			style={
+				active
+					? {
+							color,
+							background: "var(--vb-surface2)",
+							boxShadow: `0 0 0 1px color-mix(in srgb, ${color} 20%, transparent)`,
+						}
+					: undefined
+			}
+		>
+			{burst > 0 && (
+				<span
+					key={burst}
+					className="vb-burst"
+					aria-hidden
+					data-testid="support-burst"
+				>
+					<span className="vb-burst-ring" />
+					{Array.from({ length: 8 }, (_, i) => {
+						const a = (i * Math.PI) / 4;
+						return (
+							<span
+								key={i}
+								className="vb-burst-particle"
+								style={
+									{
+										"--tx": `${Math.round(Math.cos(a) * 26)}px`,
+										"--ty": `${Math.round(Math.sin(a) * 26)}px`,
+										animationDelay: `${i * 18}ms`,
+									} as CSSProperties
+								}
+							/>
+						);
+					})}
+				</span>
+			)}
+			<Icon
+				size={13}
+				fill={active ? "currentColor" : "none"}
+				className={`transition-transform duration-200 ${active ? "scale-110" : ""}`}
+			/>
+			<span className="hidden sm:inline">{label}</span>
+			<span
+				key={count}
+				className="vb-pop inline-block min-w-[14px] text-center"
+			>
+				{count}
+			</span>
+		</button>
+	);
+}
 
 interface PostCardProps {
 	post: PostData;
@@ -57,15 +182,54 @@ interface PostCardProps {
 		counts: Record<string, number>,
 		kind: string,
 		toggled: boolean,
+		mine?: string[],
 	) => void;
+	pollData?: PollData | null;
+	myPollVote?: number[];
+	onPollVoted?: (poll?: PollData) => void;
 }
 
-function PostCardInner({ post, myReactions, onReacted }: PostCardProps) {
-	const { anonId, bookmarks, toggleBookmark, toast } = useApp();
+function PostCardInner({ post, myReactions, onReacted, pollData, myPollVote, onPollVoted }: PostCardProps) {
+	const { anonId, bookmarks, toggleBookmark, toast, profile, displayName } = useApp();
+	// Reactive admin state: a login in another tab (or an expired credential)
+	// must add/remove moderation controls on already-mounted cards.
+	const isAdminSession = useSyncExternalStore(
+		subscribeAdminSession,
+		hasAdminSession,
+		() => false,
+	);
 	const [busy, setBusy] = useState<string | null>(null);
 	const [reportOpen, setReportOpen] = useState(false);
-	const [replyOpen, setReplyOpen] = useState(false);
-	const [replyText, setReplyText] = useState("");
+	const [selectedProfile, setSelectedProfile] = useState<UserProfileMeta | null>(null);
+	const resolvedAuthor = useMemo(() => {
+		if (typeof resolveAuthorProfile === "function") {
+			try {
+				return resolveAuthorProfile({
+					authorId: post.author_id,
+					myAnonId: anonId,
+					myProfile: profile,
+					myDisplayName: displayName,
+					postAuthorName: post.author_name,
+				});
+			} catch {
+				// fallback below
+			}
+		}
+		const isMe = !!(anonId && post.author_id === anonId);
+		return {
+			name: post.author_name || (isMe ? (displayName || "You") : "Student"),
+			avatar: isMe ? (profile?.avatar || "👤") : "👤",
+			photo: isMe ? profile?.photo : undefined,
+			isCustom: !!(isMe && (profile?.photo || profile?.avatar)),
+			handle: post.author_id ? `@${post.author_id.slice(0, 10)}` : "@anon",
+			styleClass: "bg-surface3 border-border",
+		};
+	}, [post.author_id, post.author_name, anonId, profile, displayName]);
+	const aiValidation = useMemo(
+		() => validateSchoolProblem(post.title, post.description),
+		[post.title, post.description],
+	);
+	// confirmAction, replyOpen, and replyText are handled by PostCardAdminBar
 	const [localCounts, setLocalCounts] = useState<Record<string, number> | null>(
 		null,
 	);
@@ -79,55 +243,22 @@ function PostCardInner({ post, myReactions, onReacted }: PostCardProps) {
 		() => localMine || myReactions || [],
 		[localMine, myReactions],
 	);
-
-	/** Admin-only moderation — the feed updates itself via the posts realtime channel. */
-	const adminSet = async (patch: {
-		status?: string;
-		official?: boolean;
-		hidden?: boolean;
-	}) => {
-		if (busy) return;
-		setBusy("admin");
-		try {
-			await api.put("/api/posts", { id: post.id, ...patch });
-			if (patch.status === "solved")
-				toast("Issue marked solved — community notified", "ok");
-			else if (patch.status === "in_progress")
-				toast("Marked in progress", "ok");
-			else if (patch.status === "verified")
-				toast("Marked verified", "ok");
-			else if (patch.official !== undefined)
-				toast(patch.official ? "Marked official" : "Removed official", "ok");
-			else if (patch.hidden !== undefined)
-				toast(patch.hidden ? "Post hidden" : "Post unhidden", "ok");
-		} catch (e: unknown) {
-			toast(e instanceof Error ? e.message : "Action failed", "err");
-		} finally {
-			setBusy(null);
-		}
-	};
-
-	const sendReply = async (e: React.FormEvent) => {
-		e.preventDefault();
-		const text = replyText.trim();
-		if (!text || busy) return;
-		setBusy("reply");
-		try {
-			await api.put("/api/posts", { id: post.id, admin_reply: text });
-			setReplyText("");
-			setReplyOpen(false);
-			toast("Official reply posted — visible on the post", "ok");
-		} catch (err: unknown) {
-			toast(err instanceof Error ? err.message : "Failed to post reply", "err");
-		} finally {
-			setBusy(null);
-		}
-	};
+	// Single source for the badge count: the live poll fetch wins over the
+	// feed snapshot (`post.linked_poll_votes`), which only refreshes when the
+	// whole feed refetches — otherwise the badge lags the PollCard below it.
+	const badgeVotes = useMemo(() => {
+		if (pollData && typeof pollData.total_votes === "number")
+			return pollData.total_votes;
+		return post.linked_poll_votes ?? 0;
+	}, [pollData, post.linked_poll_votes]);
 
 	// Reset stale optimistic state when server data arrives (prevents double-reaction bug).
 	// Skip the reset immediately after a successful POST — onReacted() updates the parent,
 	// which re-renders with new myReactions, but our local state is already reconciled
 	// from the server response. Clearing it here would revert the reaction visually.
+	// The effect also watches post.reactions: later parent row-merges (other users'
+	// reactions arriving through the posts realtime lane) must win over the reconciled
+	// local copy — otherwise a card you reacted to freezes until a full refresh.
 	useEffect(() => {
 		if (postedRef.current) {
 			postedRef.current = false;
@@ -135,20 +266,22 @@ function PostCardInner({ post, myReactions, onReacted }: PostCardProps) {
 		}
 		setLocalMine(null);
 		setLocalCounts(null);
-	}, [myReactions]);
+	}, [myReactions, post.reactions]);
 
 	const status = STATUS_META[post.status] ??
-		STATUS_META.reported ?? { label: "Unknown", color: "#888", pct: 0 };
-	const prio = PRIORITY_META[post.priority] ??
-		PRIORITY_META.medium ?? { label: "Medium", color: "#888" };
+		STATUS_META.reported ?? { label: "Unknown", color: "var(--vb-ink3)", pct: 0 };
 	// Trending: fast-rising support relative to age
 	const isTrending =
 		trendingScore(post) > 1.2 &&
 		Date.now() - +new Date(post.created_at) < 7 * 86400000;
 
+	// Priority meta for chip (only show for non-medium priorities)
+	const priorityMeta = post.priority && post.priority !== "medium" ? PRIORITY_META[post.priority] : null;
+
 	const react = useCallback(
 		async (kind: string) => {
 			if (busy) return;
+			triggerHaptic("medium");
 			setBusy(kind);
 			// Optimistic flip: update locally FIRST so the button feels instant,
 			// then reconcile with the authoritative server response.
@@ -182,7 +315,13 @@ function PostCardInner({ post, myReactions, onReacted }: PostCardProps) {
 				setLocalCounts(res.counts);
 				setLocalMine(res.mine ?? []);
 				postedRef.current = true;
-				onReacted?.(post.id, res.counts, kind, res.toggled);
+				// Server-confirmed support gets a small, accessible celebration.
+				if (res.toggled) celebrate("support");
+				// Hand the authoritative result to the parent so the list and the
+				// my-map converge immediately (not on the next full refresh).
+				// The 5th arg is the server mine list; callers that ignore args
+				// (e.g. Saved's `() => load()`) are unaffected.
+				onReacted?.(post.id, res.counts, kind, res.toggled, res.mine ?? []);
 			} catch (e: unknown) {
 				// Roll back the optimistic flip
 				setLocalCounts(prevCounts);
@@ -216,8 +355,8 @@ function PostCardInner({ post, myReactions, onReacted }: PostCardProps) {
 							<span
 								className="chip !border-transparent vb-pop"
 								style={{
-									background: "rgba(22,160,106,0.14)",
-									color: "#16a06a",
+									background: "color-mix(in srgb, var(--vb-good) 14%, transparent)",
+									color: "var(--vb-good)",
 								}}
 								title={`Reached ${post.ready_threshold} co-signs — flagged for admin decision`}
 							>
@@ -229,8 +368,8 @@ function PostCardInner({ post, myReactions, onReacted }: PostCardProps) {
 							<span
 								className="chip !border-transparent vb-pop"
 								style={{
-									background: "rgba(217,138,11,0.12)",
-									color: "#d98a0b",
+									background: "color-mix(in srgb, var(--vb-warn) 12%, transparent)",
+									color: "var(--vb-warn)",
 								}}
 							>
 								<Flame size={11} className="vb-trend-bounce" /> Trending
@@ -254,107 +393,175 @@ function PostCardInner({ post, myReactions, onReacted }: PostCardProps) {
 								<Lock size={11} /> Private · admins only
 							</span>
 						)}
+						{post.hidden && (
+							<span
+								className="chip !bg-amber-500/15 !text-amber-500 !border-amber-500/30 flex items-center gap-1 font-bold"
+								title={post.quarantine_reason || (post.hidden_by === "agent" ? "Hidden from public by 24/7 AI Safety Agent" : "Hidden from public")}
+							>
+								{post.hidden_by === "agent" ? <Bot size={11} /> : <EyeOff size={11} />}
+								{post.hidden_by === "agent" ? "Hidden by Agent" : "Hidden"}
+							</span>
+						)}
 						<span className="chip">{post.category}</span>
 						<span
 							className="chip"
-							style={{ color: prio.color, borderColor: `${prio.color}44` }}
+							title={
+								post.type === "suggestion"
+									? "Suggestion — an idea, not a complaint"
+									: post.type === "poll"
+										? "Poll — vote, not a complaint"
+										: "Problem — a complaint needing a fix"
+							}
 						>
-							{prio.label}
+							{post.type === "suggestion"
+								? "Suggestion"
+								: post.type === "poll"
+									? "Poll"
+									: "Problem"}
 						</span>
 						<span
 							className="chip"
-							style={{ color: status.color, borderColor: `${status.color}44` }}
+							style={{
+								color: status.color,
+								borderColor: `color-mix(in srgb, ${status.color} 27%, transparent)`,
+							}}
 						>
 							{post.status === "solved" && <CheckCircle2 size={11} />}{" "}
 							{status.label}
 						</span>
+						{post.deleted && (
+							<span
+								className="chip"
+								style={{
+									color: "var(--vb-ink3)",
+									borderColor: "color-mix(in srgb, var(--vb-ink3) 27%, transparent)",
+								}}
+								title="This post was deleted by its author"
+							>
+								Deleted by user
+							</span>
+						)}
+						{post.priority && post.priority !== "medium" && priorityMeta && (
+							<span
+								className="chip"
+								style={{
+									color: priorityMeta.color,
+									borderColor: `color-mix(in srgb, ${priorityMeta.color} 27%, transparent)`,
+								}}
+								title={`Auto-assigned priority: ${priorityMeta.label}`}
+							>
+								{post.priority === "critical" && "🔴"}
+								{post.priority === "high" && "🟠"}
+								{post.priority === "low" && "🟢"}
+								{" "}{priorityMeta.label}
+							</span>
+						)}
+						{aiValidation.isRealProblem && (
+							<span
+								className={`chip !font-medium ${aiValidation.badge.colorClass} ${aiValidation.badge.borderClass} ${aiValidation.badge.bgClass}`}
+								title={aiValidation.summary}
+							>
+								{aiValidation.badge.emoji} {aiValidation.badge.text}
+							</span>
+						)}
 					</div>
-					<Link to={`/post/${post.id}`} className="block group">
-						<h3 className="font-display font-semibold text-[15px] sm:text-base leading-snug group-hover:text-accent transition-colors duration-200">
+					<Link
+						to={`/post/${post.id}`}
+						className="block group"
+						onMouseEnter={() => prefetchRouteChunk("post")}
+						onFocus={() => prefetchRouteChunk("post")}
+						/* touchstart fires ~100ms before the tap resolves, and is the
+						   ONLY intent signal on a phone — hover never arrives there, so
+						   without this every post tap paid the chunk fetch in full. */
+						onTouchStart={() => prefetchRouteChunk("post")}
+					>
+						<h3 className="font-display font-semibold text-[15px] sm:text-base leading-snug break-words group-hover:text-accent transition-colors duration-200">
 							{post.title}
 						</h3>
-						<p className="text-sm text-ink2 mt-1.5 line-clamp-2 leading-relaxed">
+						<p className="text-sm text-ink2 mt-1.5 line-clamp-2 leading-relaxed break-words">
 							{post.description}
 						</p>
+							{post.ai_summary && (
+								<p className="text-xs text-accent mt-2 flex items-center gap-1.5 bg-accent/5 rounded-lg px-2.5 py-1.5">
+									<Sparkles size={11} className="shrink-0" />
+									<span className="line-clamp-1">{post.ai_summary}</span>
+								</p>
+							)}
+							{/* Official Administration Response (Prominent in Feed) */}
+							{post.admin_reply && (
+								<div className="mt-2.5 p-3 rounded-xl bg-emerald-500/10 dark:bg-emerald-950/30 border border-emerald-500/30 text-left">
+									<p className="text-[10px] font-bold uppercase tracking-wider text-emerald-800 dark:text-emerald-300 mb-1 flex items-center gap-1.5">
+										<ShieldCheck size={12} /> Official Administration Response
+									</p>
+									<p className="text-xs text-ink2 leading-relaxed">
+										{post.admin_reply}
+									</p>
+								</div>
+							)}
+							{post.status === "solved" && !post.admin_reply && (
+								<div className="mt-2 px-2.5 py-1 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-xs text-emerald-700 dark:text-emerald-300 flex items-center gap-1.5 font-medium">
+									<CheckCircle2 size={12} /> Resolved by School Administration
+								</div>
+							)}
 					</Link>
 					{post.tags && post.tags.length > 0 && (
 						<div className="flex flex-wrap gap-1.5 mt-2">
 							{post.tags.map((t) => (
-								<span key={t} className="text-[11px] text-accent font-medium">
+								<Link
+									key={t}
+									to={`/search?q=${encodeURIComponent(`#${t}`)}`}
+									className="text-[11px] text-accent font-medium hover:underline"
+									aria-label={`Show all posts tagged ${t}`}
+									onClick={(e) => e.stopPropagation()}
+								>
 									#{t}
-								</span>
+								</Link>
 							))}
 						</div>
 					)}
 					<div className="flex flex-wrap items-center gap-1 mt-3 -ml-1">
-						{REACTION_META.map(({ kind, label, icon: Icon, color }) => {
-							const active = mine.includes(kind);
-							const n = counts[kind] || 0;
-							return (
-								<button
-									key={kind}
-									onClick={() => react(kind)}
-									disabled={busy !== null}
-									aria-label={`${label} (${n})`}
-									aria-pressed={active}
-									title={label}
-									className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-semibold transition-all duration-200 ${
-										active
-											? "vb-pop ring-1"
-											: "text-ink3 hover:bg-surface2 hover:-translate-y-0.5 hover:shadow-sm"
-									}`}
-									style={
-										active
-											? {
-													color,
-													background: "var(--vb-surface2)",
-													boxShadow: `0 0 0 1px ${color}33`,
-												}
-											: undefined
-									}
-								>
-									<Icon
-										size={13}
-										fill={
-											active && kind !== "concerned" ? "currentColor" : "none"
-										}
-										className={`transition-transform duration-200 ${active ? "scale-110" : ""}`}
-									/>
-									<span className="hidden sm:inline">{label}</span>
-									<span
-										key={n}
-										className="vb-pop inline-block min-w-[14px] text-center"
-									>
-										{n}
-									</span>
-								</button>
-							);
-						})}
-						<Link
-							to={`/post/${post.id}`}
-							data-tour="comments-link"
-							className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-semibold text-ink3 hover:bg-surface2 hover:text-accent transition-all duration-200"
-						>
-							<MessageCircle
-								size={13}
-								className="transition-transform duration-200 hover:scale-110"
-							/>{" "}
-							{post.comment_count || 0}
-						</Link>
+						{getReactionMeta(post.type).map(({ kind, label, icon: Icon, color }) => (
+							<ReactionButton
+							key={kind}
+							kind={kind}
+							label={label}
+							icon={Icon}
+							color={color}
+							active={mine.includes(kind)}
+							count={counts[kind] || 0}
+							disabled={busy !== null}
+							onReact={react}
+							inactiveClassName="text-ink3 hover:text-accent"
+							/>
+						))}
+					<Link
+						to={`/post/${post.id}`}
+						data-tour="comments-link"
+						aria-label={`${post.comment_count || 0} comments on ${post.title}`}
+						className="flex items-center gap-1 px-2.5 py-2 sm:py-1.5 rounded-lg text-xs font-semibold text-ink3 hover:text-accent transition-colors duration-200"
+					>
+						<MessageCircle
+							size={13}
+							className="transition-transform duration-200 hover:scale-110"
+						/>{" "}
+						{post.comment_count || 0}
+					</Link>
 						{post.linked_poll && (
-							<Link
-								to={`/post/${post.id}`}
-								className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-semibold text-accent hover:bg-accent-soft transition-all duration-200"
-								title="This post has a live poll"
+							<span
+								className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-semibold text-accent"
+								role="status"
+								aria-label={`Poll with ${badgeVotes} vote${badgeVotes === 1 ? "" : "s"}`}
+								title="This post has a live poll — see below"
 							>
 								<BarChart3 size={13} /> Poll ·{" "}
-								{(post.linked_poll_votes ?? 0) === 1
+								{badgeVotes === 1
 									? "1 vote"
-									: `${post.linked_poll_votes ?? 0} votes`}
-							</Link>
+									: `${badgeVotes} votes`}
+							</span>
 						)}
 						<button
 							onClick={() => {
+								triggerHaptic("selection");
 								toggleBookmark(post.id);
 								toast(
 									bookmarks.includes(post.id)
@@ -365,7 +572,7 @@ function PostCardInner({ post, myReactions, onReacted }: PostCardProps) {
 							}}
 							aria-label="Bookmark"
 							aria-pressed={bookmarks.includes(post.id)}
-							className={`px-2.5 py-1.5 rounded-lg transition-all duration-200 ${bookmarks.includes(post.id) ? "text-accent vb-pop" : "text-ink3 hover:text-accent hover:-translate-y-0.5 hover:bg-surface2"}`}
+							className={`px-2.5 py-2 sm:py-1.5 rounded-lg transition-colors duration-200 ${bookmarks.includes(post.id) ? "text-accent vb-pop" : "text-ink3 hover:text-accent"}`}
 						>
 							<Bookmark
 								size={13}
@@ -377,121 +584,69 @@ function PostCardInner({ post, myReactions, onReacted }: PostCardProps) {
 							onClick={() => setReportOpen(true)}
 							aria-label="Report this post"
 							title="Report this post"
-							className="px-2.5 py-1.5 rounded-lg text-ink3 hover:text-bad hover:-translate-y-0.5 hover:bg-surface2 transition-all duration-200"
+							className="px-2.5 py-2 sm:py-1.5 rounded-lg text-ink3 hover:text-bad transition-colors duration-200"
 						>
 							<Flag size={13} className="transition-transform duration-200" />
 						</button>
-						<span className="ml-auto text-[11px] text-ink3">
-							{timeAgo(post.created_at)}
-						</span>
+						<div className="ml-auto flex items-center gap-1.5">
+							{post.author_id && (
+								<button
+									type="button"
+									onClick={(e) => {
+										e.preventDefault();
+										e.stopPropagation();
+										setSelectedProfile({
+											authorId: post.author_id,
+											isMine: post.author_id === anonId || Boolean(post.is_mine),
+											isOp: true,
+											createdAt: post.created_at,
+											authorName: resolvedAuthor.name,
+											authorPhoto: resolvedAuthor.photo,
+											authorAvatar: resolvedAuthor.avatar,
+										});
+									}}
+									className="inline-flex items-center gap-1.5 text-[11px] text-ink3 hover:text-accent transition-colors py-0.5 px-1.5 rounded hover:bg-surface-raised cursor-pointer"
+									title={`View author profile (${resolvedAuthor.name})`}
+									aria-label={`View author profile ${resolvedAuthor.name}`}
+								>
+									{resolvedAuthor.photo ? (
+										<img
+											src={resolvedAuthor.photo}
+											alt={resolvedAuthor.name}
+											className="w-4 h-4 rounded-full object-cover border border-border"
+										/>
+									) : (
+										<span className={`w-4 h-4 rounded-full inline-flex items-center justify-center text-[10px] ${resolvedAuthor.styleClass} shadow-2xs`}>
+											{resolvedAuthor.avatar || "👤"}
+										</span>
+									)}
+									<span className="text-[11px] font-medium opacity-90 truncate max-w-[90px]">
+										{resolvedAuthor.name}
+									</span>
+								</button>
+							)}
+							<span className="text-[11px] text-ink3">
+								{timeAgo(post.created_at)}
+							</span>
+						</div>
 					</div>
 				</div>
 			</div>
 
-			{/* ── Admin-only moderation — large, obvious controls (visible only
-			    while an admin session is active) ── */}
-			{hasAdminSession() && (
-				<div className="border-t border-border bg-surface2/40">
-					<div className="flex items-center gap-1.5 px-3 pt-2.5 pb-2 flex-wrap">
-						<span className="inline-flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-[0.16em] text-accent mr-1">
-							<ShieldCheck size={13} aria-hidden /> Moderation
-						</span>
-						{post.status !== "solved" && post.status !== "archived" && (
-							<>
-								{post.status !== "in_progress" && (
-									<button
-										type="button"
-										disabled={!!busy}
-										onClick={() => adminSet({ status: "in_progress" })}
-										title="Mark in progress"
-										className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold text-warn bg-warn/10 border border-warn/25 hover:bg-warn/20 transition-colors disabled:opacity-40"
-									>
-										<Play size={13} /> In progress
-									</button>
-								)}
-								{post.status !== "verified" && (
-									<button
-										type="button"
-										disabled={!!busy}
-										onClick={() => adminSet({ status: "verified" })}
-										title="Verify this post"
-										className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold text-blue-400 bg-blue-500/10 border border-blue-500/25 hover:bg-blue-500/20 transition-colors disabled:opacity-40"
-									>
-										<ShieldCheck size={13} /> Verify
-									</button>
-								)}
-								<button
-									type="button"
-									disabled={!!busy}
-									onClick={() => adminSet({ status: "solved" })}
-									title="Mark solved"
-									className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-xs font-bold text-good bg-good/15 border border-good/30 hover:bg-good/25 transition-colors disabled:opacity-40"
-								>
-									<CheckCircle2 size={14} /> Solve
-								</button>
-							</>
-						)}
-						<button
-							type="button"
-							disabled={!!busy}
-							onClick={() => adminSet({ official: !post.official })}
-							title={post.official ? "Remove official badge" : "Mark as official"}
-							className={`inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold transition-colors disabled:opacity-40 ${
-								post.official
-									? "text-amber-400 bg-amber-500/15 border border-amber-500/30"
-									: "text-amber-400 bg-amber-500/5 border border-amber-500/20 hover:bg-amber-500/15"
-							}`}
-						>
-							<Sparkles size={13} />
-							{post.official ? "Official" : "Mark official"}
-						</button>
-						<button
-							type="button"
-								disabled={!!busy}
-							onClick={() => adminSet({ hidden: !post.hidden })}
-							title={post.hidden ? "Unhide post" : "Hide post"}
-							className={`inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold transition-colors disabled:opacity-40 ${
-								post.hidden
-									? "text-red-400 bg-red-500/15 border border-red-500/30"
-									: "text-red-400 bg-red-500/5 border border-red-500/20 hover:bg-red-500/15"
-							}`}
-						>
-							<EyeOff size={13} /> {post.hidden ? "Unhide" : "Hide"}
-						</button>
-						<button
-							type="button"
-							onClick={() => setReplyOpen((o) => !o)}
-							title="Post an official admin reply on this post"
-							className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold text-accent bg-accent/10 border border-accent/25 hover:bg-accent/20 transition-colors"
-						>
-							<Send size={13} /> {replyOpen ? "Close" : "Official reply"}
-						</button>
-					</div>
-					{replyOpen && (
-						<form
-							onSubmit={sendReply}
-							className="flex items-center gap-1.5 px-3 pb-2.5"
-						>
-							<input
-								autoFocus
-								value={replyText}
-								onChange={(e) => setReplyText(e.target.value)}
-								placeholder="Write an official message for everyone viewing this post…"
-								className="input !py-2 !text-sm flex-1"
-								maxLength={1000}
-								aria-label="Official admin reply"
-							/>
-							<button
-								type="submit"
-								disabled={busy === "reply" || !replyText.trim()}
-								className="btn btn-primary !py-2 !px-4 !text-xs"
-							>
-								{busy === "reply" ? "Sending…" : "Send"}
-							</button>
-						</form>
-					)}
+			{/* ── Inline poll — when a linked poll exists and data is loaded, show
+			    the full PollCard so users can see options, results, and vote state
+			    without leaving the feed. */}
+			{post.linked_poll && pollData && (
+				<div className="mt-3 border-t border-border pt-3">
+					<PollCard
+						poll={pollData}
+						myVote={myPollVote}
+						onVoted={onPollVoted}
+					/>
 				</div>
-			)}
+			)}			{/* ── Admin-only moderation — extracted to PostCardAdminBar for clean
+			    separation and memoization */}
+			{isAdminSession && <PostCardAdminBar post={post} />}
 
 			{/* Report from the feed — same flow as the detail page: sends author_id
           (the API rejects reports without it), surfaces failures honestly,
@@ -517,6 +672,13 @@ function PostCardInner({ post, myReactions, onReacted }: PostCardProps) {
 						);
 					}
 				}}
+			/>
+
+			<UserProfileDialog
+				profileMeta={selectedProfile}
+				localProfile={profile}
+				displayName={displayName}
+				onClose={() => setSelectedProfile(null)}
 			/>
 		</article>
 	);

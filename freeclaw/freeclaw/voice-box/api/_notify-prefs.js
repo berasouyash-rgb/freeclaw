@@ -1,16 +1,18 @@
-// Notification channel preferences — phone + email for SMS/email alerts.
-// GET  /api/notify-prefs?user_id=X → { phone, email, sms_enabled, email_enabled, ai_chat_enabled }
-// POST /api/notify-prefs { user_id, phone, email, sms_enabled, email_enabled, ai_chat_enabled }
+// Notification channel preferences — phone + email for SMS/email alerts,
+// plus on-device browser notifications (no phone number needed).
+// GET  /api/notify-prefs?user_id=X → { phone, email, sms_enabled, email_enabled, browser_enabled, ai_chat_enabled }
+// POST /api/notify-prefs { user_id, phone, email, sms_enabled, email_enabled, browser_enabled, ai_chat_enabled }
 //
 // Stored in the settings table under `notify_prefs:<anonId>` as
-// { phone, email, sms_enabled, email_enabled, ai_chat_enabled, updated_at } —
+// { phone, email, sms_enabled, email_enabled, browser_enabled, updated_at } —
 // the same KV pattern as follows/notifications. Consumed by _follows.js when a
 // followed post is solved/updated: enabled + valid phone → SMS, enabled +
-// valid email → email (via api/_dispatch.js). ai_chat_enabled gates the
+// valid email → email (via api/_dispatch.js). browser_enabled gates on-device
+// browser notifications in the client (Settings → Notifications). ai_chat_enabled gates the
 // inbox AI auto-reply in _inbox.js. Reading prefs is public; writes require
 // a valid, non-banned, non-suspended user (same gate as _posts.js).
 
-import { checkUser, clean, cors, rateLimitResponse } from "./_auth.js";
+import { checkUser, clean, clientIp, cors, rateLimitResponse, verifyCallerIdentity } from "./_auth.js";
 import supabase from "./_db-client.js";
 import { sanitizeError } from "./_error.js";
 import { normalizePhone, validEmail } from "./_dispatch.js";
@@ -46,6 +48,8 @@ export async function getNotifyPrefs(userId) {
 			email: typeof v.email === "string" ? v.email : "",
 			sms_enabled: v.sms_enabled !== false,
 			email_enabled: v.email_enabled !== false,
+			// On-device browser notifications (PC + mobile, no phone needed) — default ON.
+			browser_enabled: v.browser_enabled !== false,
 			// Inbox AI auto-replies — user-controllable, default ON.
 			ai_chat_enabled: v.ai_chat_enabled !== false,
 			// Status-change notifications (solved/in-progress/admin reply) — default ON.
@@ -70,6 +74,20 @@ function writeRateLimited(userId, windowMs = 60000, limit = 15) {
 	return entry.count > limit;
 }
 
+// Per-IP limiter for reads: GET returns phone/email, so flood the endpoint
+// with guessed user_ids from one source and we throttle before touching auth.
+const readHits = new Map();
+function readRateLimited(ip, windowMs = 60000, limit = 30) {
+	const now = Date.now();
+	const entry = readHits.get(ip);
+	if (!entry || now - entry.start > windowMs) {
+		readHits.set(ip, { start: now, count: 1 });
+		return false;
+	}
+	entry.count++;
+	return entry.count > limit;
+}
+
 export default async function handler(req, res) {
 	cors(res, req);
 	if (req.method === "OPTIONS") return res.status(204).end();
@@ -82,7 +100,25 @@ export default async function handler(req, res) {
 		if (!validAnonId(userId))
 			return res.status(400).json({ error: "Invalid user_id" });
 
-		// GET: read prefs (public, like _me.js)
+		// FIX #2 (AUDIT): reads expose phone/email — rate-limit the source IP
+		// first, then verify identity for both read and write.
+		if (req.method === "GET" && readRateLimited(clientIp(req)))
+			return rateLimitResponse(
+				res,
+				60,
+				"Too many requests. Please try again later.",
+			);
+
+		if (req.method === "GET" || req.method === "POST") {
+			const caller = await verifyCallerIdentity(req, res, userId);
+			if (!caller.ok) {
+				return res
+					.status(caller.status || 403)
+					.json({ error: caller.error || "Forbidden", code: caller.code });
+			}
+		}
+
+		// GET: read own prefs
 		if (req.method === "GET") {
 			const prefs = await getNotifyPrefs(userId);
 			return res.status(200).json(prefs || {});
@@ -115,6 +151,7 @@ export default async function handler(req, res) {
 				email: email ? email.trim() : "",
 				sms_enabled: b.sms_enabled !== false,
 				email_enabled: b.email_enabled !== false,
+				browser_enabled: b.browser_enabled !== false,
 				ai_chat_enabled: b.ai_chat_enabled !== false,
 				status_updates: b.status_updates !== false,
 				updated_at: new Date().toISOString(),

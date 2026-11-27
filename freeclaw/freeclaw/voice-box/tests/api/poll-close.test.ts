@@ -112,7 +112,7 @@ describe("POST /api/polls { action: closed }", () => {
 				method: "POST",
 				body: { action: "closed", poll_id: "poll-1" },
 				query: {},
-				headers: {},
+				headers: { "x-anon-id": "anon-1" },
 			},
 			res,
 		);
@@ -148,7 +148,7 @@ describe("POST /api/polls { action: closed }", () => {
 				method: "POST",
 				body: { action: "closed", poll_id: "poll-1" },
 				query: {},
-				headers: {},
+				headers: { "x-anon-id": "anon-1" },
 			},
 			res,
 		);
@@ -173,7 +173,7 @@ describe("POST /api/polls { action: closed }", () => {
 				method: "POST",
 				body: { action: "closed", poll_id: "poll-1" },
 				query: {},
-				headers: {},
+				headers: { "x-anon-id": "anon-1" },
 			},
 			res,
 		);
@@ -191,7 +191,7 @@ describe("POST /api/polls { action: closed }", () => {
 				method: "POST",
 				body: { action: "closed", poll_id: "nope" },
 				query: {},
-				headers: {},
+				headers: { "x-anon-id": "anon-1" },
 			},
 			res,
 		);
@@ -201,7 +201,7 @@ describe("POST /api/polls { action: closed }", () => {
 	it("405s on unhandled methods", async () => {
 		const { default: handler } = await import("../../api/_polls.js");
 		const res = response();
-		await handler({ method: "PATCH", body: {}, query: {}, headers: {} }, res);
+		await handler({ method: "PATCH", body: {}, query: {}, headers: { "x-anon-id": "anon-1" } }, res);
 		expect(res.statusCode).toBe(405);
 	});
 });

@@ -10,6 +10,7 @@ import { isTestArtifact } from "./_artifact-filter.js";
 import { cors } from "./_auth.js";
 import supabase from "./_db-client.js";
 import { sanitizeError } from "./_error.js";
+import { isMissingColumn } from "./_polls.js";
 
 // Default page size when no admin config is stored — kept in sync with the
 // admin setter default (api/_admin.js) so the Customize panel always previews
@@ -74,6 +75,27 @@ export default async function handler(req, res) {
 		// ── Problems & Suggestions: fetch real columns + compute support from the
 		//    reactions table (posts.reactions / comment_count are NOT stored columns —
 		//    selecting them would make PostgREST error and silently empty the board).
+		// Polls carry the same hidden rule as problems/suggestions — a moderated
+		// (hidden) poll must not rank publicly. Pre-migration DBs lack
+		// polls.hidden (migration 018): retry without the filter so the board
+		// degrades to unfiltered polls instead of emptying, mirroring the
+		// runList fallback in api/_polls.js.
+		const fetchPollRows = async () => {
+			const runPolls = (withHidden) => {
+				let qq = supabase
+					.from("polls")
+					.select("id,title,ptype,created_at,archived")
+					.eq("deleted", false)
+					.order("created_at", { ascending: false })
+					.limit(200);
+				if (withHidden) qq = qq.neq("hidden", true);
+				return qq;
+			};
+			const first = await runPolls(true);
+			if (first.error && isMissingColumn(first.error, "hidden"))
+				return runPolls(false);
+			return first;
+		};
 		const [{ data: problems }, { data: suggestions }, { data: pollRows }] =
 			await Promise.all([
 				supabase
@@ -92,12 +114,7 @@ export default async function handler(req, res) {
 					.neq("hidden", true)
 					.order("created_at", { ascending: false })
 					.limit(200),
-				supabase
-					.from("polls")
-					.select("id,title,ptype,created_at,archived")
-					.eq("deleted", false)
-					.order("created_at", { ascending: false })
-					.limit(200),
+				fetchPollRows(),
 			]);
 
 		// Batch-fetch reactions for the union of post ids, then sum per target_id.
@@ -108,21 +125,33 @@ export default async function handler(req, res) {
 			]),
 		];
 		const reactMap = {};
-		try {
-			if (allPostIds.length) {
-				const { data: reactRows } = await supabase
-					.from("reactions")
-					.select("target_id,kind")
-					.in("target_id", allPostIds);
-				(reactRows || []).forEach((r) => {
-					reactMap[r.target_id] = reactMap[r.target_id] || {};
-					reactMap[r.target_id][r.kind] =
-						(reactMap[r.target_id][r.kind] || 0) + 1;
-				});
+		let reactionsFailed = false;
+		const chunk = (arr, size) => {
+			const out = [];
+			for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
+			return out;
+		};
+		const reactionsTask = (async () => {
+			try {
+				if (allPostIds.length) {
+				for (const ids of chunk(allPostIds, 100)) {
+					const { data: reactRows, error: reactErr } = await supabase
+						.from("reactions")
+						.select("target_id,kind")
+						.in("target_id", ids);
+					if (reactErr) throw reactErr;
+					(reactRows || []).forEach((r) => {
+						reactMap[r.target_id] = reactMap[r.target_id] || {};
+						reactMap[r.target_id][r.kind] =
+							(reactMap[r.target_id][r.kind] || 0) + 1;
+					});
+				}
+				}
+			} catch (err) {
+				console.error("[leaderboard] reactions fetch failed, marking estimated", { error: err?.message || String(err) });
+				reactionsFailed = true;
 			}
-		} catch {
-			/* non-fatal — leaderboard shows zero supports */
-		}
+		})();
 
 		const supportOf = (counts) =>
 			(counts?.support || 0) +
@@ -131,37 +160,102 @@ export default async function handler(req, res) {
 			(counts?.concerned || 0) +
 			(counts?.frustrated || 0);
 
+		// Down-votes (thumbs-down / arrow-down). Legacy rows never had
+		// them, so this is 0 for all historical data — rankings are
+		// unchanged until users actually cast down-votes.
+		const downOf = (counts) =>
+			(counts?.disagree || 0) +
+			(counts?.downvote || 0);
+
+		// ── Multi-factor leaderboard scoring ──────────────────────────
+		// Instead of raw support count, use a weighted composite:
+		//   Quality = support × 3 + comments × 2.5 + resolution_bonus
+		//   Freshness = log(1 + hours_since_post) / 48
+		//   Participation = diversity of engagement types
+		//   Score = quality × freshness_factor + resolution_bonus
+		const fetchCommentCounts = async (ids) => {
+			const counts = {};
+			if (!ids.length) return { counts, failed: false };
+			try {
+				for (let i = 0; i < ids.length; i += 100) {
+					const slice = ids.slice(i, i + 100);
+					// Mirror the feed's counting rule exactly: only non-deleted,
+					// non-hidden comments score. Hidden (moderated) comments must
+					// not inflate a post's rank.
+					const { data, error: cErr } = await supabase
+						.from("comments")
+						.select("post_id")
+						.in("post_id", slice)
+						.eq("deleted", false)
+						.neq("hidden", true);
+					if (cErr) throw cErr;
+					(data || []).forEach((c) => {
+						counts[c.post_id] = (counts[c.post_id] || 0) + 1;
+					});
+				}
+			} catch (err) { console.error("[leaderboard] comment counts fetch failed", { error: err?.message || String(err) }); return { counts, failed: true }; }
+			return { counts, failed: false };
+		};
+
+		const computeScore = (item, commentCount, up, down = 0) => {
+			const net = Math.max(0, up - down);
+			const comments = commentCount || 0;
+			const hours = Math.max(0.1, (Date.now() - new Date(item.created_at).getTime()) / 3600000);
+			const isSolved = item.status === "solved";
+
+			// Quality: weighted engagement. Down-votes subtract from the
+			// up-vote signal (floored at zero) so a thumbs-down actually
+			// counts instead of being decorative.
+			const quality = net * 3 + comments * 2.5;
+
+			// Freshness: log-compressed time decay (not harsh — rewards sustained engagement)
+			const freshness = Math.log(1 + hours / 24) / 2;
+
+			// Resolution bonus: solved posts get a 20% boost
+			const resolutionBonus = isSolved ? 1.2 : 1;
+
+			// Discussion depth: posts with comments are more valuable than reaction-only
+			const depthFactor = comments > 3 ? 1.15 : comments > 0 ? 1.05 : 1;
+
+			const score = Math.round((quality + freshness) * resolutionBonus * depthFactor);
+
+			return {
+				score,
+				breakdown: {
+					support: net * 3,
+					downvotes: down * 3,
+					comments: comments * 2.5,
+					freshness: Math.round(freshness * 10) / 10,
+					resolution: isSolved ? "+20%" : "—",
+					depth: depthFactor > 1 ? "+" + Math.round((depthFactor - 1) * 100) + "%" : "—",
+				},
+			};
+		};
+
 		// Full ranked lists (no hide_empty filter, no cap) — the source of truth
 		// for BOTH the visible per-section lists AND the merged board. Pinned ids
 		// resolve against these full lists so a pin can never silently no-op just
 		// because the item ranks below the page cap or has zero support.
-		const allProblems = (problems || [])
-			.map((p) => ({ ...p, support: supportOf(reactMap[p.id]) }))
-			.filter((p) => !isTestArtifact(p.title))
-			.sort((a, b) => b.support - a.support);
+		// Fetch comment counts for all posts to enable discussion depth scoring
+		const commentsTask = fetchCommentCounts(allPostIds);
 
-		const allSuggestions = (suggestions || [])
-			.map((s) => ({ ...s, support: reactMap[s.id]?.upvote || 0 }))
-			.filter((s) => !isTestArtifact(s.title))
-			.sort((a, b) => b.support - a.support);
-
-		const rankedProblems = allProblems
-			.filter((p) => (cfg.hide_empty ? p.support > 0 : true))
-			.slice(0, LIMIT);
-
-		const rankedSuggestions = allSuggestions
-			.filter((s) => (cfg.hide_empty ? s.support > 0 : true))
-			.slice(0, LIMIT);
-
-		// ── Polls: ranked by total votes ───────────────────────────
+		// ── Polls: ranked by total votes (independent leg of the fan-out) ───────
 		let rankedPolls = [];
+		let votesFailed = false;
+		const votesTask = (async () => {
 		const pollIds = (pollRows || []).map((p) => p.id);
 		if (pollIds.length) {
 			try {
-				const { data: votes } = await supabase
-					.from("poll_votes")
-					.select("poll_id")
-					.in("poll_id", pollIds);
+				const votes = [];
+				for (let i = 0; i < pollIds.length; i += 100) {
+					const slice = pollIds.slice(i, i + 100);
+					const { data, error: sliceErr } = await supabase
+						.from("poll_votes")
+						.select("poll_id")
+						.in("poll_id", slice);
+					if (sliceErr) throw sliceErr;
+					if (data) votes.push(...data);
+				}
 				const voteMap = {};
 				(votes || []).forEach((v) => {
 					voteMap[v.poll_id] = (voteMap[v.poll_id] || 0) + 1;
@@ -173,9 +267,13 @@ export default async function handler(req, res) {
 					.sort((a, b) => b.votes - a.votes)
 					.slice(0, LIMIT);
 			} catch {
-				/* non-fatal — leaderboard shows zero votes */
+				// Non-fatal, but the section now shows zero votes as estimates —
+				// say so via the degraded flag instead of silently ranking.
+				votesFailed = true;
 			}
 		}
+		})();
+
 
 		// ── AI activity: recent agent executions + learning records ─
 		// NOTE: uses real columns from agent_executions (started_at/agent_name/task —
@@ -183,6 +281,7 @@ export default async function handler(req, res) {
 		// there is no title). Selecting non-existent columns makes PostgREST error,
 		// which the old code swallowed and rendered an always-empty AI tab.
 		let aiActivity = [];
+		const aiTask = (async () => {
 		try {
 			// Guard each sub-query independently so one missing table can't sink the board.
 			let execs = null;
@@ -224,6 +323,43 @@ export default async function handler(req, res) {
 		} catch {
 			/* non-fatal — AI activity is supplementary */
 		}
+		})();
+
+		// ── Fan-in: one join for the whole independent fan-out. ──
+		await reactionsTask;
+		const { counts: commentCounts, failed: commentsFailed } = await commentsTask;
+		await votesTask;
+		await aiTask;
+		const countsDegraded = reactionsFailed || commentsFailed || votesFailed;
+
+		const allProblems = (problems || [])
+			.map((p) => {
+				const support = supportOf(reactMap[p.id]);
+				const down = downOf(reactMap[p.id]);
+				const { score, breakdown } = computeScore(p, commentCounts[p.id], support, down);
+				return { ...p, support, down, score, breakdown };
+			})
+			.filter((p) => !isTestArtifact(p.title))
+			.sort((a, b) => (b.score || 0) - (a.score || 0));
+
+		const allSuggestions = (suggestions || [])
+			.map((s) => {
+				const support = (reactMap[s.id]?.upvote || 0) + (reactMap[s.id]?.support || 0);
+				const down = downOf(reactMap[s.id]);
+				const { score, breakdown } = computeScore(s, commentCounts[s.id], support, down);
+				return { ...s, support, down, score, breakdown };
+			})
+			.filter((s) => !isTestArtifact(s.title))
+			.sort((a, b) => (b.score || 0) - (a.score || 0));
+
+		const rankedProblems = allProblems
+			.filter((p) => (cfg.hide_empty ? p.support > 0 : true))
+			.slice(0, LIMIT);
+
+		const rankedSuggestions = allSuggestions
+			.filter((s) => (cfg.hide_empty ? s.support > 0 : true))
+			.slice(0, LIMIT);
+
 
 		// ── Aggregate leaderboard (merged, human + AI) ─────────────
 		// Admin-pinned ids rise to the top (in the order they were listed);
@@ -234,7 +370,8 @@ export default async function handler(req, res) {
 			type,
 			id: r.id,
 			title: r.title,
-			score: r.support,
+			score: r.score || r.support,
+			breakdown: r.breakdown,
 			category: r.category,
 			status: r.status,
 			at: r.created_at,
@@ -269,6 +406,8 @@ export default async function handler(req, res) {
 			ai_activity: aiActivity,
 			leaderboard: merged,
 			generated_at: new Date().toISOString(),
+			degraded: countsDegraded || undefined,
+			estimated: countsDegraded || undefined,
 		});
 	} catch (err) {
 		return sanitizeError(res, err, "leaderboard");

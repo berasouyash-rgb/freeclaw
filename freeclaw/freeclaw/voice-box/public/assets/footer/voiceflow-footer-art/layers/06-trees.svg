@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="600" viewBox="0 0 1600 600">
+<title>Trees</title>
+
+<g stroke="#5ba9a0" stroke-width="3" fill="#d9f5ed">
+ <path d="M275 400 V300 M275 325 Q225 300 235 260 Q255 235 275 270 Q295 220 325 255 Q345 290 295 320Z"/>
+ <path d="M1320 405 V300 M1320 330 Q1270 300 1285 265 Q1305 240 1320 275 Q1340 225 1370 260 Q1390 295 1340 325Z"/>
+</g>
+<g fill="none" stroke="#9bd8c8" stroke-width="2">
+ <path d="M275 300 l-24 -22 M275 315 l28 -30 M1320 305 l-24 -25 M1320 320 l28 -28"/>
+</g>
+
+</svg>

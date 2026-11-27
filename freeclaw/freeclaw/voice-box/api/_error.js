@@ -3,14 +3,11 @@
 // file paths, and internal service URLs to unauthenticated users.
 import { logger, trackError } from "./_observability.js";
 
-// Lazy-init Sentry for backend — uses SENTRY_DSN env var, falls back to hardcoded DSN
-const BACKEND_DSN =
-	"https://2edb1451dd3eaf08c56dc4c2c8839cf4@o4511824665968640.ingest.us.sentry.io/4511824685760512";
+// Lazy-init Sentry for backend — env-only, no hardcoded fallback.
+const BACKEND_DSN = process.env.SENTRY_DSN || "";
 
 let sentryInit = false;
 let sentryModule = null;
-// Cache the init promise so concurrent sanitizeError calls await the SAME
-// import instead of each re-triggering it (and racing the sentryModule check).
 let sentryInitPromise = null;
 function initBackendSentry() {
 	if (sentryInitPromise) return sentryInitPromise;
@@ -33,7 +30,6 @@ function initBackendSentry() {
 				],
 			});
 			sentryModule = Sentry;
-			console.log("[Sentry] Backend initialized ✓");
 		} catch {
 			/* @sentry/node not installed — skip silently */
 		}
@@ -43,41 +39,78 @@ function initBackendSentry() {
 
 /**
  * Sanitize an error for client-facing JSON responses.
- * Logs the full error server-side with structured logging, returns generic message to client.
- * Sends to Sentry if configured.
+ *
+ * The response is sent SYNCHRONOUSLY — callers do NOT need `await`.
+ * Logging and Sentry happen in the background (fire-and-forget) so they
+ * never delay or block the 500 response from reaching the client.
  */
-export async function sanitizeError(res, err, context = "api") {
-	const msg = err instanceof Error ? err.message : String(err);
-	const stack = err instanceof Error ? err.stack : "";
-
-	// Lazy init Sentry on first error and AWAIT it — otherwise the first error
-	// races the dynamic import and is never captured.
-	try {
-		await initBackendSentry();
-		if (sentryModule) {
-			try {
-				sentryModule.captureException(err, {
-					tags: { context },
-					extra: { status_code: 500 },
-				});
-			} catch {
-				/* skip */
-			}
+/**
+ * Describe any thrown value for the logs.
+ *
+ * PostgREST rejections are PLAIN OBJECTS (`{message, details, hint, code}`),
+ * not Errors. The old `String(err)` on those produced "[object Object]" in
+ * every log line, so a failing 500 (e.g. an undefined column on a post
+ * update) arrived with no cause at all and could not be diagnosed from the
+ * server log. This keeps client responses generic while the log stays useful.
+ */
+function describeThrown(err) {
+	if (err instanceof Error) {
+		return { msg: err.message, stack: err.stack || "" };
+	}
+	if (err && typeof err === "object") {
+		const e = err;
+		const parts = [e.message, e.details, e.hint, e.code ? `code=${String(e.code)}` : ""]
+			.filter((p) => typeof p === "string" && p.trim().length > 0);
+		if (parts.length) return { msg: parts.join(" | "), stack: "" };
+		try {
+			return { msg: JSON.stringify(err).slice(0, 800), stack: "" };
+		} catch {
+			return { msg: "[unserializable thrown value]", stack: "" };
 		}
+	}
+	return { msg: String(err), stack: "" };
+}
+
+export function sanitizeError(res, err, context = "api") {
+	const { msg, stack } = describeThrown(err);
+
+	// Fire-and-forget: structured logging (async, non-blocking)
+	try {
+		logger.error(context, "request_error", {
+			error_message: msg,
+			stack: stack?.slice(0, 1000),
+			status_code: 500,
+		});
 	} catch {
-		/* never let error reporting crash the response path */
+		/* logger failure must never block the response */
 	}
 
-	// Structured error logging
-	logger.error(context, "request_error", {
-		error_message: msg,
-		stack: stack?.slice(0, 1000),
-		status_code: 500,
-	});
+	// Fire-and-forget: error tracking
+	try {
+		trackError(err instanceof Error ? err : new Error(msg), { context });
+	} catch {
+		/* tracking failure must never block the response */
+	}
 
-	// Track error for aggregation
-	trackError(err instanceof Error ? err : new Error(msg), { context });
+	// Fire-and-forget: Sentry (lazy-loads @sentry/node on first error)
+	initBackendSentry()
+		.then(() => {
+			if (sentryModule) {
+				try {
+					sentryModule.captureException(err, {
+						tags: { context },
+						extra: { status_code: 500 },
+					});
+				} catch {
+					/* skip */
+				}
+			}
+		})
+		.catch(() => {
+			/* Sentry failure must never block the response */
+		});
 
+	// Send the response IMMEDIATELY — this is the critical path
 	return res.status(500).json({ error: "Internal server error" });
 }
 

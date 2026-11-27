@@ -93,7 +93,7 @@ export default function QuickActions({
 		.slice(0, 4);
 
 	return (
-		<div className="grid lg:grid-cols-2 gap-3">
+		<div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
 			{/* Announcement broadcaster */}
 			<div className="card p-4 vb-rise">
 				<h2 className="font-display font-semibold text-sm flex items-center gap-1.5 mb-3">

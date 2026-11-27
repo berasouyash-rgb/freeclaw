@@ -29,7 +29,14 @@ export default async function handler(req, res) {
 			const b = req.body || {};
 			if (b.clear) {
 				// Delete the announcement row entirely (value is NOT NULL, can't set null)
-				await supabase.from("settings").delete().eq("key", "announcement");
+				// The error MUST be checked: this is the platform-wide banner, and
+				// an unchecked delete answered ok:true while the previous notice
+				// stayed live for every user.
+				const { error: clearErr } = await supabase
+					.from("settings")
+					.delete()
+					.eq("key", "announcement");
+				if (clearErr) throw clearErr;
 				await auditLog("admin", "clear_announcement", "");
 				return res.status(200).json({ ok: true, value: null });
 			}
@@ -43,13 +50,22 @@ export default async function handler(req, res) {
 				.select("key")
 				.eq("key", "announcement")
 				.maybeSingle();
-			if (existing)
-				await supabase
+			// An unchecked write here meant the admin saw their own text echoed
+			// back with ok:true while every user kept seeing the PREVIOUS
+			// banner — and the audit log recorded a publish that never landed.
+			// Urgent notices are exactly the case that must not fail quietly.
+			if (existing) {
+				const { error: setErr } = await supabase
 					.from("settings")
 					.update({ value })
 					.eq("key", "announcement");
-			else
-				await supabase.from("settings").insert({ key: "announcement", value });
+				if (setErr) throw setErr;
+			} else {
+				const { error: insertErr } = await supabase
+					.from("settings")
+					.insert({ key: "announcement", value });
+				if (insertErr) throw insertErr;
+			}
 			await auditLog("admin", "set_announcement", b.text || "");
 			return res.status(200).json({ ok: true, value });
 		}

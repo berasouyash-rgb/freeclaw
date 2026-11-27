@@ -31,6 +31,7 @@ vi.mock("../../api/_auth.js", () => ({
 	rateLimitResponse: vi.fn((res) =>
 		res.status(429).json({ error: "rate limited" }),
 	),
+	verifyCallerIdentity: vi.fn().mockResolvedValue({ ok: true, callerId: "anon_owner" }),
 }));
 vi.mock("../../api/_error.js", () => ({
 	sanitizeError: vi.fn((res) =>

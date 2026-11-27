@@ -1,6 +1,8 @@
 /* Fonts are loaded via <link> in index.html (lightningcss cannot resolve remote @imports) */
 @import "tailwindcss";
 
+@custom-variant dark (&:where(.dark, .dark *));
+
 @theme {
   --font-display: "Fraunces", Georgia, "Times New Roman", serif;
   --font-body: "Albert Sans", ui-sans-serif, system-ui, sans-serif;
@@ -30,17 +32,47 @@
   --vb-surface3: #e8e8f1;
   --vb-border: #e4e4ee;
   /* ── Text ─────────────────────────────────────────────────── */
+  /* Contrast contract: every text token below holds WCAG AA (4.5:1) against
+     the WORST surface it can land on — surface3 #e8e8f1 — not just white.
+     `--vb-ink3` previously sat at 2.63:1 there and 3.19:1 on white, which
+     broke the 4.5:1 promise published on /accessibility on every page.
+     Values are derived, not eyeballed: see tests/e2e/a11y-claims.spec.ts,
+     which fails the build if any of these regress. */
   --vb-ink: #171724;
   --vb-ink2: #55556b;
-  --vb-ink3: #8e8ea5;
+  --vb-ink3: #5f5f77; /* 4.56:1 on surface3 -> ~5.2:1; tinted surfaces (accent-soft/30) need the extra headroom */
   /* ── Accent ───────────────────────────────────────────────── */
   --vb-accent: #5652d6;
-  --vb-accent2: #7a6ff0;
+  --vb-accent2: #5c4eed; /* 3.22:1 -> 4.58:1 (was #7a6ff0) */
   --vb-accent-soft: #edecfc;
   /* ── Semantic ─────────────────────────────────────────────── */
-  --vb-good: #16a06a;
-  --vb-warn: #d98a0b;
-  --vb-bad: #dc4b4b;
+  --vb-good: #0b5f3f; /* 4.57:1 on surface3 -> ~5.7:1; status text also lands on bg-good/10 tints */
+  --vb-warn: #915c07; /* 2.27:1 -> 4.61:1 (was #d98a0b) */
+  --vb-bad: #c82727; /* 3.35:1 -> 4.57:1 (was #dc4b4b) */
+  /* --vb-bad as a bare "R G B" triplet. The aurora bloom needs the raw
+     channels because it dials its own alpha per tier; a hex or colour value
+     cannot be split. Keep the two in sync. */
+  --vb-bad-rgb: 200 39 39;
+  /* ── Aurora bloom (primary action) ─────────────────────────
+     The light a primary action throws when it is pressed: the warm→green→
+     cyan→blue→violet drift of white light through a prism, not a single
+     tinted halo. Five hues, warm at the left edge to cool at the right.
+     Stored as bare "R G B" triplets so one alpha variable per tier dials
+     the whole arc at once and `box-shadow` can interpolate between states
+     without changing its layer count (which would make it snap).
+     Consumed as `rgb(var(--vb-aurora-N) / var(--vb-a-*))`. Space-separated
+     rgb() is Chrome 65+ / Safari 12.1+ / Firefox 52+ — all below the
+     lightningcss targets in vite.config.ts, so nothing rewrites it. */
+  --vb-aurora-1: 255 157 92;   /* amber  — warm end */
+  --vb-aurora-2: 47 208 122;   /* jade */
+  --vb-aurora-3: 35 196 224;   /* cyan */
+  --vb-aurora-4: 79 125 255;   /* azure */
+  --vb-aurora-5: 157 107 255;  /* violet — cool end */
+  /* Text colour for use ON --vb-accent. Must be a token, not a literal
+     `#fff`: the accent flips to a light purple in dark mode, where white
+     text drops to 3.10:1. In dark mode this becomes the dark background,
+     giving 6.19:1 on accent and 8.17:1 on the hover accent. */
+  --vb-on-accent: #ffffff;
   /* ── Shadows (tiered) ────────────────────────────────────── */
   --vb-shadow-xs: 0 1px 2px rgba(0,0,0,0.04);
   --vb-shadow-sm: 0 2px 8px -2px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04);
@@ -69,13 +101,22 @@
   --vb-border: #262637;
   --vb-ink: #f0f0f7;
   --vb-ink2: #a7a7c0;
-  --vb-ink3: #6e6e88;
+  --vb-ink3: #8d8da2; /* 3.01:1 -> 4.58:1 on surface3 (was #6e6e88) */
   --vb-accent: #8b85f5;
   --vb-accent2: #a89dff;
   --vb-accent-soft: #232043;
   --vb-good: #35c68d;
   --vb-warn: #eaa93c;
   --vb-bad: #f06d6d;
+  --vb-bad-rgb: 240 109 109;
+  /* Aurora hues lift in dark mode: the same pigments over lacquer need more
+     lightness to read as light rather than as stained glass. */
+  --vb-aurora-1: 255 179 122;
+  --vb-aurora-2: 88 227 155;
+  --vb-aurora-3: 74 217 238;
+  --vb-aurora-4: 110 149 255;
+  --vb-aurora-5: 180 140 255;
+  --vb-on-accent: #0e0e16; /* 6.19:1 on --vb-accent (white would be 3.10:1) */
   /* Dark mode shadows — subtler, more purple-tinted */
   --vb-shadow-xs: 0 1px 2px rgba(0,0,0,0.2);
   --vb-shadow-sm: 0 2px 8px -2px rgba(0,0,0,0.3), 0 1px 2px rgba(0,0,0,0.2);
@@ -84,6 +125,27 @@
   --vb-shadow-xl: 0 16px 48px -12px rgba(0,0,0,0.5), 0 8px 16px rgba(0,0,0,0.25);
   color-scheme: dark;
 }
+
+/* ───────────────────────────────────────────────────────────────────
+   COMPONENT LAYER — deliberate, not decorative.
+
+   Unlayered CSS outranks `@layer utilities` in the cascade. A plain
+   `.btn { display: inline-flex }` sitting outside any layer therefore
+   defeated every responsive display utility: `hidden sm:inline-flex`
+   never hid the button, it only *looked* conditional. That silently
+   broke responsive layout across the whole app — most visibly a 392px
+   minimum content width that made every page scroll sideways on any
+   viewport narrower than ~392px.
+
+   Putting the component rules in the components layer restores the
+   intended precedence: a Tailwind utility always beats component CSS.
+   Theme tokens (@theme, :root, .dark) stay unlayered above so the
+   palette always resolves.
+
+   Guarded by tests/e2e/audit.spec.ts (no route may overflow its
+   viewport) — do not move these rules back out of the layer.
+   ─────────────────────────────────────────────────────────────────── */
+@layer components {
 
 @media (prefers-reduced-motion: no-preference) {
   html { scroll-behavior: smooth; }
@@ -135,7 +197,7 @@ h1,h2,h3,h4 { font-family: var(--font-display); letter-spacing: -0.01em; }
 
 /* Reduce motion for users who prefer it */
 @media (prefers-reduced-motion: reduce) {
-  .vb-rise, .vb-pop, .vb-bar-anim, .vb-trend-bounce, .btn:active:not(:disabled) {
+  .vb-rise, .vb-pop, .vb-bar-anim, .vb-trend-bounce, .vb-burst-ring, .vb-burst-particle, .vb-logo-arcs path, .vb-feed-item, .vb-motive-mesh, .vb-mesh-orb, .btn:active:not(:disabled) {
     animation: none !important;
     transform: none !important;
   }
@@ -202,11 +264,13 @@ h1,h2,h3,h4 { font-family: var(--font-display); letter-spacing: -0.01em; }
 ::-webkit-scrollbar-track { background: transparent; }
 
 /* Optimized: GPU-accelerated animations with will-change hints */
-@keyframes vb-rise { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: none; } }
+@keyframes vb-rise { from { opacity: 0; } to { opacity: 1; } }
 @keyframes vb-pop { 0% { transform: scale(.85); } 60% { transform: scale(1.08); } 100% { transform: scale(1); } }
 @keyframes vb-bar { from { width: 0; } }
 @keyframes vb-pulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
-@keyframes vb-shimmer { 0% { background-position: -400px 0; } 100% { background-position: 400px 0; } }
+/* Loading shimmer is a calm opacity pulse — never a left-to-right sweep
+   across the viewport. Used by .skeleton, .vb-shimmer and voice-transcribing. */
+@keyframes vb-shimmer { 0%,100% { opacity: 1; } 50% { opacity: .45; } }
 .vb-shimmer {
   background: linear-gradient(90deg, var(--vb-surface2) 0%, color-mix(in srgb, var(--vb-border) 50%, var(--vb-surface)) 50%, var(--vb-surface2) 100%);
   background-size: 800px 100%;
@@ -218,19 +282,131 @@ h1,h2,h3,h4 { font-family: var(--font-display); letter-spacing: -0.01em; }
 .vb-scale-hover:hover { transform: scale(1.03); box-shadow: var(--vb-shadow-sm); }
 .vb-scale-hover:active { transform: scale(0.97); }
 
-.vb-rise { animation: vb-rise .35s cubic-bezier(.22,.9,.3,1) both; will-change: transform, opacity; }
-.vb-rise-delay-1 { animation: vb-rise .35s cubic-bezier(.22,.9,.3,1) both; animation-delay: .06s; will-change: transform, opacity; }
-.vb-rise-delay-2 { animation: vb-rise .35s cubic-bezier(.22,.9,.3,1) both; animation-delay: .12s; will-change: transform, opacity; }
-.vb-rise-delay-3 { animation: vb-rise .35s cubic-bezier(.22,.9,.3,1) both; animation-delay: .18s; will-change: transform, opacity; }
-.vb-rise-delay-4 { animation: vb-rise .35s cubic-bezier(.22,.9,.3,1) both; animation-delay: .24s; will-change: transform, opacity; }
-.vb-pop { animation: vb-pop .2s ease both; will-change: transform; }
-.vb-bar-anim { animation: vb-bar .7s cubic-bezier(.22,.9,.3,1) both; }
-
-@keyframes vb-trend-bounce {
-  0%, 100% { transform: translateY(0); }
-  50% { transform: translateY(-1.5px); }
+/* Entrance motion is a plain fade — no sliding, no vertical travel.
+   Content appears instantly; only state changes animate. */
+.vb-rise { animation: vb-rise 0.08s linear both; }
+.vb-rise-delay-1, .vb-rise-delay-2, .vb-rise-delay-3, .vb-rise-delay-4, .vb-rise-delay-5 {
+  animation: vb-rise 0.08s linear both;
 }
-.vb-trend-bounce { animation: vb-trend-bounce 1.6s ease-in-out infinite; }
+.vb-pop { animation: vb-pop 0.05s ease both; will-change: transform; }
+
+/* APK-only feed entrance: staggered fade for the first cards, so the list
+   feels alive as it paints. The .vb-feed-item class is only rendered when
+   isMobileApp() — web/desktop never match these selectors. Brief by design
+   (≤0.3s total) with no vertical travel, and killed under
+   prefers-reduced-motion like every other vb-* animation. */
+@media (prefers-reduced-motion: no-preference) {
+  .vb-feed-item { animation: vb-rise 0.16s ease-out both; }
+  .vb-feed-item:nth-child(2) { animation-delay: 0.03s; }
+  .vb-feed-item:nth-child(3) { animation-delay: 0.06s; }
+  .vb-feed-item:nth-child(4) { animation-delay: 0.09s; }
+  .vb-feed-item:nth-child(5) { animation-delay: 0.12s; }
+  .vb-feed-item:nth-child(6) { animation-delay: 0.15s; }
+  .vb-feed-item:nth-child(n+7) { animation-delay: 0.18s; }
+}
+
+/* ---------- Voice logo — radiating sound arcs (opacity/scale only).
+   Static mode (.vb-logo-static) and prefers-reduced-motion render the
+   mark with steady arcs: the identity never depends on motion. */
+.vb-logo-arcs path { opacity: .35; animation: vb-logo-wave 2.2s ease-in-out infinite; transform-box: fill-box; transform-origin: left center; }
+.vb-logo-arcs path:nth-child(2) { animation-delay: .25s; }
+.vb-logo-arcs path:nth-child(3) { animation-delay: .5s; }
+@keyframes vb-logo-wave { 0%,100% { opacity: .3; transform: scale(.92); } 50% { opacity: 1; transform: scale(1.04); } }
+.vb-logo-static .vb-logo-arcs path { animation: none; opacity: .9; }
+
+/* ---------- Support burst — YouTube-like celebration on activation.
+   Ring + 8 radiating particles, transform/opacity only (GPU). Base
+   opacity 0 so prefers-reduced-motion (animation killed above) renders
+   nothing while the count pop still confirms the tap. */
+.vb-burst { position: absolute; inset: 0; pointer-events: none; }
+.vb-burst-ring { position: absolute; left: 50%; top: 50%; width: 10px; height: 10px; margin: -5px 0 0 -5px; border-radius: 50%; border: 2px solid var(--vb-accent); opacity: 0; animation: vb-burst-ring .55s ease-out both; }
+@keyframes vb-burst-ring { 0% { opacity: .9; transform: scale(.4); } 100% { opacity: 0; transform: scale(3.4); } }
+.vb-burst-particle { position: absolute; left: 50%; top: 50%; width: 5px; height: 5px; margin: -2.5px 0 0 -2.5px; border-radius: 50%; background: var(--vb-accent); opacity: 0; animation: vb-burst-fly .6s cubic-bezier(.16,1,.3,1) both; }
+@keyframes vb-burst-fly { 0% { opacity: 1; transform: translate(0, 0) scale(1); } 100% { opacity: 0; transform: translate(var(--tx), var(--ty)) scale(.3); } }
+.vb-bar-anim { animation: vb-bar 0.05s cubic-bezier(.22,.9,.3,1) both; }
+
+/* ---------- Rank-move chip — "↑ 2 / ↓ 1" after a vote reorders a feed.
+   Pairs with useFlipList: the card glides to its new slot and says where it
+   went, then leaves after 3s. Decorative (aria-hidden) — the count itself
+   is the accessible confirmation. Reduced-motion keeps the chip, drops the
+   entrance. */
+.vb-rank-delta {
+  position: absolute;
+  top: 0.625rem;
+  right: 0.75rem;
+  z-index: 30;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1.2;
+  pointer-events: none;
+  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(12px);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
+  animation: vb-rank-delta-in .24s cubic-bezier(.2,.9,.3,1) both;
+}
+.vb-rank-delta-up {
+  color: #10b981;
+  background: rgba(16, 185, 129, 0.22);
+  border: 1px solid rgba(16, 185, 129, 0.6);
+  box-shadow: 0 0 16px rgba(16, 185, 129, 0.35);
+}
+.vb-rank-delta-down {
+  color: #f59e0b;
+  background: rgba(245, 158, 11, 0.22);
+  border: 1px solid rgba(245, 158, 11, 0.6);
+  box-shadow: 0 0 16px rgba(245, 158, 11, 0.35);
+}
+@keyframes vb-rank-delta-in { from { opacity: 0; transform: translateY(-4px) scale(.85); } to { opacity: 1; transform: none; } }
+/* One deliberate directional nudge, timed to the 900ms FLIP glide. The old
+   `animate-bounce` repeated every second and read as a twitch, not a move. */
+@keyframes vb-rank-arrow-up {
+  from { transform: translateY(5px); opacity: .35; }
+  to   { transform: translateY(-2px); opacity: 1; }
+}
+@keyframes vb-rank-arrow-down {
+  from { transform: translateY(-5px); opacity: .35; }
+  to   { transform: translateY(2px); opacity: 1; }
+}
+.vb-rank-delta-up svg.vb-rank-arrow { animation: vb-rank-arrow-up 900ms cubic-bezier(.2,.9,.3,1) both; }
+.vb-rank-delta-down svg.vb-rank-arrow { animation: vb-rank-arrow-down 900ms cubic-bezier(.2,.9,.3,1) both; }
+@media (prefers-reduced-motion: reduce) {
+  .vb-rank-delta, .vb-rank-delta svg { animation: none !important; }
+}
+
+/* ---------- Poll result fill — the share eases to its new value over 600ms
+   instead of snapping, and the leading edge carries one light sweep when a
+   vote lands. The sweep is a ::after so it never touches layout. */
+.vb-poll-fill {
+  position: absolute;
+  inset-block: 0;
+  left: 0;
+  overflow: hidden;
+  transition: width 600ms cubic-bezier(.2,.9,.3,1);
+  will-change: width;
+}
+.vb-poll-fill::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  background: linear-gradient(90deg, transparent 0%, color-mix(in srgb, var(--vb-accent) 26%, transparent) 50%, transparent 100%);
+}
+.vb-poll-fill[data-fresh="true"]::after { animation: vb-poll-sweep 620ms ease-out both; }
+@keyframes vb-poll-sweep { 0% { opacity: .9; transform: translateX(-100%); } 100% { opacity: 0; transform: translateX(100%); } }
+@media (prefers-reduced-motion: reduce) {
+  .vb-rank-delta { animation: none; }
+  .vb-poll-fill { transition: none; }
+  .vb-poll-fill[data-fresh="true"]::after { animation: none; }
+}
+
+/* Trend chip is static — a bouncing arrow communicates nothing and adds
+   constant motion to an otherwise calm page. */
+.vb-trend-bounce { animation: none; }
 
 @keyframes vb-draw { from { stroke-dashoffset: 1; } to { stroke-dashoffset: 0; } }
 .vb-draw { stroke-dasharray: 1; animation: vb-draw 1.2s cubic-bezier(.22,.9,.3,1) both; }
@@ -246,8 +422,8 @@ h1,h2,h3,h4 { font-family: var(--font-display); letter-spacing: -0.01em; }
 
 /* ---------- State-change animations: pipeline slides, text appears ---------- */
 /* Optimized: merged redundant keyframes, shorter durations */
-@keyframes vb-slide-in-right { from { opacity: 0; transform: translateX(14px); } to { opacity: 1; transform: none; } }
-.vb-slide-in { animation: vb-slide-in-right .35s cubic-bezier(.22,.9,.3,1) both; will-change: transform, opacity; }
+@keyframes vb-slide-in-right { from { opacity: 0; } to { opacity: 1; } }
+.vb-slide-in { animation: vb-slide-in-right .12s linear both; }
 
 @keyframes vb-stage-pop-fill {
   from { transform: scale(0.7); opacity: 0; }
@@ -283,37 +459,36 @@ h1,h2,h3,h4 { font-family: var(--font-display); letter-spacing: -0.01em; }
     radial-gradient(85% 70% at 88% 100%, color-mix(in srgb, var(--vb-accent2) 14%, transparent) 0%, transparent 55%);
 }
 
-/* Drifting brand orbs — pure CSS ambient depth behind the ring */
-.vb-loader-orb {
+/* Premium motive mesh — soft drifting blur orbs behind the loader stage */
+.vb-motive-mesh { position: absolute; inset: 0; }
+.vb-mesh-orb {
   position: absolute;
   border-radius: 50%;
-  filter: blur(36px);
-  opacity: .5;
+  filter: blur(44px);
+  opacity: .40;
   pointer-events: none;
-  z-index: -1;
 }
-.vb-loader-orb--1 {
-  width: 170px; height: 170px;
-  left: -45px; top: -35px;
-  background: color-mix(in srgb, var(--vb-accent) 32%, transparent);
-  animation: vb-orb-drift 9s var(--vb-ease) infinite alternate;
+.vb-mesh-orb--a {
+  width: 300px; height: 300px;
+  left: -80px; top: 10%;
+  background: radial-gradient(circle, var(--vb-accent) 0%, color-mix(in srgb, var(--vb-accent) 28%, transparent) 55%, transparent 78%);
+  animation: vb-motive-drift-a 12s cubic-bezier(.42,0,.58,1) infinite alternate;
 }
-.vb-loader-orb--2 {
-  width: 130px; height: 130px;
-  right: -35px; top: 18%;
-  background: color-mix(in srgb, var(--vb-accent2) 30%, transparent);
-  animation: vb-orb-drift 11.5s var(--vb-ease) infinite alternate-reverse;
+.vb-mesh-orb--b {
+  width: 260px; height: 340px;
+  left: 55%; top: 30%;
+  background: radial-gradient(circle, #38BDF8 0%, color-mix(in srgb, #38BDF8 22%, transparent) 60%, transparent 78%);
+  animation: vb-motive-drift-b 15s cubic-bezier(.42,0,.58,1) infinite alternate-reverse;
 }
-.vb-loader-orb--3 {
-  width: 95px; height: 95px;
-  left: 28%; bottom: -22px;
-  background: color-mix(in srgb, #38BDF8 22%, transparent);
-  animation: vb-orb-drift 7.5s var(--vb-ease) infinite alternate;
+.vb-mesh-orb--c {
+  width: 280px; height: 280px;
+  right: -60px; bottom: 10%;
+  background: radial-gradient(circle, color-mix(in srgb, var(--vb-accent2) 30%, transparent) 0%, transparent 78%);
+  animation: vb-motive-drift-c 18s cubic-bezier(.42,0,.58,1) infinite alternate;
 }
-@keyframes vb-orb-drift {
-  from { transform: translate(0, 0) scale(1); }
-  to { transform: translate(28px, 20px) scale(1.12); }
-}
+@keyframes vb-motive-drift-a { from { transform: translate(-35px, 45px); } to { transform: translate(30px, -25px); } }
+@keyframes vb-motive-drift-b { from { transform: translate(25px, -30px); } to { transform: translate(-25px, 35px); } }
+@keyframes vb-motive-drift-c { from { transform: translate(-10px, 20px); } to { transform: translate(20px, -15px); } }
 
 /* Conic brand ring + breathing halo */
 .vb-loading-ring {
@@ -330,35 +505,29 @@ h1,h2,h3,h4 { font-family: var(--font-display); letter-spacing: -0.01em; }
 @keyframes vb-loading-spin { to { transform: rotate(360deg); } }
 @keyframes vb-loading-pulse { 0%, 100% { opacity: .35; } 50% { opacity: .95; } }
 
-/* Voice bars — a tiny waveform inside the brand tile */
+/* Voice bars — a waveform inside the brand tile; per-bar durations via
+   --bar-dur so each bar "sings" at a different pitch (dancers, not metronome). */
 .vb-loading-bars rect {
   transform-box: fill-box;
   transform-origin: center;
-  animation: vb-bars-wave 1.4s ease-in-out infinite;
+  animation: vb-bars-wave var(--bar-dur, 1.6s) ease-in-out infinite;
 }
-.vb-loading-bars rect:nth-child(1) { animation-delay: .05s; }
-.vb-loading-bars rect:nth-child(2) { animation-delay: .3s; }
-.vb-loading-bars rect:nth-child(3) { animation-delay: .55s; }
+.vb-loading-bars rect:nth-child(1) { animation-delay: .05s; --bar-dur: 1.6s; }
+.vb-loading-bars rect:nth-child(2) { animation-delay: .30s; --bar-dur: 1.45s; }
+.vb-loading-bars rect:nth-child(3) { animation-delay: .55s; --bar-dur: 1.70s; }
+.vb-loading-bars rect:nth-child(4) { animation-delay: .12s; --bar-dur: 1.52s; }
+.vb-loading-bars rect:nth-child(5) { animation-delay: .38s; --bar-dur: 1.35s; }
 @keyframes vb-bars-wave {
-  0%, 100% { transform: scaleY(.55); opacity: .8; }
-  50% { transform: scaleY(1.05); opacity: 1; }
+  0%, 100% { transform: scaleY(.62); opacity: .85; }
+  50% { transform: scaleY(1.12); opacity: 1; }
 }
 
-/* Shimmering status line */
+/* Loading status line — a calm opacity breath in plain ink. It used to be
+   gradient text with a left-to-right background-position sweep, which read
+   as the page reloading every couple of seconds. */
 .vb-loading-label {
-  background: linear-gradient(90deg,
-    color-mix(in srgb, var(--vb-ink3) 55%, transparent) 0%,
-    var(--vb-ink) 50%,
-    color-mix(in srgb, var(--vb-ink3) 55%, transparent) 100%);
-  background-size: 200% 100%;
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
-  animation: vb-loading-shimmer 2.4s linear infinite;
-}
-@keyframes vb-loading-shimmer { to { background-position: 200% 0; } }
-@supports not ((-webkit-background-clip: text)) {
-  .vb-loading-label { color: var(--vb-ink3); background: none; }
+  color: var(--vb-ink3);
+  animation: vb-shimmer 2.4s ease-in-out infinite;
 }
 
 /* Wordmark — gradient sheen across the lockup */
@@ -412,8 +581,8 @@ h1,h2,h3,h4 { font-family: var(--font-display); letter-spacing: -0.01em; }
   opacity: .8;
 }
 @keyframes vb-motive-fade {
-  from { opacity: 0; transform: translateY(8px); filter: blur(4px); }
-  to { opacity: 1; transform: translateY(0); filter: blur(0); }
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 .vb-motive-in {
   animation: vb-motive-fade 0.55s ease both;
@@ -463,6 +632,9 @@ h1,h2,h3,h4 { font-family: var(--font-display); letter-spacing: -0.01em; }
 @keyframes vb-progress-fill { to { transform: scaleX(1); } }
 @media (prefers-reduced-motion: reduce) {
   .vb-loading-progress { display: none; }
+  .vb-motive-mesh { opacity: .14; }
+  .vb-mesh-orb { opacity: .14; }
+  .vb-loading-bars rect { animation: none !important; transform: none !important; }
 }
 
 .card {
@@ -471,8 +643,16 @@ h1,h2,h3,h4 { font-family: var(--font-display); letter-spacing: -0.01em; }
   border-radius: var(--vb-radius-lg);
   box-shadow: var(--vb-shadow-xs);
   transition: border-color var(--vb-duration-normal) var(--vb-ease),
-              box-shadow var(--vb-duration-normal) var(--vb-ease);
-  will-change: transform;
+              box-shadow var(--vb-duration-normal) var(--vb-ease),
+              transform var(--vb-duration-fast) var(--vb-ease);
+}
+.card-hover { transition: border-color var(--vb-duration-normal) var(--vb-ease), box-shadow var(--vb-duration-normal) var(--vb-ease), transform var(--vb-duration-fast) var(--vb-ease); }
+@media (hover: hover) and (pointer: fine) {
+  .card-hover:hover {
+    border-color: color-mix(in srgb, var(--vb-accent) 40%, var(--vb-border));
+    box-shadow: var(--vb-shadow-md);
+    transform: translateY(-2px);
+  }
 }
 
 /* ═══════════════════════════════════════════════════════════════
@@ -483,7 +663,7 @@ h1,h2,h3,h4 { font-family: var(--font-display); letter-spacing: -0.01em; }
    is NOT affected — tokens revert outside this wrapper.
    ═══════════════════════════════════════════════════════════════ */
 .admin-shell {
-  /* Brand violet — the original Voice Box admin accent. The Google-blue
+  /* Brand violet — the original Voice Flow admin accent. The Google-blue
      experiment was reverted after feedback; the enterprise layout/radii/
      shadows remain, but the identity color is back to the brand purple. */
   --vb-accent: #5652d6;
@@ -518,6 +698,14 @@ h1,h2,h3,h4 { font-family: var(--font-display); letter-spacing: -0.01em; }
   border-radius: 6px;
   padding: 7px 10px;
   transition: background-color .12s ease, color .12s ease;
+  min-height: 36px;
+}
+@media (max-width: 767px) {
+  .admin-shell .vb-admin-nav {
+    padding: 10px 12px;
+    min-height: 44px;
+    font-size: 14px;
+  }
 }
 .admin-shell .vb-admin-nav:hover {
   background: var(--vb-surface2);
@@ -555,10 +743,12 @@ h1,h2,h3,h4 { font-family: var(--font-display); letter-spacing: -0.01em; }
   border-color: var(--vb-accent);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--vb-accent) 18%, transparent);
 }
-.card-hover:hover {
-  border-color: var(--vb-accent);
-  box-shadow: var(--vb-shadow-lg);
-  transform: translateY(-2px);
+@media (hover: hover) and (pointer: fine) {
+  .card-hover:hover {
+    border-color: var(--vb-accent);
+    box-shadow: var(--vb-shadow-lg);
+    transform: translateY(-2px);
+  }
 }
 
 .btn {
@@ -569,36 +759,148 @@ h1,h2,h3,h4 { font-family: var(--font-display); letter-spacing: -0.01em; }
               border-color var(--vb-duration-fast) var(--vb-ease),
               color var(--vb-duration-fast) var(--vb-ease),
               box-shadow var(--vb-duration-fast) var(--vb-ease),
-              opacity var(--vb-duration-fast) var(--vb-ease);
+              opacity var(--vb-duration-fast) var(--vb-ease),
+              transform var(--vb-duration-fast) var(--vb-ease);
   white-space: nowrap; position: relative; overflow: hidden;
-  will-change: transform;
+  will-change: transform; user-select: none;
+  -webkit-tap-highlight-color: transparent;
 }
 .btn:active:not(:disabled) { transform: scale(0.97); }
 .btn:disabled { opacity: .5; cursor: not-allowed; }
-.btn-primary { background: var(--vb-accent); color: #fff; box-shadow: var(--vb-shadow-sm), inset 0 1px 0 rgba(255,255,255,0.1); }
+.btn-primary {
+  background: var(--vb-accent); color: var(--vb-on-accent);
+  /* Base drop shadow lives in its own variable so states can swap the
+     elevation tier without touching the bloom — `box-shadow` only animates
+     when both ends of the transition have the same layer count, and both
+     --vb-shadow-sm and --vb-shadow-md expand to exactly two layers. */
+  --vb-elev: var(--vb-shadow-sm), inset 0 1px 0 rgba(255,255,255,0.12);
+  --vb-a-near: 0%;
+  --vb-a-far: 0%;
+  /* Ambient bloom for the primary action (publish / post / submit …).
+     An aurora arc in ten layers. The five near layers sit close to the rim
+     but are nudged sideways (−12px … +12px) so the warm end, the greens and
+     the cool end each keep their own footing; pack them any tighter and they
+     overlap into one colourless pale wash. The five far layers drift wider
+     and softer, so the light separates warm at the lower-left through jade
+     and cyan to violet at the right — white light through a prism.
+     Only the two alpha variables above change between states, so this list
+     is written once and every state is the same shape — the transition
+     glides instead of snapping. It lives on box-shadow rather than a
+     pseudo-element because .btn sets overflow: hidden, which would clip a
+     child or ::after glow. Static — a light, not a pulse. */
+  --vb-bloom:
+    -12px  3px 20px -6px rgb(var(--vb-aurora-1) / var(--vb-a-near)),
+     -6px  4px 19px -6px rgb(var(--vb-aurora-2) / var(--vb-a-near)),
+      0px  4px 18px -6px rgb(var(--vb-aurora-3) / var(--vb-a-near)),
+      6px  4px 19px -6px rgb(var(--vb-aurora-4) / var(--vb-a-near)),
+     12px  3px 20px -6px rgb(var(--vb-aurora-5) / var(--vb-a-near)),
+    -30px  9px 60px -20px rgb(var(--vb-aurora-1) / var(--vb-a-far)),
+    -15px 12px 58px -20px rgb(var(--vb-aurora-2) / var(--vb-a-far)),
+      0px 12px 56px -20px rgb(var(--vb-aurora-3) / var(--vb-a-far)),
+     15px 12px 58px -20px rgb(var(--vb-aurora-4) / var(--vb-a-far)),
+     30px  9px 60px -20px rgb(var(--vb-aurora-5) / var(--vb-a-far));
+  box-shadow: var(--vb-elev), var(--vb-bloom);
+}
+/* Re-tint the bloom when the fill has been overridden. A destructive
+   button that glows violet under a red fill reads as a bug, not a light.
+   Collapsing all five hues to one makes it a red halo, which is the point:
+   an aurora under a red button would read as a rendering fault. */
+.btn-bloom-danger {
+  --vb-aurora-1: var(--vb-bad-rgb);
+  --vb-aurora-2: var(--vb-bad-rgb);
+  --vb-aurora-3: var(--vb-bad-rgb);
+  --vb-aurora-4: var(--vb-bad-rgb);
+  --vb-aurora-5: var(--vb-bad-rgb);
+}
+/* Text sitting on an accent fill. Use this instead of text-white: the accent
+   flips to a light purple in dark mode, where white text is 3.10:1. */
+.text-on-accent { color: var(--vb-on-accent); }
+/* Hover lifts one elevation tier and wakes the bloom to a third — a hint
+   that the button is live, not the full press. Deliberately no box-shadow
+   declaration here: one would outrank the var-driven one above. */
 .btn-primary:hover:not(:disabled) {
   background: var(--vb-accent2);
-  box-shadow: var(--vb-shadow-md), 0 4px 20px -4px color-mix(in srgb, var(--vb-accent) 45%, transparent);
+  --vb-elev: var(--vb-shadow-md), inset 0 1px 0 rgba(255,255,255,0.12);
+  --vb-a-near: 34%;
+  --vb-a-far: 15%;
   transform: translateY(-1px);
 }
-.btn-primary:active:not(:disabled) { transform: translateY(0) scale(0.98); box-shadow: var(--vb-shadow-xs); }
+/* Press / tap: the button lights up like a prism under the finger.
+   This is the rule that gives touch users the same feedback desktop gets
+   from :hover — a finger down is a press, not a hover. */
+.btn-primary:active:not(:disabled) {
+  transform: translateY(0) scale(0.98);
+  --vb-a-near: 72%;
+  --vb-a-far: 36%;
+}
+/* Keyboard parity — focus lights the same bloom, a touch quieter, so
+   tabbing to Publish reads the same as pressing it. */
+.btn-primary:focus-visible {
+  --vb-a-near: 46%;
+  --vb-a-far: 21%;
+}
 .btn-ghost { background: transparent; color: var(--vb-ink2); border-color: var(--vb-border); }
 .btn-ghost:hover:not(:disabled) { border-color: var(--vb-accent); color: var(--vb-accent); background: var(--vb-accent-soft); }
 .btn-ghost:active:not(:disabled) { transform: scale(0.97); }
 .btn-soft { background: var(--vb-accent-soft); color: var(--vb-accent); }
 .btn-soft:hover:not(:disabled) { filter: brightness(0.94); box-shadow: var(--vb-shadow-xs); }
-.btn-danger { background: rgba(220, 75, 75, 0.10); color: var(--vb-bad); border: 1px solid rgba(220, 75, 75, 0.15); }
-.btn-danger:hover:not(:disabled) { background: rgba(220, 75, 75, 0.18); border-color: rgba(220, 75, 75, 0.3); }
+.btn-danger { background: color-mix(in srgb, var(--vb-bad) 10%, transparent); color: var(--vb-bad); border: 1px solid color-mix(in srgb, var(--vb-bad) 15%, transparent); }
+.btn-danger:hover:not(:disabled) { background: color-mix(in srgb, var(--vb-bad) 18%, transparent); border-color: color-mix(in srgb, var(--vb-bad) 30%, transparent); }
+/* Touch-target floor — the 44x44 promise published on /accessibility.
+   Scoped to `pointer: coarse` on purpose: a mouse-driven desktop keeps its
+   dense rhythm, while a thumb-driven device gets a target it can actually
+   hit. Enforcing this globally instead would bloat every desktop toolbar. */
+@media (pointer: coarse) {
+  button,
+  [role="button"],
+  select,
+  .btn {
+    min-height: 44px;
+    min-width: 44px;
+  }
+  /* Switches are the exception to the 44x44 floor. A toggle track is
+     intentionally 44x24; forcing min-height:44px turned it into a 44x44
+     rounded-full CIRCLE on touch devices, and since the knob stays pinned
+     top-left the control read as a vertical switch. Keep the real track
+     geometry and grow the hit area with a transparent overlay instead, so
+     the tap target is still >=44px tall without distorting the visual. */
+  button.switch,
+  [role="switch"].switch {
+    min-height: 0;
+    min-width: 0;
+    height: 1.5rem;
+    width: 2.75rem;
+  }
+  button.switch::after,
+  [role="switch"].switch::after {
+    content: "";
+    position: absolute;
+    inset: -10px -2px;
+    border-radius: 999px;
+  }
+}
+
+/* Touch-optimized buttons on mobile: larger hit targets */
+@media (pointer: coarse) {
+  .btn { min-height: 44px; padding: .65rem 1.2rem; }
+  .btn-sm, .btn-xs { min-height: 36px; }
+}
 
 .input {
   width: 100%; background: var(--vb-surface); border: 1.5px solid var(--vb-border);
   border-radius: var(--vb-radius-md); padding: .65rem .9rem; font-size: .9rem; color: var(--vb-ink);
   transition: border-color var(--vb-duration-fast) var(--vb-ease),
-              box-shadow var(--vb-duration-fast) var(--vb-ease);
+              box-shadow var(--vb-duration-fast) var(--vb-ease),
+              background var(--vb-duration-fast) var(--vb-ease);
+  -webkit-appearance: none; appearance: none;
 }
-  .input:focus { outline: 2px solid var(--vb-accent); outline-offset: 2px; border-color: var(--vb-accent); background: var(--vb-surface); }
+  .input:focus { outline: 2px solid var(--vb-accent); outline-offset: 2px; border-color: var(--vb-accent); background: var(--vb-surface); box-shadow: 0 0 0 3px color-mix(in srgb, var(--vb-accent) 10%, transparent); }
 .input:hover:not(:focus) { border-color: color-mix(in srgb, var(--vb-accent) 30%, var(--vb-border)); }
 .input::placeholder { color: var(--vb-ink3); }
+/* Touch-optimized inputs on mobile */
+@media (pointer: coarse) {
+  .input { min-height: 44px; font-size: 16px; /* prevents iOS zoom */ }
+}
 
 .chip {
   display: inline-flex; align-items: center; gap: .3rem;
@@ -639,8 +941,8 @@ h1,h2,h3,h4 { font-family: var(--font-display); letter-spacing: -0.01em; }
 .vb-cleanup-pulse { animation: vb-cleanup-pulse 2s ease-in-out infinite; }
 
 /* ---------- Pagination shimmer ---------- */
-@keyframes vb-page-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
-.vb-page-in { animation: vb-page-in .3s ease both; }
+@keyframes vb-page-in { from { opacity: 0; } to { opacity: 1; } }
+.vb-page-in { animation: vb-page-in 0.08s ease both; }
 
 .tooltip { position: relative; }
 
@@ -650,12 +952,13 @@ h1,h2,h3,h4 { font-family: var(--font-display); letter-spacing: -0.01em; }
    PREMIUM CHAT UI — ChatGPT/Claude-tier animations & styles
    ═══════════════════════════════════════════════════════════════ */
 
-/* Message slide-in */
+/* New message — fades in place. No travel: a message arriving should not
+   slide the conversation, which reads as layout shift, not as content. */
 @keyframes chat-msg-in {
-  from { opacity: 0; transform: translateY(12px) scale(0.98); }
-  to { opacity: 1; transform: none; }
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
-.chat-msg-anim { animation: chat-msg-in .35s cubic-bezier(.22,.9,.3,1) both; }
+.chat-msg-anim { animation: chat-msg-in .18s linear both; }
 
 /* Typing indicator dots */
 @keyframes typing-dot {
@@ -735,16 +1038,14 @@ h1,h2,h3,h4 { font-family: var(--font-display); letter-spacing: -0.01em; }
   font-style: italic;
 }
 
-/* Smooth thread sidebar hover */
+/* Smooth thread sidebar hover — color only, no sideways shift */
 .thread-item {
   transition: background .18s ease,
               color .18s ease,
-              border-color .18s ease,
-              transform .18s ease;
+              border-color .18s ease;
 }
 .thread-item:hover {
   background: var(--vb-surface2);
-  transform: translateX(2px);
 }
 .thread-item.active {
   background: var(--vb-accent-soft);
@@ -796,19 +1097,19 @@ h1,h2,h3,h4 { font-family: var(--font-display); letter-spacing: -0.01em; }
   box-shadow: 0 8px 25px -8px color-mix(in srgb, var(--vb-accent) 20%, transparent);
 }
 
-/* Smooth panel slide */
+/* Panels fade in place — no horizontal slide across the viewport. */
 @keyframes panel-slide {
-  from { opacity: 0; transform: translateX(24px); }
-  to { opacity: 1; transform: none; }
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
-.panel-slide { animation: panel-slide .4s cubic-bezier(.22,.9,.3,1) both; }
+.panel-slide { animation: panel-slide .16s ease-out both; }
 
-/* Toast notification slide */
+/* Toast notification — fade + subtle settle, not a slide-in */
 @keyframes toast-in {
-  from { opacity: 0; transform: translateX(20px) scale(0.95); }
+  from { opacity: 0; transform: scale(0.97); }
   to { opacity: 1; transform: none; }
 }
-.toast-anim { animation: toast-in .3s cubic-bezier(.22,.9,.3,1) both; }
+.toast-anim { animation: toast-in .18s ease-out both; }
 
 /* Auto-dismiss progress bar */
 @keyframes shrink {
@@ -855,14 +1156,251 @@ textarea.moderation-ok {
 }
 
 /* ─── Mobile drawer animations ───────────────────────────────── */
-@keyframes mobile-drawer-in { from { transform: translateX(-100%); } to { transform: translateX(0); } }
+/* Drawer enters with a fade — no horizontal slide anywhere on the platform. */
+@keyframes mobile-drawer-in { from { opacity: 0; } to { opacity: 1; } }
 @keyframes mobile-overlay-in { from { opacity: 0; } to { opacity: 1; } }
 .mobile-drawer-enter { animation: mobile-drawer-in .28s cubic-bezier(.22,.9,.3,1) both; }
 .mobile-overlay-enter { animation: mobile-overlay-in .2s ease both; }
 
+/* The creator page keeps the reference's light palette in both themes so the
+   editorial layout and portrait read exactly as designed. */
+.creator-page {
+  --vb-bg: #fdfcff;
+  --vb-surface: #ffffff;
+  --vb-surface2: #f4f1fb;
+  --vb-border: #e2ddf0;
+  --vb-ink: #14141a;
+  --vb-ink2: #4b4b59;
+  --vb-ink3: #666677;
+  --vb-accent: #4b39d6;
+  --vb-accent2: #8b5cf6;
+  --vb-accent-soft: #efebff;
+  --vb-on-accent: #ffffff;
+  color-scheme: light;
+}
+
+/* ─── Project showcase ───────────────────────────────────────── */
+.project-tile {
+  overflow: hidden;
+  border: 1px solid #e2ddf0;
+  border-radius: 1.5rem;
+  background: #fff;
+  box-shadow: 0 2px 10px rgba(20,20,26,.04);
+  transition: transform .4s cubic-bezier(.16,1,.3,1), box-shadow .4s ease;
+  transform-style: preserve-3d;
+}
+.project-tile:hover {
+  transform: translateY(-6px) perspective(900px) rotateX(2deg);
+  box-shadow: 0 20px 44px -20px rgba(75,57,214,.35);
+}
+.project-tile-art {
+  position: relative; height: 168px; overflow: hidden;
+  background: linear-gradient(135deg, #14141a 0%, #2a2560 55%, #4b39d6 100%);
+}
+.project-tile-art::after {
+  content: ""; position: absolute; inset: -30%;
+  background: radial-gradient(45% 55% at 70% 30%, rgba(122,92,246,.5), transparent 70%);
+  opacity: .6; transition: transform .6s cubic-bezier(.16,1,.3,1);
+}
+.project-tile:hover .project-tile-art::after { transform: translate(12%, -8%) scale(1.1); }
+.project-tile-mark {
+  position: absolute; left: 24px; bottom: -32px; z-index: 1;
+  font-family: "Fraunces", Georgia, serif; font-size: 150px; font-weight: 700;
+  line-height: 1; color: rgba(255,255,255,.16);
+  transition: transform .6s cubic-bezier(.16,1,.3,1);
+}
+.project-tile:hover .project-tile-mark { transform: translateY(-8px) scale(1.04); }
+.project-tile-index {
+  position: absolute; right: 20px; top: 18px; z-index: 1;
+  font-family: "JetBrains Mono", monospace; font-size: 11px; letter-spacing: .2em;
+  color: rgba(255,255,255,.7);
+}
+.project-tile-body { padding: 22px; }
+@media (prefers-reduced-motion: reduce) {
+  .project-tile, .project-tile-art::after, .project-tile-mark { transform: none !important; transition: none !important; }
+}
+
+/* ─── Ambient studio environment ─────────────────────────────── */
+.ambient-field {
+  position: fixed; inset: 0; z-index: 0; pointer-events: none; overflow: hidden;
+}
+.ambient-glow { position: absolute; border-radius: 50%; filter: blur(70px); }
+.ambient-glow--one {
+  width: 55vw; height: 55vw; left: -18vw; top: 8vh;
+  background: radial-gradient(circle, rgba(79,124,255,.13) 0%, rgba(139,92,246,.07) 45%, transparent 72%);
+  animation: ambient-drift-a 22s ease-in-out infinite alternate;
+}
+.ambient-glow--two {
+  width: 46vw; height: 46vw; right: -14vw; top: 42vh;
+  background: radial-gradient(circle, rgba(139,92,246,.12) 0%, rgba(75,57,214,.05) 50%, transparent 74%);
+  animation: ambient-drift-b 27s ease-in-out infinite alternate;
+}
+.ambient-glow--pointer {
+  width: 34vw; height: 34vw; left: var(--light-x, 40%); top: var(--light-y, 30%);
+  transform: translate(-50%, -50%);
+  background: radial-gradient(circle, rgba(79,124,255,.09) 0%, transparent 68%);
+  transition: left .5s cubic-bezier(.16,1,.3,1), top .5s cubic-bezier(.16,1,.3,1);
+}
+@keyframes ambient-drift-a { to { transform: translate(9vw, 6vh) scale(1.08); } }
+@keyframes ambient-drift-b { to { transform: translate(-7vw, -5vh) scale(1.06); } }
+.ambient-grain {
+  position: absolute; inset: 0; opacity: .035;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+.ambient-dust { position: absolute; inset: 0; display: block; }
+.creator-page > *:not(.ambient-field) { position: relative; z-index: 1; }
+@media (prefers-reduced-motion: reduce) {
+  .ambient-glow--one, .ambient-glow--two { animation: none; }
+  .ambient-dust { display: none; }
+}
+
+/* ─── Kinetic typography & signature styling are unified at the bottom of this file ── */
+.creator-page { overflow-x: clip; }
+
+/* ─── Creator hero intro — one-time word / letter choreography ── */
+.ci-word, .ci-letter {
+  display: inline-block;
+  opacity: 0;
+  transform: translateY(.75em);
+  animation: ci-rise .85s cubic-bezier(.16,1,.3,1) var(--d, 0ms) both;
+  will-change: transform, opacity;
+}
+.ci-bounce { animation-name: ci-bounce-in; animation-duration: 1.05s; }
+@keyframes ci-rise {
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes ci-bounce-in {
+  0%   { opacity: 0; transform: translateY(.8em); }
+  62%  { opacity: 1; transform: translateY(-.14em); }
+  82%  { transform: translateY(.04em); }
+  100% { opacity: 1; transform: translateY(0); }
+}
+.ci-highlight {
+  background: linear-gradient(120deg, #ece5ff, #e3d7ff);
+  color: #4b39d6;
+  padding: 0 .14em;
+  border-radius: .22em;
+  font-weight: 700;
+}
+.ci-large { font-size: 1.09em; font-weight: 800; color: #15151d; }
+.ci-gradient, .ci-name-gradient {
+  background: linear-gradient(90deg, #4b39d6 0%, #8b5cf6 55%, #b14ff2 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+@media (prefers-reduced-motion: reduce) {
+  .ci-word, .ci-letter {
+    opacity: 1 !important;
+    transform: none !important;
+    animation: none !important;
+  }
+}
+
+/* ─── Creator hero — reference layout ───────────────────────── */
+.creator-hero {
+  position: relative;
+  overflow: hidden;
+  color: #14141a;
+  background:
+    radial-gradient(60% 70% at 82% 20%, rgba(168, 139, 255, .42) 0%, transparent 60%),
+    radial-gradient(50% 60% at 96% 78%, rgba(123, 108, 255, .30) 0%, transparent 65%),
+    linear-gradient(110deg, #fdfcff 0%, #f6f3ff 48%, #e9e4ff 100%);
+}
+.creator-hero-inner {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  min-height: min(860px, 92vh);
+  max-width: 1500px;
+  margin: 0 auto;
+}
+.creator-hero-copy {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: clamp(3rem, 6vw, 7rem) clamp(1.5rem, 5vw, 5rem);
+}
+.creator-hero-photo { position: relative; min-height: 100%; }
+.creator-hero-photo img {
+  position: absolute; inset: 0;
+  width: 100%; height: 100%;
+  object-fit: cover; object-position: center 18%;
+}
+.creator-hero-name {
+  font-family: "Albert Sans", system-ui, sans-serif;
+  font-weight: 800;
+  letter-spacing: -.05em;
+  line-height: .92;
+}
+/* The gradient must live on each word span: a wrapper with background-clip:text
+   cannot paint text inside its child spans. */
+.creator-hero-gradient .vb-word-reveal {
+  background: linear-gradient(90deg, #4b39d6 0%, #8b5cf6 55%, #b14ff2 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+@media (max-width: 1023px) {
+  .creator-hero-inner { grid-template-columns: 1fr; }
+  .creator-hero-photo { min-height: 420px; }
+}
+
+/* ─── Per-word reveal (creator page) ──────────────────────────
+   One observer per block in AnimatedText; CSS staggers the words. */
+.vb-word-reveal {
+  display: inline-block;
+  opacity: 0;
+  transform: translateY(.55em);
+}
+.vb-words.is-visible .vb-word-reveal {
+  animation: vb-word-in .52s cubic-bezier(.16,1,.3,1) both;
+}
+@keyframes vb-word-in {
+  to { opacity: 1; transform: translateY(0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .vb-word-reveal {
+    opacity: 1 !important;
+    transform: none !important;
+    animation: none !important;
+  }
+}
+
+/* ─── Essay word choreography (creator page) ──────────────────
+   One-shot per block when it enters view; every word rises, some bounce,
+   some are highlighted / oversized — the same visual language as the hero. */
+.vb-scroll-word {
+  display: inline-block;
+  opacity: 0;
+  transform: translateY(.7em);
+  will-change: transform, opacity;
+}
+.vb-scroll-words.is-revealed .vb-scroll-word {
+  animation: ci-rise .8s cubic-bezier(.16,1,.3,1) var(--d, 0ms) both;
+}
+.vb-scroll-words.is-revealed .vb-scroll-word--pop {
+  animation-name: ci-bounce-in;
+  animation-duration: 1.05s;
+}
+.vb-scroll-word--accent { color: var(--vb-accent); font-weight: 700; }
+.vb-scroll-word--highlight {
+  background: linear-gradient(120deg, #ece5ff, #e3d7ff);
+  color: #4b39d6;
+  padding: 0 .12em;
+  border-radius: .2em;
+  font-weight: 700;
+}
+.vb-scroll-word--large { font-size: 1.08em; font-weight: 800; color: var(--vb-ink); }
+@media (prefers-reduced-motion: reduce) {
+  .vb-scroll-word { opacity: 1 !important; transform: none !important; animation: none !important; }
+}
+
 /* ─── Page content transitions ───────────────────────────────── */
-@keyframes page-enter { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
-.vb-page-enter { animation: page-enter .35s cubic-bezier(.22,.9,.3,1) both; }
+/* Routes render immediately; no page-open animation. */
+@keyframes page-enter { from { opacity: 0; } to { opacity: 1; } }
+.vb-page-enter { animation: none; }
 
 /* ═══════════════════════════════════════════════════════════════
    PREMIUM MICRO-INTERACTIONS & POLISH
@@ -890,6 +1428,33 @@ textarea.moderation-ok {
 }
 .vb-spinner-sm { width: 14px; height: 14px; border-width: 2px; }
 .vb-spinner-lg { width: 32px; height: 32px; border-width: 3px; }
+
+/* ── Switch geometry — SINGLE SOURCE OF TRUTH ──────────────────
+   The track is 44x24 by design and the knob travels horizontally.
+   Touch-target rules elsewhere raise buttons to a 44x44 minimum, which
+   squares the track into a stub with the knob pinned top-left — it then
+   reads as a VERTICAL switch (reported on phones, desktop was fine
+   because no touch rule fires there). Tailwind's `w-11 h-6` only
+   describes the size, it does not defend it against a min-size rule.
+   So the geometry is asserted here, outside every media query, with
+   explicit min AND max: no later min-size rule can stretch the track on
+   any device or inside a native shell. The tap target is still >=44px
+   tall — grown by the transparent ::after overlay in the
+   `@media (pointer: coarse)` block above — so accessibility holds
+   without distorting the shape. */
+.switch,
+button.switch,
+[role="switch"].switch {
+  position: relative;
+  width: 2.75rem;
+  min-width: 2.75rem;
+  max-width: 2.75rem;
+  height: 1.5rem;
+  min-height: 1.5rem;
+  max-height: 1.5rem;
+  flex: 0 0 auto;
+  border-radius: 999px;
+}
 
 /* ── Toggle switch (replaces checkbox toggles) ────────────────── */
 .vb-toggle {
@@ -1013,19 +1578,8 @@ textarea.moderation-ok {
 }
 
 /* ── Optimized stagger: shorter delay, GPU-accelerated ──────── */
-@keyframes vb-stagger-in {
-  from { opacity: 0; transform: translateY(8px); }
-  to { opacity: 1; transform: none; }
-}
-.vb-stagger > * { animation: vb-stagger-in .2s var(--vb-ease) both; will-change: transform, opacity; }
-.vb-stagger > *:nth-child(1) { animation-delay: 0ms; }
-.vb-stagger > *:nth-child(2) { animation-delay: 20ms; }
-.vb-stagger > *:nth-child(3) { animation-delay: 40ms; }
-.vb-stagger > *:nth-child(4) { animation-delay: 60ms; }
-.vb-stagger > *:nth-child(5) { animation-delay: 80ms; }
-.vb-stagger > *:nth-child(6) { animation-delay: 100ms; }
-.vb-stagger > *:nth-child(7) { animation-delay: 120ms; }
-.vb-stagger > *:nth-child(8) { animation-delay: 140ms; }
+/* Stagger — instant for fast navigation */
+.vb-stagger > * { opacity: 1; }
 
 /* ── Focus ring (accessibility) ──────────────────────────────── */
 .btn:focus-visible, .input:focus-visible, a:focus-visible, button:focus-visible {
@@ -1036,10 +1590,9 @@ textarea.moderation-ok {
 
 /* ── Smooth page transitions ─────────────────────────────────── */
 @keyframes vb-fade-in {
-  from { opacity: 0; transform: translateY(8px); }
-  to { opacity: 1; transform: none; }
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
-.vb-page-enter { animation: vb-fade-in .35s var(--vb-ease) both; }
 
 /* ── Better chip styles ──────────────────────────────────────── */
 .chip {
@@ -1256,11 +1809,7 @@ textarea.moderation-ok {
 /* State treatments */
 .vb3d-card-working .vb3d-card-icon {
   border-color: rgba(52, 211, 153, .7);
-  animation: vb3d-bob 1.5s ease-in-out infinite;
-}
-@keyframes vb3d-bob {
-  0%, 100% { transform: translateY(0); }
-  50% { transform: translateY(-4px); }
+  box-shadow: 0 0 0 3px rgba(52, 211, 153, .12);
 }
 .vb3d-card-verifying .vb3d-card-icon {
   border-color: rgba(251, 191, 36, .7);
@@ -1375,11 +1924,6 @@ html[data-scale="110"] { font-size: 110%; }
   }
   .pb-safe { padding-bottom: max(env(safe-area-inset-bottom), 0px); }
 }
-@media (hover: none) and (pointer: coarse) {
-  .btn:hover, button:hover {
-    transform: none;
-  }
-}
 
 /* ── Mobile UX hardening (touch devices) ───────────────────────
    Fixes the classic mobile pain points:
@@ -1421,4 +1965,1552 @@ html[data-scale="110"] { font-size: 110%; }
 @media (max-width: 640px) {
   h1.font-display { letter-spacing: -0.01em; }
   .card { border-radius: var(--vb-radius-md); }
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   PREMIUM ANIMATIONS — elevated micro-interactions
+   ═══════════════════════════════════════════════════════════════ */
+
+/* Gradient shift for hero elements and 404 — REMOVED. The slow
+   left-to-right background drift was ambient motion with no state to
+   communicate; the hero keeps its static gradient. */
+
+/* Floating bob animation */
+@keyframes vb-float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-8px); }
+}
+
+/* Orbit animation for decorative dots */
+@keyframes vb-orbit {
+  from { transform: rotate(0deg) translateX(60px) rotate(0deg); }
+  to { transform: rotate(360deg) translateX(60px) rotate(-360deg); }
+}
+
+/* Card shimmer removed — caused unreadable colored fills on touch */
+
+/* Smooth page transition wrapper */
+.vb-page-enter {
+  animation: none;
+}
+
+/* Hero gradient refinement — static. The infinite background-position
+   drift was the platform's last left-to-right sweep. */
+.hero-gradient {
+  background: linear-gradient(135deg, #5652d6 0%, #6f63e8 40%, #8a7bf2 70%, #38BDF8 100%);
+}
+
+/* Subtle glow behind primary buttons — desktop only */
+@media (hover: hover) and (pointer: fine) {
+  .btn-primary-glow:hover {
+    box-shadow: var(--vb-shadow-md), 0 0 30px -8px color-mix(in srgb, var(--vb-accent) 40%, transparent);
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   TOUCH DEVICE FIX — prevent :hover getting stuck on tap
+   On mobile/touch, a tapped element stays in :hover state, so hover-only
+   decoration (lifts, rings) would stick around after the finger leaves.
+   NOTE: this must NEVER unset color/background-color/border-color: doing
+   that stripped tapped buttons and posts of their own fill and text color
+   (white-on-purple became dark-on-transparent) — i.e. "every text turns
+   black when I tap". Stuck tints are harmless; unreadable text is not.
+   ═══════════════════════════════════════════════════════════════ */
+@media (hover: none) and (pointer: coarse) {
+  /* No dark flash overlay while the finger is down. */
+  * {
+    -webkit-tap-highlight-color: transparent;
+  }
+  /* Kill stuck hover MOTION and rings globally — covers every Tailwind
+     hover: class. Colors and fills are deliberately left alone. */
+  *:hover {
+    transform: none !important;
+    box-shadow: unset !important;
+  }
+  /* Restore active (press) feedback on interactive elements */
+  .btn:active:not(:disabled) {
+    transform: scale(0.97) !important;
+    opacity: 0.85 !important;
+  }
+  /* A tap puts the button in :hover AND :active at once, so the global
+     reset above would cancel the bloom exactly when the finger lands.
+     Re-assert it here — this is the one shadow the touch fix must keep,
+     because it only exists while pressed and cannot get stuck.
+     The 0.85 dim from the rule above is also undone for primary buttons:
+     their press feedback is now the aurora brightening, and receding at
+     that instant reads as contradictory. */
+  .btn-primary:active:not(:disabled) {
+    box-shadow: var(--vb-elev), var(--vb-bloom) !important;
+    opacity: 1 !important;
+  }
+  .card-hover:active {
+    transform: scale(0.985) !important;
+  }
+  /* Keep transition-colors working for instant text-color changes
+     only — no background or border transitions on touch */
+  .card,
+  .card * {
+    transition-property: color, opacity !important;
+    transition-duration: 0.15s !important;
+  }
+}
+
+/* ── Magic UI / React Bits animated components ───────────────────── */
+
+/* ShimmerButton sheen is static — no left-to-right sweep anywhere. */
+.animate-shimmer-slide {
+  animation: none;
+}
+
+/* Border beam rotation for BorderBeam */
+@keyframes border-beam-rotate {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+/* Prefers-reduced-motion: disable decorative animations */
+@media (prefers-reduced-motion: reduce) {
+  .animate-shimmer-slide,
+  [style*="border-beam-rotate"] {
+    animation: none !important;
+  }
+  /* The press bloom still appears — it is feedback, not decoration — but
+     it snaps on instantly instead of fading, so nothing sweeps or glides. */
+  .btn-primary:active:not(:disabled),
+  .btn-primary:focus-visible {
+    transition: none;
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   PREMIUM DASHBOARD UTILITIES
+   ═══════════════════════════════════════════════════════════════ */
+
+/* ── Glow rings for important metrics ──────────────────────────── */
+.vb-glow-accent {
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--vb-accent) 20%, transparent),
+              0 0 20px -4px color-mix(in srgb, var(--vb-accent) 15%, transparent);
+}
+.vb-glow-good {
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--vb-good) 20%, transparent),
+              0 0 20px -4px color-mix(in srgb, var(--vb-good) 15%, transparent);
+}
+.vb-glow-warn {
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--vb-warn) 20%, transparent),
+              0 0 20px -4px color-mix(in srgb, var(--vb-warn) 15%, transparent);
+}
+.vb-glow-bad {
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--vb-bad) 20%, transparent),
+              0 0 20px -4px color-mix(in srgb, var(--vb-bad) 15%, transparent);
+}
+
+/* ── Premium metric card with hover lift ────────────────────────── */
+.vb-metric-card {
+  position: relative;
+  overflow: hidden;
+  transition: all 0.25s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.vb-metric-card:hover {
+  transform: translateY(-2px);
+  z-index: 1;
+}
+.vb-metric-card::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, var(--vb-accent), transparent);
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+.vb-metric-card:hover::after {
+  opacity: 1;
+}
+
+/* ── Animated number counter pulse ──────────────────────────────── */
+@keyframes vb-count-glow {
+  0% { text-shadow: 0 0 0 transparent; }
+  50% { text-shadow: 0 0 12px color-mix(in srgb, var(--vb-accent) 40%, transparent); }
+  100% { text-shadow: 0 0 0 transparent; }
+}
+.vb-count-animate {
+  animation: vb-count-glow 0.6s ease-out;
+}
+
+/* ── Community health ring glow ─────────────────────────────────── */
+.vb-health-glow {
+  filter: drop-shadow(0 0 8px color-mix(in srgb, var(--vb-accent) 30%, transparent));
+}
+.vb-health-glow-good {
+  filter: drop-shadow(0 0 8px color-mix(in srgb, var(--vb-good) 30%, transparent));
+}
+.vb-health-glow-warn {
+  filter: drop-shadow(0 0 8px color-mix(in srgb, var(--vb-warn) 30%, transparent));
+}
+.vb-health-glow-bad {
+  filter: drop-shadow(0 0 8px color-mix(in srgb, var(--vb-bad) 30%, transparent));
+}
+
+/* ── Subtle gradient backgrounds for section cards ──────────────── */
+.vb-section-gradient {
+  background: linear-gradient(135deg,
+    color-mix(in srgb, var(--vb-surface) 95%, transparent),
+    color-mix(in srgb, var(--vb-surface2) 90%, transparent));
+}
+.vb-section-gradient-accent {
+  background: linear-gradient(135deg,
+    color-mix(in srgb, var(--vb-accent) 3%, var(--vb-surface)),
+    color-mix(in srgb, var(--vb-accent2) 3%, var(--vb-surface)));
+}
+
+/* ── Badge pulse for critical items ─────────────────────────────── */
+@keyframes vb-badge-pulse {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.15); }
+}
+.vb-badge-pulse {
+  animation: vb-badge-pulse 2s ease-in-out infinite;
+}
+
+/* ── Smooth tab transition ──────────────────────────────────────── */
+/* Tab transition — near-instant for fast feel */
+.vb-tab-enter { opacity: 1; }
+@keyframes vb-tab-fade { from { opacity: 0; } to { opacity: 1; } }
+
+/* ── Sidebar nav active indicator ───────────────────────────────── */
+.vb-admin-nav-active::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 25%;
+  bottom: 25%;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: var(--vb-accent);
+  animation: vb-slide-in 0.05s ease-out;
+}
+@keyframes vb-slide-in {
+  from { transform: scaleY(0); }
+  to { transform: scaleY(1); }
+}
+
+/* ── Activity item hover slide ──────────────────────────────────── */
+.vb-activity-item {
+  transition: all 0.2s ease;
+  border-left: 2px solid transparent;
+}
+.vb-activity-item:hover {
+  border-left-color: var(--vb-accent);
+  background: color-mix(in srgb, var(--vb-accent) 3%, transparent);
+}
+
+/* ── Gradient text utility ──────────────────────────────────────── */
+.vb-gradient-text {
+  background: linear-gradient(135deg, var(--vb-accent), var(--vb-accent2));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+.dark .vb-gradient-text {
+  background: linear-gradient(135deg, color-mix(in srgb, var(--vb-accent) 90%, white), var(--vb-accent2));
+  -webkit-background-clip: text;
+  background-clip: text;
+}
+
+/* ── Chart bar hover glow ───────────────────────────────────────── */
+.vb-chart-bar {
+  transition: all 0.2s ease;
+  border-radius: 3px 3px 0 0;
+}
+.vb-chart-bar:hover {
+  filter: brightness(1.2);
+  transform: scaleY(1.02);
+  transform-origin: bottom;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   ULTRA-PREMIUM DASHBOARD — 1000000x
+   ═══════════════════════════════════════════════════════════════ */
+
+/* ── Ambient background for the entire dashboard ────────────────── */
+.vb-dashboard-ambient {
+  position: relative;
+}
+.vb-dashboard-ambient::before {
+  content: '';
+  position: fixed;
+  top: -50%;
+  left: -50%;
+  width: 200%;
+  height: 200%;
+  background:
+    radial-gradient(ellipse at 20% 50%, color-mix(in srgb, var(--vb-accent) 4%, transparent) 0%, transparent 50%),
+    radial-gradient(ellipse at 80% 20%, color-mix(in srgb, var(--vb-accent2) 3%, transparent) 0%, transparent 50%),
+    radial-gradient(ellipse at 50% 80%, color-mix(in srgb, var(--vb-good) 2%, transparent) 0%, transparent 50%);
+  pointer-events: none;
+  z-index: 0;
+  animation: vb-ambient-drift 20s ease-in-out infinite alternate;
+}
+@keyframes vb-ambient-drift {
+  from { transform: translate(0, 0) rotate(0deg); }
+  to { transform: translate(-2%, 1%) rotate(1deg); }
+}
+.vb-dashboard-ambient > * {
+  position: relative;
+  z-index: 1;
+}
+
+/* ── Hero metric card — large, featured ─────────────────────────── */
+.vb-hero-card {
+  position: relative;
+  overflow: hidden;
+  border-radius: 16px;
+  padding: 20px 24px;
+  background: var(--vb-surface);
+  border: 1px solid var(--vb-border);
+  box-shadow: var(--vb-shadow-sm);
+  transition: all 0.35s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.vb-hero-card::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  background: linear-gradient(90deg, var(--vb-accent), var(--vb-accent2));
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+.vb-hero-card::after {
+  content: '';
+  position: absolute;
+  top: -80px;
+  right: -80px;
+  width: 160px;
+  height: 160px;
+  border-radius: 50%;
+  background: radial-gradient(circle, color-mix(in srgb, var(--vb-accent) 6%, transparent), transparent 70%);
+  pointer-events: none;
+  transition: opacity 0.3s ease;
+  opacity: 0;
+}
+.vb-hero-card:hover {
+  transform: translateY(-3px);
+  box-shadow: var(--vb-shadow-lg);
+}
+.vb-hero-card:hover::before {
+  opacity: 1;
+}
+.vb-hero-card:hover::after {
+  opacity: 1;
+}
+.vb-hero-card.vb-hero-danger {
+  border-color: color-mix(in srgb, var(--vb-bad) 25%, var(--vb-border));
+}
+.vb-hero-card.vb-hero-danger::before {
+  background: linear-gradient(90deg, var(--vb-bad), #ff6b6b);
+  opacity: 1;
+}
+.vb-hero-card.vb-hero-danger::after {
+  background: radial-gradient(circle, color-mix(in srgb, var(--vb-bad) 8%, transparent), transparent 70%);
+  opacity: 1;
+}
+.vb-hero-card.vb-hero-warn {
+  border-color: color-mix(in srgb, var(--vb-warn) 25%, var(--vb-border));
+}
+.vb-hero-card.vb-hero-warn::before {
+  background: linear-gradient(90deg, var(--vb-warn), #ffd166);
+  opacity: 1;
+}
+
+/* ── Premium glass card with backdrop blur ──────────────────────── */
+.vb-glass-card {
+  background: color-mix(in srgb, var(--vb-surface) 80%, transparent);
+  backdrop-filter: blur(12px) saturate(1.4);
+  -webkit-backdrop-filter: blur(12px) saturate(1.4);
+  border: 1px solid color-mix(in srgb, var(--vb-border) 60%, transparent);
+  border-radius: 16px;
+  box-shadow: var(--vb-shadow-sm), inset 0 1px 0 color-mix(in srgb, white 5%, transparent);
+}
+
+/* ── Section divider with gradient ──────────────────────────────── */
+.vb-section-divider {
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--vb-border), transparent);
+  margin: 8px 0;
+}
+
+/* ── Animated gradient border for featured items ────────────────── */
+@keyframes vb-border-spin {
+  from { --angle: 0deg; }
+  to { --angle: 360deg; }
+}
+@property --angle {
+  syntax: '<angle>';
+  initial-value: 0deg;
+  inherits: false;
+}
+.vb-gradient-border {
+  position: relative;
+  border: 2px solid transparent;
+  background-origin: border-box;
+  background-clip: padding-box, border-box;
+  animation: vb-border-spin 4s linear infinite;
+  background-image:
+    var(--vb-surface),
+    conic-gradient(from var(--angle), var(--vb-accent), var(--vb-accent2), var(--vb-good), var(--vb-accent));
+}
+
+/* ── Floating label chip ────────────────────────────────────────── */
+.vb-float-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 10px;
+  border-radius: 20px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  background: color-mix(in srgb, var(--vb-accent) 10%, transparent);
+  color: var(--vb-accent);
+  border: 1px solid color-mix(in srgb, var(--vb-accent) 15%, transparent);
+}
+
+/* ── Glass surface for dashboard widgets ────────────────────────── */
+/* Real backdrop blur over a translucent surface, so widgets read as glass
+   against the page background rather than as a painted gradient. */
+.widget-glass {
+  background: color-mix(in srgb, var(--vb-surface) 68%, transparent);
+  backdrop-filter: blur(14px) saturate(1.15);
+  -webkit-backdrop-filter: blur(14px) saturate(1.15);
+}
+
+/* ── Dashboard widgets: phone-home-screen behaviour ─────────────── */
+/* On phones every widget goes full-width (inline grid spans are desktop
+   geometry) and the touch up/down reorder controls appear — HTML5 drag
+   handles don't exist on touchscreens. */
+@media (max-width: 639px) {
+  .vb-widget-wrap {
+    grid-column: span 12 / span 12 !important;
+  }
+}
+@media (pointer: coarse) {
+  .vb-touch-reorder {
+    display: inline-flex !important;
+  }
+}
+
+/* ── Mobile bottom nav: thumb-reach tab bar with safe-area padding ── */
+.vb-bottomnav {
+  padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 0.5rem);
+}
+.vb-bottomnav a {
+  min-height: 44px;
+  min-width: 44px;
+}
+
+/* ── Status dot with pulse ring ─────────────────────────────────── */
+.vb-status-dot {
+  position: relative;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--vb-good);
+}
+.vb-status-dot::after {
+  content: '';
+  position: absolute;
+  inset: -3px;
+  border-radius: 50%;
+  border: 2px solid var(--vb-good);
+  opacity: 0;
+  animation: vb-status-ring 2s ease-out infinite;
+}
+@keyframes vb-status-ring {
+  0% { transform: scale(0.8); opacity: 0.6; }
+  100% { transform: scale(1.8); opacity: 0; }
+}
+
+/* ── Heatmap cell premium ───────────────────────────────────────── */
+.vb-heat-cell {
+  border-radius: 4px;
+  transition: all 0.2s ease;
+  cursor: default;
+}
+.vb-heat-cell:hover {
+  transform: scale(1.15);
+  box-shadow: 0 0 8px color-mix(in srgb, var(--vb-accent) 30%, transparent);
+  z-index: 1;
+}
+
+/* ── Activity timeline connector ────────────────────────────────── */
+.vb-timeline {
+  position: relative;
+  padding-left: 20px;
+}
+.vb-timeline::before {
+  content: '';
+  position: absolute;
+  left: 5px;
+  top: 8px;
+  bottom: 8px;
+  width: 2px;
+  background: linear-gradient(180deg, var(--vb-accent), color-mix(in srgb, var(--vb-accent) 20%, transparent));
+  border-radius: 2px;
+}
+.vb-timeline-dot {
+  position: absolute;
+  left: -20px;
+  top: 10px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--vb-surface);
+  border: 2px solid var(--vb-accent);
+  z-index: 1;
+}
+.vb-timeline-dot::after {
+  content: '';
+  position: absolute;
+  inset: 2px;
+  border-radius: 50%;
+  background: var(--vb-accent);
+}
+
+/* ── Floating number with ambient glow ──────────────────────────── */
+.vb-number-glow {
+  text-shadow: 0 0 20px color-mix(in srgb, var(--vb-accent) 20%, transparent);
+}
+
+/* Card entrance — instant */
+.vb-stagger-enter > * { animation: none; }
+.vb-stagger-enter > *:nth-child(1) { animation-delay: 0ms; }
+.vb-stagger-enter > *:nth-child(2) { animation-delay: 50ms; }
+.vb-stagger-enter > *:nth-child(3) { animation-delay: 100ms; }
+.vb-stagger-enter > *:nth-child(4) { animation-delay: 150ms; }
+.vb-stagger-enter > *:nth-child(5) { animation-delay: 200ms; }
+.vb-stagger-enter > *:nth-child(6) { animation-delay: 250ms; }
+.vb-stagger-enter > *:nth-child(7) { animation-delay: 300ms; }
+.vb-stagger-enter > *:nth-child(8) { animation-delay: 350ms; }
+
+/* ── Sparkline container ────────────────────────────────────────── */
+.vb-sparkline-wrap {
+  position: relative;
+  height: 32px;
+  overflow: hidden;
+  border-radius: 4px;
+}
+.vb-sparkline-wrap::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 60%;
+  background: linear-gradient(to top, color-mix(in srgb, var(--vb-accent) 8%, transparent), transparent);
+  pointer-events: none;
+}
+
+/* ── Chart section premium ──────────────────────────────────────── */
+.vb-chart-section {
+  position: relative;
+  overflow: hidden;
+  border-radius: 16px;
+  padding: 24px;
+  background: var(--vb-surface);
+  border: 1px solid var(--vb-border);
+}
+.vb-chart-section::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 120px;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--vb-accent) 3%, transparent), transparent);
+  pointer-events: none;
+}
+
+/* ── Tab pill premium ───────────────────────────────────────────── */
+.vb-tab-pill {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  border-radius: 10px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--vb-ink3);
+  transition: all 0.2s ease;
+  cursor: pointer;
+  border: 1px solid transparent;
+}
+.vb-tab-pill:hover {
+  color: var(--vb-ink2);
+  background: color-mix(in srgb, var(--vb-surface2) 80%, transparent);
+}
+.vb-tab-pill-active {
+  color: var(--vb-ink) !important;
+  background: var(--vb-surface) !important;
+  border-color: var(--vb-border) !important;
+  box-shadow: var(--vb-shadow-xs);
+}
+
+/* ── Trending item premium ──────────────────────────────────────── */
+.vb-trending-item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  border-radius: 12px;
+  transition: all 0.2s ease;
+  cursor: pointer;
+  border: 1px solid transparent;
+}
+.vb-trending-item:hover {
+  background: color-mix(in srgb, var(--vb-accent) 4%, var(--vb-surface2));
+  border-color: color-mix(in srgb, var(--vb-accent) 15%, transparent);
+}
+
+/* ── Section header premium ─────────────────────────────────────── */
+.vb-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px 12px;
+  border-bottom: 1px solid var(--vb-border);
+}
+.vb-section-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--vb-ink2);
+}
+
+/* ── Category bar premium ───────────────────────────────────────── */
+.vb-cat-bar-track {
+  height: 10px;
+  border-radius: 6px;
+  background: var(--vb-surface2);
+  overflow: hidden;
+  position: relative;
+}
+.vb-cat-bar-fill {
+  height: 100%;
+  border-radius: 6px;
+  background: linear-gradient(90deg, var(--vb-accent), var(--vb-accent2));
+  transition: width 0.6s cubic-bezier(0.22, 1, 0.36, 1);
+  position: relative;
+}
+.vb-cat-bar-fill::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 50%;
+  background: linear-gradient(180deg, rgba(255,255,255,0.15), transparent);
+  border-radius: 6px 6px 0 0;
+}
+
+/* Skeleton premium — static soft sheen, no sweep. (The old duplicate
+   vb-shimmer keyframes used to slide every .skeleton sideways.) */
+.vb-skeleton-premium {
+  position: relative;
+  overflow: hidden;
+  background: var(--vb-surface2);
+  border-radius: 8px;
+}
+.vb-skeleton-premium::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, white 6%, transparent), transparent);
+  animation: vb-shimmer 1.5s ease-in-out infinite;
+}
+
+/* ── Health ring interactive ────────────────────────────────────── */
+.vb-health-ring-interactive {
+  cursor: pointer;
+  transition: all 0.3s ease;
+}
+.vb-health-ring-interactive:hover {
+  transform: scale(1.05);
+  filter: drop-shadow(0 0 16px color-mix(in srgb, var(--vb-accent) 40%, transparent));
+}
+
+/* ── Ambient card glow for system health ────────────────────────── */
+.vb-system-healthy {
+  border-color: color-mix(in srgb, var(--vb-good) 20%, var(--vb-border));
+  background: linear-gradient(135deg, color-mix(in srgb, var(--vb-good) 3%, var(--vb-surface)), var(--vb-surface));
+}
+.vb-system-degraded {
+  border-color: color-mix(in srgb, var(--vb-warn) 20%, var(--vb-border));
+  background: linear-gradient(135deg, color-mix(in srgb, var(--vb-warn) 3%, var(--vb-surface)), var(--vb-surface));
+}
+.vb-system-critical {
+  border-color: color-mix(in srgb, var(--vb-bad) 20%, var(--vb-border));
+  background: linear-gradient(135deg, color-mix(in srgb, var(--vb-bad) 3%, var(--vb-surface)), var(--vb-surface));
+}
+
+/* ── Metric mini sparkline ──────────────────────────────────────── */
+.vb-metric-mini {
+  display: flex;
+  align-items: flex-end;
+  gap: 1px;
+  height: 20px;
+}
+.vb-metric-bar {
+  flex: 1;
+  min-width: 2px;
+  border-radius: 1px 1px 0 0;
+  background: var(--vb-accent);
+  transition: height 0.3s ease;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   WORLD-CLASS ADMIN DASHBOARD — 10,000,000x PREMIUM
+   Enterprise SaaS / Datadog / Vercel Analytics-grade design
+   ═══════════════════════════════════════════════════════════════ */
+
+/* ── Dashboard ambient background — subtle radial glow ──────── */
+.vb-dash-ambient {
+  position: relative;
+}
+.vb-dash-ambient::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background:
+    radial-gradient(ellipse 60% 40% at 15% 20%, color-mix(in srgb, var(--vb-accent) 5%, transparent), transparent),
+    radial-gradient(ellipse 50% 50% at 85% 75%, color-mix(in srgb, var(--vb-accent2) 3%, transparent), transparent);
+  pointer-events: none;
+  z-index: 0;
+}
+.vb-dash-ambient > * { position: relative; z-index: 1; }
+
+/* ── Premium hero metric card — large, featured ─────────────── */
+.vb-hero-card {
+  position: relative;
+  overflow: hidden;
+  border-radius: 14px;
+  padding: 20px 22px;
+  background: var(--vb-surface);
+  border: 1px solid var(--vb-border);
+  box-shadow: var(--vb-shadow-sm);
+  transition: all 0.3s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.vb-hero-card::before {
+  content: '';
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 3px;
+  background: linear-gradient(90deg, var(--vb-accent), var(--vb-accent2));
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+.vb-hero-card::after {
+  content: '';
+  position: absolute;
+  top: -60px; right: -60px;
+  width: 120px; height: 120px;
+  border-radius: 50%;
+  background: radial-gradient(circle, color-mix(in srgb, var(--vb-accent) 6%, transparent), transparent 70%);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+.vb-hero-card:hover {
+  transform: translateY(-3px);
+  box-shadow: var(--vb-shadow-lg);
+  border-color: color-mix(in srgb, var(--vb-accent) 25%, var(--vb-border));
+}
+.vb-hero-card:hover::before { opacity: 1; }
+.vb-hero-card:hover::after { opacity: 1; }
+
+/* ── Premium metric card (small) ─────────────────────────────── */
+.vb-metric-card {
+  position: relative;
+  overflow: hidden;
+  border-radius: 12px;
+  transition: all 0.25s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.vb-metric-card:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--vb-shadow-md);
+  border-color: color-mix(in srgb, var(--vb-accent) 20%, var(--vb-border));
+}
+.vb-metric-card::after {
+  content: '';
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, var(--vb-accent), transparent);
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+.vb-metric-card:hover::after { opacity: 1; }
+
+/* ── Dashboard section card — premium glass + depth ──────────── */
+.vb-dash-section {
+  position: relative;
+  background: var(--vb-surface);
+  border: 1px solid var(--vb-border);
+  border-radius: 14px;
+  box-shadow: var(--vb-shadow-xs);
+  overflow: hidden;
+  transition: box-shadow 0.25s ease, border-color 0.25s ease;
+}
+.vb-dash-section:hover {
+  box-shadow: var(--vb-shadow-sm);
+  border-color: color-mix(in srgb, var(--vb-accent) 12%, var(--vb-border));
+}
+.vb-dash-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 18px 12px;
+  border-bottom: 1px solid var(--vb-border);
+}
+.vb-dash-section-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--vb-ink2);
+}
+.vb-dash-section-icon {
+  width: 24px; height: 24px;
+  border-radius: 6px;
+  display: flex; align-items: center; justify-content: center;
+}
+
+/* ── Chart premium — gradient fills + hover state ────────────── */
+.vb-chart-bar-premium {
+  border-radius: 4px 4px 0 0;
+  transition: all 0.2s ease;
+  position: relative;
+}
+.vb-chart-bar-premium:hover {
+  filter: brightness(1.15);
+  transform: scaleY(1.03);
+  transform-origin: bottom;
+}
+.vb-chart-bar-premium::after {
+  content: '';
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 40%;
+  background: linear-gradient(180deg, rgba(255,255,255,0.18), transparent);
+  border-radius: 4px 4px 0 0;
+  pointer-events: none;
+}
+
+/* ── Category bar premium — with glass sheen ─────────────────── */
+.vb-cat-bar-glass {
+  height: 10px;
+  border-radius: 6px;
+  background: var(--vb-surface2);
+  overflow: hidden;
+}
+.vb-cat-bar-glass-fill {
+  height: 100%;
+  border-radius: 6px;
+  background: linear-gradient(90deg, var(--vb-accent), var(--vb-accent2));
+  position: relative;
+  transition: width 0.6s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.vb-cat-bar-glass-fill::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg, rgba(255,255,255,0.2), transparent 60%);
+  border-radius: 6px;
+}
+
+/* ── System health card — status-aware ───────────────────────── */
+.vb-sys-card {
+  position: relative;
+  border-radius: 12px;
+  padding: 14px 16px;
+  border: 1px solid var(--vb-border);
+  background: var(--vb-surface);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  transition: all 0.25s ease;
+  overflow: hidden;
+}
+.vb-sys-card::before {
+  content: '';
+  position: absolute;
+  top: 0; left: 0; bottom: 0;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  transition: background 0.3s ease;
+}
+.vb-sys-card--ok { border-color: color-mix(in srgb, var(--vb-good) 15%, var(--vb-border)); }
+.vb-sys-card--ok::before { background: var(--vb-good); }
+.vb-sys-card--ok:hover { border-color: color-mix(in srgb, var(--vb-good) 30%, var(--vb-border)); }
+.vb-sys-card--warn { border-color: color-mix(in srgb, var(--vb-warn) 15%, var(--vb-border)); }
+.vb-sys-card--warn::before { background: var(--vb-warn); }
+.vb-sys-card--down { border-color: color-mix(in srgb, var(--vb-bad) 15%, var(--vb-border)); }
+.vb-sys-card--down::before { background: var(--vb-bad); }
+.vb-sys-card:hover { box-shadow: var(--vb-shadow-sm); }
+
+/* ── Status pulse dot — animated ring ────────────────────────── */
+.vb-pulse-ring {
+  position: relative;
+  width: 10px; height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.vb-pulse-ring::before {
+  content: '';
+  position: absolute;
+  inset: -4px;
+  border-radius: 50%;
+  animation: vb-pulse-ring-anim 2s ease-out infinite;
+}
+.vb-pulse-ring--ok { background: var(--vb-good); }
+.vb-pulse-ring--ok::before { border: 2px solid var(--vb-good); }
+.vb-pulse-ring--warn { background: var(--vb-warn); }
+.vb-pulse-ring--warn::before { border: 2px solid var(--vb-warn); animation-duration: 1.2s; }
+.vb-pulse-ring--down { background: var(--vb-bad); }
+.vb-pulse-ring--down::before { border: 2px solid var(--vb-bad); animation-duration: 0.8s; }
+@keyframes vb-pulse-ring-anim {
+  0% { transform: scale(0.8); opacity: 0.7; }
+  100% { transform: scale(2); opacity: 0; }
+}
+
+/* ── Activity timeline — connector dots ──────────────────────── */
+.vb-act-timeline {
+  position: relative;
+  padding-left: 16px;
+}
+.vb-act-timeline::before {
+  content: '';
+  position: absolute;
+  left: 4px; top: 12px; bottom: 12px;
+  width: 1.5px;
+  background: linear-gradient(180deg, var(--vb-accent) 0%, color-mix(in srgb, var(--vb-accent) 10%, transparent) 100%);
+  border-radius: 2px;
+}
+.vb-act-dot {
+  position: absolute;
+  left: -16px; top: 10px;
+  width: 9px; height: 9px;
+  border-radius: 50%;
+  border: 2px solid var(--vb-surface);
+  background: var(--vb-good);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--vb-good) 20%, transparent);
+  z-index: 1;
+}
+
+/* ── Heatmap cell — hover glow ───────────────────────────────── */
+.vb-heat-cell-premium {
+  border-radius: 5px;
+  transition: all 0.2s ease;
+  cursor: default;
+}
+.vb-heat-cell-premium:hover {
+  transform: scale(1.2);
+  box-shadow: 0 0 10px color-mix(in srgb, var(--vb-accent) 30%, transparent);
+  z-index: 1;
+}
+
+/* ── Pipeline bar premium — glossy stacked ──────────────────── */
+.vb-pipeline-bar {
+  height: 8px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: var(--vb-surface2);
+  position: relative;
+}
+.vb-pipeline-bar > div {
+  height: 100%;
+  transition: width 0.6s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.vb-pipeline-bar > div:first-child { border-radius: 999px 0 0 999px; }
+.vb-pipeline-bar > div:last-child { border-radius: 0 999px 999px 0; }
+
+/* ── Health breakdown interactive ─────────────────────────────── */
+.vb-health-bar {
+  height: 6px;
+  border-radius: 4px;
+  background: var(--vb-surface2);
+  overflow: hidden;
+}
+.vb-health-bar-fill {
+  height: 100%;
+  border-radius: 4px;
+  transition: width 0.7s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* ── Trending item premium ───────────────────────────────────── */
+.vb-trending-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--vb-border);
+  transition: background 0.15s ease;
+}
+.vb-trending-row:last-child { border-bottom: none; }
+.vb-trending-row:hover {
+  background: color-mix(in srgb, var(--vb-accent) 3%, var(--vb-surface));
+}
+
+/* ── Engagement progress bar ─────────────────────────────────── */
+.vb-eng-bar {
+  height: 3px;
+  border-radius: 2px;
+  background: var(--vb-surface2);
+  overflow: hidden;
+}
+.vb-eng-bar-fill {
+  height: 100%;
+  border-radius: 2px;
+  background: linear-gradient(90deg, var(--vb-accent), var(--vb-accent2));
+  transition: width 0.5s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* ── Premium header strip ────────────────────────────────────── */
+.vb-header-strip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.vb-header-brand {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.vb-header-icon {
+  width: 48px; height: 48px;
+  border-radius: 14px;
+  background: linear-gradient(135deg, var(--vb-accent), var(--vb-accent2));
+  display: flex; align-items: center; justify-content: center;
+  box-shadow: 0 4px 16px -4px color-mix(in srgb, var(--vb-accent) 40%, transparent);
+  position: relative;
+}
+.vb-header-live {
+  position: absolute;
+  bottom: -2px; right: -2px;
+  width: 16px; height: 16px;
+  border-radius: 50%;
+  background: var(--vb-good);
+  border: 2.5px solid var(--vb-surface);
+  display: flex; align-items: center; justify-content: center;
+}
+.vb-header-live::after {
+  content: '';
+  width: 5px; height: 5px;
+  border-radius: 50%;
+  background: white;
+}
+
+/* Dash stagger — instant for fast navigation */
+.vb-dash-stagger > * { animation: none; }
+
+/* ── Number glow — premium value display ─────────────────────── */
+.vb-num-glow {
+  text-shadow: 0 0 24px color-mix(in srgb, var(--vb-accent) 15%, transparent);
+}
+
+/* ── Skeleton premium — soft tint with a calm opacity breath ─────── */
+/* The old vb-sk-shimmer keyframes swept the gradient left-to-right forever,
+   which on the admin dashboard read as a constant reload. */
+.vb-skeleton-prem {
+  background: color-mix(in srgb, var(--vb-border) 30%, var(--vb-surface));
+  animation: vb-shimmer 1.8s ease-in-out infinite;
+  border-radius: 8px;
+}
+
+/* ── Live dot animation ──────────────────────────────────────── */
+@keyframes vb-live-glow {
+  0%, 100% { opacity: 1; box-shadow: 0 0 0 0 color-mix(in srgb, var(--vb-good) 50%, transparent); }
+  50% { opacity: 0.6; box-shadow: 0 0 8px 2px color-mix(in srgb, var(--vb-good) 30%, transparent); }
+}
+.vb-live-glow { animation: vb-live-glow 2s ease-in-out infinite; }
+
+/* ── Tooltip hover card ──────────────────────────────────────── */
+.vb-hover-tip {
+  position: relative;
+}
+.vb-hover-tip::after {
+  content: attr(data-tip);
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%) translateY(4px);
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: var(--vb-ink);
+  color: var(--vb-bg);
+  font-size: 10px;
+  font-weight: 600;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  transition: all 0.15s ease;
+  z-index: 50;
+}
+.vb-hover-tip:hover::after {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   COMMAND CENTER CALM SURFACE
+   The admin console is an operations surface, not a promotional
+   landing page. Keep hierarchy in type, borders, and whitespace;
+   remove ambient movement, glass blur, glow, and gradient text.
+   ═══════════════════════════════════════════════════════════════ */
+[data-admin-console="true"] .vb-dashboard-ambient::before,
+[data-admin-console="true"] .vb-dash-ambient::before,
+[data-admin-console="true"] .vb-glass-card,
+[data-admin-console="true"] .widget-glass,
+[data-admin-console="true"] .glass-card,
+[data-admin-console="true"] .glass-strong {
+  background: var(--vb-surface);
+  border-color: var(--vb-border);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  box-shadow: var(--vb-shadow-xs);
+}
+
+[data-admin-console="true"] .vb-gradient-text {
+  background: none;
+  color: var(--vb-ink);
+  -webkit-background-clip: border-box;
+  background-clip: border-box;
+  -webkit-text-fill-color: currentColor;
+}
+
+[data-admin-console="true"] .vb-hero-card,
+[data-admin-console="true"] .vb-metric-card,
+[data-admin-console="true"] .vb-dash-section,
+[data-admin-console="true"] .vb-chart-section,
+[data-admin-console="true"] .vb-sys-card {
+  border-radius: var(--vb-radius-md);
+  box-shadow: var(--vb-shadow-xs);
+  transition: border-color 0.15s ease, background-color 0.15s ease;
+}
+
+[data-admin-console="true"] .vb-hero-card::before,
+[data-admin-console="true"] .vb-hero-card::after,
+[data-admin-console="true"] .vb-metric-card::after,
+[data-admin-console="true"] .vb-chart-bar-premium::after,
+[data-admin-console="true"] .vb-cat-bar-glass-fill::after,
+[data-admin-console="true"] .vb-pulse-ring::before,
+[data-admin-console="true"] .vb-status-dot::after {
+  display: none;
+  content: none;
+}
+
+[data-admin-console="true"] .vb-hero-card:hover,
+[data-admin-console="true"] .vb-metric-card:hover,
+[data-admin-console="true"] .vb-dash-section:hover,
+[data-admin-console="true"] .vb-chart-section:hover,
+[data-admin-console="true"] .vb-sys-card:hover,
+[data-admin-console="true"] .vb-health-ring-interactive:hover,
+[data-admin-console="true"] .vb-heat-cell:hover,
+[data-admin-console="true"] .vb-heat-cell-premium:hover {
+  transform: none;
+  box-shadow: var(--vb-shadow-xs);
+  filter: none;
+}
+
+[data-admin-console="true"] .vb-header-icon {
+  background: var(--vb-accent);
+  box-shadow: none;
+}
+
+[data-admin-console="true"] .vb-number-glow,
+[data-admin-console="true"] .vb-num-glow,
+[data-admin-console="true"] .vb-health-glow,
+[data-admin-console="true"] .vb-health-glow-good,
+[data-admin-console="true"] .vb-health-glow-warn,
+[data-admin-console="true"] .vb-health-glow-bad {
+  text-shadow: none;
+  filter: none;
+}
+
+[data-admin-console="true"] .vb-live-glow,
+[data-admin-console="true"] .vb-badge-pulse,
+[data-admin-console="true"] .vb-bar-anim,
+[data-admin-console="true"] .vb-skeleton-prem,
+[data-admin-console="true"] .vb-skeleton-premium::after {
+  animation: none;
+}
+
+[data-admin-console="true"] .vb-section-gradient,
+[data-admin-console="true"] .vb-section-gradient-accent,
+[data-admin-console="true"] .vb-cat-bar-fill,
+[data-admin-console="true"] .vb-cat-bar-glass-fill,
+[data-admin-console="true"] .vb-eng-bar-fill,
+[data-admin-console="true"] .vb-system-healthy,
+[data-admin-console="true"] .vb-system-degraded,
+[data-admin-console="true"] .vb-system-critical {
+  background: var(--vb-surface);
+}
+
+[data-admin-console="true"] .vb-cat-bar-fill,
+[data-admin-console="true"] .vb-cat-bar-glass-fill,
+[data-admin-console="true"] .vb-eng-bar-fill {
+  background: var(--vb-accent);
+}
+
+[data-admin-console="true"] .vb-gradient-border {
+  border: 1px solid var(--vb-border);
+  background: var(--vb-surface);
+  animation: none;
+}
+
+[data-admin-console="true"] .vb-tab-pill-active {
+  background: var(--vb-surface2) !important;
+  box-shadow: none;
+}
+
+} /* end @layer components */
+
+
+.vb-orb { position: relative; width: 120px; height: 120px; flex-shrink: 0; }
+/* ── Typewriter caret (AI message reveal) ──────── */
+.vb-caret {
+  display: inline-block; width: 2px; height: 1em; margin-left: 2px;
+  vertical-align: -0.15em; background: var(--vb-accent);
+  animation: vb-caret-blink 1s steps(2, start) infinite;
+}
+@keyframes vb-caret-blink { 0%,100% { opacity: 1; } 50% { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) {
+  .vb-caret { animation: none !important; opacity: 1; }
+}
+
+/* ── Print-friendly reports ────────────────────────────────────────────
+   Admins print/save-as-PDF the audit report; strip the app chrome so the
+   output is just the document, and keep cards from splitting across pages. */
+@media print {
+  header, nav, aside, footer,
+  [data-print-hide],
+  .no-print { display: none !important; }
+
+  html, body {
+    background: #fff !important;
+    color: #111 !important;
+  }
+
+  main { padding: 0 !important; }
+
+  .card {
+    background: #fff !important;
+    border: 1px solid #d4d4d4 !important;
+    box-shadow: none !important;
+    break-inside: avoid;
+  }
+
+  a[href]::after { content: ""; }
+
+  @page { margin: 14mm; }
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   STUDIO AMBIENT ENVIRONMENT & PARTICLES
+   ───────────────────────────────────────────────────────────────────────────── */
+.ambient-field {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+  z-index: 0;
+}
+
+.ambient-glow {
+  position: absolute;
+  border-radius: 9999px;
+  filter: blur(100px);
+  opacity: 0.6;
+  will-change: transform;
+}
+
+.ambient-glow--one {
+  top: -15%;
+  left: 15%;
+  width: 650px;
+  height: 480px;
+  background: radial-gradient(circle, rgba(86, 82, 214, 0.28) 0%, rgba(99, 102, 241, 0.12) 60%, transparent 80%);
+  animation: ambientFloat1 20s ease-in-out infinite alternate;
+}
+
+.ambient-glow--two {
+  top: 40%;
+  right: -10%;
+  width: 600px;
+  height: 550px;
+  background: radial-gradient(circle, rgba(236, 72, 153, 0.22) 0%, rgba(139, 92, 246, 0.14) 50%, transparent 80%);
+  animation: ambientFloat2 24s ease-in-out infinite alternate;
+}
+
+.ambient-glow--pointer {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 450px;
+  height: 450px;
+  transform: translate(calc(var(--light-x, 50vw) - 225px), calc(var(--light-y, 40vh) - 225px));
+  background: radial-gradient(circle, rgba(56, 189, 248, 0.16) 0%, rgba(124, 58, 237, 0.08) 50%, transparent 75%);
+  transition: transform 0.18s cubic-bezier(0.1, 0.9, 0.2, 1);
+  opacity: 0.7;
+}
+
+.ambient-grain {
+  position: absolute;
+  inset: 0;
+  background-image: radial-gradient(rgba(0, 0, 0, 0.04) 1px, transparent 0);
+  background-size: 24px 24px;
+  opacity: 0.8;
+  mask-image: radial-gradient(circle at center, black 40%, transparent 90%);
+}
+
+.dark .ambient-grain {
+  background-image: radial-gradient(rgba(255, 255, 255, 0.05) 1px, transparent 0);
+  opacity: 0.9;
+}
+
+.ambient-dust {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+@keyframes ambientFloat1 {
+  0% { transform: translate(0, 0) scale(1); }
+  50% { transform: translate(40px, 30px) scale(1.08); }
+  100% { transform: translate(-30px, 50px) scale(0.95); }
+}
+
+@keyframes ambientFloat2 {
+  0% { transform: translate(0, 0) scale(1); }
+  50% { transform: translate(-50px, -30px) scale(1.1); }
+  100% { transform: translate(20px, -40px) scale(0.92); }
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   MONUMENTAL SOUYASH BERA KINETIC SIGNATURE
+   ───────────────────────────────────────────────────────────────────────────── */
+.signature-scroll {
+  display: block;
+  perspective: 1200px;
+  transform-style: preserve-3d;
+  width: 100%;
+}
+
+.signature-tilt {
+  display: flex;
+  flex-direction: column;
+  gap: 0.06em;
+  transform-style: preserve-3d;
+  will-change: transform;
+}
+
+.signature-line {
+  display: flex;
+  flex-wrap: nowrap;
+  line-height: 1;
+  letter-spacing: -0.02em;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.signature-line--solid {
+  color: var(--vb-ink);
+  font-family: 'Manrope', 'Albert Sans', ui-sans-serif, system-ui, sans-serif;
+  font-weight: 800;
+  letter-spacing: -0.05em;
+  font-size: clamp(2.4rem, 8.5vw, 7.5rem);
+}
+
+.dark .signature-line--solid {
+  color: #ffffff;
+}
+
+.signature-line--gradient {
+  font-family: 'Manrope', 'Albert Sans', ui-sans-serif, system-ui, sans-serif;
+  font-weight: 800;
+  letter-spacing: -0.05em;
+  font-size: clamp(2.4rem, 8.5vw, 7.5rem);
+  color: #4338ca;
+}
+
+.dark .signature-line--gradient {
+  color: #a5b4fc;
+}
+
+.signature-line span[data-sig-letter] {
+  display: inline-block;
+  transform-origin: 50% 100%;
+  cursor: default;
+  user-select: none;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   FULL-PARAGRAPH KINETIC WORD ENGINE (ZERO COLLISION / BULLETPROOF SPACING)
+   ───────────────────────────────────────────────────────────────────────────── */
+.kt-text {
+  position: relative;
+  line-height: 1.75;
+  display: block;
+  max-width: 100%;
+}
+
+.kt-word {
+  display: inline-block;
+  position: relative;
+  white-space: nowrap;
+  backface-visibility: hidden;
+  will-change: transform, opacity;
+  margin-right: 0.32em;
+  margin-left: 0;
+  letter-spacing: -0.01em;
+}
+
+.kt-word:last-child {
+  margin-right: 0;
+}
+
+.kt-space {
+  display: inline-block;
+  width: 0.32em;
+  min-width: 0.32em;
+}
+
+.kt-text[data-kinetic-variant="display"] .kt-word {
+  margin-right: 0.28em;
+}
+
+.kt-text[data-kinetic-variant="quote"] .kt-word {
+  margin-right: 0.35em;
+}
+
+.kt-word--highlight,
+.kt-word--gradient {
+  color: #4338ca;
+  font-weight: 600;
+  margin-right: 0.36em;
+}
+.dark .kt-word--highlight,
+.dark .kt-word--gradient {
+  color: #a5b4fc;
+  font-weight: 600;
+  margin-right: 0.36em;
+}
+
+/* Editorial Swiss-Inspired Typography & Theme */
+.font-serif-editorial {
+  font-family: 'Instrument Serif', Georgia, serif;
+}
+
+.font-sans-editorial {
+  font-family: 'Manrope', -apple-system, BlinkMacSystemFont, sans-serif;
+}
+
+.editorial-ease {
+  transition-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@keyframes wave-slow {
+  0% { transform: translateX(0); }
+  50% { transform: translateX(-15px); }
+  100% { transform: translateX(0); }
+}
+
+.animate-editorial-wave {
+  animation: wave-slow 12s ease-in-out infinite;
+}
+
+/* ─── City Mode — minimal glassy night-city visual language ───────
+   Dark ink, hairline structure, thin light fields and motion. No
+   paper, no serif editorial texture. Applied to /developer only. */
+.font-city-display {
+  font-family: 'Manrope', 'Albert Sans', ui-sans-serif, system-ui, sans-serif;
+  font-weight: 800;
+  letter-spacing: -0.045em;
+  line-height: 0.98;
+}
+.city-shell {
+  position: relative;
+  isolation: isolate;
+  background:
+    radial-gradient(1200px 620px at 78% -10%, rgba(110,92,255,0.16), transparent 60%),
+    radial-gradient(900px 560px at 8% 18%, rgba(56,132,255,0.12), transparent 62%),
+    linear-gradient(180deg, #070910 0%, #080A12 55%, #06070D 100%);
+}
+.city-shell::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background-image:
+    linear-gradient(rgba(150,170,255,0.045) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(150,170,255,0.045) 1px, transparent 1px);
+  background-size: 72px 72px;
+  mask-image: linear-gradient(180deg, rgba(0,0,0,0.9), transparent 78%);
+  -webkit-mask-image: linear-gradient(180deg, rgba(0,0,0,0.9), transparent 78%);
+}
+.city-shell::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background: linear-gradient(180deg, transparent 0%, rgba(110,92,255,0.06) 50%, transparent 100%);
+  animation: city-breathe 14s ease-in-out infinite alternate;
+}
+@keyframes city-breathe { to { opacity: 0.35; } }
+.city-glass {
+  background: linear-gradient(160deg, rgba(255,255,255,0.062), rgba(255,255,255,0.018));
+  -webkit-backdrop-filter: blur(22px) saturate(150%);
+  backdrop-filter: blur(22px) saturate(150%);
+  border: 1px solid rgba(180,195,255,0.14);
+  box-shadow: 0 18px 50px -20px rgba(0,0,0,0.75), inset 0 1px 0 rgba(255,255,255,0.06);
+}
+.city-hairline { border-color: rgba(180,195,255,0.14) !important; }
+.city-eyebrow {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  letter-spacing: 0.24em;
+  text-transform: uppercase;
+}
+@media (prefers-reduced-motion: reduce) {
+  .city-shell::after { animation: none; }
+  /* Pinned layers would overlap with no scrub — fall back to a readable
+     vertical story for reduced-motion users and automated browsers. */
+  .story-root .story-stage { height: auto; min-height: 0; overflow: visible; }
+  .story-root [data-story-act] {
+    position: relative;
+    inset: auto;
+    min-height: 0;
+    padding-block: 4rem;
+    opacity: 1 !important;
+    transform: none !important;
+    border-bottom: 1px solid rgba(180,195,255,0.12);
+  }
+  .story-root [data-story-ghost] { opacity: 0.03 !important; }
 }

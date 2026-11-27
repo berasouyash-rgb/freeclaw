@@ -1,31 +1,79 @@
 import {
 	Bot,
 	BotOff,
+	CheckCheck,
+	Clock,
 	Heart,
 	ImagePlus,
+	Info,
 	Loader2,
 	MessageSquare,
 	Send,
 	ShieldCheck,
+	Sparkles,
+	Trash2,
+	UserCheck,
+	Volume2,
+	VolumeX,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { Link } from "react-router";
 import {
 	LoadingSpinner,
 	prefersReducedMotion,
-	VB_FULL_CYCLE_MS,
 } from "../components/ErrorBoundary";
 import TypingIndicator from "../components/TypingIndicator";
+import Typewriter from "../components/Typewriter";
+import { ConfirmDialog } from "../components/ui";
+import UpdateNotice from "../components/admin/UpdateNotice";
 import { useApp } from "../contexts/AppContext";
+import { useUpdateSignal } from "../hooks/useUpdateSignal";
 import { api } from "../lib/api";
+import { triggerHaptic } from "../lib/haptics";
 import { useRealtime } from "../lib/useRealtime";
 import { fmtDate, sanitize } from "../lib/utils";
 import { lsGet, lsSet } from "../lib/identity";
+import {
+	readAloud,
+	speechOutputSupported,
+	stopReading,
+} from "../lib/speech";
 import type { ChatMessage } from "../types";
+
+// Starter chips for the empty inbox — one tap fills the composer for
+// review; nothing sends until the student taps Send. They route into
+// the existing agent pipeline (drafting help, capabilities, safety),
+// so the AI gets engaged instead of facing a blank box.
+const STARTER_CHIPS = [
+	{ label: "Help me write a complaint", fill: "I need help writing a complaint about " },
+	{ label: "Status of my reports", fill: "What is the status of my recent complaints or reports?" },
+	{ label: "What can you help with?", fill: "What can you help me with?" },
+	{ label: "I feel unsafe", fill: "I feel unsafe and need help" },
+];
 
 interface InboxResponse {
 	messages: ChatMessage[];
 	thread: { thread_id: string; status: string };
-	state?: { agent?: string };
+	state?: {
+		agent?: string;
+		draft_proposal?: { status?: string; title?: string; description?: string; category?: string };
+		draft_suggestion?: { status?: string };
+	};
+	title?: string;
+}
+
+function bodyMatches(optBody?: string, incomingBody?: string): boolean {
+	if (!optBody || !incomingBody) return optBody === incomingBody;
+	if (optBody === incomingBody) return true;
+	if (optBody.length !== incomingBody.length) return false;
+	for (let i = 0; i < optBody.length; i++) {
+		const incChar = incomingBody[i];
+		const optChar = optBody[i];
+		if (!incChar || !optChar) return false;
+		if (incChar === "*" || optChar === "*") continue;
+		if (incChar.toLowerCase() !== optChar.toLowerCase()) return false;
+	}
+	return true;
 }
 
 // Merge server messages into the local list WITHOUT producing duplicates.
@@ -56,7 +104,7 @@ export function mergeMessages(
 					typeof x.id === "string" &&
 					x.id.startsWith("user-") &&
 					x.sender === "user" &&
-					x.body === m.body,
+					bodyMatches(x.body, m.body),
 			);
 			if (optIdx >= 0) merged.splice(optIdx, 1);
 		}
@@ -80,10 +128,16 @@ export default function UserChat() {
 		thread_id: string;
 		status: string;
 	} | null>(null);
+	const [chatTitle, setChatTitle] = useState<string | null>(null);
+	const [confirmDelete, setConfirmDelete] = useState(false);
+	const [deleting, setDeleting] = useState(false);
 	const [text, setText] = useState("");
 	const [loading, setLoading] = useState(true);
 	const [busy, setBusy] = useState(false);
 	const [typing, setTyping] = useState(false);
+	// Typewriter reveal + voice read-back for the freshly arrived AI reply.
+	const [streamId, setStreamId] = useState<string | number | null>(null);
+	const [readBack, setReadBack] = useState<boolean>(() => lsGet<boolean>("vb:readaloud", true));
 	const [agentLabel, setAgentLabel] = useState<string | null>(null);
 	// AI-mode: user-controllable auto-replies. The server gates generation
 	// authoritatively; this cached copy just renders the switch instantly
@@ -92,24 +146,133 @@ export default function UserChat() {
 		lsGet<boolean>("vb:aichat", true),
 	);
 	const [aiBusy, setAiBusy] = useState(false);
+	const [triageNote, setTriageNote] = useState<string | null>(null);
+	// In-chat draft card: the AI proposed a post from an explicit request.
+	// Accept publishes it with the student's own visibility choice (default
+	// private; public drafts are held for admin review first); Dismiss drops it.
+	const [pendingDraft, setPendingDraft] = useState<{ title: string; description: string; category: string } | null>(null);
+	const [draftVisibility, setDraftVisibility] = useState<"private" | "public">("private");
+	const [draftBusy, setDraftBusy] = useState(false);
+	// Proactive nudge ("Would you like me to generate a complaint?") shown
+	// when the server suggests a draft for a described problem. Generate
+	// reuses the draft card below (with its private/public choice); Not now
+	// dismisses server-side so the nudge never returns for this thread.
+	const [showNudge, setShowNudge] = useState(false);
+	const [nudgeBusy, setNudgeBusy] = useState(false);
+	// Local Dismiss of the draft card must survive the next load(): the
+	// server proposal stays open until accepted, and load() restores open
+	// proposals (reload-loss fix) — without this the card would resurrect.
+	const draftDismissedRef = useRef(false);
+	const acceptDraftCard = async () => {
+		if (!pendingDraft || draftBusy) return;
+		triggerHaptic("success");
+		setDraftBusy(true);
+		try {
+			const res = await api.postInbox<{ status?: string }>("/api/inbox", {
+				thread_id: anonId,
+				action: "accept_own_draft",
+				visibility: draftVisibility,
+			});
+			setPendingDraft(null);
+			setDraftVisibility("private");
+			setTriageNote(
+				res.status === "pending_review"
+					? "📋 Sent for admin review — it goes public once approved."
+					: draftVisibility === "public"
+						? "📋 Sent for admin review — it goes public once approved."
+						: "✅ Your private post is live — visible only to you and the admin team.",
+			);
+		} catch (e: unknown) {
+			toast(e instanceof Error ? e.message : "Could not publish — try again", "err");
+		} finally {
+			setDraftBusy(false);
+		}
+	};
+	// Nudge actions: Generate runs the shared server pipeline through an
+	// explicit tap (the draft card takes over from there, with its
+	// private/public choice); Not now dismisses server-side so the nudge
+	// never returns for this thread. Both hide the card instantly; failures
+	// surface honestly and the next load converges from server truth.
+	const generateFromNudge = async () => {
+		if (nudgeBusy) return;
+		triggerHaptic("selection");
+		setNudgeBusy(true);
+		try {
+			const res = await api.postInbox<{
+				draft_proposed?: boolean;
+				draft?: { title: string; description: string; category: string } | null;
+			}>("/api/inbox", {
+				thread_id: anonId,
+				action: "request_own_draft",
+			});
+			setShowNudge(false);
+			if (res.draft && res.draft.title) {
+				draftDismissedRef.current = false;
+				setPendingDraft({
+					title: res.draft.title,
+					description: res.draft.description,
+					category: res.draft.category,
+				});
+			} else {
+				toast("Couldn't draft that just now — describe it once more?", "err");
+			}
+		} catch (e: unknown) {
+			toast(e instanceof Error ? e.message : "Could not draft — try again", "err");
+		} finally {
+			setNudgeBusy(false);
+		}
+	};
+	const dismissNudge = async () => {
+		if (nudgeBusy) return;
+		triggerHaptic("light");
+		setNudgeBusy(true);
+		setShowNudge(false);
+		try {
+			await api.postInbox("/api/inbox", {
+				thread_id: anonId,
+				action: "dismiss_draft_suggestion",
+			});
+		} catch {
+			// Dismiss is idempotent server-side; a failed call simply leaves
+			// the suggestion live, and the next load resurrects the nudge.
+		} finally {
+			setNudgeBusy(false);
+		}
+	};
+	const [readingId, setReadingId] = useState<string | number | null>(null);
 	const bottomRef = useRef<HTMLDivElement>(null);
 	const fileRef = useRef<HTMLInputElement>(null);
 	const sendingRef = useRef(false);
 
-	// ── Initial-loader minimum display time ─────────────────────────
-	// The motive loader tells a 5-line story over VB_FULL_CYCLE_MS. If the
-	// inbox answers instantly, the spinner used to vanish before the story
-	// was told. Hold it until the full cycle has had time to play (shorter
-	// for reduced-motion users).
-	const MIN_LOADER_MS = prefersReducedMotion() ? 1200 : VB_FULL_CYCLE_MS;
+	// ── Initial-loader floor ─────────────────────────────────────────
+	// The loader must reflect REAL loading, not a decorative countdown.
+	//
+	// It used to be VB_FULL_CYCLE_MS — 3200ms x 5 motives = 16 SECONDS held
+	// unconditionally, even when the inbox answered in 50ms. That is the
+	// "cover the problem with a loading spinner" antipattern: it converts a
+	// fast response into a slow one and hides real latency behind a splash.
+	// A genuine load failure looked identical to a slow network.
+	//
+	// What is actually justified is a tiny anti-flicker floor: a loader that
+	// appears for 30ms and vanishes reads as a rendering glitch. 250ms is
+	// enough. Reduced-motion users get none at all — there is no animation to
+	// protect, and a longer floor for them was simply backwards.
+	const MIN_LOADER_MS = prefersReducedMotion() ? 0 : 250;
 	const mountTimeRef = useRef(Date.now());
 	const loaderTimerRef = useRef<number | null>(null);
 	const mountedRef = useRef(true);
 	useEffect(() => {
+		// Remounts must re-arm: StrictMode (dev/E2E) runs this cleanup
+		// spuriously, and without re-arming + nulling the timer ref the
+		// next holdLoaderForFullStory() early-returns on the stale ref and
+		// the loader sticks forever on fast responses.
+		mountedRef.current = true;
 		return () => {
 			mountedRef.current = false;
-			if (loaderTimerRef.current !== null)
+			if (loaderTimerRef.current !== null) {
 				window.clearTimeout(loaderTimerRef.current);
+				loaderTimerRef.current = null;
+			}
 		};
 	}, []);
 
@@ -135,6 +298,34 @@ export default function UserChat() {
 			// Deduplicate by message id + replace optimistic bubbles on server confirm
 			setMessages((prev: ChatMessage[]) => mergeMessages(prev, newMsgs));
 			setThread(data.thread);
+			setChatTitle(data.title ?? null);
+			// Restore an open draft proposal so a reload never loses the card —
+			// unless the student dismissed it locally (the server proposal stays
+			// open until accepted; the next Generate reuses it via dedupe).
+			const openProposal = data.state?.draft_proposal;
+			if (
+				openProposal?.status === "proposed" &&
+				!draftDismissedRef.current &&
+				typeof openProposal.title === "string" &&
+				openProposal.title
+			) {
+				setPendingDraft({
+					title: openProposal.title,
+					description:
+						typeof openProposal.description === "string"
+							? openProposal.description
+							: "",
+					category:
+						typeof openProposal.category === "string"
+							? openProposal.category
+							: "Other",
+				});
+				setShowNudge(false);
+			} else if (!openProposal || openProposal.status !== "proposed") {
+				// Converge the nudge from server truth (covers POST-driven and
+				// reload-driven arrivals alike).
+				setShowNudge(data.state?.draft_suggestion?.status === "suggested");
+			}
 			if (data.state?.agent) {
 				setAgentLabel(
 					data.state.agent === "emotional"
@@ -156,13 +347,17 @@ export default function UserChat() {
 			// so a locally-assigned variable would still be empty here).
 			return newMsgs;
 		} catch {
-			// Fallback to old chat API
+			// Fallback to old chat API — merge, don't replace, so an
+			// optimistic bubble from an in-flight send is never wiped.
 			try {
 				const data = await api.get<InboxResponse>(
 					`/api/chat?thread_id=${anonId}`,
 				);
-				setMessages(data.messages);
+				setMessages((prev: ChatMessage[]) =>
+					mergeMessages(prev, data.messages || []),
+				);
 				setThread(data.thread);
+			setChatTitle(data.title ?? null);
 				await api.put("/api/chat", {
 					action: "mark_read",
 					thread_id: anonId,
@@ -183,8 +378,52 @@ export default function UserChat() {
 		load();
 	}, [load]);
 
+	// ── Visible-only auto-peek (contract evolution 2026-10-05) ──
+	// chat_messages is outside the anon realtime contract
+	// (src/lib/realtimeContract.json), so the subscription below can never
+	// deliver: without this, a reply from another device appears only after
+	// a manual refresh. Peek at the thread every 4s while this page is
+	// mounted AND visible, plus once on focus/visibility return. This is a
+	// merge, not a load: no mark_read PUT (read state is written by the
+	// explicit load/send paths), no loader touch, and getFresh bypasses the
+	// 5s GET cache so the tick sees live rows. One timer for one thread —
+	// no fan-out; torn down on unmount.
+	const peek = useCallback(async () => {
+		if (
+			typeof document !== "undefined" &&
+			document.visibilityState === "hidden"
+		)
+			return;
+		try {
+			const data = await api.getFresh<InboxResponse>(
+				`/api/inbox?thread_id=${anonId}`,
+			);
+			const newMsgs = data.messages || [];
+			setMessages((prev: ChatMessage[]) => mergeMessages(prev, newMsgs));
+		} catch {
+			/* offline ok */
+		}
+	}, [anonId]);
+
+	useEffect(() => {
+		const id = window.setInterval(() => {
+			void peek();
+		}, 4000);
+		const refetch = () => {
+			void peek();
+		};
+		window.addEventListener("focus", refetch);
+		document.addEventListener("visibilitychange", refetch);
+		return () => {
+			window.clearInterval(id);
+			window.removeEventListener("focus", refetch);
+			document.removeEventListener("visibilitychange", refetch);
+		};
+	}, [peek]);
+
 	const toggleAi = async () => {
 		if (aiBusy) return;
+		triggerHaptic("selection");
 		const next = !aiEnabled;
 		setAiBusy(true);
 		try {
@@ -206,9 +445,41 @@ export default function UserChat() {
 		setAiBusy(false);
 	};
 
-	// Realtime subscription (with built-in fallback polling in useRealtime)
-	// handles both live updates AND silent-channel recovery — no raw setInterval needed.
-	useRealtime(["chat_messages"], () => load(), 500);
+	// Freshness signal, not a refetch: the old wiring reloaded the WHOLE
+	// thread on every matching event, so a lively conversation (or a slow AI
+	// reply landing in pieces) fired a burst of full refetches that competed
+	// with actual message delivery — the thread visibly rebuilt over and
+	// over. Realtime now only raises a badge; the reader pulls the thread
+	// with the update notice. Own messages stay instant (optimistic bubble
+	// in send()), and the send path still refreshes after its own write.
+	//
+	// SCALE: chat_messages is a global table, but this page owns exactly one
+	// thread (the current user's anon id). Without filtering on the changed
+	// thread_id, one message from any user would raise a badge on every open
+	// conversation — the same fan-out the old refetch had, just cheaper.
+	const { updatesAvailable, markUpdatesAvailable, clearUpdates } =
+		useUpdateSignal();
+
+	const handleThreadUpdate = useCallback(async () => {
+		await load();
+		clearUpdates();
+	}, [load, clearUpdates]);
+
+	useRealtime(
+		["chat_messages"],
+		(_table, payload) => {
+			const next = payload?.new as { thread_id?: string } | undefined;
+			const prev = payload?.old as { thread_id?: string } | undefined;
+			const changedThreadId =
+				payload?.eventType === "DELETE" ? prev?.thread_id : next?.thread_id;
+			// POLL/VISIBLE events intentionally carry no row payload. They are
+			// recovery signals, so raise the badge when the thread id is
+			// unavailable rather than fetching blindly.
+			if (changedThreadId && changedThreadId !== anonId) return;
+			markUpdatesAvailable();
+		},
+		1000,
+	);
 
 	useEffect(() => {
 		bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -218,6 +489,7 @@ export default function UserChat() {
 		const body = sanitize(text, 2000);
 		if (!body && !attachment_url) return;
 		if (sendingRef.current) return;
+		triggerHaptic("medium");
 		sendingRef.current = true;
 		setBusy(true);
 		setTyping(true);
@@ -243,6 +515,10 @@ export default function UserChat() {
 				message?: ChatMessage;
 				auto_reply?: ChatMessage;
 				emotion?: { level?: string };
+				triage?: { reported?: boolean; urgency?: string; private?: boolean };
+				draft_proposed?: boolean;
+				draft_suggested?: boolean;
+				draft?: { title: string; description: string; category: string; private: boolean } | null;
 			}>("/api/inbox", {
 				thread_id: anonId,
 				sender: "user",
@@ -273,7 +549,39 @@ export default function UserChat() {
 				);
 			}
 
-			// Then sync with server to catch anything we missed
+			// TYPEWRITER-STREAM-ARM: reveal + voice the fresh reply only.
+		if (result.auto_reply && (result.auto_reply as ChatMessage).id !== undefined) {
+			const freshId = (result.auto_reply as ChatMessage).id as string | number;
+			setStreamId(freshId);
+			if (readBack && speechOutputSupported && (result.auto_reply as ChatMessage).body) {
+				readAloud((result.auto_reply as ChatMessage).body || "");
+			}
+		}
+		// Surface instant triage: the inbox files real reports, not chat.
+		setTriageNote(null);
+		if (result.triage?.reported) {
+			setTriageNote(
+				result.triage.urgency === "urgent"
+					? "🚨 Marked urgent — filed as a private report and the admin team was notified immediately."
+					: result.triage.private
+						? "🔒 Filed as a private report — it stays between you and the admin team, never public."
+						: "📋 Filed as a report — the admin team will review it shortly.",
+			);
+		}
+		if (result.draft && result.draft.title) setPendingDraft({
+			title: result.draft.title,
+			description: result.draft.description,
+			category: result.draft.category,
+		});
+		if (result.draft_proposed) {
+			setTriageNote((prev) =>
+				(prev ? prev + " " : "") +
+				"✏️ I drafted a post from what you asked to share — an admin reviews it before anything is published.",
+			);
+		}
+		if (result.draft_suggested) setShowNudge(true);
+
+		// Then sync with server to catch anything we missed
 			await load();
 		} catch (e: unknown) {
 			// NOTE: We do NOT re-post to /api/chat here — the inbox endpoint already
@@ -283,8 +591,14 @@ export default function UserChat() {
 			const errMsg = e instanceof Error ? e.message : "Send failed";
 			// Sync with the server so a late AI reply (or the confirmed copy of the
 			// user's message) replaces the optimistic bubble.
-			await load();
-			if (errMsg.includes("timed out") || errMsg.includes("network")) {
+			const synced = (await load()) || [];
+			if (!synced.some((m) => m.body === body && m.sender === "user")) {
+				// The message provably did NOT land server-side — restore the
+				// draft instead of eating the user's words, and clean up the failed bubble.
+				setText(body);
+				setMessages((prev) => prev.filter((m) => m.id !== userMsg.id));
+			}
+			if (/offline|taking too long|timed out|network|failed to fetch/i.test(errMsg)) {
 				toast("Message sent — AI is still composing a reply.", "info");
 			} else {
 				toast(errMsg, "err");
@@ -313,10 +627,46 @@ export default function UserChat() {
 		reader.readAsDataURL(f);
 	};
 
+	// ── Voice ────────────────────────────────────────────────
+
+
+	useEffect(
+		() => () => {
+			stopReading();
+		},
+		[],
+	);
+	const toggleRead = (m: ChatMessage) => {
+		if (readingId === m.id) {
+			stopReading();
+			setReadingId(null);
+			return;
+		}
+		stopReading();
+		setReadingId(m.id ?? null);
+		readAloud(m.body || "", () => setReadingId(null));
+	};
+
+	const deleteConversation = async () => {
+		if (deleting) return;
+		setDeleting(true);
+		setConfirmDelete(false);
+		try {
+			await api.post("/api/inbox", { action: "delete_thread", thread_id: anonId });
+			setMessages([]);
+			setThread(null);
+			setChatTitle(null);
+			setChatUnread(0);
+			toast("Conversation deleted", "ok");
+		} catch (e: unknown) {
+			toast(e instanceof Error ? e.message : "Could not delete — try again", "err");
+		}
+		setDeleting(false);
+	};
 	return (
-		<div className="max-w-3xl mx-auto px-4 py-6 vb-page-enter flex flex-col h-[calc(100vh-9.5rem)] lg:h-[calc(100vh-8rem)]">
+		<div className="max-w-3xl mx-auto px-4 py-3 sm:py-6 vb-page-enter flex flex-col h-[calc(100dvh-6rem)] sm:h-[calc(100dvh-8rem)]">
 			{/* Header — same treatment as Community insights */}
-			<div className="flex items-center gap-2.5 mb-5">
+			<div className="flex items-center gap-2.5 mb-3 sm:mb-5">
 				<span className="vb-empty-icon !w-9 !h-9">
 					<MessageSquare size={17} />
 				</span>
@@ -324,7 +674,7 @@ export default function UserChat() {
 					<h1 className="font-display font-bold text-xl sm:text-2xl leading-tight">
 						Anonymous inbox
 					</h1>
-					<p className="text-xs text-ink3 truncate">
+					<p className="text-xs text-ink3 line-clamp-2 sm:line-clamp-none">
 						{aiEnabled
 							? "Chat directly — our AI assistant responds instantly. An admin will join when available."
 							: "AI replies are paused. Your messages reach the admin team directly."}
@@ -354,7 +704,13 @@ export default function UserChat() {
 					)}
 					<span className="hidden sm:inline">AI {aiEnabled ? "ON" : "OFF"}</span>
 				</button>
+				<button type="button" onClick={() => { triggerHaptic("warning"); setConfirmDelete(true); }} disabled={deleting} title="Delete conversation" aria-label="Delete conversation" className="shrink-0 inline-flex items-center rounded-full border border-border px-2.5 py-1.5 text-ink3 hover:text-bad hover:border-bad/40 disabled:opacity-50">
+					<Trash2 size={12} />
+				</button>
 			</div>
+			{chatTitle && (
+				<p className="text-xs text-ink2 truncate mt-2" data-testid="chat-title">{chatTitle}</p>
+			)}
 
 			{/* Agent indicator banner */}
 			{agentLabel && (
@@ -365,15 +721,47 @@ export default function UserChat() {
 						<Bot size={13} />
 					)}
 					<span className="font-medium">{agentLabel}</span>
-					<span className="text-ink3 ml-auto">Responding instantly</span>
+					<span className="text-ink3 ml-auto">
+						{busy || typing ? (
+							<span className="inline-flex items-center gap-1.5 text-accent font-medium animate-pulse">
+								<Loader2 size={11} className="animate-spin" /> Thinking...
+							</span>
+						) : (
+							aiEnabled ? "Online" : "AI Paused"
+						)}
+					</span>
 				</div>
 			)}
+
+			{/* Human counselor takeover or notices banner */}
+			{messages.some((m) => m.sender === "admin") ? (
+				<div className="flex items-center gap-2 px-3 py-2 rounded-xl bg-good/10 border border-good/30 text-xs text-good mb-3 animate-in fade-in">
+					<UserCheck size={14} className="shrink-0" />
+					<span className="font-semibold">Campus Counselor Active</span>
+					<span className="text-[11px] text-ink3 ml-auto">Direct human support</span>
+				</div>
+			) : (
+				<div className="flex items-center justify-between gap-2 px-3.5 py-2 rounded-xl bg-surface2/60 dark:bg-white/[0.03] border border-border/60 text-xs text-ink3 mb-3">
+					<span className="flex items-center gap-1.5">
+						<Info size={13} className="text-accent shrink-0" />
+						<span>Looking for school administrative notices?</span>
+					</span>
+					<Link to="/notifications" className="font-semibold text-accent hover:underline shrink-0">
+						View Notifications
+					</Link>
+				</div>
+			)}
+
+			<UpdateNotice
+				count={updatesAvailable}
+				onViewUpdates={() => void handleThreadUpdate()}
+			/>
 
 			<div className="card flex-1 overflow-y-auto p-4 space-y-3">
 				{loading && (
 					<LoadingSpinner
 						text="Opening your anonymous inbox…"
-						durationMs={MIN_LOADER_MS}
+						motiveOff
 					/>
 				)}
 				{!loading && messages.length === 0 && (
@@ -388,9 +776,38 @@ export default function UserChat() {
 							Send a message to reach the support team anonymously. Our AI
 							responds instantly.
 						</p>
+						{/* Starter chips — one tap fills the box for review;
+						    nothing sends until Send is tapped. */}
+						<div className="flex flex-wrap justify-center gap-2 mt-4" role="group" aria-label="Start with">
+							{STARTER_CHIPS.map((chip) => (
+								<button
+									key={chip.label}
+									type="button"
+									onClick={() => {
+										triggerHaptic("selection");
+										setText(chip.fill);
+									}}
+									className="btn btn-ghost !text-xs !rounded-full vb-pop"
+								>
+									{chip.label}
+								</button>
+							))}
+						</div>
 					</div>
 				)}
-				{messages.map((m) => (
+				{messages.map((m) => {
+					if (m.sender === "system") {
+						return (
+							<div
+								key={m.id}
+								data-testid="chat-system-note"
+								className="my-2 px-3 py-1.5 rounded-lg border border-border/50 text-xs text-ink3 text-center flex items-center justify-center gap-1.5"
+							>
+								<span>{m.body}</span>
+							</div>
+						);
+					}
+					return (
 					<div
 						key={m.id}
 						className={`flex ${m.sender === "user" ? "justify-end" : "justify-start"}`}
@@ -414,6 +831,11 @@ export default function UserChat() {
 									<Bot size={10} /> AI ASSISTANT
 								</p>
 							)}
+							{m.sender !== "user" && m.sender !== "ai" && m.sender !== "admin" && (
+								<p className="text-[10px] font-bold uppercase tracking-wider text-accent mb-0.5">
+									{m.sender.toUpperCase()}
+								</p>
+							)}
 							{m.attachment_url && (
 								<img
 									src={m.attachment_url}
@@ -422,15 +844,45 @@ export default function UserChat() {
 									className="rounded-lg mb-1.5 max-h-48"
 								/>
 							)}
-							{m.body && <p className="prose-desc">{m.body}</p>}
-							<p
-								className={`text-[9px] mt-1 ${m.sender === "user" ? "text-white/60" : "text-ink3"}`}
-							>
-								{fmtDate(m.created_at ?? "")}
+							{m.body && (m.sender === "ai" && m.id === streamId ? (
+							<p className="prose-desc">
+								<Typewriter text={m.body} label="AI reply" />
 							</p>
+						) : (
+							<p className="prose-desc">{m.body}</p>
+						))}
+							{(m.sender === "ai" || m.sender === "admin") && m.body && speechOutputSupported && (
+								<button
+									type="button"
+									onClick={() => toggleRead(m)}
+									aria-label={readingId === m.id ? "Stop reading aloud" : "Read aloud (device voice)"}
+									title={readingId === m.id ? "Stop" : "Listen (device voice)"}
+									className="mt-1 inline-flex items-center gap-1 text-[10px] font-bold text-accent/70 hover:text-accent"
+								>
+									{readingId === m.id ? <VolumeX size={11} /> : <Volume2 size={11} />}
+									{readingId === m.id ? "Stop" : "Listen"}
+								</button>
+							)}
+							<div
+								className={`text-[9px] mt-1 flex items-center gap-1 ${m.sender === "user" ? "text-white/70" : "text-ink3"}`}
+							>
+								<span>{fmtDate(m.created_at ?? "")}</span>
+								{m.sender === "user" && (
+									typeof m.id === "string" && m.id.startsWith("user-") ? (
+										<span title="Sending to server…" className="inline-flex items-center gap-0.5 opacity-80">
+											<Clock size={9} className="animate-spin" />
+										</span>
+									) : (
+										<span title="Delivered and saved" className="inline-flex items-center">
+											<CheckCheck size={11} className="text-white" />
+										</span>
+									)
+								)}
+							</div>
 						</div>
 					</div>
-				))}
+					);
+				})}
 
 				{/* Typing indicator — premium animated dots (AI mode only) */}
 				{typing && aiEnabled && (
@@ -443,7 +895,91 @@ export default function UserChat() {
 				<div ref={bottomRef} />
 			</div>
 
-			<div className="flex gap-2 mt-3">
+			{/* Triage confirmation — the inbox files reports, not chat */}
+			{triageNote && (
+				<div className="flex items-center gap-2 px-3 py-2 rounded-xl bg-accent/10 border border-accent/20 text-xs text-accent mt-3 animate-in slide-in-from-top-1" role="status">
+					<span className="font-medium">{triageNote}</span>
+				</div>
+			)}
+
+			{/* Nudge — "Would you like me to generate a complaint?" Nothing is
+			    drafted until Generate is tapped; Not now dismisses for good. */}
+			{showNudge && !pendingDraft && (
+				<div className="card border-accent/30 p-3.5 mt-3" data-testid="draft-nudge" role="dialog" aria-label="Generate a complaint?">
+					<p className="text-[10px] font-bold uppercase tracking-wider text-accent mb-1.5">Turn this chat into a complaint?</p>
+					<p className="text-xs text-ink2 leading-relaxed">I can draft it from what you described — you review it, choose private or public, and post it. Nothing is published automatically.</p>
+					<div className="flex gap-2 mt-3">
+						<button type="button" disabled={nudgeBusy} onClick={() => void generateFromNudge()} className="btn btn-primary !text-xs flex-1">{nudgeBusy ? "Drafting…" : "Generate complaint"}</button>
+						<button type="button" disabled={nudgeBusy} onClick={() => void dismissNudge()} className="btn btn-ghost !text-xs">Not now</button>
+					</div>
+				</div>
+			)}
+
+			{/* Draft card — Accept publishes with your visibility choice, Dismiss drops it */}
+			{pendingDraft && (
+				<div className="card border-accent/30 p-3.5 mt-3" data-testid="draft-card" role="dialog" aria-label="Suggested post">
+					<p className="text-[10px] font-bold uppercase tracking-wider text-accent mb-1.5">Suggested post — your call</p>
+					<p className="font-semibold text-sm leading-snug">{pendingDraft.title}</p>
+					<span className="chip !text-[10px] mt-1.5">{pendingDraft.category}</span>
+					<p className="text-xs text-ink2 leading-relaxed mt-1">{pendingDraft.description}</p>
+					<div className="flex gap-2 mt-3" role="radiogroup" aria-label="Post visibility">
+						{(["private", "public"] as const).map((v) => (
+							<button
+								key={v}
+								type="button"
+								role="radio"
+								aria-checked={draftVisibility === v}
+								disabled={draftBusy}
+								onClick={() => {
+									triggerHaptic("selection");
+									setDraftVisibility(v);
+								}}
+								className={`flex-1 px-3 py-2 rounded-lg text-xs font-semibold border transition-all disabled:opacity-40 ${
+									draftVisibility === v
+										? "border-accent bg-accent-soft text-accent"
+										: "border-border text-ink2"
+								}`}
+							>
+								{v === "private" ? "🔒 Private" : "🌍 Public"}
+							</button>
+						))}
+					</div>
+					{draftVisibility === "public" && (
+						<p className="text-[11px] text-ink3 mt-1.5">
+							Public posts are reviewed by an admin before anyone sees them.
+						</p>
+					)}
+					<div className="flex gap-2 mt-3">
+						<button type="button" disabled={draftBusy} onClick={() => void acceptDraftCard()} className="btn btn-primary !text-xs flex-1">{draftBusy ? "Posting…" : draftVisibility === "private" ? "Post privately" : "Send for review"}</button>
+						<button type="button" disabled={draftBusy} onClick={() => { triggerHaptic("light"); setPendingDraft(null); draftDismissedRef.current = true; setDraftVisibility("private"); }} className="btn btn-ghost !text-xs">Dismiss</button>
+					</div>
+				</div>
+			)}
+
+			{/* Quick-Reply Carousel */}
+			<div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar py-1 mt-2.5" role="group" aria-label="Quick replies">
+				{[
+					{ label: "Status of my reports", fill: "What is the status of my recent complaints?" },
+					{ label: "Report a facility issue", fill: "I want to report a broken facility on campus: " },
+					{ label: "Speak with counselor", fill: "I would like to request confidential guidance from a counselor." },
+					{ label: "Hostel / mess complaint", fill: "I have an issue regarding hostel facilities: " },
+				].map((chip) => (
+					<button
+						key={chip.label}
+						type="button"
+						onClick={() => {
+							setText(chip.fill);
+							triggerHaptic("light");
+						}}
+						className="shrink-0 text-[11px] px-2.5 py-1 rounded-full border border-border bg-surface hover:border-accent/50 hover:bg-surface2 text-ink2 transition-all flex items-center gap-1 cursor-pointer"
+					>
+						<Sparkles size={10} className="text-accent" />
+						{chip.label}
+					</button>
+				))}
+			</div>
+
+	<div className="flex gap-2 mt-3">
 				<button
 					className="btn btn-ghost !px-3"
 					onClick={() => fileRef.current?.click()}
@@ -482,6 +1018,19 @@ export default function UserChat() {
 					)}
 				</button>
 			</div>
+		<div className="mt-1.5 flex items-center justify-between text-[10px] text-ink3">
+			<span>Replies can be read back in your device voice.</span>
+			<button type="button" onClick={() => { triggerHaptic("selection"); const next = !readBack; setReadBack(next); lsSet("vb:readaloud", next); if (!next) stopReading(); }} aria-pressed={readBack} aria-label="Read AI replies aloud" title="Hear AI replies in your device voice" className="font-bold text-accent/80 hover:text-accent">🔊 Voice: {readBack ? "on" : "off"}</button>
+		</div>
+	<ConfirmDialog
+		open={confirmDelete}
+		onClose={() => setConfirmDelete(false)}
+		onConfirm={() => void deleteConversation()}
+		title="Delete conversation?"
+		message="Your messages and this conversation will be permanently removed. This cannot be undone."
+		confirmLabel="Delete"
+		danger
+	/>
 		</div>
 	);
 }

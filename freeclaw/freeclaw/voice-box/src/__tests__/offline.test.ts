@@ -69,6 +69,17 @@ describe("offline queue", () => {
 		expect(fetchMock).not.toHaveBeenCalled();
 	});
 
+	it("does not replay a write queued for a different anonymous identity", async () => {
+		localStorage.setItem("vb:anonId", "anon_first");
+		queueAction("POST", "/api/posts", { title: "belongs to first identity" });
+		localStorage.setItem("vb:anonId", "anon_second");
+		fetchMock.mockResolvedValue(okResponse({}));
+
+		await expect(flushQueue()).resolves.toBe(0);
+		expect(fetchMock).not.toHaveBeenCalled();
+		expect(queuedCount()).toBe(0);
+	});
+
 	it("flushQueue replays successful writes and clears the queue", async () => {
 		queueAction("POST", "/api/posts", { title: "x" });
 		queueAction("DELETE", "/api/posts/1", null);
@@ -226,5 +237,87 @@ describe("offline queue", () => {
 			.map((a) => a.path)
 			.sort();
 		expect(remaining).toEqual(["/api/network-error", "/api/server-error"]);
+	});
+
+	function backdateQueue(hoursAgo: number) {
+		const q = readQueue().map((a) => ({
+			...a,
+			queuedAt: new Date(Date.now() - hoursAgo * 3600_000).toISOString(),
+		}));
+		localStorage.setItem(KEY, JSON.stringify(q));
+	}
+
+	it("replays a fresh post-create directly with no twin pre-check", async () => {
+		queueAction("POST", "/api/posts", { title: "fresh post", category: "Other" });
+		fetchMock.mockResolvedValue(okResponse({ id: "p1" }));
+
+		await expect(flushQueue()).resolves.toBe(1);
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+		expect(fetchMock).toHaveBeenCalledWith(
+			"/api/posts",
+			expect.objectContaining({ method: "POST" }),
+		);
+		expect(queuedCount()).toBe(0);
+	});
+
+	it("drops a stale post-create when the post is already live (no twin)", async () => {
+		queueAction("POST", "/api/posts", { title: "My wifi is down!", category: "Facilities" });
+		backdateQueue(2);
+		fetchMock.mockImplementation((url: string) => {
+			if (String(url).includes("/api/posts?author=")) {
+				return Promise.resolve(
+					okResponse([
+						{ title: "My wifi is down!", category: "Facilities" },
+					]),
+				);
+			}
+			return Promise.resolve(okResponse({}));
+		});
+
+		await expect(flushQueue()).resolves.toBe(1);
+		expect(queuedCount()).toBe(0);
+		// Only the twin-check GET fired — the duplicate POST never sent.
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+		expect(String(fetchMock.mock.calls[0]?.[0] ?? "")).toContain("/api/posts?author=");
+	});
+
+	it("replays a stale post-create when no twin exists", async () => {
+		queueAction("POST", "/api/posts", { title: "Brand new issue", category: "Other" });
+		backdateQueue(2);
+		fetchMock.mockImplementation((url: string) => {
+			if (String(url).includes("/api/posts?author=")) {
+				return Promise.resolve(okResponse([{ title: "Something else", category: "Other" }]));
+			}
+			return Promise.resolve(okResponse({ id: "p9" }));
+		});
+
+		await expect(flushQueue()).resolves.toBe(1);
+		expect(queuedCount()).toBe(0);
+		expect(fetchMock).toHaveBeenCalledTimes(2);
+	});
+
+	it("replays stale non-post actions without a twin pre-check", async () => {
+		queueAction("POST", "/api/reactions", { kind: "support" });
+		backdateQueue(2);
+		fetchMock.mockResolvedValue(okResponse({}));
+
+		await expect(flushQueue()).resolves.toBe(1);
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+	});
+
+	it("fails open: replays the stale create when the twin check errors", async () => {
+		queueAction("POST", "/api/posts", { title: "Maybe twin", category: "Other" });
+		backdateQueue(2);
+		fetchMock.mockImplementation((url: string) => {
+			if (String(url).includes("/api/posts?author=")) {
+				return Promise.reject(new TypeError("Failed to fetch"));
+			}
+			return Promise.resolve(okResponse({ id: "p3" }));
+		});
+
+		// Twin check failed → write replays normally instead of being dropped.
+		await expect(flushQueue()).resolves.toBe(1);
+		expect(queuedCount()).toBe(0);
+		expect(fetchMock).toHaveBeenCalledTimes(2);
 	});
 });

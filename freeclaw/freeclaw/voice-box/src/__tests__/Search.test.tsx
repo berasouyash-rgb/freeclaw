@@ -2,7 +2,7 @@
 // Advanced Search page — /search
 // ═══════════════════════════════════════════════════════════════════
 // Locks the contract:
-//   1. Renders the search input + type/category/status/priority filters.
+//   1. Renders the search input + type/category/status filters.
 //   2. Submitting a query calls /api/search and renders post results
 //      (linked to /post/:id).
 //   3. Empty results → "No results" state.
@@ -18,10 +18,12 @@ import Search from "../pages/Search";
 const mocks = vi.hoisted(() => ({
 	get: vi.fn(),
 	toast: vi.fn(),
+	hasAdminSession: vi.fn(() => false),
 }));
 
 vi.mock("../lib/api", () => ({
 	api: { get: mocks.get },
+	hasAdminSession: mocks.hasAdminSession,
 }));
 
 vi.mock("../contexts/AppContext", () => ({
@@ -78,6 +80,7 @@ function renderPage() {
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	mocks.hasAdminSession.mockReturnValue(false);
 	mocks.get.mockResolvedValue({
 		results: [],
 		total: 0,
@@ -94,7 +97,7 @@ describe("Search — filters render", () => {
 		expect(screen.getByLabelText(/filter by type/i)).toBeInTheDocument();
 		expect(screen.getByLabelText(/filter by category/i)).toBeInTheDocument();
 		expect(screen.getByLabelText(/filter by status/i)).toBeInTheDocument();
-		expect(screen.getByLabelText(/filter by priority/i)).toBeInTheDocument();
+
 	});
 });
 
@@ -163,11 +166,6 @@ describe("Search — query flow", () => {
 			screen.getByLabelText(/filter by status/i),
 			"solved",
 		);
-		await user.selectOptions(
-			screen.getByLabelText(/filter by priority/i),
-			"medium",
-		);
-
 		await waitFor(() => {
 			const searchCalls = mocks.get.mock.calls.filter(([u]) =>
 				String(u).includes("/api/search"),
@@ -176,7 +174,6 @@ describe("Search — query flow", () => {
 			const url = String(searchCalls[searchCalls.length - 1]?.[0] ?? "");
 			expect(url).toContain("type=posts");
 			expect(url).toContain("status=solved");
-			expect(url).toContain("priority=medium");
 		});
 	});
 
@@ -275,5 +272,104 @@ describe("Search — empty and error states", () => {
 		);
 		await user.click(screen.getByRole("button", { name: /retry/i }));
 		await screen.findByText("Broken projector");
+	});
+});
+
+describe("Search — stale-response guard", () => {
+	const FIRST = {
+		type: "post",
+		id: "p-first",
+		title: "First post",
+		description: "stale",
+		category: "Facilities",
+		status: "reported",
+		created_at: "2026-07-01T10:00:00.000Z",
+		relevance_score: 1,
+	};
+	const SECOND = {
+		type: "post",
+		id: "p-second",
+		title: "Second post",
+		description: "fresh",
+		category: "Facilities",
+		status: "reported",
+		created_at: "2026-07-02T10:00:00.000Z",
+		relevance_score: 2,
+	};
+
+	it("never lets a slow earlier run overwrite newer results", async () => {
+		let releaseFirst: () => void = () => {};
+		mocks.get.mockImplementation((url: string) => {
+			const u = String(url);
+			if (!u.includes("/api/search")) return Promise.resolve({});
+			if (u.includes("q=first"))
+				return new Promise((resolve) => {
+					releaseFirst = () =>
+						resolve({ results: [FIRST], total: 1 });
+				});
+			if (u.includes("q=second"))
+				return Promise.resolve({ results: [SECOND], total: 1 });
+			return Promise.resolve({ results: [], total: 0 });
+		});
+		const user = userEvent.setup();
+		renderPage();
+		const input = screen.getByLabelText(/search everything/i);
+
+		await user.type(input, "first");
+		await user.keyboard("{Enter}");
+		await user.clear(input);
+		await user.type(input, "second");
+		await user.keyboard("{Enter}");
+
+		// Newer run resolves first and wins.
+		await screen.findByText("Second post");
+		// The stale run resolves late and must be ignored.
+		releaseFirst();
+		await waitFor(() => {
+			expect(screen.queryByText("First post")).not.toBeInTheDocument();
+		});
+		expect(screen.getByText("Second post")).toBeInTheDocument();
+	});
+});
+
+describe("Search — user rows", () => {
+	const USER_RESULT = {
+		type: "user",
+		id: "user-9",
+		description: "Active member",
+		created_at: "2026-07-01T10:00:00.000Z",
+		relevance_score: 1,
+	};
+
+	async function searchFor(text: string) {
+		const user = userEvent.setup();
+		renderPage();
+		await user.type(screen.getByLabelText(/search everything/i), text);
+		await user.keyboard("{Enter}");
+		await screen.findByText("user-9");
+	}
+
+	it("renders user rows without a link for non-admins", async () => {
+		mocks.get.mockImplementation((url: string) =>
+			String(url).includes("/api/search")
+				? Promise.resolve({ results: [USER_RESULT], total: 1 })
+				: Promise.resolve({}),
+		);
+		await searchFor("user-9");
+		expect(screen.getByText("user-9").closest("a")).toBeNull();
+	});
+
+	it("links user rows to /admin for admins", async () => {
+		mocks.hasAdminSession.mockReturnValue(true);
+		mocks.get.mockImplementation((url: string) =>
+			String(url).includes("/api/search")
+				? Promise.resolve({ results: [USER_RESULT], total: 1 })
+				: Promise.resolve({}),
+		);
+		await searchFor("user-9");
+		expect(screen.getByText("user-9").closest("a")).toHaveAttribute(
+			"href",
+			"/admin",
+		);
 	});
 });

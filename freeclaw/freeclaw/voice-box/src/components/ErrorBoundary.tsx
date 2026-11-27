@@ -18,6 +18,10 @@ import {
 	useId,
 	useState,
 } from "react";
+import { isChunkLoadError, reloadOnceForStaleChunk } from "../lib/retryLazy";
+import { reportBoundaryError } from "../lib/errors";
+import { navigateTo } from "../lib/platform";
+import BlurFade from "./ui/blur-fade";
 
 interface Props {
 	children: ReactNode;
@@ -67,23 +71,6 @@ function describeError(error: unknown): string {
 	}
 }
 
-// Detect chunk-load / dynamic-import failures
-function isChunkLoadError(error: unknown): boolean {
-	if (!error) return false;
-	const msg =
-		typeof error === "string"
-			? error
-			: error instanceof Error
-				? error.message
-				: "";
-	return (
-		msg.includes("Failed to fetch dynamically imported module") ||
-		msg.includes("Loading chunk") ||
-		msg.includes("ChunkLoadError") ||
-		msg.includes("NetworkError when attempting to fetch resource")
-	);
-}
-
 // Detect offline / network errors
 function isNetworkError(error: unknown): boolean {
 	if (!error) return false;
@@ -118,6 +105,16 @@ export class ErrorBoundary extends Component<Props, State> {
 			"\nComponent stack:",
 			info.componentStack,
 		);
+		// An error caught here never reaches window.onerror — React consumes it.
+		// Forward it to the client error buffer so it reaches POST /api/errors
+		// instead of dying in the developer console. reportBoundaryError is a
+		// no-op until initErrorCapture() has run (it runs in main.tsx), so this
+		// is safe in every environment. Non-Error throws are normalised first:
+		// the buffer needs a message it can dedupe and display.
+		reportBoundaryError(
+			error instanceof Error ? error : new Error(describeError(error)),
+			info.componentStack ?? undefined,
+		);
 		this.props.onError?.(error as Error, info);
 	}
 
@@ -126,15 +123,22 @@ export class ErrorBoundary extends Component<Props, State> {
 	};
 
 	handleGoHome = () => {
-		window.location.href = "/";
+		navigateTo("/");
 	};
 
-	handleHardRefresh = () => {
-		// Clear all caches and hard refresh
-		window.location.reload();
+	/**
+	 * Chunk-load recovery. Ask retryLazy's guarded self-heal to reload once
+	 * (a fresh index.html fetches the new hashed chunks after a redeploy).
+	 * If the once-per-session guard is already spent, force a plain reload
+	 * anyway so the button always does something.
+	 */
+	handleRecoverChunk = () => {
+		if (!reloadOnceForStaleChunk()) {
+			window.location.reload();
+		}
 	};
 
-	render() {
+	override render() {
 		if (this.state.hasError) {
 			if (this.props.fallback) {
 				return this.props.fallback;
@@ -181,7 +185,7 @@ export class ErrorBoundary extends Component<Props, State> {
 								: "Please try again."}
 						</p>
 						{detail && (
-							<details className="mb-6 text-left" open>
+							<details className="mb-6 text-left">
 								<summary className="text-xs text-ink3 cursor-pointer hover:text-ink2">
 									Error details — {(detail.split("\n")[0] ?? "").slice(0, 140)}
 								</summary>
@@ -191,19 +195,19 @@ export class ErrorBoundary extends Component<Props, State> {
 							</details>
 						)}
 						<div className="flex gap-3 justify-center flex-wrap">
-							<button
-								onClick={this.handleRetry}
-								className="btn btn-primary flex items-center gap-2 text-sm"
-							>
-								<RefreshCw size={14} /> Try Again
-							</button>
-							{isChunk && (
+							{isChunk ? (
 								<button
-									onClick={this.handleHardRefresh}
-									className="btn btn-soft flex items-center gap-2 text-sm"
-									style={{ borderColor: "var(--vb-warn/30)" }}
+									onClick={this.handleRecoverChunk}
+									className="btn btn-primary flex items-center gap-2 text-sm"
 								>
-									<RefreshCw size={14} /> Refresh Page
+									<RefreshCw size={14} /> Reload page
+								</button>
+							) : (
+								<button
+									onClick={this.handleRetry}
+									className="btn btn-primary flex items-center gap-2 text-sm"
+								>
+									<RefreshCw size={14} /> Try Again
 								</button>
 							)}
 							<button
@@ -258,7 +262,7 @@ export function ErrorDisplay({
 }
 
 /**
- * The full Voice Box motive, told one line per beat. While the app works,
+ * The full Voice Flow motive, told one line per beat. While the app works,
  * the loader walks through the whole story so a wait is never wasted.
  */
 export const VB_MOTIVES: readonly string[] = [
@@ -294,12 +298,13 @@ interface LoadingSpinnerProps {
 }
 
 /**
- * Premium motive loader for async operations — an ambient stage with
- * drifting brand orbs, a brand tile with animated voice bars in a conic
- * gradient ring with a soft halo, the Voice Box wordmark and tagline,
- * a shimmering status line, a rotating line that tells the full SaaS
- * motive, and chapter dots marking story progress. Pure CSS, static
- * under prefers-reduced-motion.
+ * Premium motive loader for async operations — an ambient stage with a
+ * soft drifting mesh of blurred brand orbs, a brand tile with animated
+ * voice bars in a conic gradient ring with a soft halo, the Voice Flow
+ * wordmark and tagline (Magic UI BlurFade entrances), a shimmering
+ * status line, a rotating line that tells the full SaaS motive, and
+ * chapter dots marking story progress. Motion is CSS + framer-motion
+ * driven by real wait states; static under prefers-reduced-motion.
  */
 export function LoadingSpinner({
 	text = "Loading…",
@@ -332,51 +337,59 @@ export function LoadingSpinner({
 			role="status"
 			aria-live="polite"
 		>
-			{/* Ambient stage — drifting brand orbs behind the ring (pure CSS) */}
-			<span className="vb-loader-orb vb-loader-orb--1" aria-hidden="true" />
-			<span className="vb-loader-orb vb-loader-orb--2" aria-hidden="true" />
-			<span className="vb-loader-orb vb-loader-orb--3" aria-hidden="true" />
+			{/* Ambient stage — soft drifting mesh orbs behind the ring (pure CSS) */}
+			<span className="vb-motive-mesh" aria-hidden="true">
+				<span className="vb-mesh-orb vb-mesh-orb--a" />
+				<span className="vb-mesh-orb vb-mesh-orb--b" />
+				<span className="vb-mesh-orb vb-mesh-orb--c" />
+			</span>
 
-			<div className="relative w-16 h-16 mb-4">
-				<div
-					className="absolute inset-0 rounded-full vb-loading-ring"
-					aria-hidden="true"
-				/>
-				<div
-					className="absolute inset-0 rounded-full vb-loading-halo"
-					aria-hidden="true"
-				/>
-				<div className="absolute inset-0 flex items-center justify-center">
-					<svg width={38} height={38} viewBox="0 0 96 96" aria-hidden="true">
-						<defs>
-							<linearGradient id={gradId} x1="0" y1="0" x2="1" y2="1">
-								<stop offset="0" stopColor="#6366F1" />
-								<stop offset="1" stopColor="#7C3AED" />
-							</linearGradient>
-						</defs>
-						<rect
-							x="4"
-							y="4"
-							width="88"
-							height="88"
-							rx="24"
-							fill={`url(#${gradId})`}
-						/>
-						<g
-							className="vb-loading-bars"
-							fill="none"
-							stroke="#fff"
-							strokeLinecap="round"
-						>
-							<rect x="26" y="30" width="44" height="8" rx="4" />
-							<rect x="30" y="44" width="36" height="8" rx="4" />
-							<rect x="26" y="58" width="44" height="8" rx="4" />
-						</g>
-					</svg>
+			<BlurFade>
+				<div className="relative w-16 h-16 mb-4">
+					<div
+						className="absolute inset-0 rounded-full vb-loading-ring"
+						aria-hidden="true"
+					/>
+					<div
+						className="absolute inset-0 rounded-full vb-loading-halo"
+						aria-hidden="true"
+					/>
+					<div className="absolute inset-0 flex items-center justify-center">
+						<svg width={38} height={38} viewBox="0 0 96 96" aria-hidden="true">
+							<defs>
+								<linearGradient id={gradId} x1="0" y1="0" x2="1" y2="1">
+									<stop offset="0" stopColor="#6366F1" />
+									<stop offset="1" stopColor="#7C3AED" />
+								</linearGradient>
+							</defs>
+							<rect
+								x="4"
+								y="4"
+								width="88"
+								height="88"
+								rx="24"
+								fill={`url(#${gradId})`}
+							/>
+							<g
+								className="vb-loading-bars"
+								fill="none"
+								stroke="#fff"
+								strokeLinecap="round"
+							>
+								<rect x="26" y="29" width="44" height="13" rx="4" />
+								<rect x="30" y="40" width="36" height="19" rx="4" />
+								<rect x="25" y="53" width="46" height="25" rx="4" />
+								<rect x="36" y="36" width="24" height="14" rx="4" />
+								<rect x="26" y="30" width="40" height="12" rx="4" />
+							</g>
+						</svg>
+					</div>
 				</div>
-			</div>
-			<p className="vb-loading-wordmark">Voice Box</p>
-			<p className="vb-loading-tagline">Your Voice Matters</p>
+				<BlurFade>
+					<p className="vb-loading-wordmark">Voice Flow</p>
+					<p className="vb-loading-tagline">Your Voice Matters</p>
+				</BlurFade>
+			</BlurFade>
 			{text && (
 				<p className="vb-loading-label text-xs font-medium tracking-wide">
 					{text}

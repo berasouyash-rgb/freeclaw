@@ -25,6 +25,7 @@ import {
 
 describe("Identity - Anonymous ID", () => {
 	beforeEach(() => {
+		clearAllLocalData();
 		localStorage.clear();
 	});
 
@@ -56,6 +57,7 @@ describe("Identity - Anonymous ID", () => {
 	it("has no two IDs the same (different instances)", () => {
 		const id1 = getAnonId();
 		// Clear and reset
+		clearAllLocalData();
 		localStorage.clear();
 		const id2 = getAnonId();
 		expect(id1).not.toBe(id2);
@@ -294,15 +296,18 @@ describe("Identity - Display name (optional, local only)", () => {
 		}
 	});
 });	describe("local profile (avatar + photo + bio)", () => {
-	beforeEach(() => localStorage.clear());
+	beforeEach(() => {
+		clearAllLocalData();
+		localStorage.clear();
+	});
 
 	it("defaults to an empty profile", () => {
-		expect(getProfile()).toEqual({ avatar: "", bio: "", photo: "" });
+		expect(getProfile()).toEqual({ avatar: "", bio: "", photo: "", displayName: "", featuredBadge: "" });
 	});
 
 	it("round-trips a valid emoji avatar and bio", () => {
 		setProfile({ avatar: "🦊", bio: "Night owl coder" });
-		expect(getProfile()).toEqual({ avatar: "🦊", bio: "Night owl coder", photo: "" });
+		expect(getProfile()).toEqual({ avatar: "🦊", bio: "Night owl coder", photo: "", displayName: "", featuredBadge: "" });
 	});
 
 	it("rejects non-emoji avatars and clamps the bio", () => {
@@ -335,6 +340,6 @@ describe("Identity - Display name (optional, local only)", () => {
 
 	it("ignores junk stored under the profile key", () => {
 		localStorage.setItem("vb:profile", "{oops");
-		expect(getProfile()).toEqual({ avatar: "", bio: "", photo: "" });
+		expect(getProfile()).toEqual({ avatar: "", bio: "", photo: "", displayName: "", featuredBadge: "" });
 	});
 });

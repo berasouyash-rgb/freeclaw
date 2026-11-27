@@ -98,7 +98,7 @@ export default async function handler(req, res) {
 					b.output_result && typeof b.output_result === "object"
 						? b.output_result
 						: {},
-				actor_id: clean(b.actor_id, 100) || "admin",
+				actor_id: clean(b.actor_id, 100) || "unknown",
 				actor_type: b.actor_type === "user" ? "user" : "admin",
 				ip_address: b.ip_address ? clean(b.ip_address, 64) : null,
 				risk_level: VALID_RISK_LEVELS.includes(b.risk_level)

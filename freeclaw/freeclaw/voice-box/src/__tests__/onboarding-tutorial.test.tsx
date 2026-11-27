@@ -61,7 +61,7 @@ describe("Tutorial", () => {
 			expect(screen.getByText(title)).toBeInTheDocument();
 		}
 		await user.click(
-			screen.getByRole("button", { name: /Start using Voice Box/ }),
+			screen.getByRole("button", { name: /Start using Voice Flow/ }),
 		);
 		expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
 		expect(localStorage.getItem("vb:tutorialDone")).toBe("true");

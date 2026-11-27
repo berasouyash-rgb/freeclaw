@@ -1,5 +1,5 @@
 /**
- * Shared domain types for Voice Box.
+ * Shared domain types for Voice Flow.
  * Source of truth for all frontend data shapes.
  */
 
@@ -12,7 +12,8 @@ export type PostStatus =
 	| "in_progress"
 	| "waiting"
 	| "solved"
-	| "archived";
+	| "archived"
+	| "pending_review";
 export type Priority = "low" | "medium" | "high" | "critical";
 
 export interface StatusHistoryEntry {
@@ -42,6 +43,9 @@ export interface PostData {
 	pinned?: boolean;
 	featured?: boolean;
 	hidden?: boolean;
+	hidden_by?: string | null;
+	quarantine_reason?: string | null;
+	quarantined_at?: string | null;
 	/** 'private' → visible ONLY to author + admins/moderators */
 	visibility?: "public" | "private";
 	locked?: boolean;
@@ -61,6 +65,8 @@ export interface PostData {
 	purge_at?: string;
 	star?: { reactions?: Record<string, number> };
 	author_name?: string;
+	author_photo?: string;
+	author_avatar?: string;
 }
 
 // ─── Comment ─────────────────────────────────────────
@@ -76,6 +82,9 @@ export interface CommentData {
 	edited?: boolean;
 	deleted?: boolean;
 	hidden?: boolean;
+	hidden_by?: string | null;
+	quarantine_reason?: string | null;
+	quarantined_at?: string | null;
 	is_mine?: boolean;
 }
 
@@ -93,10 +102,21 @@ export interface PollData {
 	expires_at?: string | null;
 	archived?: boolean;
 	deleted?: boolean;
+	hidden?: boolean;
+	hidden_by?: string | null;
+	quarantine_reason?: string | null;
+	quarantined_at?: string | null;
 	total_votes?: number;
 	vote_counts?: Record<number, number>;
 	is_mine?: boolean;
 	created_at?: string;
+	/**
+	 * Row liveness stamp. The vote endpoint bumps it (`api/_polls.js:399`) and
+	 * the realtime UPDATE carries the new value, so it is the freshness key that
+	 * decides between a locally-held poll and a refetched one (see
+	 * `pickNewerPoll` in `components/PollCard.tsx`).
+	 */
+	updated_at?: string;
 }
 
 export interface PollVote {
@@ -129,7 +149,14 @@ export type NotificationKind =
 	| "poll"
 	| "info"
 	| "submitted"
-	| "mention";
+	| "mention"
+	| "warning"
+	| "success"
+	| "suspension"
+	| "suspension_lifted"
+	| "ban"
+	| "unban"
+	| "moderation";
 
 export interface Notification {
 	id: string;
@@ -143,7 +170,7 @@ export interface Notification {
 
 // ─── Chat ────────────────────────────────────────────
 
-export type ChatSender = "admin" | "student" | "user" | "ai";
+export type ChatSender = "admin" | "student" | "user" | "ai" | "system" | (string & {});
 
 export interface ChatMessage {
 	// DB messages use numeric identity ids; optimistic bubbles use string ids
@@ -178,6 +205,10 @@ export interface AccountStatus {
 	suspended_until: string | null;
 	strikes: number;
 	latest_warning?: string | null;
+	/** Canonical restriction level: none | feed_blocked | read_only | full_ban */
+	restriction_level?: string;
+	restriction_reason?: string | null;
+	restriction_expires_at?: string | null;
 }
 
 // ─── Report ──────────────────────────────────────────

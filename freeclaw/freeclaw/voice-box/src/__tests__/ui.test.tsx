@@ -38,6 +38,22 @@ describe("Modal", () => {
 		expect(screen.getByText("Some content")).toBeInTheDocument();
 	});
 
+	it("portals to document.body so card clipping cannot trap it", () => {
+		// Regression: the report dialog painted inside the post card because
+		// Modal rendered inline under ancestors with overflow/transform.
+		const { container } = render(
+			<div data-testid="caller">
+				<Modal open onClose={vi.fn()} title="Hello">
+					Some content
+				</Modal>
+			</div>,
+		);
+		const dialog = screen.getByRole("dialog", { name: "Hello" });
+		expect(dialog.parentElement?.closest('[data-testid="caller"]')).toBeNull();
+		expect(document.body.contains(dialog)).toBe(true);
+		expect(container.querySelector('[data-testid="caller"]')).not.toBeNull();
+	});
+
 	it("closes via the close button, backdrop, and Escape", async () => {
 		const onClose = vi.fn();
 		render(

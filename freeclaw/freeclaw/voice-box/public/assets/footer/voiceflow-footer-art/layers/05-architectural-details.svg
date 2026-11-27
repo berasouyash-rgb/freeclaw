@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="600" viewBox="0 0 1600 600">
+<title>Architectural line details</title>
+
+<g fill="none" stroke="#5ba8dc" stroke-width="2" opacity=".9">
+ <path d="M400 210 H1200 M420 200 H1180 M470 225 H1130"/>
+ <path d="M500 250 V380 M610 250 V380 M720 250 V380 M880 250 V380 M990 250 V380 M1100 250 V380"/>
+ <path d="M750 400 V430 M850 400 V430 M735 430 H865"/>
+ <path d="M780 150 H820 M780 160 H820"/>
+</g>
+<g fill="#1b659f" font-family="monospace" font-size="15" opacity=".8">
+ <text x="800" y="205" text-anchor="middle" letter-spacing="5">VOICEFLOW • LEARNING CAMPUS</text>
+ <text x="800" y="455" text-anchor="middle" font-size="12" letter-spacing="3">EST. • IDEAS • BUILD • CREATE</text>
+</g>
+
+</svg>

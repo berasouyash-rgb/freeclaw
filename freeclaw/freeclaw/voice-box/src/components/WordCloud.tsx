@@ -121,12 +121,15 @@ const WordCloud = memo(function WordCloud({
 			</p>
 		);
 	const max = first[1];
+	// These paint small TEXT on tinted surfaces — use the high-contrast ink
+	// token for every word (the old palette failed WCAG AA with seeded data).
+	// Active word still gets the accent color plus an underline.
 	const COLORS = [
-		"var(--vb-accent)",
-		"#d98a0b",
-		"#16a06a",
-		"#dc4b4b",
-		"var(--vb-accent2)",
+		"var(--vb-ink)",
+		"var(--vb-ink2)",
+		"var(--vb-ink)",
+		"var(--vb-ink2)",
+		"var(--vb-ink)",
 	];
 
 	return (
@@ -150,8 +153,9 @@ const WordCloud = memo(function WordCloud({
 						className={`vb-rise font-display font-semibold leading-none transition-all hover:scale-110 active:scale-95 ${active ? "underline" : ""}`}
 						style={{
 							fontSize: `${scale}rem`,
-							color: active ? "var(--vb-accent)" : COLORS[i % COLORS.length],
-							opacity: active || !activeWord ? 0.55 + (n / max) * 0.45 : 0.25,
+							color: COLORS[i % COLORS.length],
+							// Frequency is already encoded by font size (redundant, so no
+							// information is lost) — an opacity fade broke AA contrast.
 							animationDelay: `${i * 40}ms`,
 						}}
 						title={`“${word}” appears in ${n} posts — click to filter`}

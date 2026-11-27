@@ -4,6 +4,13 @@
  * Returns structured results with severity levels for live UI feedback.
  */
 
+// Profanity + slang detection is NOT a local word-list scan any more: it runs
+// the same spelling-proof matcher the server gate uses (src/lib/lexicon.ts
+// mirrors api/_wordlists.js + api/_lexicon.js), so "sh1t", "shiiiit",
+// "s.h.i.t", "s h i t" and the Hinglish variants are caught before sending —
+// and "class"/"grass"/"passage" are still not. See tests/api/lexicon-parity.
+import { PROFANITY as PROFANITY_WORDS, SLANG as SLANG_WORDS, findTerms } from "./lexicon";
+
 export type Severity = "none" | "low" | "medium" | "high" | "critical";
 
 export interface ModerationFlag {
@@ -19,69 +26,99 @@ export interface ModerationResult {
 	flags: ModerationFlag[];
 	maskedText: string; // text with bad words masked
 	score: number; // 0 = clean, 100 = worst
+	/**
+	 * The authoritative server verdict, present only on results that came
+	 * from `/api/moderate`. The local word-list scan cannot answer this
+	 * question — it has no notion of a target, so it cannot tell
+	 * "Dhansiri, I will hate you" from "I hate this exam". Callers must
+	 * treat `undefined` as "not known", never as "false".
+	 */
+	serverBlocked?: boolean;
+	/** False when the server check itself failed. A failed check is not a pass. */
+	checked?: boolean;
+	/**
+	 * True ONLY when the server judges this exact text needs support
+	 * routing (model-read distress, or a deterministic plea): the draft
+	 * must stay private. Computed server-side by `needsSupport` (model)
+	 * or the relevance support route (deterministic) — never derived on
+	 * the client, so preview and write path cannot disagree. Absent/false
+	 * means no support signal; `undefined` = not known (older server).
+	 */
+	supportNeeded?: boolean;
+	/**
+	 * True ONLY when a language model actually judged the exact text this
+	 * result describes (`/api/moderate` with `aiJudge:true`, reporting
+	 * `decision.model_used === true`). Absent/false means deterministic-only,
+	 * skipped, timed out, or failed — the green "AI reviewed" banner must
+	 * never render from such a result. Callers must treat `undefined` as
+	 * "not known", never as "false" for any OTHER question: this field
+	 * answers one question only ("did the model judge this text?"), exactly
+	 * like `serverBlocked` answers "will the server reject this?".
+	 */
+	aiChecked?: boolean;
+	/**
+	 * True when the model was asked but timed out and the deterministic
+	 * verdict stands. Lets the UI say "couldn't run" instead of silently
+	 * implying a review happened. Only meaningful alongside `aiChecked`.
+	 */
+	aiTimedOut?: boolean;
+	/**
+	 * Advisory: is this an actionable school problem, or noise?
+	 *
+	 * Present only on results from `/api/moderate`. `undefined`/`null` means
+	 * "not known" (the check has not run, or it failed) — callers must never
+	 * render an absent verdict as a positive claim about the content.
+	 *
+	 * This NEVER blocks. There is deliberately no `blocked` field: the write
+	 * path is the only authority on what may be published, and a confident
+	 * machine judgement that silences a real complaint is a worse failure
+	 * than a noisy inbox.
+	 */
+	relevance?: RelevanceResult | null;
+	/**
+	 * The ONE merged review verdict: the safety gate and the LLM analysis
+	 * combined server-side, stricter wins. Present only when the server ran
+	 * the full review (`fullReview: true`). This is the same object
+	 * `/api/pre-publish` returns on publish, so the panel and the publish
+	 * gate can never contradict each other.
+	 */
+	review?: PrePubResult | null;
+}
+
+/** The exact text evidence behind one relevance signal. */
+export interface RelevanceReason {
+	kind: "distress" | "plea" | "problem" | "school" | "off_topic" | "threat";
+	signal: string;
+	label: string;
+	/** The literal substring that matched, for the "why" shown to the author. */
+	evidence?: string;
+}
+
+export type RelevanceVerdict =
+	| "school_problem"
+	| "unclear"
+	| "not_school_related"
+	| "safety_violation";
+export type RelevanceRoute =
+	| "post"
+	| "post_with_note"
+	| "support"
+	| "safety_block";
+
+/** Output of `api/_relevance.js`, mirrored here for the UI. */
+export interface RelevanceResult {
+	policyVersion: string;
+	verdict: RelevanceVerdict;
+	route: RelevanceRoute;
+	confidence: "low" | "medium" | "high";
+	reasons: RelevanceReason[];
+	explanation: string;
+	/** True when the author is invited (never required) to double-check. */
+	askUserToConfirm: boolean;
+	limits: string[];
 }
 
 // ─── Word lists ───────────────────────────────────────────────────
-
-// Profanity: common English slurs and vulgarities
-const PROFANITY_WORDS = [
-	"fuck",
-	"fucking",
-	"fucked",
-	"fucker",
-	"fucks",
-	"motherfucker",
-	"motherfucking",
-	"shit",
-	"shitting",
-	"shitty",
-	"bullshit",
-	"horseshit",
-	"dipshit",
-	"douchebag",
-	"bitch",
-	"bitches",
-	"bitchy",
-	"asshole",
-	"assholes",
-	"arsehole",
-	"bastard",
-	"bastards",
-	"cunt",
-	"cunts",
-	"twat",
-	"dick",
-	"dicks",
-	"dickhead",
-	"dickheads",
-	"slut",
-	"sluts",
-	"sluty",
-	"whore",
-	"whores",
-	"cock",
-	"cocks",
-	"prick",
-	"pussy",
-	"pussies",
-	"bollocks",
-	"bollock",
-	"wanker",
-	"wankers",
-	"tosser",
-	"tossers",
-	"piss",
-	"pissed",
-	"pissing",
-	"damn",
-	"dammit",
-	"goddamn",
-	"crap",
-	"crappy",
-	"retard",
-	"retarded",
-	"retards",
-];
 
 // Racial/ethnic slurs and hate speech
 const SLUR_WORDS = [
@@ -150,12 +187,22 @@ const DANGEROUS_PATTERNS: Array<{
 	pattern: RegExp;
 	message: string;
 	severity: Severity;
+	/** Structural coercion (mirrors the server engine). Victim reports
+	 *  demote these to review-only in moderateContent — never block victims. */
+	coercion?: boolean;
 }> = [
 	// Self-harm
 	{
 		pattern:
 			/\b(?:kill\s+(?:my\s+)?self|suicide|suicidal|end\s+(?:my\s+)?life|want\s+to\s+die|going\s+to\s+kill|overdose)\b/i,
 		message: "This content mentions self-harm. A counselor has been notified.",
+		severity: "critical",
+	},
+	// Directed self-harm abuse (schoolyard "kys") — always blocking, even
+	// without first-person framing. Mirrors the server violence gate.
+	{
+		pattern: /\b(?:kys|kill\s+yourself|hang\s+yourself)\b/i,
+		message: "Directing self-harm at anyone is strictly prohibited.",
 		severity: "critical",
 	},
 	// Violence threats — broad patterns
@@ -221,6 +268,14 @@ const DANGEROUS_PATTERNS: Array<{
 		message: "Mentions of weapons are flagged for safety review.",
 		severity: "high",
 	},
+	// Harassment / Intimidation / Menacing idioms (including Indian English / Hindi idioms)
+	{
+		pattern:
+			/\b(?:i\s+will\s+not\s+leave\s+you|will\s+not\s+leave\s+you|wont\s+leave\s+you|won't\s+leave\s+you|not\s+leave\s+you|chhodunga\s+nahi|chodunga\s+nahi|nahi\s+chhodunga|nahi\s+chodunga|tujhe\s+chhodunga\s+nahi|tujhe\s+nahi\s+chhodunga|dekh\s+lunga|dekh\s+lenge|watch\s+your\s+back|you\s+will\s+pay|you're\s+dead|you\s+are\s+dead|see\s+you\s+after\s+school|meet\s+me\s+after\s+school|meet\s+me\s+alone|wait\s+and\s+watch|you\s+will\s+regret|youll\s+regret|you'll\s+regret|i\s+know\s+where\s+you\s+live|i\s+know\s+where\s+you\s+stay|i\s+know\s+where\s+you\s+go|coming\s+for\s+you|i'm\s+coming\s+for\s+you|im\s+coming\s+for\s+you)\b/i,
+		message:
+			"Threats of intimidation, personal pursuit, or harassment targeting individuals are strictly prohibited.",
+		severity: "critical",
+	},
 	// Drugs
 	{
 		pattern:
@@ -228,17 +283,79 @@ const DANGEROUS_PATTERNS: Array<{
 		message: "Drug-related content is flagged for review.",
 		severity: "high",
 	},
-	// Blackmail / extortion
+	// Blackmail / extortion keywords (advisory: the server blocks only
+	// structural demands, so bare words warn high instead of blocking).
 	{
 		pattern:
-			/\b(?:blackmail|extort|extortion|pay\s+(?:me|us)\s+or|i(?:'ll| will)\s+(?:post|share|send|upload|expose)\s+(?:your|the)\s+(?:photos?|pics?|pictures?|videos?|nudes?|secrets?))\b/i,
-		message: "Blackmail and extortion are serious offenses.",
-		severity: "critical",
+			/\b(?:blackmail|extort|extortion|pay\s+(?:me|us)\s+or)\b/i,
+		message: "Possible extortion language — a human will review this.",
+		severity: "high",
+		coercion: true,
 	},
 	{
 		pattern:
 			/\b(?:if\s+you\s+(?:don(?:'t|t)?|do\s+not)\s+(?:pay|give|send|do)\s+\w+.*?(?:i(?:'ll| will)|gonna|going\s+to)\s+(?:expose|share|post|leak|send))\b/i,
 		message: "Extortion attempts are automatically flagged.",
+		severity: "critical",
+		coercion: true,
+	},
+	// Structural coercion — mirrors the server engine (api/_moderation.js)
+	// so live feedback matches the publish verdict: perpetrator demands
+	// block, victim reports only ever hold for review (see the demotion
+	// step in moderateContent).
+	{
+		pattern:
+			/\b(?:pay(?: me)?|send(?: me)?|give(?: me)?|transfer)\b[^.!?]{0,60}\b(?:or\s+(?:else|i(?:'ll| will))|otherwise|then\s+i(?:'ll| will)|,\s*i(?:'ll| will))\b[^.!?]{0,80}\b(?:leak|leaks|leaked|leaking|post|posts|posted|posting|share|shared|sharing|expose|exposed|exposing|tell\s+(?:everyone|everybody|all|them|the\s+(?:class|school|group|world))|upload|publish|send\s+(?:it|them|those|your))\b/i,
+		message:
+			"Blackmail demand detected — coercion is blocked. If someone is doing this to you, report them instead.",
+		severity: "critical",
+		coercion: true,
+	},
+	{
+		pattern:
+			/\b(?:i(?:'ll| will)|gonna|going\s+to)\b[^.!?]{0,40}\b(?:post|publish|share|leak|drop|expose|upload)\b[^.!?]{0,40}\b(?:your|ur)\b[^.!?]{0,40}\b(?:address|number|phone|location|where you live|secret|secrets)\b/i,
+		message:
+			"Doxxing threat detected — threatening to publish someone's private details is blocked.",
+		severity: "critical",
+		coercion: true,
+	},
+	{
+		pattern:
+			/\bdo\s+(?:as\s+i\s+say|what\s+i\s+say)\b[^.!?]{0,60}\b(?:or\s+(?:else|i(?:'ll| will))|otherwise)\b/i,
+		message: "Coercive threat detected — intimidation is blocked.",
+		severity: "critical",
+		coercion: true,
+	},
+	{
+		pattern:
+			/\b(?:i(?:'ll| will)|gonna|going\s+to)\b[^.!?]{0,40}\b(?:post|publish|share|leak|drop|expose|upload)\b[^.!?]{0,40}\b(?:your|ur)\b[^.!?]{0,40}\b(?:address|number|phone|location|where you live|secret|secrets)\b/i,
+		message:
+			"Doxxing threat detected — threatening to publish someone's private details is blocked.",
+		severity: "critical",
+		coercion: true,
+	},
+	{
+		pattern:
+			/\bdo\s+(?:as\s+i\s+say|what\s+i\s+say)\b[^.!?]{0,60}\b(?:or\s+(?:else|i(?:'ll| will))|otherwise)\b/i,
+		message: "Coercive threat detected — intimidation is blocked.",
+		severity: "critical",
+		coercion: true,
+	},
+	{
+		pattern:
+			/\b(?:i(?:'ll| will)|gonna|going\s+to)\b[^.!?]{0,40}\b(?:post|publish|share|leak|drop|expose|upload)\b[^.!?]{0,40}\b(?:your|ur)\b[^.!?]{0,40}\b(?:photo|pic|picture|video|videos|selfie)\b/i,
+		message:
+			"Possible photo-sharing threat — a human will review this before it goes public.",
+		severity: "high",
+	},
+	// Sexualized photo solicitation/sharing ("hot pics", "pic hot phots") —
+	// mirrors the server explicit gate so live feedback matches the publish
+	// verdict: blocked, with or without a named student.
+	{
+		pattern:
+			/\bhot\s+(?:pics?|photos?|phots?|pictures?|videos?|selfies?)\b|\b(?:pics?|photos?|phots?|pictures?)\b[^.!?]{0,4}\bhot\b/i,
+		message:
+			"Sexualized photo language is blocked — describe the incident without those terms and a human will review it.",
 		severity: "critical",
 	},
 	// Doxxing
@@ -247,6 +364,7 @@ const DANGEROUS_PATTERNS: Array<{
 			/\b(?:dox(?:ing|ed)?|doxx(?:ing|ed)?|releasing?\s+(?:your|their|the)\s+(?:address|phone|real\s+name|info(?:rmation)?))\b/i,
 		message: "Sharing personal information without consent is forbidden.",
 		severity: "high",
+		coercion: true,
 	},
 	// Generic threat patterns
 	{
@@ -263,6 +381,11 @@ const DANGEROUS_PATTERNS: Array<{
 		severity: "high",
 	},
 ];
+
+// Victim reports ("someone is blackmailing me") must never be blocked:
+// the server holds them for human review, so live feedback must agree.
+const COERCION_VICTIM_RE =
+	/\b(?:someone|somebody|some\s+one|he|she|they|this\s+(?:guy|person|boy|girl|man))\b[^.!?]{0,40}\b(?:blackmail(?:ing|ed|s)?|threaten(?:ed|ing|s)?|extort(?:ing|ed|s)?|forcing\s+me)\b|\b(?:blackmail(?:ing|ed)?|threaten(?:ed|ing)?|extort(?:ing|ed)?)\s+(?:me|him|her|them|us)\b/i;
 
 // Spam patterns
 const SPAM_PATTERNS: Array<{
@@ -293,7 +416,9 @@ const SPAM_PATTERNS: Array<{
 function normalize(text: string): string {
 	return text
 		.toLowerCase()
-		.replace(/[^a-z0-9\s]/g, " ")
+		// Preserve Unicode letters and digits (Hindi, Bengali, etc.) — only strip
+		// punctuation and symbols so repeated-word detection works for all languages.
+		.replace(/[^\p{L}\p{N}\s]/gu, " ")
 		.replace(/\s+/g, " ")
 		.trim();
 }
@@ -366,9 +491,9 @@ function detectPII(text: string): ModerationFlag[] {
 	if (/\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b/.test(text)) {
 		flags.push({
 			category: "privacy",
-			severity: "medium",
+			severity: "critical",
 			message:
-				"Email addresses detected — this is an anonymous platform. Remove personal contact info.",
+				"Email addresses detected — VoiceFlow is strictly anonymous. Remove personal contact info.",
 			matched:
 				text.match(
 					/\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b/,
@@ -380,13 +505,160 @@ function detectPII(text: string): ModerationFlag[] {
 	) {
 		flags.push({
 			category: "privacy",
-			severity: "medium",
+			severity: "critical",
 			message:
-				"Phone number detected — this is an anonymous platform. Remove personal contact info.",
+				"Phone number detected — VoiceFlow is strictly anonymous. Remove personal contact info.",
 			matched:
 				text.match(
 					/\b(?:\+?\d{1,3}[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b/,
 				)?.[0] || "",
+		});
+	}
+
+	// ── Personal names & student identification (Zero-Knowledge Protection) ──
+	// 1. Postfix honorifics: "[name] mam/sir/miss" (e.g. "kauli mam", "sharma sir", "gupta ma'am")
+	const COURTESY_BEFORE_HONORIFIC = new Set([
+		"yes", "no", "dear", "hello", "hi", "hey", "thanks", "thank", "sorry",
+		"please", "morning", "evening", "afternoon", "excuse", "pardon",
+		"welcome", "ok", "okay", "alright", "right", "good", "both", "our",
+		"your", "to", "the", "a", "an", "by", "with", "for", "and", "or",
+		"you", "me", "us", "them", "all",
+	]);
+	const POSTFIX_HONORIFIC_RE = /\b([a-zA-Z]{3,20})\s+(?:mam|maam|ma'am|madam|sir|miss)\b/gi;
+	let postfixMatch: RegExpExecArray | null;
+	while ((postfixMatch = POSTFIX_HONORIFIC_RE.exec(text)) !== null) {
+		const word = (postfixMatch[1] || "").toLowerCase();
+		if (word && !COURTESY_BEFORE_HONORIFIC.has(word)) {
+			flags.push({
+				category: "privacy",
+				severity: "critical",
+				message: `Faculty/personal name detected ("${postfixMatch[0]}") — VoiceFlow strictly protects campus anonymity. Real names cannot be published.`,
+				matched: postfixMatch[0],
+			});
+			break;
+		}
+	}
+
+	// 2. Prefix titles with typos: "tecaher kauli", "teacher kauli", "faculty sharma", "prof verma"
+	const TITLE_GENERIC_AFTER = new Set([
+		"here", "there", "said", "told", "asked", "was", "is", "are", "were",
+		"did", "does", "do", "has", "have", "had", "can", "could", "will",
+		"would", "should", "must", "name", "names", "room", "cabin", "office",
+		"desk", "evaluation", "feedback", "meeting", "union", "staff", "student", "students",
+		"that", "the", "about", "to", "in", "on", "at", "who", "which", "my", "our", "your", "his", "her",
+	]);
+	const PREFIX_TITLE_RE = /\b(?:teacher|tecaher|techer|teachr|faculty|faclty|faculity|prof|proff|professor|principal|princpal|headmaster|headmistress|warden|hod|dean)\s+([a-zA-Z]{2,20})\b/gi;
+	let prefixMatch: RegExpExecArray | null;
+	while ((prefixMatch = PREFIX_TITLE_RE.exec(text)) !== null) {
+		const word = (prefixMatch[1] || "").toLowerCase();
+		if (word && !TITLE_GENERIC_AFTER.has(word) && !flags.some((f) => f.matched.toLowerCase() === prefixMatch![0].toLowerCase())) {
+			flags.push({
+				category: "privacy",
+				severity: "critical",
+				message: `Teacher/faculty name detected ("${prefixMatch[0]}") — VoiceFlow strictly protects campus anonymity. Real names cannot be published.`,
+				matched: prefixMatch[0],
+			});
+			break;
+		}
+	}
+
+	// 3. Combined teacher + name + honorific ("tecaher kauli mam", "teacher sharma sir")
+	const TEACHER_NAME_MAM_RE = /\b(?:tecaher|teacher|techer|teachr|faculty|faclty|prof|proff)\s+([a-zA-Z]{2,20})\s+(?:mam|maam|ma'am|madam|sir|miss)\b/i;
+	const tMatch = text.match(TEACHER_NAME_MAM_RE);
+	if (tMatch && !flags.some((f) => f.matched.toLowerCase() === tMatch[0].toLowerCase())) {
+		flags.push({
+			category: "privacy",
+			severity: "critical",
+			message: `Teacher name detected ("${tMatch[0]}") — VoiceFlow is strictly anonymous. Real names cannot be published in public submissions.`,
+			matched: tMatch[0],
+		});
+	}
+
+	// 4. Reporting/complaining phrase naming a teacher/staff ("told our tecaher kauli mam")
+	const REPORT_NAME_RE = /\b(?:told|telling|complained\s+to|spoke\s+to|talked\s+to|informed|reported\s+to|went\s+to)\s+(?:our\s+)?(?:tecaher|teacher|techer|faculty|prof)?\s*([a-zA-Z]{2,20})\s*(?:mam|maam|ma'am|madam|sir|miss)\b/i;
+	const rMatch = text.match(REPORT_NAME_RE);
+	if (rMatch && !flags.some((f) => f.matched.toLowerCase() === rMatch[0].toLowerCase())) {
+		flags.push({
+			category: "privacy",
+			severity: "critical",
+			message: `Reporting a named teacher/faculty member ("${rMatch[0]}") — submit privately to administration instead of public posts.`,
+			matched: rMatch[0],
+		});
+	}
+
+	// 5. Existing formal and direct name patterns
+	const COMMON_SALUTATION_AFTER = new Set([
+		"please", "can", "could", "will", "would", "look", "help", "check",
+		"see", "we", "i", "you", "they", "he", "she", "it", "the", "this",
+		"that", "our", "my", "your", "is", "are", "was", "were", "do", "does",
+		"did", "have", "has", "had", "tell", "listen", "pardon", "excuse",
+		"thank", "thanks", "for", "to", "in", "at", "on", "from",
+	]);
+	const TITLE_NAME_RE = /\b(?:mr|mrs|ms|miss|dr|prof|professor|coach|principal|headmaster)\s+([a-zA-Z]{2,}(?:\s+[a-zA-Z]{2,})?)\b/i;
+	const SIR_NAME_RE = /\b(?:sir|ma(?:'am|am))\s+([a-zA-Z]{2,})\b/i;
+
+	const titleM = text.match(TITLE_NAME_RE);
+	if (titleM && !flags.some((f) => f.matched.toLowerCase() === titleM[0].toLowerCase())) {
+		flags.push({
+			category: "privacy",
+			severity: "critical",
+			message: `Faculty title and name detected ("${titleM[0]}") — VoiceFlow strictly protects campus anonymity.`,
+			matched: titleM[0].slice(0, 50),
+		});
+	}
+
+	const sirM = text.match(SIR_NAME_RE);
+	const sirTarget = (sirM?.[1] || "").toLowerCase();
+	if (sirM && sirTarget && !COMMON_SALUTATION_AFTER.has(sirTarget) && !flags.some((f) => f.matched.toLowerCase() === sirM[0].toLowerCase())) {
+		flags.push({
+			category: "privacy",
+			severity: "critical",
+			message: `Faculty name detected ("${sirM[0]}") — VoiceFlow strictly protects campus anonymity.`,
+			matched: sirM[0].slice(0, 50),
+		});
+	}
+
+	const OTHER_NAME_PATTERNS = [
+		/\b(?:student|kid|boy|girl|classmate)\s+named\s+([a-zA-Z]{2,}(?:\s+[a-zA-Z]{2,})?)\b/i,
+		/\b(?:student|kid|boy|girl|classmate)\s+([A-Z][a-z]{1,20}(?:\s+[A-Z][a-z]{1,20})+)\b/,
+		/\b(?:named|name\s+is|his\s+name\s+is|her\s+name\s+is)\s+([a-zA-Z]{2,}(?:\s+[a-zA-Z]{2,})?)\b/i,
+		/\b(?:about|against|call(?:ed)?)\s+([A-Z][a-z]{2,}\s+[A-Z][a-z]{2,})\b/,
+	];
+	for (const pattern of OTHER_NAME_PATTERNS) {
+		const match = text.match(pattern);
+		if (match && !flags.some((f) => f.matched.toLowerCase() === match[0].toLowerCase())) {
+			flags.push({
+				category: "privacy",
+				severity: "critical",
+				message:
+					"Personal name detected in submission — VoiceFlow strictly protects campus anonymity. Publishing real names in public posts is prohibited. Please remove the name or submit privately.",
+				matched: match[0].slice(0, 50),
+			});
+			break;
+		}
+	}
+
+	// Student roll number or admission ID
+	const ID_PATTERN = /\b(?:roll\s*(?:no|num|number|#)?\s*[:=-]?\s*\d{1,5}|student\s*id\s*[:=-]?\s*[A-Za-z0-9_-]{4,14}|admission\s*(?:no|number|#)?\s*[:=-]?\s*\d{3,10})\b/i;
+	if (ID_PATTERN.test(text)) {
+		flags.push({
+			category: "privacy",
+			severity: "critical",
+			message:
+				"Student ID or roll number detected — sharing personal student identifiers compromises anonymity. Remove it before publishing.",
+			matched: text.match(ID_PATTERN)?.[0] || "",
+		});
+	}
+
+	// Personal social media handles
+	const SOCIAL_PATTERN = /\b(?:instagram|insta|ig|snapchat|snap|telegram|discord)\s*[:=-]?\s*@?([a-zA-Z0-9_.]{3,30})\b/i;
+	if (SOCIAL_PATTERN.test(text)) {
+		flags.push({
+			category: "privacy",
+			severity: "high",
+			message:
+				"Social media handle detected — do not post personal social accounts on this anonymous forum.",
+			matched: text.match(SOCIAL_PATTERN)?.[0] || "",
 		});
 	}
 
@@ -430,8 +702,7 @@ function detectPII(text: string): ModerationFlag[] {
 		});
 	}
 
-	// "Kauli lives in Bally Street 123" — NAME + lives/stays/resides + location
-	// Multi-word names ("MAAM KAULI") + digits in location ("STREE 123") — the
+	// "Kauli lives in Bally Street 123" — NAME + lives/stays/resides + location	// Multi-word names ("MAAM KAULI") + digits in location ("STREE 123") — the
 	// single-word-only `[A-Z][a-zA-Z]+` used to let "MAAM KAULI LIVES IN STREE 123" through.
 	// Uses the STRICT whitelist (STREET_TYPES_AFTER): generic words like park, block, city,
 	// town, village, area, place, way, lane, drive, building, phase are excluded so legit
@@ -453,13 +724,39 @@ function detectPII(text: string): ModerationFlag[] {
 		});
 	}
 
+	// ── Leaked secrets (mirrors the server engine) ──────────────
+	// Assignment or vendor prefix required — plain words never match.
+	const CRED_CHECKS: Array<[RegExp, string]> = [
+		[/(?:password|passwd|pwd)\s*[:=]\s*\S+/gi, "password"],
+		[/\bapi[_-]?key\s*[:=]\s*['"]?[A-Za-z0-9_-]{8,}['"]?/gi, "API key"],
+		[/\b(?:auth[_-]?token|access[_-]?token|secret[_-]?key|client[_-]?secret)\s*[:=]\s*['"]?\S+['"]?/gi, "token"],
+		[/\btoken\s*[:=]\s*['"]?[A-Za-z0-9_\-.~+/=]{8,}['"]?/gi, "token"],
+		[/\bsk-[A-Za-z0-9]{20,}\b/g, "API key"],
+		[/\bgh[pousr]_[A-Za-z0-9]{36}\b/g, "token"],
+		[/\bAKIA[0-9A-Z]{16}\b/g, "API key"],
+		[/\bxox[bpras]-[A-Za-z0-9-]+\b/g, "token"],
+		[/\bBearer\s+[A-Za-z0-9\-._~+/]{10,}={0,2}\b/g, "token"],
+	];
+	for (const [re, label] of CRED_CHECKS) {
+		re.lastIndex = 0;
+		const m = text.match(re);
+		if (m) {
+			flags.push({
+				category: "privacy",
+				severity: "critical",
+				message: `Exposed ${label} detected — secrets must never be posted publicly. Remove it to continue.`,
+				matched: m[0].slice(0, 60),
+			});
+			break;
+		}
+	}
+
 	return flags;
 }
 
 /** Check for someone posting another person's name in a negative context (bullying) */
 function detectBullyingPatterns(text: string): ModerationFlag[] {
 	const flags: ModerationFlag[] = [];
-	const _lower = normalize(text);
 	// "Mr./Mrs./Ms./Teacher [Name] is" followed by insults
 	if (
 		/\b(?:mr|mrs|ms|miss|teacher|professor|coach|principal|sir|ma(?:'am|am))\s+\w+\s+(?:is|are|was)\s+(?:a\s+)?(?:bad|terrible|awful|horrible|worst|stupid|idiot|dumb|ugly|fat|disgusting|pathetic|useless)\b/i.test(
@@ -522,42 +819,106 @@ function maskWord(word: string): string {
 	return word[0] + "*".repeat(word.length - 1);
 }
 
-/** Replace profanity in text with masked version */
-function maskText(text: string, words: string[]): string {
-	let out = text;
-	for (const w of words) {
-		const regex = new RegExp(
-			`\\b${w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`,
-			"gi",
-		);
-		out = out.replace(regex, (m) => maskWord(m));
+const escapeMaskRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/**
+ * One `\b`-anchored alternation per list, built ONCE at module load.
+ * The old version compiled a fresh RegExp per word and ran one full pass of
+ * the string for each — ~450 regex rebuilds and full-text scans on every
+ * (debounced) keystroke. Longest-first ordering keeps "bullshit" from being
+ * half-matched as "shit".
+ */
+function buildMaskRe(words: string[]): RegExp {
+	const alternation = [...words]
+		.sort((a, b) => b.length - a.length)
+		.map(escapeMaskRe)
+		.join("|");
+	return new RegExp(`\\b(?:${alternation})\\b`, "gi");
+}
+
+const PROFANITY_MASK_RE = buildMaskRe(PROFANITY_WORDS);
+const SLANG_MASK_RE = buildMaskRe(SLANG_WORDS);
+const SLUR_MASK_RE = buildMaskRe(SLUR_WORDS);
+
+/** Replace every blocked word in text with its masked version. */
+function maskWith(text: string, re: RegExp): string {
+	re.lastIndex = 0;
+	return text.replace(re, (m) => maskWord(m));
+}
+
+/** Check for garbled punctuation within words or keyboard mash */
+export function detectGibberishOrLowQuality(text: string): ModerationFlag[] {
+	const flags: ModerationFlag[] = [];
+	// Words with interior punctuation like "shou;d", "asdd;ac"
+	const punctuationInWordMatch = text.match(/\b[a-zA-Z]{2,}[;:{}|\\<>[\]~`][a-zA-Z]{1,}\b/);
+	if (punctuationInWordMatch) {
+		flags.push({
+			category: "quality",
+			severity: "medium",
+			message: `Garbled spelling or punctuation within word ("${punctuationInWordMatch[0]}"). Please use clear, complete words.`,
+			matched: punctuationInWordMatch[0],
+		});
 	}
-	return out;
+
+	// Keyboard mash tokens (e.g. "asdf", "sdfg", "qwer", or 5+ consecutive consonants)
+	const tokens = text.toLowerCase().split(/\s+/).map((w) => w.replace(/^[^a-z]+|[^a-z]+$/g, "")).filter(Boolean);
+	for (const token of tokens) {
+		if (token.length >= 4) {
+			if (!/[aeiouy]/.test(token) || /[^aeiouy]{5,}/.test(token)) {
+				flags.push({
+					category: "quality",
+					severity: "medium",
+					message: `Unintelligible word or keyboard mash ("${token}"). Please write clear descriptions.`,
+					matched: token,
+				});
+				break;
+			}
+			if (/(?:asdf|sdfg|dfgh|fghj|ghjk|hjkl|zxcv|xcvb|cvbn|vbnm|qwer|wert|erty|rtyu|tyui|yuio|uiop)/i.test(token)) {
+				flags.push({
+					category: "quality",
+					severity: "medium",
+					message: `Keyboard mash pattern detected ("${token}").`,
+					matched: token,
+				});
+				break;
+			}
+		}
+	}
+	return flags;
 }
 
 /**
  * Moderate content — returns flags, overall severity, and masked text.
  * Run this on the CLIENT for instant UI feedback before submission.
+ *
+ * Evasion parity with the server (api/_moderation.js serverModerate, enforced
+ * in-request by api/_safety-pipeline.js): the word-list loops below run on
+ * NFKC-normalized text, and profanity/slang get a leet-folded token pass
+ * with the server's exact substitution map and changed-guard. Without this
+ * the submit button stays enabled for sh1t/ｓｕｃｋｓ while the server 403s.
  */
 export function moderateContent(text: string): ModerationResult {
 	const flags: ModerationFlag[] = [];
-	const _normalized = normalize(text);
+	// NFKC first: full-width/lookalike evasion is judged as its ASCII self.
+	// Then strip invisible format chars (zero-width joiners/spaces, BOM,
+	// soft hyphens) — same strip as serverModerate, no visible prose impact.
+	const folded = text
+		.normalize("NFKC")
+		.replace(/[\u200b-\u200d\ufeff\u00ad]/g, "");
 
-	// 1. Profanity check
-	for (const word of PROFANITY_WORDS) {
-		const regex = new RegExp(
-			`\\b${word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`,
-			"gi",
-		);
-		const match = text.match(regex);
-		if (match) {
-			flags.push({
-				category: "profanity",
-				severity: "high",
-				message: `Profanity detected: "${match[0]}" — please remove or rephrase.`,
-				matched: match[0],
-			});
-		}
+	// 1. Profanity + slang — ONE spelling-proof pass through the shared mirror
+	// of the server matcher. The old code ran three separate loops (exact list,
+	// exact slang, whole-token leet) and still missed repeated letters,
+	// interior separators, and spaced-out letters, so the client could show
+	// "no issues" on text the server would 403. Same folds as the server now.
+	for (const hit of findTerms(folded)) {
+		const label = hit.category === "slang" ? "Slang" : "Profanity";
+		flags.push({
+			category: "profanity",
+			severity: "high",
+			message: `${label} detected: "${hit.matched}" — please remove or rephrase.`,
+			matched: hit.matched,
+		});
 	}
 
 	// 2. Slur check
@@ -566,7 +927,7 @@ export function moderateContent(text: string): ModerationResult {
 			`\\b${word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`,
 			"gi",
 		);
-		const match = text.match(regex);
+		const match = folded.match(regex);
 		if (match) {
 			flags.push({
 				category: "hate_speech",
@@ -578,11 +939,11 @@ export function moderateContent(text: string): ModerationResult {
 	}
 
 	// 3. Dangerous content
-	for (const { pattern, message, severity } of DANGEROUS_PATTERNS) {
+	for (const { pattern, message, severity, coercion } of DANGEROUS_PATTERNS) {
 		const match = text.match(pattern);
 		if (match) {
 			flags.push({
-				category: "dangerous",
+				category: coercion ? "coercion" : "dangerous",
 				severity,
 				message,
 				matched: match[0],
@@ -610,8 +971,27 @@ export function moderateContent(text: string): ModerationResult {
 	// 8. PII (email/phone)
 	flags.push(...detectPII(text));
 
+	// 8b. Victim-report handling — mirrors the server: a victim describing
+	// coercion is never blocked live; they always get a review note, whether
+	// or not a coercion flag fired (server holds these for a human too).
+	if (COERCION_VICTIM_RE.test(text)) {
+		const kept = flags.filter((f) => f.category !== "coercion");
+		kept.push({
+			category: "coercion_report",
+			severity: "high",
+			message:
+				"Possible coercion report — you can post this; a human will review it.",
+			matched: text.slice(0, 60),
+		});
+		flags.length = 0;
+		flags.push(...kept);
+	}
+
 	// 9. Bullying patterns
 	flags.push(...detectBullyingPatterns(text));
+
+	// 10. Garbled punctuation & keyboard mash
+	flags.push(...detectGibberishOrLowQuality(text));
 
 	// Compute overall
 	const overallSeverity = worstSeverity(flags);
@@ -620,10 +1000,11 @@ export function moderateContent(text: string): ModerationResult {
 		0,
 	);
 
-	// Mask profanity in text
+	// Mask profanity, slang and slurs in text
 	let maskedText = text;
-	maskedText = maskText(maskedText, PROFANITY_WORDS);
-	maskedText = maskText(maskedText, SLUR_WORDS);
+	maskedText = maskWith(maskedText, PROFANITY_MASK_RE);
+	maskedText = maskWith(maskedText, SLANG_MASK_RE);
+	maskedText = maskWith(maskedText, SLUR_MASK_RE);
 
 	return {
 		safe: overallSeverity === "none" || overallSeverity === "low",
@@ -635,20 +1016,230 @@ export function moderateContent(text: string): ModerationResult {
 }
 
 /**
- * Quick check: is this content blocked entirely? (critical severity = cannot submit)
+ * Quick check: is this content blocked entirely? (critical severity or
+ * profanity = cannot submit — school zero-tolerance: no stars, the server
+ * 403s the same set in-request, so the client must agree before sending)
  */
 export function isBlocked(result: ModerationResult): boolean {
-	return result.flags.some((f) => f.severity === "critical");
+	return (result?.flags ?? []).some(
+		(f) => f.severity === "critical" || f.category === "profanity",
+	);
+}
+
+/**
+ * Server-parity gate for anonymous write surfaces (posts, polls, comments).
+ * Mirrors the server's hard verdict — the SAME `serverModerate().blocked`
+ * check `api/_posts.js`, `api/_polls.js`, and `api/_comments.js` each enforce
+ * on RAW text before insert:
+ *
+ *   blocked = any flag with severity "critical", category "privacy",
+ *   or category "profanity"
+ *
+ * Strong personal information — email, phone, street address — is a hard 403
+ * on every one of those routes: comments and polls have no review queue, and
+ * posts 403 strong PII outright (only WEAK signals route to review). Profanity
+ * and slang are likewise a hard 403 everywhere — school zero-tolerance: no
+ * stars are published, the user removes the language and resubmits. The
+ * client must hard-block the same set before sending, or the user gets an
+ * unexplained failure after an optimistic "sent" row — and the request must
+ * carry RAW text, because a masked word reads as stars and blinds this check
+ * on both sides.
+ *
+ * Weak/ambiguous signals (`privacy_weak`/`explicit_weak`) exist only
+ * server-side — the server stays authoritative and its
+ * PII_BLOCKED/CONTENT_BLOCKED message is surfaced verbatim through the toast
+ * on a rejected request.
+ */
+export function isBlockedByServer(result: ModerationResult): boolean {
+	// `result` arrives over the network and may be a partial shape without
+	// `flags`. A missing list is "not blocked", never an exception — this one
+	// guard covers every caller (Submit, Comments, polls).
+	return (result?.flags ?? []).some(
+		(f) =>
+			f.severity === "critical" ||
+			f.category === "privacy" ||
+			f.category === "profanity",
+	);
+}
+
+/** Server-verbatim rejection messages (api/_comments.js 403 bodies). Used for
+ *  the pre-submit client gate so the wording the user sees before sending is
+ *  identical to what the server would have returned. COMMENT_BLOCK_PII_MSG is
+ *  byte-identical to api/_polls.js's PII 403, so polls reuse it. */
+export const COMMENT_BLOCK_PII_MSG =
+	"Personal information detected (address, phone, or email). This is an anonymous platform — please remove personal details.";
+export const COMMENT_BLOCK_CONTENT_MSG =
+	"This comment violates our safety guidelines and cannot be posted.";
+
+/** Server-verbatim rejection messages for the Submit surface:
+ *  api/_posts.js (POST) and api/_polls.js (POST) 403 bodies. */
+export const POST_BLOCK_PII_MSG =
+	"Personal information detected (address, phone, or email). This is an anonymous platform — please remove all personal details and try again.";
+export const POST_BLOCK_CONTENT_MSG =
+	"This content violates our safety guidelines and cannot be published. If you are in crisis, please contact a counselor or call a crisis hotline.";
+export const POLL_BLOCK_CONTENT_MSG =
+	"This poll violates our safety guidelines and cannot be published.";
+
+/** Pick the server's rejection message for a blocked comment result: privacy
+ *  flags → the PII message, anything else → the generic safety message. */
+export function commentBlockMessage(result: ModerationResult): string {
+	return (result?.flags ?? []).some((f) => f.category === "privacy")
+		? COMMENT_BLOCK_PII_MSG
+		: COMMENT_BLOCK_CONTENT_MSG;
+}
+
+/** Pick the server's rejection message for a Submit-surface block: `kind`
+ *  selects the route's exact 403 wording (post vs poll), privacy flags select
+ *  the PII variant — so the pre-send toast is byte-identical to the 403 the
+ *  server would have returned. */
+export function submitBlockMessage(
+	result: ModerationResult,
+	kind: "post" | "poll",
+): string {
+	const pii = (result?.flags ?? []).some((f) => f.category === "privacy");
+	if (kind === "poll") {
+		return pii ? COMMENT_BLOCK_PII_MSG : POLL_BLOCK_CONTENT_MSG;
+	}
+	return pii ? POST_BLOCK_PII_MSG : POST_BLOCK_CONTENT_MSG;
+}
+
+// ─── Pre-publish advisory verdict (POST /api/pre-publish) ──────────
+
+/**
+ * The four checks `api/_pre-publish.js` can report. The client renders a
+ * check ONLY when the server actually sent one: an absent check is "not
+ * verified", which must never be drawn as a green pass.
+ */
+export const PREPUB_CHECK_KEYS = [
+	"privacy",
+	"safety",
+	"spam",
+	"quality",
+] as const;
+
+export type PrePubCheckKey = (typeof PREPUB_CHECK_KEYS)[number];
+
+export interface PrePubCheck {
+	pass: boolean;
+	issues: string[];
+}
+
+export interface PrePubAnalysis {
+	llm_analyzed?: boolean;
+	estimated_resolution_time?: string;
+	priority?: string;
+	department?: string;
+	summary?: string;
+}
+
+/**
+ * The advisory pre-publish verdict, as the CLIENT may safely use it.
+ *
+ * `decision` is `"safe" | "revision" | "high_risk"` on the wire (see
+ * api/_pre-publish.js). It stays a plain string here on purpose: an
+ * unrecognised value must be handled as "unknown", never coerced into one of
+ * the three the UI knows how to colour.
+ */
+export interface PrePubResult {
+	decision: string;
+	reason: string;
+	risk_score: number;
+	review_id?: string;
+	checks?: Partial<Record<PrePubCheckKey, PrePubCheck>>;
+	analysis?: PrePubAnalysis;
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+	return typeof value === "object" && value !== null
+		? (value as Record<string, unknown>)
+		: {};
+}
+
+function asIssues(value: unknown): string[] {
+	return Array.isArray(value)
+		? value.filter((i): i is string => typeof i === "string")
+		: [];
+}
+
+/**
+ * Coerce an untrusted `/api/pre-publish` body into `PrePubResult`.
+ *
+ * A response is not a schema. The advisory verdict is produced by an LLM
+ * pipeline behind a lambda: it can arrive partial (a check that did not run),
+ * degraded (a fallback path that skips a section), proxied, or from an older
+ * deploy. The submit page used to index `checks.privacy`, `checks.safety`, …
+ * unconditionally, so ONE missing check threw during render and React
+ * unmounted the entire page — form, appeal panel, publish button, all gone,
+ * with no error UI to explain it.
+ *
+ * Normalizing here is the single point of truth: every field the page reads is
+ * present, of the right type, and coerced toward "unknown" rather than toward
+ * reassurance.
+ */
+export function normalizePrePubResult(raw: unknown): PrePubResult {
+	const source = asRecord(raw);
+
+	// Only checks the server actually reported survive. A check entry that is
+	// present but malformed is kept as a FAILED check (with no issues listed)
+	// rather than dropped: the server did not say it passed.
+	const rawChecks = asRecord(source.checks);
+	const checks: Partial<Record<PrePubCheckKey, PrePubCheck>> = {};
+	for (const key of PREPUB_CHECK_KEYS) {
+		if (!(key in rawChecks)) continue;
+		const check = asRecord(rawChecks[key]);
+		checks[key] = { pass: check.pass === true, issues: asIssues(check.issues) };
+	}
+
+	const rawAnalysis = asRecord(source.analysis);
+	const hasAnalysis = Object.keys(rawAnalysis).length > 0;
+
+	const risk = Number(source.risk_score);
+	const decision = typeof source.decision === "string" ? source.decision : "";
+
+	return {
+		decision,
+		reason: typeof source.reason === "string" ? source.reason : "",
+		// An unreadable score is 0, not NaN: NaN renders as "NaN/100" and an
+		// invalid CSS width, both worse than an honest zero.
+		risk_score: Number.isFinite(risk) ? Math.min(100, Math.max(0, risk)) : 0,
+		...(typeof source.review_id === "string"
+			? { review_id: source.review_id }
+			: {}),
+		...(Object.keys(checks).length > 0 ? { checks } : {}),
+		...(hasAnalysis
+			? {
+					analysis: {
+						llm_analyzed: rawAnalysis.llm_analyzed === true,
+						...(typeof rawAnalysis.estimated_resolution_time === "string"
+							? {
+									estimated_resolution_time:
+										rawAnalysis.estimated_resolution_time,
+								}
+							: {}),
+						...(typeof rawAnalysis.priority === "string"
+							? { priority: rawAnalysis.priority }
+							: {}),
+						...(typeof rawAnalysis.department === "string"
+							? { department: rawAnalysis.department }
+							: {}),
+						...(typeof rawAnalysis.summary === "string"
+							? { summary: rawAnalysis.summary }
+							: {}),
+					},
+				}
+			: {}),
+	};
 }
 
 /**
  * Get human-readable summary of moderation issues
  */
 export function getModerationSummary(result: ModerationResult): string {
-	if (result.safe) return "";
-	const critical = result.flags.filter((f) => f.severity === "critical");
-	const high = result.flags.filter((f) => f.severity === "high");
-	const medium = result.flags.filter((f) => f.severity === "medium");
+	if (result?.safe) return "";
+	const flags = result?.flags ?? [];
+	const critical = flags.filter((f) => f.severity === "critical");
+	const high = flags.filter((f) => f.severity === "high");
+	const medium = flags.filter((f) => f.severity === "medium");
 	const parts: string[] = [];
 	if (critical.length) parts.push(`${critical.length} critical issue(s)`);
 	if (high.length) parts.push(`${high.length} serious issue(s)`);

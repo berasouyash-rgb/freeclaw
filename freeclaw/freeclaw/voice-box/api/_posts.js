@@ -5,23 +5,44 @@ import {
 	auditLog,
 	checkUser,
 	clean,
+	clientIp,
 	cors,
 	ensureUser,
 	isAdmin,
 	maskProfanity,
+	notifyUser,
 	rateLimited,
 	rateLimitResponse,
+	verifyCallerIdentity,
 } from "./_auth.js";
 import supabase from "./_db-client.js";
-import { staleWhileRevalidate, cacheClear } from "./_cache.js";
+import { staleWhileRevalidate } from "./_cache.js";
+import { getRawCounts, invalidateCounts } from "./_counts.js";
+import { evaluateContentDeep, messageFor, needsSupport } from "./_safety-pipeline.js";
+import { assessRelevance } from "./_relevance.js";
+import { strikeSlangAbuse } from "./_reports.js";
 import { sanitizeError } from "./_error.js";
-import { EVENT_TYPES, emitEvent } from "./_events.js";
-import { notifyFollowers } from "./_follows.js";
 import {
-	serverModerate,
+	CLOSED_RETENTION_MS,
+	CLOSED_STATUSES,
+	closedRetentionDueAt,
+	getRetentionPolicy,
+	isClosedRetentionDue,
+	isClosedStatus,
+} from "./_retention.js";
+import { EVENT_TYPES, emitEventAndBridge } from "./_events.js";
+import { notifyFollowers } from "./_follows.js";
+import { sendPostSolvedEmail } from "./_email.js";
+import {
 	getLearnedWeakStats,
 	recordModerationDecision,
+	recordSafetyRepost,
+	checkSafetyRepost,
+	spamAnalyze,
+	getSpamConfig,
+	alertAdminThreat,
 } from "./_moderation.js";
+import { hasStalkingSignal } from "./_stalking.js";
 
 const CATEGORIES = [
 	"Academics",
@@ -53,15 +74,97 @@ const STATUSES = [
 // enforced on every read path in this file and in _comments.js.
 const VISIBILITIES = ["public", "private"];
 
+// ─── Automatic priority scoring ─────────────────────────────────────
+// Deterministic keyword scorer: the platform decides priority from the
+// content's urgency, so no author (or admin) can hand-pick it. Real
+// emergencies surface as critical; everything else stays honest.
+const PRIORITY_KEYWORDS = {
+	critical: [
+		"emergency",
+		"danger",
+		"injur",
+		"bleeding",
+		"fire",
+		"accident",
+		"ambulance",
+		"hospital",
+		"threat",
+		"weapon",
+		"gas leak",
+	],
+	high: [
+		"harass",
+		"bully",
+		"abuse",
+		"stolen",
+		"theft",
+		"fight",
+		"unsafe",
+		"broken",
+		"leak",
+		"not working",
+		"crash",
+		"urgent",
+		"asap",
+		"immediately",
+		"safety",
+		"risk",
+		"damage",
+	],
+	low: [
+		"minor",
+		"cosmetic",
+		"sometimes",
+		"occasionally",
+		"small issue",
+		"nice to have",
+		"whenever possible",
+	],
+};
+
+/** Compute priority from content urgency. Order matters: critical > high > low > medium. */
+export function computeAutoPriority(...texts) {
+	const hay = texts
+		.filter((t) => typeof t === "string")
+		.join(" ")
+		.toLowerCase();
+	for (const w of PRIORITY_KEYWORDS.critical)
+		if (hay.includes(w)) return "critical";
+	// Stalking/intimidation is a surveillance claim, not an emergency keyword:
+	// "i know your name" matched NO urgency word and published as "low", at
+	// the bottom of the admin queue. Reuse the moderation detector so a phrase
+	// is only critical when it actually signals stalking ("i know your name is
+	// on the list" stays medium).
+	if (hasStalkingSignal(hay)) return "critical";
+	for (const w of PRIORITY_KEYWORDS.high) if (hay.includes(w)) return "high";
+	for (const w of PRIORITY_KEYWORDS.low) if (hay.includes(w)) return "low";
+	return "medium";
+}
+
 // Co-sign threshold: posts with this many supports are auto-flagged "ready for decision"
 const READY_THRESHOLD = 10;
-// Solved/archived posts are permanently deleted after 5 days of NO activity.
-// Any reaction or comment bumps updated_at and resets the countdown.
-const PURGE_MS = 5 * 24 * 60 * 60 * 1000;
+// Solved/archived posts are permanently deleted 5 days after the LAST activity
+// (close stamp, comment, reaction or edit). The deadline itself lives in
+// _retention.js so the countdown and both sweeps share one rule.
+const CLOSED_SWEEP_LIMIT = 50; // rows examined per sweep — drains across hourly runs
 
-// Throttle: run purge at most once per hour to avoid unnecessary DB queries on every GET
-let _lastPurgeAt = 0;
+// FIX #10: Persist purge throttle in settings so it survives cold starts / scales across serverless instances
 const PURGE_COOLDOWN_MS = 60 * 60 * 1000; // 1 hour
+let _lastPurgeAtMem = 0; // in-memory fast-path; DB is source of truth
+// Admin-configured feed page size (60s in-memory cache; serverless-safe:
+// worst case a stale size for one minute after an admin change).
+// Fail-open to 30 (today's default) — the feed must load even if the
+// settings read fails.
+let _feedPageCache = { at: 0, size: 30 };
+async function getFeedPageSize() {
+	if (Date.now() - _feedPageCache.at < 60_000) return _feedPageCache.size;
+	try {
+		const { data } = await supabase.from("settings").select("value").eq("key", "feed_config").maybeSingle();
+		const n = data?.value?.page_size;
+		_feedPageCache = { at: Date.now(), size: Number.isInteger(n) && n >= 5 && n <= 100 ? n : 30 };
+	} catch { _feedPageCache = { at: Date.now(), size: 30 }; }
+	return _feedPageCache.size;
+}
 
 // ── Module-level feed cache (load-shedding) ─────────────────────
 // ONE wrapper instance for the process lifetime — its memory map is what
@@ -73,7 +176,7 @@ async function fetchFeedRows({ type, cursor }) {
 		.order("created_at", { ascending: false });
 	if (type) qq = qq.eq("type", type);
 	qq = qq.eq("hidden", false).eq("deleted", false).neq("status", "pending_review");
-	if (cursor) qq = qq.lt("created_at", cursor);
+	if (validCursor(cursor)) qq = qq.lt("created_at", cursor);
 	qq = qq.limit(2000);
 	const r = await qq;
 	if (r.error) throw r.error;
@@ -85,105 +188,208 @@ const feedSWR = staleWhileRevalidate(fetchFeedRows, {
 	keyPrefix: "postsfeed",
 });
 
-/** Lazy sweep: permanently remove solved/archived posts inactive for 5+ days (throttled to 1/hour) */
-async function purgeExpired() {
-	const now = Date.now();
-	if (now - _lastPurgeAt < PURGE_COOLDOWN_MS) return;
-	_lastPurgeAt = now;
-	try {
-		const cutoff = new Date(Date.now() - PURGE_MS).toISOString();
-		const { data: expired } = await supabase
-			.from("posts")
-			.select("id")
-			.in("status", ["solved", "archived"])
-			.lt("updated_at", cutoff)
-			.limit(20);
-		if (expired?.length) {
-			const ids = expired.map((p) => p.id);
-			await Promise.all([
-				supabase.from("posts").delete().in("id", ids),
-				supabase.from("comments").delete().in("post_id", ids),
-				supabase.from("reactions").delete().in("target_id", ids),
-			]);
-		}
-	} catch {
-		/* sweep is best-effort */
+// ── Content-type filters ────────────────────────────────────────
+// `posts.type` only ever holds "problem" or "suggestion": a poll is a post
+// with a `polls` row pointing back at it through `post_id`. So
+// `.eq("type", "poll")` matches nothing — a "polls only" feed has to resolve
+// the linked post ids first. `polls.post_id` carries no foreign key, which
+// rules out a PostgREST embed, so this is an explicit id-set lookup.
+//
+// The id set travels back to PostgREST inside one `.in()` predicate, i.e. it
+// is URL-encoded into the request line. POLL_LINK_SCAN_LIMIT is the ceiling
+// that keeps that predicate bounded; past it the feed still works, it just
+// shows the most recent N polls rather than every poll ever created.
+const POLL_LINK_SCAN_LIMIT = 300;
+// Portable "match no rows": PostgREST has no FALSE literal in a filter chain,
+// and an impossible id keeps every branch the same shape as the populated one.
+const MATCH_NOTHING_ID = "__no_such_post__";
+const POST_TYPE_FILTERS = new Set(["problem", "suggestion", "poll"]);
+
+/** Post ids that currently have a poll attached, newest poll first. */
+async function resolvePollPostIds() {
+	const { data, error } = await supabase
+		.from("polls")
+		.select("post_id")
+		.not("post_id", "is", null)
+		.order("created_at", { ascending: false })
+		.limit(POLL_LINK_SCAN_LIMIT);
+	if (error) throw error;
+	const seen = new Set();
+	for (const row of data || []) {
+		if (row && row.post_id) seen.add(row.post_id);
 	}
+	return [...seen];
+}
+
+/**
+ * A cursor is an opaque ISO timestamp WE issued as nextCursor. Anything else
+ * (cursor=0, hand-typed garbage, a leaked internal id) must read as page 1:
+ * PostgREST turns `.lt("created_at", "0")` into a 400 that used to surface
+ * here as a 500 "Internal server error". Fail open, never 500 on input shape.
+ */
+export function validCursor(c) {
+	if (typeof c !== "string" || !c) return null;
+	// nextCursor values we issue are always ISO timestamps. Date.parse alone
+	// is insufficient — V8 parses "0" as year 2000 — so require ISO shape too.
+	if (!/\d{4}-\d{2}-\d{2}/.test(c)) return null;
+	return Number.isNaN(Date.parse(c)) ? null : c;
+}
+
+/** Authenticated maintenance sweep: permanently remove solved/archived posts inactive for 5+ days (throttled to 1/hour). */
+export async function purgeExpired() {
+	const now = Date.now();
+	if (now - _lastPurgeAtMem < PURGE_COOLDOWN_MS) {
+		return { purged: 0, skipped: true };
+	}
+	// FIX #10: Check persisted throttle in settings (survives cold starts)
+	try {
+		const { data: state } = await supabase.from("settings").select("value").eq("key", "purge_state").maybeSingle();
+		const lastAt = state?.value?.last_purge_at ? new Date(state.value.last_purge_at).getTime() : 0;
+		if (now - lastAt < PURGE_COOLDOWN_MS) {
+			_lastPurgeAtMem = lastAt;
+			return { purged: 0, skipped: true };
+		}
+	} catch (err) { console.error("[posts] purge throttle read failed, continuing", { error: err?.message || String(err) }); }
+	_lastPurgeAtMem = now;
+	let purged = 0;
+	try {
+		const policy = await getRetentionPolicy();
+		if (policy.autoDeleteEnabled && policy.closedPostsEnabled) {
+			const { data: closed, error: closedErr } = await supabase
+				.from("posts")
+				.select("id,status,status_history,updated_at,created_at")
+				.in("status", CLOSED_STATUSES)
+				.neq("deleted", true)
+				.order("updated_at", { ascending: true })
+				.limit(CLOSED_SWEEP_LIMIT);
+			if (closedErr) throw closedErr;
+			// Ordering by updated_at is a safe drain order: the shared deadline
+			// is max(close stamp, updated_at, created_at), so a row with the
+			// oldest updated_at has the earliest possible deadline.
+			const ids = (closed || [])
+				.filter((p) => isClosedRetentionDue(p))
+				.map((p) => p.id);
+			if (ids.length) {
+				await auditLog("system", "purge_expired", `${ids.length} solved/archived posts inactive 5d`);
+				// Ordered compensating deletes: unlink linked polls first, then the
+				// parent posts, then dependents. The unlink MUST succeed before a
+				// parent row is removed — once it is gone the sweep can never
+				// re-select it, so a failed unlink throws and the next sweep
+				// retries the intact batch instead of orphaning polls.post_id.
+				// (Dependent comment/reaction failures below stay log-only: those
+				// reads are always anchored at the post, so their orphans are
+				// invisible, but a poll points AT the post and dangles visibly.)
+				const { error: e0 } = await supabase.from("polls").update({ post_id: null }).in("post_id", ids);
+				if (e0) throw e0;
+				const { error: e1 } = await supabase.from("posts").delete().in("id", ids);
+				if (e1) throw e1;
+				purged = ids.length;
+				const { error: e2 } = await supabase.from("comments").delete().in("post_id", ids);
+				if (e2) console.error("[posts] purge comments cleanup failed", { count: ids.length, error: e2.message });
+				const { error: e3 } = await supabase.from("reactions").delete().in("target_id", ids);
+				if (e3) console.error("[posts] purge reactions cleanup failed", { count: ids.length, error: e3.message });
+			}
+		} else {
+			console.log("[posts] purge skipped: closed-post retention disabled by policy");
+		}
+		// User-deleted auto-purge: deleted=true and updated_at older than 5h.
+		// updated_at is set on every PUT, so it marks deletion time honestly
+		// without a schema migration. Throttled with the same 1h gate above.
+		if (policy.autoDeleteEnabled) {
+		const userDeleteHours = policy.userDeleteHours;
+		try {
+			const userCutoff = new Date(Date.now() - userDeleteHours * 60 * 60 * 1000).toISOString();
+			const { data: userDeleted, error: userDeletedErr } = await supabase
+				.from("posts")
+				.select("id")
+				.eq("deleted", true)
+				.lt("updated_at", userCutoff)
+				.limit(20);
+			if (userDeletedErr) throw userDeletedErr;
+			if (userDeleted?.length) {
+				const uids = userDeleted.map((p) => p.id);
+				// Same unlink-first order as the solved/archived sweep above:
+				// a failed unlink throws before any parent row is removed.
+				const { error: u0 } = await supabase.from("polls").update({ post_id: null }).in("post_id", uids);
+				if (u0) throw u0;
+				const { error: u1 } = await supabase.from("posts").delete().in("id", uids);
+				if (u1) throw u1;
+				purged += uids.length;
+				await auditLog("system", "purge_user_deleted", `${uids.length} user-deleted posts older than ${userDeleteHours}h`);
+				const { error: u2 } = await supabase.from("comments").delete().in("post_id", uids);
+				if (u2) console.error("[posts] purge user-deleted comments cleanup failed", { count: uids.length, error: u2.message });
+				const { error: u3 } = await supabase.from("reactions").delete().in("target_id", uids);
+				if (u3) console.error("[posts] purge user-deleted reactions cleanup failed", { count: uids.length, error: u3.message });
+			}
+		} catch (err) {
+			console.error("[posts] user-deleted purge sweep failed", { error: err?.message || String(err) });
+		}
+		}
+		// Purging cascades comment/reaction deletes — drop the derived-count SWR
+		// so the next feed read does not serve a purged post's counts for up to
+		// staleTtl. Best-effort: a miss just ages out with the TTL anyway.
+		if (purged) invalidateCounts();
+		// FIX #10: Persist last purge timestamp so throttle survives cold starts
+		try {
+			await supabase.from("settings").upsert({ key: "purge_state", value: { last_purge_at: new Date().toISOString() } }, { onConflict: "key" });
+		} catch (err) { console.error("[posts] purge throttle persist failed", { error: err?.message || String(err) }); }
+	} catch (err) {
+		console.error("[posts] purge sweep failed", { error: err?.message || String(err) });
+		throw err;
+	}
+	return { purged, skipped: false };
+}
+
+// ── Sentinel quarantine provenance ────────────────────
+// `posts.hidden_by` / `posts.quarantine_reason` are not columns in this
+// schema; the sentinel records who hid a post and why in the audit-tagged
+// admin_notes line. Re-expose that under the field names the admin UI
+// already reads (row filter, PostCard badge, drawer Reason panel) so the
+// quarantine surfaces work without a schema change.
+// Fields that must never reach a non-admin reader. `admin_reply` and
+// `status_history` stay public on purpose (the official response and the
+// public status timeline); `admin_notes` and the internal staff assignment
+// are staff-only. The list/detail maps spread the raw row, so without this
+// the GET response handed both fields to anonymous visitors — an internal
+// note or assignee name became public the moment an admin wrote one.
+function maskAdminOnly(p, admin) {
+	if (admin) return p;
+	return { ...p, admin_notes: null, assigned_to: null };
+}
+
+function quarantineProvenance(p) {
+	if (!p || p.hidden !== true) return {};
+	const notes = typeof p.admin_notes === "string" ? p.admin_notes : "";
+	if (!notes.includes("Auto-Quarantine")) return {};
+	const tag = "Auto-Quarantine]: ";
+	const at = notes.lastIndexOf(tag);
+	const reason = (at >= 0 ? notes.slice(at + tag.length) : "")
+		.split(" (Rule:")[0]
+		.trim();
+	return {
+		hidden_by: "agent",
+		quarantine_reason: reason || "Policy violation detected by safety sentinel.",
+	};
 }
 
 async function attachCounts(posts) {
 	const ids = posts.map((p) => p.id);
 	if (!ids.length) return posts;
 
-	// Batch all 3 count queries in parallel across ALL IDs (chunked for Supabase IN limit)
-	const chunkSize = 100;
-	const allReactions = [];
-	const allComments = [];
-	const allPolls = [];
-
-	// Build chunk arrays once, then run all queries in flat parallel
-	const chunks = [];
-	for (let i = 0; i < ids.length; i += chunkSize)
-		chunks.push(ids.slice(i, i + chunkSize));
-
-	const results = await Promise.all(
-		chunks.flatMap((chunk) => [
-			supabase
-				.from("reactions")
-				.select("target_id,kind")
-				.in("target_id", chunk),
-			supabase
-				.from("comments")
-				.select("post_id")
-				.in("post_id", chunk)
-				.eq("deleted", false)
-				.eq("hidden", false),
-			supabase.from("polls").select("id,post_id").in("post_id", chunk),
-		]),
-	);
-
-	// Unpack results: every 3 entries correspond to one chunk (reactions, comments, polls)
-	for (let i = 0; i < results.length; i += 3) {
-		const reactRes = results[i];
-		const commRes = results[i + 1];
-		const pollRes = results[i + 2];
-		if (reactRes.data) allReactions.push(...reactRes.data);
-		if (commRes.data) allComments.push(...commRes.data);
-		if (pollRes.data) allPolls.push(...pollRes.data);
-	}
-
-	const rMap = {};
-	const cMap = {};
-	const pMap = {};
-	allReactions.forEach((r) => {
-		rMap[r.target_id] = rMap[r.target_id] || {};
-		rMap[r.target_id][r.kind] = (rMap[r.target_id][r.kind] || 0) + 1;
-	});
-	allComments.forEach((c) => {
-		cMap[c.post_id] = (cMap[c.post_id] || 0) + 1;
-	});
-	allPolls.forEach((p) => {
-		pMap[p.post_id] = p.id;
-	});
-
-	// Live vote count per linked poll. Vote upserts never write the polls row,
-	// so count poll_votes rows directly (same source as /api/polls results).
-	const pollIds = Object.values(pMap).filter(Boolean);
-	const pvMap = {};
-	for (let i = 0; i < pollIds.length; i += chunkSize) {
-		const chunk = pollIds.slice(i, i + chunkSize);
-		const { data: votes } = await supabase
-			.from("poll_votes")
-			.select("poll_id")
-			.in("poll_id", chunk);
-		(votes || []).forEach((v) => {
-			pvMap[v.poll_id] = (pvMap[v.poll_id] || 0) + 1;
-		});
-	}
+	// The four raw count queries live in _counts.js behind staleWhileRevalidate
+	// (3 s fresh / 6 s stale) so N concurrent visitors cost ONE set of queries
+	// per window instead of 4 N. Under Vitest that cache is bypassed, so this
+	// still hits the mocked DB every call — nothing test-visible changes here.
+	// Everything below is presentation and is recomputed on EVERY request:
+	// status gates, the co-sign threshold and purge_at are wall-clock/status
+	// dependent and must never be served from a cache.
+	const { rMap, cMap, pMap, pvMap } = await getRawCounts(ids);
 
 	return posts.map((p) => {
-		const reactions = rMap[p.id] || {};
-		const isClosed = ["solved", "archived"].includes(p.status);
+		// Copy: the maps are shared across requests, so the response must not
+		// hand out a reference a later handler could mutate.
+		const reactions = { ...(rMap[p.id] || {}) };
+		const isClosed = isClosedStatus(p.status);
 		const pollId = pMap[p.id] || null;
 		return {
 			...p,
@@ -195,11 +401,14 @@ async function attachCounts(posts) {
 			ready_for_decision:
 				!isClosed && (reactions.support || 0) >= READY_THRESHOLD,
 			ready_threshold: READY_THRESHOLD,
-			// Countdown metadata for solved/archived posts (5-day auto-delete)
+			// Countdown metadata for solved/archived posts (5-day auto-delete).
+			// Same helper the sweeps use — the UI cannot promise a date the
+			// server will not honour.
 			purge_at: isClosed
-				? new Date(
-						+new Date(p.updated_at || p.created_at) + PURGE_MS,
-					).toISOString()
+				? (() => {
+						const due = closedRetentionDueAt(p);
+						return due === null ? null : new Date(due).toISOString();
+					})()
 				: null,
 		};
 	});
@@ -211,7 +420,8 @@ export default async function handler(req, res) {
 
 	try {
 		if (req.method === "GET") {
-			purgeExpired(); // fire-and-forget: don't await, don't delay the response
+			// Public reads are side-effect free. Expired-post cleanup belongs to
+			// the authenticated maintenance/cron path, never to a user's GET.
 			const {
 				id,
 				ids,
@@ -223,12 +433,129 @@ export default async function handler(req, res) {
 				limit: limitParam,
 				paginate,
 				filter_artifacts,
+				status,
+				category,
+				priority,
+				q: qParam,
+				fresh: freshParam,
+				from,
+				to,
 			} = req.query;
-			const admin = all === "1" ? await isAdmin(req) : false;
+
+			// Content-type filter. "all" (and anything absent/unknown) means
+			// unfiltered; a recognised type is applied in SQL. Two values are
+			// normalised rather than rejected so old links keep working:
+			// `all` = no filter, and an unrecognised value keeps the historic
+			// "matches nothing" behaviour instead of silently widening the feed.
+			const rawType = clean(type, 20).toLowerCase();
+			const listType = rawType === "all" ? "" : rawType;
+
+			// ── Server-side list filters ─────────────────────────────
+			// These MUST run in SQL. The admin table pages 30 rows at a time, so
+			// filtering in the browser only ever filtered the rows that happened
+			// to be loaded — which is why the date filter appeared broken: it
+			// searched the 30 most recent posts of all time rather than the
+			// dataset, and the row count it reported was not a real total.
+			const listFilters = {
+				status: clean(status, 40),
+				category: clean(category, 60),
+				priority: clean(priority, 20),
+				q: clean(qParam, 80),
+				from: clean(from, 40),
+				to: clean(to, 40),
+			};
+			const hasListFilters = Object.values(listFilters).some(Boolean);
+			// Date filters are user-typed: garbage must 400 with a clear
+			// message, never reach PostgREST (which 400s opaquely and used
+			// to surface here as a 500 "Internal server error").
+			for (const k of ["from", "to"]) {
+				if (listFilters[k] && !validCursor(listFilters[k])) {
+					return res
+						.status(400)
+						.json({ error: `Invalid ${k} date — use YYYY-MM-DD.` });
+				}
+			}
+
+			/** Narrow any posts query (row fetch OR exact count) by the same filters. */
+			const applyListFilters = (query) => {
+				let out = query;
+				if (listFilters.status) {
+					if (listFilters.status === "hidden_by_agent") {
+						// Sentinel provenance is the audit line quarantine writes into
+						// admin_notes (the posts.hidden_by column does not exist). Matching
+						// it in SQL keeps paging and the total count correct without a
+						// schema change.
+						out = out
+							.eq("hidden", true)
+							.ilike("admin_notes", "%Auto-Quarantine%");
+					} else if (listFilters.status === "hidden") {
+						out = out.eq("hidden", true);
+					} else {
+						out = out.eq("status", listFilters.status);
+					}
+				}
+				if (listFilters.category) out = out.eq("category", listFilters.category);
+				if (listFilters.priority) out = out.eq("priority", listFilters.priority);
+				if (listFilters.from) out = out.gte("created_at", listFilters.from);
+				if (listFilters.to) out = out.lt("created_at", listFilters.to);
+				if (listFilters.q) {
+					// Strip PostgREST separators so user input cannot reshape the query
+					// (a stray comma in an `.or()` string would inject another clause).
+					const term = listFilters.q.replace(/[,()%\\*]/g, " ").trim();
+					if (term)
+						out = out.or(
+							[
+								"title",
+								"description",
+								"category",
+								"id",
+								"author_id",
+							]
+								.map((col) => `${col}.ilike.%${term}%`)
+								.join(","),
+						);
+				}
+				return out;
+			};
+
+			// Resolved once per request, and only for a polls-only list — the row
+			// fetch and the deeper-page count both narrow by the same id set.
+			const pollPostIds =
+				listType === "poll" && !id && !ids && !author
+					? await resolvePollPostIds()
+					: [];
+
+			/** Narrow any posts query by the requested content type. */
+			const applyTypeFilter = (query) => {
+				if (!listType) return query;
+				if (listType === "poll") {
+					return pollPostIds.length
+						? query.in("id", pollPostIds)
+						: query.eq("id", MATCH_NOTHING_ID);
+				}
+				if (!POST_TYPE_FILTERS.has(listType))
+					return query.eq("id", MATCH_NOTHING_ID);
+				return query.eq("type", listType);
+			};
+
+			// Admin read access is honored whenever a token is presented, not only
+			// with all=1. A hidden/quarantined post opened BY ID (the moderation
+			// drawer, a notification link) used to 404 for the admin who was
+			// looking straight at the row, because admin defaulted to false and the
+			// public visibility guard then hid it. isAdmin fails closed, and
+			// by-id reads never touch the shared feed cache.
+			const admin =
+				all === "1" || req.headers["x-admin-token"]
+					? await isAdmin(req)
+					: false;
 			const isPaginated = paginate === "1" || paginate === "true";
 			// Clamp on both ends: NaN/0 falls back to 30, negatives would produce
-			// an invalid PostgREST `limit` and surface as a 500.
-			const PAGE_LIMIT = Math.max(1, Math.min(parseInt(limitParam) || 30, 100));
+			// an invalid PostgREST `limit` and surface as a 500. An explicit
+			// client limit is honored as today; when absent, the admin-configured
+			// feed page size applies (default 30 = today's behavior).
+			const PAGE_LIMIT = limitParam
+				? Math.max(1, Math.min(parseInt(limitParam) || 30, 100))
+				: await getFeedPageSize();
 
 			// Cache headers for public reads (30s browser cache, 30s CDN, 10s stale-while-revalidate)
 			if (!admin && !viewer) {
@@ -242,6 +569,18 @@ export default async function handler(req, res) {
 			}
 
 			const viewerId = clean(viewer, 40);
+			// Read-side restriction gate (spec §8): Level 3 (full_ban) blocks
+			// every read; Level 1 (feed_blocked) blocks the main feed only.
+			// Admins and anonymous requests without an identity are unaffected.
+			if (!admin && viewerId) {
+				const readSurface = id || ids || author ? "post_read" : "feed_read";
+				const readGate = await checkUser(viewerId, readSurface);
+				if (!readGate.ok) {
+					return res
+						.status(403)
+						.json({ error: readGate.error, code: readGate.code || "restricted" });
+				}
+			}
 			// Visibility guard: private posts are visible ONLY to their author
 			// and verified admins — feeds, id fetches, ids lists, author views.
 			const canSeePost = (p) =>
@@ -265,19 +604,29 @@ export default async function handler(req, res) {
 						.neq("status", "pending_review");
 			} else if (author) {
 				q = q.eq("author_id", clean(author, 40)).eq("deleted", false);
-				// Author listing is public data — apply the same visibility filter as the main feed
-				if (!admin) q = q.eq("hidden", false).neq("status", "pending_review");
+				// Author listing is public data — apply the same visibility filter as
+				// the main feed, EXCEPT the author always sees their own held and
+				// hidden posts (otherwise an admin hide or a queued submission
+				// silently vanishes from My Activity with no explanation).
+				const isSelfView = !!viewerId && viewerId === clean(author, 40);
+				if (!admin) {
+					if (!isSelfView) q = q.eq("hidden", false);
+					if (!isSelfView) q = q.neq("status", "pending_review");
+				}
 				// Widen the fetch window: the JS artifact filter below can thin the set.
 				q = q.limit(2000);
 			} else {
-				if (type) q = q.eq("type", type);
+				q = applyTypeFilter(q);
 				if (!admin)
 					q = q
 						.eq("hidden", false)
 						.eq("deleted", false)
 						.neq("status", "pending_review");
-				// Cursor-based pagination: cursor is ISO timestamp of last item
-				if (isPaginated && cursor) q = q.lt("created_at", cursor);
+				q = applyListFilters(q);
+				// Cursor-based pagination: only a valid ISO cursor narrows the
+				// window — garbage reads as page 1 (see validCursor).
+				const safeCursor = validCursor(cursor);
+				if (isPaginated && safeCursor) q = q.lt("created_at", safeCursor);
 				// The artifact filter runs in JS AFTER this SQL limit, so raise the fetch
 				// window on every path — otherwise fuzz posts filling the most recent rows
 				// would starve real posts out of the response. 2000 covers the realistic
@@ -292,14 +641,24 @@ export default async function handler(req, res) {
 			// refreshes. Viewer-specific branches bypass this entirely.
 			// Under Vitest the cache is bypassed so every test exercises the real
 			// query path against its own mocked data (no cross-test pollution).
+			// Filtered requests must never read the shared feed cache — the cache
+			// key describes the unfiltered feed, so serving it here would return
+			// rows that do not match the requested filters. The same is true of a
+			// polls-only list: `fetchFeedRows` narrows by `posts.type`, and no post
+			// carries that type, so a cached poll feed would always come back empty.
+			const typeIsFeedCacheable =
+				!listType || listType === "problem" || listType === "suggestion";
 			const canUseFeedCache =
 				!process.env.VITEST &&
+				freshParam !== "1" &&
+				freshParam !== "true" &&
 				!admin &&
 				!viewerId &&
 				!id &&
 				!ids &&
-				!author;
-			const feedCacheKey = `${type || "all"}|${cursor || ""}|${PAGE_LIMIT}`;
+				!author &&
+				typeIsFeedCacheable &&
+				!hasListFilters;
 			const fetchRows = async () => {
 				const r = await q;
 				if (r.error) throw r.error;
@@ -307,7 +666,7 @@ export default async function handler(req, res) {
 			};
 			const data = canUseFeedCache
 				? await feedSWR({
-						type: type || null,
+						type: listType || null,
 						cursor: cursor || null,
 					})
 				: await fetchRows();
@@ -323,6 +682,11 @@ export default async function handler(req, res) {
 			// Keep responses bounded: only the most recent clean rows matter.
 			if (!isPaginated && rows.length > (author ? 200 : 300))
 				rows = rows.slice(0, author ? 200 : 300);
+			// An explicit `limit` is a response-size contract on every path, not
+			// only on paginated requests. Previously limit=1 returned the full
+			// 300-row feed because the clamp only ran inside the paginated branch.
+			if (!isPaginated && limitParam && rows.length > PAGE_LIMIT)
+				rows = rows.slice(0, PAGE_LIMIT);
 
 			// Visibility guard for direct-by-id fetches: non-admins may only view
 			// hidden/deleted/pending_review/private posts they own. Prevents
@@ -345,40 +709,79 @@ export default async function handler(req, res) {
 				const nextCursor = hasMore
 					? sliced[sliced.length - 1]?.created_at
 					: null;
+
+				// ── Total count ────────────────────────────────────────────
+				// The count must describe the SAME set the rows came from, or the
+				// header reports a total that contradicts what pagination can
+				// actually serve: a plain count here once reported 1068 while the
+				// artifact-filtered rows numbered 32, so every "total posts" widget
+				// lied by 33x. The JS filter (artifacts + visibility) cannot be
+				// expressed in SQL (word-boundary matching), but page 1 already
+				// scans the full window and applies it — so `rows.length` IS the
+				// honest total there (the comment at the limit(2000) documents that
+				// ceiling).
+				//
+				// That also means page 1 never needs the SQL count. It used to run
+				// an exact COUNT(*) — a matching-row scan plus one round trip — on
+				// EVERY page-1 request and then DISCARD the result via
+				// `cursor ? sqlCount : rows.length`. Page 1 is the hot path every
+				// visitor lands on first, so skipping it removes a whole DB round
+				// trip from the request that matters most under load. Only deeper
+				// cursor pages, which never saw the whole set, still run the query —
+				// and they start it BEFORE attachCounts so the two overlap instead
+				// of queueing.
+				const runTotalCount = () => {
+					let totalQ = supabase
+						.from("posts")
+						.select("id", { count: "exact", head: true });
+					totalQ = applyTypeFilter(totalQ);
+					if (!admin)
+						totalQ = totalQ
+							.eq("hidden", false)
+							.eq("deleted", false)
+							.neq("status", "pending_review");
+					totalQ = applyListFilters(totalQ);
+					return Promise.resolve(totalQ);
+				};
+				const countPromise = cursor ? runTotalCount() : null;
+				// Not awaited yet: if attachCounts throws below we must not leave
+				// an unhandled rejection behind. The original stays awaitable.
+				if (countPromise) countPromise.catch(() => {});
+
 				const out = await attachCounts(sliced);
 				const masked = out.map((p) => {
 					const is_mine = !!viewerId && p.author_id === viewerId;
 					return {
-						...p,
+						...maskAdminOnly(p, admin),
+						...quarantineProvenance(p),
 						is_mine,
 						author_id:
-							admin || is_mine ? p.author_id : p.author_id.slice(0, 9) + "…",
+							admin || is_mine ? p.author_id : p.author_id.slice(0, 9) + "...",
 					};
 				});
-				// Get total count (separate query, lightweight)
-				let totalQ = supabase
-					.from("posts")
-					.select("id", { count: "exact", head: true });
-				if (type) totalQ = totalQ.eq("type", type);
-				if (!admin)
-					totalQ = totalQ
-						.eq("hidden", false)
-						.eq("deleted", false)
-						.neq("status", "pending_review");
-				const { count } = await totalQ;
+
+				// Page 1: the observed, fully-filtered set IS the total (pagination
+				// can serve exactly these rows). Deeper cursor pages report the SQL
+				// count as an approximate header, where precision matters less.
+				let total = rows.length;
+				if (countPromise) {
+					const { count } = await countPromise;
+					total = typeof count === "number" ? count : 0;
+				}
 				return res
 					.status(200)
-					.json({ data: masked, nextCursor, total: count || 0 });
+					.json({ data: masked, nextCursor, total });
 			}
 
 			const out = await attachCounts(rows);
 			const masked = out.map((p) => {
 				const is_mine = !!viewerId && p.author_id === viewerId;
 				return {
-					...p,
+					...maskAdminOnly(p, admin),
+					...quarantineProvenance(p),
 					is_mine,
 					author_id:
-						admin || is_mine ? p.author_id : p.author_id.slice(0, 9) + "…",
+						admin || is_mine ? p.author_id : p.author_id.slice(0, 9) + "...",
 				};
 			});
 			// Single-post fetch (by ID) returns wrapped format for PostDetail page
@@ -402,8 +805,45 @@ export default async function handler(req, res) {
 
 		if (req.method === "POST") {
 			const b = req.body || {};
-			const author_id = clean(b.author_id, 40);
-			const gate = await checkUser(author_id);
+			// ── Opt-in phase timing (OFF unless VB_PHASE_TIMING=1) ──────
+			// Attribution only. The p50/p95 gates can say a write is slow but
+			// not WHICH tier spent the time: the pre-write reads, the
+			// moderation provider, or the insert. These marks exist so a
+			// regression is charged to the measured phase instead of guessed
+			// at. No behaviour changes when the flag is absent.
+			const timing = process.env.VB_PHASE_TIMING === "1";
+			const t0 = timing ? performance.now() : 0;
+			const phases = {};
+			const mark = (name) => {
+				if (timing) phases[name] = Math.round(performance.now() - t0);
+			};
+			// ── Write wall (always on, independent of the timing flag) ──
+			// The llm-write SLO is 6000 ms. Auth (~1.0–1.35 s) + pre-reads
+			// (~0.23 s) + a full 5000 ms moderation cap + the insert (~0.2 s)
+			// sums to ~6.4 s whenever the model does not answer quickly, so the
+			// phases — each individually reasonable — together blew the gate.
+			// One wall deadline, spent down by every later phase, makes the sum
+			// impossible: whatever is left when moderation starts is the whole
+			// model budget. Nothing is lowered globally; a fast request still
+			// lets the model use its full slice.
+			const POST_WALL_MS = 5400;
+			const wallStart = performance.now();
+			const spentMs = () => Math.max(0, performance.now() - wallStart);
+			const remainingWallMs = () => Math.max(0, POST_WALL_MS - spentMs());
+			// P0 SECURITY FIX: Derive author_id from x-anon-id header, NOT from client body
+			const headerId = clean(req.headers["x-anon-id"] || "", 40);
+			const admin = await isAdmin(req);
+			const author_id = headerId || (admin ? "ADMIN" : "");
+			if (!author_id)
+				return res.status(403).json({ error: "Missing session identity (x-anon-id header)" });
+			// Session binding: the header claim must match a live session.
+			// Header-only auth let anyone knowing an id post as them.
+			// (Admins bypass inside the gate, like everywhere else.)
+			if (!admin) {
+				const caller = await verifyCallerIdentity(req, res, author_id);
+				if (!caller.ok) return res.status(caller.status || 403).json({ error: caller.error, code: caller.code });
+			}
+			const gate = await checkUser(author_id, "post_write");
 			if (!gate.ok) return res.status(403).json({ error: gate.error });
 			if (await rateLimited("posts", author_id, 60, 3)) {
 				return rateLimitResponse(
@@ -412,8 +852,15 @@ export default async function handler(req, res) {
 					"Slow down — you can post at most 3 times per minute.",
 				);
 			}
-			const title = maskProfanity(clean(b.title, 120));
-			const description = maskProfanity(clean(b.description, 500));
+			// End of identity/restriction/rate-limit gating. Without this mark the
+			// prefix before `pre_reads_start` was invisible, so a tail could be
+			// charged to moderation when it was really auth round-trips.
+			mark("auth_done");
+			// Raw text through every gate below; masked only at insert.
+			// Masking first would blind serverModerate (a masked slur no
+			// longer matches SLURS and would publish instead of blocking).
+			const title = clean(b.title, 120);
+			const description = clean(b.description, 500);
 			if (title.length < 5)
 				return res
 					.status(400)
@@ -436,22 +883,129 @@ export default async function handler(req, res) {
 					.trim();
 			const normalizedTitle = normalizeForCompare(title);
 
-			// Fetch recent posts in same category (last 200) for comparison
-			const { data: recentPosts } = await supabase
-				.from("posts")
-				.select("id, title, category, status")
-				.eq("category", category)
-				.eq("deleted", false)
-				.eq("visibility", visibility)
-				.order("created_at", { ascending: false })
-				.limit(200);
+			// ── One round-trip window for every independent pre-write read ──
+			//
+			// These lookups have no dependency on each other: the safety-repost
+			// fingerprint, the author's recent posts (idempotency), the category
+			// feed (duplicate scan), the learned weak-signal stats (input to the
+			// moderation call), the spam config, and the author row. Awaiting
+			// them one at a time cost ~250-380 ms each against the live database,
+			// which is what put POST /api/posts at a 5.6 s p50. Issuing them
+			// together runs the SAME reads and produces the SAME decisions — only
+			// the waiting overlaps.
+			//
+			// Safety repost guard: previously removed content resurfacing is
+			// NOT a hard block. A fingerprint match only means the text looks
+			// like something removed before — it does not re-prove a violation,
+			// and a blanket 403 stops legitimate resubmission (edited, appealed,
+			// or recontextualised posts). Instead we hold the post for a human
+			// and let the moderation pipeline below keep blocking anything that
+			// is genuinely harmful on its own merits. Audit trail preserved.
+			const IDEMPOTENCY_MS = 90000;
+			const authorReady = ensureUser(author_id);
+			mark("pre_reads_start");
+			const [repost, recentMine, recentPostsRes, learned, spamConfig] = await Promise.all([
+				checkSafetyRepost(supabase, `${title} ${description}`),
+				supabase
+					.from("posts")
+					.select("id,title,category,status,created_at,deleted,hidden")
+					.eq("author_id", author_id)
+					.gte("created_at", new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString())
+					.order("created_at", { ascending: false })
+					.limit(50),
+				supabase
+					.from("posts")
+					.select("id, title, category, status, author_id, created_at")
+					.eq("category", category)
+					.eq("deleted", false)
+					.eq("hidden", false)
+					.eq("visibility", visibility)
+					.order("created_at", { ascending: false })
+					.limit(200),
+				getLearnedWeakStats(),
+				getSpamConfig(supabase),
+			]);
+			mark("pre_reads_done");
 
-			// Check for exact or near-exact title matches
-			const isDuplicate = (recentPosts || []).some((p) => {
-				if (["solved", "archived"].includes(p.status)) return false; // ignore closed posts
+			let repostHold = false;
+			if (repost.blocked) {
+				repostHold = true;
+				await auditLog(
+					"moderation",
+					"post_repost_held",
+					`${author_id}: ${title.slice(0, 60)} [rule=${repost.rule} attempts=${repost.attempts}]`,
+				);
+			}
+
+			// Idempotent submit: double-tap, retry-after-timeout, and
+			// offline-queue flush can deliver the same payload twice with
+			// both copies passing the duplicate scan (neither has landed
+			// when the other is checked). Same author + exact normalized
+			// title + same category within 90s returns the original row
+			// (200 + deduped:true) instead of a twin — and instead of a
+			// confusing 409, since from the submitter's view this IS
+			// their post. Deleted/hidden twins are skipped (a fresh repost
+			// after delete is legitimate); empty normalized titles never
+			// match (all-symbol titles would collide with each other).
+			const twinCutoff = Date.now() - IDEMPOTENCY_MS;
+			const twin = (recentMine.data || []).find(
+				(twinPost) =>
+					!twinPost.deleted &&
+					!twinPost.hidden &&
+					twinPost.category === category &&
+					Number(Date.parse(twinPost.created_at || 0)) > twinCutoff &&
+					normalizeForCompare(twinPost.title || "") === normalizedTitle &&
+					normalizedTitle !== "",
+			);
+			if (twin) {
+				return res.status(200).json({ ...twin, deduped: true });
+			}
+
+			// Recent posts in the same category (last 200) for comparison, already
+			// fetched above. Hidden posts are excluded: their titles must neither
+			// leak through duplicate collisions nor block legitimate reposts.
+			const recentPosts = recentPostsRes.data;
+
+			// Match the same public-content boundary used by GET /api/posts.
+			// Test/fuzz artifacts and pending-review rows are intentionally
+			// invisible to the submitter; neither may block a real submission
+			// with a 409 duplicate error.
+			const comparablePosts = (recentPosts || []).filter(
+				(p) => !isTestArtifact(p.title) && p.status !== "pending_review",
+			);
+
+			// Duplicate scan — deliberately SAME-AUTHOR ONLY.
+			//
+			// Word-set overlap on short titles is trivially high, so a
+			// cross-author rule rejected perfectly legitimate submissions:
+			// two students reporting the same teacher ("Ms X is a horrible
+			// teacher" / "Ms X is a horrible teacher in physics") scored
+			// ≥0.85 and the second one got a 409, even though it carried new
+			// information. A complaint box must never turn away a second
+			// witness. Cross-author floods are handled where they belong:
+			// spamAnalyze similarity, per-author/per-IP rate limits and
+			// post_repost_held — not by refusing the submitter.
+			//
+			// Same author:
+			//  · identical normalized title  → 409 (repost of their own open
+			//    post, whatever its age)
+			//  · ≥85% word overlap           → 409 only inside the rapid
+			//    repost window, so a later complaint that merely reuses the
+			//    same words is still accepted.
+			const DUP_SIMILARITY_WINDOW_MS = 24 * 60 * 60 * 1000;
+			const isMatch = (p) => {
+				if (["solved", "archived", "pending_review"].includes(p.status)) return false; // ignore closed/unreviewed posts
+				if (p.deleted || p.hidden) return false;
+				if (isTestArtifact(p.title)) return false;
+				if (p.author_id && p.author_id !== author_id) return false;
+				if (normalizedTitle === "") return false;
 				const existingTitle = normalizeForCompare(p.title || "");
+				if (existingTitle === "") return false;
 				// Exact match after normalization
 				if (existingTitle === normalizedTitle) return true;
+				// NaN-safe age check: an unparseable timestamp is treated as old.
+				const age = Date.now() - Number(Date.parse(p.created_at || 0));
+				if (!(age <= DUP_SIMILARITY_WINDOW_MS)) return false;
 				// Very high similarity (>85% word overlap in shorter title)
 				const shorter =
 					normalizedTitle.length < existingTitle.length
@@ -469,33 +1023,78 @@ export default async function handler(req, res) {
 				if (shorterWords.size > 0 && overlap / shorterWords.size >= 0.85)
 					return true;
 				return false;
+			};
+
+			// Cross-category duplicate guard: check author's recent posts across ALL categories
+			const myCrossDup = (recentMine.data || []).find(isMatch);
+			const isDuplicate = Boolean(myCrossDup) || comparablePosts.some((p) => {
+				if (p.author_id !== author_id) return false;
+				return isMatch(p);
 			});
 
 			if (isDuplicate) {
+				const catSuffix = myCrossDup && myCrossDup.category !== category
+					? ` in ${myCrossDup.category}`
+					: " in this category";
 				return res.status(409).json({
 					error:
-						"A post with a very similar title already exists in this category. Please check the existing posts before creating a duplicate.",
+						`You already have a very similar post open${catSuffix}. Creating duplicate posts across categories is not allowed.`,
 					code: "DUPLICATE_POST",
 				});
 			}
 
 			// Server-side content moderation — blocks dangerous content before save.
-			// Learned weak-signal confidence is consulted so repeat-approved
-			// patterns stop holding posts once admins have proven them benign.
-			const learned = await getLearnedWeakStats();
-			const moderation = serverModerate(title, description, learned);
-			if (moderation.blocked) {
-				const isPII = moderation.flags.some((f) => f.type === "privacy");
+			// Learned weak-signal confidence (fetched above) is consulted so
+			// repeat-approved patterns stop holding posts once admins have
+			// proven them benign.
+			// DEEP path: deterministic floor + deterministic contextual scan +
+			// a real model judging meaning (bounded, skipped when already
+			// blocked). The model is what catches contextual PII and
+			// politely-worded abuse that no list contains.
+			// Everything the request has left, not a fresh 5 s: the phases
+			// before this one already spent wall clock, and the insert still has
+			// to fit inside the same 6 s gate.
+			const modelBudgetMs = remainingWallMs();
+			const decision = await evaluateContentDeep(`${title} ${description}`, "queued", learned, {
+				taskKey: "posts.write",
+				timeoutMs: modelBudgetMs,
+			});
+			mark("deep_done");
+			phases.model_budget_ms = Math.round(modelBudgetMs);
+			phases.model_used = decision.model_used === true;
+			phases.model_timed_out = decision.timedOut === true;
+			if (decision.blocked) {
+				const isPII = decision.flags.some((f) => f.type === "privacy");
 				await auditLog(
 					"moderation",
 					"post_blocked",
-					`${author_id}: ${title.slice(0, 60)} [${moderation.flags.map((f) => f.type).join(", ")}]`,
+					`${author_id}: ${title.slice(0, 60)} [${decision.flags.map((f) => f.type).join(", ")}]`,
 				);
+				// Fingerprint blocked text so near-verbatim reposts hit SAFETY_REPOST_BLOCKED.
+				await recordSafetyRepost(
+					supabase,
+					`${title} ${description}`,
+					(decision.flags[0] || {}).type || "policy",
+				);
+				// Threats page a human: the block above stops the content;
+				// the alert names WHO (anonymous id + excerpt + flag types)
+				// so a moderator can act fast. Non-threat blocks stay
+				// silent inside alertAdminThreat — no per-type branching here.
+				await alertAdminThreat({
+					surface: "post",
+					authorId: author_id,
+					excerpt: `${title} ${description}`,
+					flags: decision.flags,
+				});
+				// Slang auto-strike: 4+ unique slang terms in one blocked
+				// submission strikes the author (best-effort, never delays 403).
+				if (decision.flags.some((f) => f.type === "profanity")) {
+					await strikeSlangAbuse(author_id, "post", `${title} ${description}`);
+				}
+				const code = isPII ? "PII_BLOCKED" : decision.code;
 				return res.status(403).json({
-					error: isPII
-						? "Personal information detected (address, phone, or email). This is an anonymous platform — please remove all personal details and try again."
-						: "This content violates our safety guidelines and cannot be published. If you are in crisis, please contact a counselor or call a crisis hotline.",
-					code: isPII ? "PII_BLOCKED" : "CONTENT_BLOCKED",
+					error: messageFor("post", code),
+					code,
 				});
 			}
 
@@ -506,17 +1105,73 @@ export default async function handler(req, res) {
 			// Weak/unusual personal-info formats (PIN codes, room-level addresses)
 			// also never publish: posts route to the review queue for an admin
 			// decision, while comments/polls hard-block outright.
-			const weakPII = moderation.flags.some((f) => f.type === "privacy_weak");
-			const needsReview = moderation.requiresReview;
-			const holdForReview = needsReview || weakPII || b.pending_review === true;
-			const initialStatus = holdForReview ? "pending_review" : "reported";
+			const weakPII = decision.flags.some((f) => f.type === "privacy_weak");
+			const needsReview = decision.needsReview;			// Genuine cry for help — model-read distress with no attack flags,
+			// or a deterministic plea ("help me", "save me"): never public.
+			// Forced private + review so the support team sees it; the client
+			// explains this up front, but the server enforces it so no client
+			// can bypass it. Threats and attacks never land here (needsSupport
+			// excludes attack flags) — they stay on the block path above.
+			const supportRouting =
+				needsSupport(decision) ||
+				assessRelevance(`${title} ${description}`).route === "support";
+			const holdForReview =
+				needsReview ||
+				weakPII ||
+				b.pending_review === true ||
+				supportRouting ||
+				repostHold;
+			const finalVisibility = supportRouting ? "private" : visibility;
+
+			// ── Real spam analysis (multi-signal, deterministic) ────────
+			const ip = clientIp(req);
+			// Thresholds come from admin settings (spam_config), read in the
+			// parallel window above and defaulting safely when unset.
+			const spamResult = spamAnalyze(
+				title,
+				description,
+				author_id,
+				ip,
+				[],
+				spamConfig,
+			);
+			mark("spam_done");
+			// Quarantine regardless of the moderation result. The action comes
+			// from the admin-configured spam ladder (spam_config), never from a
+			// second hardcoded copy of the thresholds here.
+			if (spamResult.action === "quarantine") {
+				await auditLog(
+					"spam",
+					"post_quarantined",
+					`${author_id}: ${title.slice(0, 60)} [score=${spamResult.spam_score}]`,
+				);
+				return res.status(403).json({
+					error: "This post was flagged as potential spam. Please try a different approach.",
+					code: "SPAM_QUARANTINED",
+					spam_score: spamResult.spam_score,
+				});
+			}
+			// Hold for review (don't block, but don't auto-publish)
+			const spamHold = spamResult.action === "review";
+			if (spamHold) {
+				await auditLog(
+					"spam",
+					"post_held_for_review",
+					`${author_id}: ${title.slice(0, 60)} [score=${spamResult.spam_score}]`,
+				);
+			}
+
+			// Deliberate private posts between students and administration do not require public moderator review.
+			// However, public posts diverted into private for crisis support (supportRouting) are held for review.
+			const initialStatus =
+				supportRouting || (visibility !== "private" && (holdForReview || spamHold))
+					? "pending_review"
+					: "reported";
 
 			const type = b.type === "suggestion" ? "suggestion" : "problem";
-			const priority = ["low", "medium", "high", "critical"].includes(
-				b.priority,
-			)
-				? b.priority
-				: "medium";
+			// Priority is computed automatically from content urgency —
+			// authors never pick it (everyone would choose "critical").
+			const priority = computeAutoPriority(title, description);
 			const tags = Array.isArray(b.tags)
 				? b.tags
 						.slice(0, 6)
@@ -526,13 +1181,20 @@ export default async function handler(req, res) {
 			const post = {
 				id: `${type === "suggestion" ? "sug" : "post"}_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`,
 				type,
-				title,
-				description,
+				// Store masked text; every gate above already ran on the raw text.
+				title: maskProfanity(title),
+				description: maskProfanity(description),
 				category,
-				visibility,
+				// Support-routed pleas are forced private above — the stored
+				// row must match what enforcement decided, not the request.
+				visibility: finalVisibility,
 				priority,
 				tags,
-				image_url: clean(b.image_url, 500) || null,
+				// Only a stored https URL: a `data:` payload would carry the image
+				// bytes past /api/upload and its safety review.
+				image_url: /^https:\/\//i.test(String(b.image_url || ""))
+					? clean(b.image_url, 500)
+					: null,
 				author_id,
 				status: initialStatus,
 				progress: 0,
@@ -540,9 +1202,11 @@ export default async function handler(req, res) {
 					{
 						status: initialStatus,
 						at: new Date().toISOString(),
-						note: holdForReview
-							? "Queued for quality review"
-							: "Submitted anonymously",
+						note: supportRouting
+							? "Routed to support — private"
+							: holdForReview
+								? "Queued for quality review"
+								: "Submitted anonymously",
 					},
 				],
 			};
@@ -551,16 +1215,16 @@ export default async function handler(req, res) {
 				await auditLog(
 					"moderation",
 					"post_flagged_for_review",
-					`${author_id}: ${title.slice(0, 60)} [${moderation.flags.map((f) => f.type).join(", ")}]`,
+					`${author_id}: ${title.slice(0, 60)} [${decision.flags.map((f) => f.type).join(", ")}]`,
 				);
 				// Persist the flag types so the admin's later decision can feed
 				// the self-learning loop (approve → confidence up, reject → down).
 				try {
 					await supabase.from("settings").upsert(
 						{
-							key: `modflag:${data?.id || post.id}`,
+							key: `modflag:${post.id}`,
 							value: {
-								flags: moderation.flags.map((f) => f.type),
+								flags: decision.flags.map((f) => f.type),
 								at: new Date().toISOString(),
 							},
 						},
@@ -571,6 +1235,7 @@ export default async function handler(req, res) {
 				}
 			}
 
+			mark("insert_start");
 			let { data, error } = await supabase
 				.from("posts")
 				.insert(post)
@@ -601,9 +1266,13 @@ export default async function handler(req, res) {
 				}
 			}
 			if (error) throw error;
-			await ensureUser(author_id);
+			mark("insert_done");
+			// Started alongside the pre-write reads; by now it has had the whole
+			// moderation round-trip to finish, so this normally resolves instantly.
+			await authorReady;
+			mark("author_ready");
 			// Emit event for event-triggered agents
-			emitEvent(EVENT_TYPES.POST_CREATED, {
+			emitEventAndBridge(EVENT_TYPES.POST_CREATED, {
 				post_id: data.id,
 				type,
 				category,
@@ -613,12 +1282,41 @@ export default async function handler(req, res) {
 			}).catch((err) =>
 				console.warn("[posts] emit POST_CREATED failed:", err.message),
 			);
-			cacheClear("^postsfeed"); // new post appears immediately, no stale 10s window
+			feedSWR.invalidate(); // new post appears immediately, no stale 10s window
+			invalidateCounts(); // its id enters a different id-set anyway; cheap
+			// Background: auto-generate AI summary (non-blocking, best-effort)
+			import("./_ai-summary.js").then((mod) => {
+				if (typeof mod.default === "function") {
+					mod.default({
+						method: "POST",
+						body: {
+							post_id: data.id,
+							title: data.title,
+							description: data.description,
+							category: data.category,
+						},
+					}, { status: () => ({ json: () => {} }) }).catch(() => {});
+				}
+			}).catch(() => {});
+			if (timing) {
+				mark("total");
+				phases.hold = holdForReview === true;
+				res.setHeader("X-Phase-Timing", JSON.stringify(phases));
+			}
 			return res.status(201).json(data);
 		}
 
 		if (req.method === "PUT") {
 			const b = req.body || {};
+			// ── Edit wall (always on) ────────────────────────────────
+			// PUT /posts is gated as an interactive write (2500 ms). The
+			// re-moderation below must therefore fit in what this request has
+			// left after its own auth/reads, not in a fresh 5 s cap that would
+			// alone double the gate.
+			const EDIT_WALL_MS = 2200;
+			const editWallStart = performance.now();
+			const editRemainingMs = () =>
+				Math.max(0, EDIT_WALL_MS - (performance.now() - editWallStart));
 			const { id } = b;
 			if (!id) return res.status(400).json({ error: "Missing id" });
 			const { data: post } = await supabase
@@ -628,7 +1326,17 @@ export default async function handler(req, res) {
 				.maybeSingle();
 			if (!post) return res.status(404).json({ error: "Post not found" });
 			const admin = await isAdmin(req);
-			const isOwner = b.author_id && b.author_id === post.author_id;
+			// P0 SECURITY FIX: Derive caller identity from x-anon-id header, not client body
+			const callerId = clean(req.headers["x-anon-id"] || "", 40);
+			const isOwner = callerId && callerId !== "ADMIN" && callerId === post.author_id;
+			if (isOwner) {
+				// Session binding before the ban check: the header claim must
+				// match a live session, or anyone knowing the id edits as them.
+				const caller = await verifyCallerIdentity(req, res, callerId);
+				if (!caller.ok) return res.status(caller.status || 403).json({ error: caller.error, code: caller.code });
+				const gate = await checkUser(callerId, "post_write");
+				if (!gate.ok) return res.status(403).json({ error: gate.error });
+			}
 
 			const patch = {};
 			if (isOwner || admin) {
@@ -638,9 +1346,9 @@ export default async function handler(req, res) {
 				if (b.visibility !== undefined && VISIBILITIES.includes(b.visibility))
 					patch.visibility = b.visibility;
 				if (b.title !== undefined)
-					patch.title = maskProfanity(clean(b.title, 120));
+					patch.title = clean(b.title, 120);
 				if (b.description !== undefined)
-					patch.description = maskProfanity(clean(b.description, 500));
+					patch.description = clean(b.description, 500);
 				if (b.tags !== undefined && Array.isArray(b.tags))
 					patch.tags = b.tags.slice(0, 6).map((t) => clean(t, 24));
 			}
@@ -668,6 +1376,12 @@ export default async function handler(req, res) {
 				}
 				for (const f of ["pinned", "featured", "hidden", "locked", "official"])
 					if (typeof b[f] === "boolean") patch[f] = b[f];
+				// Hidden squash/mixed: `hidden` alone is the stored state. The old
+				// code also cleared hidden_by / quarantine_reason here — columns the
+				// table never had — so every "restore from quarantine" click was
+				// rejected (42703) and surfaced as a bare 500. Sentinel provenance
+				// is read from the audit-tagged admin_notes line, which restore keeps
+				// on purpose: it is the quarantine trail.
 				if (b.admin_reply !== undefined)
 					patch.admin_reply = clean(b.admin_reply, 1000);
 				if (b.admin_notes !== undefined)
@@ -676,7 +1390,12 @@ export default async function handler(req, res) {
 					patch.ai_summary = clean(b.ai_summary, 2000);
 				if (b.category !== undefined && CATEGORIES.includes(b.category))
 					patch.category = b.category;
-				if (b.priority !== undefined) patch.priority = b.priority;
+			// Priority is automatic: recompute when the content itself is edited.
+			if (b.title !== undefined || b.description !== undefined)
+				patch.priority = computeAutoPriority(
+					patch.title ?? post.title,
+					patch.description ?? post.description,
+				);
 				if (b.eta !== undefined) patch.eta = clean(b.eta, 60);
 				if (b.assigned_to !== undefined)
 					patch.assigned_to = clean(b.assigned_to, 60);
@@ -694,28 +1413,32 @@ export default async function handler(req, res) {
 			// Re-moderate edited content — a user could create a clean post then inject an
 			// address/phone/email via edit. Never let PII leak through the PUT path either.
 			if (patch.title !== undefined || patch.description !== undefined) {
-				const editMod = serverModerate(
-					patch.title ?? post.title,
-					patch.description ?? post.description,
-				);
-				if (editMod.blocked) {
-					const isPII = editMod.flags.some((f) => f.type === "privacy");
+				const editDecision = await evaluateContentDeep(`${patch.title ?? post.title} ${patch.description ?? post.description}`, "queued", null, {
+					taskKey: "posts.edit",
+					timeoutMs: editRemainingMs(),
+				});
+				if (editDecision.blocked) {
+					const isPII = editDecision.flags.some((f) => f.type === "privacy");
 					await auditLog(
 						"moderation",
 						"edit_blocked",
-						`${id}: ${(patch.title || "").slice(0, 60)} [${editMod.flags.map((f) => f.type).join(", ")}]`,
+						`${id}: ${(patch.title || "").slice(0, 60)} [${editDecision.flags.map((f) => f.type).join(", ")}]`,
 					);
+					await recordSafetyRepost(
+						supabase,
+						`${patch.title ?? post.title} ${patch.description ?? post.description}`,
+						(editDecision.flags[0] || {}).type || "policy",
+					);
+					const editCode = isPII ? "PII_BLOCKED" : editDecision.code;
 					return res.status(403).json({
-						error: isPII
-							? "Personal information detected in your edit (address, phone, or email). This is an anonymous platform — please remove all personal details and try again."
-							: "Your edit violates our safety guidelines and cannot be saved.",
-						code: isPII ? "PII_BLOCKED" : "CONTENT_BLOCKED",
+						error: messageFor("editPost", editCode),
+						code: editCode,
 					});
 				}
 				// Weak/unusual PII formats (PIN codes, room-level addresses) never
 				// publish either: pull the post into the review queue, keeping the
 				// edit out of public view until an admin decides.
-				if (editMod.flags.some((f) => f.type === "privacy_weak")) {
+				if (editDecision.flags.some((f) => f.type === "privacy_weak")) {
 					patch.status = "pending_review";
 					patch.progress = 10;
 					patch.status_history = [
@@ -733,30 +1456,220 @@ export default async function handler(req, res) {
 					);
 				}
 			}
+			// Mask for storage only after the raw text passes moderation.
+			if (patch.title !== undefined) patch.title = maskProfanity(patch.title);
+			if (patch.description !== undefined)
+				patch.description = maskProfanity(patch.description);
 			patch.updated_at = new Date().toISOString();
 			const { data, error } = await supabase
 				.from("posts")
 				.update(patch)
 				.eq("id", id)
 				.select()
-				.single();
-			if (error) throw error;
+				.maybeSingle();
+			// PostgREST rejections are PLAIN OBJECTS, not Errors: throwing one
+			// straight into the 500 handler logged "[object Object]" and the
+			// admin saw a bare "Internal server error" with no cause anywhere.
+			// Map what the caller can act on to real statuses, and rethrow the
+			// rest as an Error so the server log carries the database reason.
+			if (error) {
+				const code = String(error.code || "");
+				if (code === "23505")
+					return res
+						.status(409)
+						.json({ error: "That change conflicts with another post — reload and retry." });
+				throw new Error(
+					`posts update ${id} failed [${code || "no-code"}]: ${error.message || "unknown"}${error.details ? ` — ${error.details}` : ""}`,
+				);
+			}
+			// The row can vanish between the read above and this write (retention
+			// sweep, concurrent permanent delete). An update that matched nothing
+			// is a 404, never a silent success.
+			if (!data) return res.status(404).json({ error: "Post not found" });
+			// Comment-block enforcement: locking comments purges ALL existing
+			// comments on the post (soft-delete: recoverable, audit-preserving).
+			// A lock that leaves old discussion visible is a lie — readers see
+			// a thread on a post that claims "comments off". NULL-safe: legacy
+			// rows may carry deleted=NULL, so match IS NOT TRUE, not = false.
+			// Failures audit loudly and ride the response — never silently.
+			let commentsPurge = null;
+			if (patch.locked === true && post.locked !== true) {
+				try {
+					const { data: purged, error: purgeError } = await supabase
+						.from("comments")
+						.update({ deleted: true })
+						.eq("post_id", id)
+						.or("deleted.is.null,deleted.eq.false")
+						.select("id");
+					if (purgeError) throw purgeError;
+					const purgedCount = (purged || []).length;
+					commentsPurge = { ok: true, purged: purgedCount };
+					if (purgedCount > 0)
+						await auditLog(
+							"moderation",
+							"lock_purged_comments",
+							`${id}: ${purgedCount} comment(s) removed with lock`,
+						);
+				} catch (err) {
+					commentsPurge = {
+						ok: false,
+						purged: 0,
+						error: err?.message || String(err),
+					};
+					await auditLog(
+						"moderation",
+						"lock_purge_failed",
+						`${id}: ${err?.message || String(err)}`,
+					);
+				}
+				invalidateCounts(); // comment_count drops with the purge
+			}
+			// Owner deletes/restores were invisible to admins (no audit row, no
+			// deleter timestamp beyond updated_at). Record them best-effort so
+			// the admin feed can show which user deleted and when.
+			if (!admin && isOwner && patch.deleted !== undefined) {
+				try {
+					await auditLog(
+						"user",
+						patch.deleted === true ? "delete_post" : "restore_post",
+						`${callerId}: ${id}`,
+					);
+				} catch {
+					/* audit never breaks the update */
+				}
+			}
 			if (admin)
 				await auditLog(
 					"admin",
 					"update_post",
 					`${id}: ${Object.keys(patch).join(", ")}`,
 				);
-			cacheClear("^postsfeed"); // solved/hidden/pinned changes show live
+			// Author notice: an admin acting on someone else's post must reach
+			// the author — otherwise posts vanish from My Activity with no
+			// explanation and no notification. Best-effort: notices never
+			// break the update. (Owner edits and follower-solved notices are
+			// handled by their own paths, not duplicated here.)
+			if (admin && !isOwner) {
+				try {
+					const shortTitle = String(post.title || "your post").slice(0, 60);
+					const spaced = (s) => String(s).replace(/_/g, " ");
+					if (patch.hidden === true)
+						await notifyUser(
+							post.author_id,
+							"info",
+							"Post hidden by moderators",
+							`"${shortTitle}" is temporarily hidden while under review. Message the team via inbox if this is a mistake.`,
+						);
+					else if (patch.hidden === false)
+						await notifyUser(
+							post.author_id,
+							"success",
+							"Post visible again",
+							`"${shortTitle}" is public again.`,
+						);
+					else if (patch.deleted === true)
+						await notifyUser(
+							post.author_id,
+							"info",
+							"Post removed by moderators",
+							`"${shortTitle}" was removed. Message the team via inbox if this is a mistake.`,
+						);
+					else if (patch.admin_reply && patch.admin_reply !== post.admin_reply)
+						await notifyUser(
+							post.author_id,
+							"info",
+							"Admin replied to your post",
+							`"${shortTitle}": ${String(patch.admin_reply).slice(0, 120)}`,
+						);
+					else if (patch.status && patch.status !== post.status)
+						await notifyUser(
+							post.author_id,
+							patch.status === "solved" ? "success" : "info",
+							patch.status === "solved"
+								? "Your post was marked solved"
+								: `Update on your post: ${spaced(patch.status)}`,
+							`"${shortTitle}" moved to ${spaced(patch.status)}.`,
+						);
+				} catch {
+					/* notices never break the update */
+				}
+			}
+			feedSWR.invalidate(); // solved/hidden/pinned changes show live
+			invalidateCounts(); // hide/unhide changes which rows counts map onto
 			// Emit event for status changes
 			if (patch.status)
-				emitEvent(EVENT_TYPES.POST_STATUS_CHANGED, {
+				emitEventAndBridge(EVENT_TYPES.POST_STATUS_CHANGED, {
 					post_id: id,
 					old_status: post.status,
 					new_status: patch.status,
 				}).catch((err) =>
 					console.warn("[posts] emit POST_STATUS_CHANGED failed:", err.message),
 				);
+			// Removal verification: when this update takes the post out of
+			// public view, prove it on the public read path and record how
+			// long it was exposed. Failures audit loudly, never silently.
+			let removalVerification = null;
+			const becameUnlisted =
+				patch.hidden === true || patch.deleted === true || patch.status === "pending_review";
+			if (becameUnlisted) {
+				let publicAbsent = false;
+				let proof = "";
+				try {
+					const { data: visible } = await supabase
+						.from("posts")
+						.select("id")
+						.eq("id", id)
+						.eq("hidden", false)
+						.eq("deleted", false)
+						.neq("status", "pending_review")
+						.maybeSingle();
+					publicAbsent = visible == null;
+					proof = publicAbsent
+						? "post absent from public read path"
+						: "post still publicly visible after removal";
+				} catch (err) {
+					proof = err?.message || String(err);
+				}
+				const createdMs = post.created_at ? new Date(post.created_at).getTime() : NaN;
+				const exposure_ms = Number.isFinite(createdMs)
+					? Math.max(0, Date.now() - createdMs)
+					: null;
+				// Fingerprint safety-driven removals so the text can't return
+				// verbatim: posts held by moderation carry the signal; plain
+				// admin curation hides do not.
+				const safetyHold =
+					post.status === "pending_review" || patch.status === "pending_review";
+				if (publicAbsent && safetyHold) {
+					let rule = "admin_hide";
+					try {
+						const { data: mf } = await supabase
+							.from("settings")
+							.select("value")
+							.eq("key", `modflag:${id}`)
+							.maybeSingle();
+						const held = mf?.value?.flags || [];
+						if (held[0]) rule = held[0];
+					} catch {
+						/* rule stays admin_hide */
+					}
+					await recordSafetyRepost(
+						supabase,
+						`${data.title ?? post.title} ${data.description ?? post.description}`,
+						rule,
+					);
+				}
+				removalVerification = {
+					ok: publicAbsent,
+					exposure_ms,
+					public_path_absent: publicAbsent,
+					proof,
+				};
+				await auditLog(
+					"moderation",
+					publicAbsent ? "post_removal_verified" : "post_removal_unverified",
+					`${id}: ${proof} [exposure_ms=${exposure_ms}]`,
+				);
+			}
 			// ── Self-learning feedback: an admin decision on a held post ──
 			// Approving (leaving pending_review to any public status) raises
 			// confidence for the weak pattern; archiving lowers it.
@@ -780,34 +1693,65 @@ export default async function handler(req, res) {
 				} catch {
 					/* learning is best-effort */
 				}
-			}
-			// Notify followers on status change or admin reply
-			if (admin && (patch.status || patch.admin_reply !== undefined)) {
-				const nTitle = patch.status
-					? `Status updated: ${patch.status.replace(/_/g, " ")}`
-					: "Admin replied";
-				notifyFollowers(id, {
-					type: "post",
-					title: nTitle,
-					body: post.title || "A post you follow was updated",
-				});
-			}
-			return res.status(200).json(data);
+			}				// Notify followers on status change or admin reply
+				if (admin && (patch.status || patch.admin_reply !== undefined)) {
+					const nTitle = patch.status
+						? `Status updated: ${patch.status.replace(/_/g, " ")}`
+						: "Admin replied";
+					notifyFollowers(id, {
+						type: "post",
+						title: nTitle,
+						body: post.title || "A post you follow was updated",
+					});
+				}
+				// Send email notification when post is solved
+				if (patch.status === "solved" && post.author_id) {
+					sendPostSolvedEmail({
+						postTitle: post.title,
+						postId: id,
+						authorId: post.author_id,
+						adminReply: patch.admin_reply || post.admin_reply,
+					}).catch(() => {});
+				}
+			return res.status(200).json(
+				removalVerification || commentsPurge
+					? {
+							...data,
+							...(removalVerification ? { verification: removalVerification } : {}),
+							...(commentsPurge ? { comments_purge: commentsPurge } : {}),
+						}
+					: data,
+			);
 		}
 
 		if (req.method === "DELETE") {
 			if (!(await isAdmin(req)))
 				return res.status(403).json({ error: "Admin only" });
-			const { id } = req.body || {};
+			// DELETE bodies are not parsed on some hosts (Vercel drops them),
+			// so the id travels in the query string; body accepted as fallback.
+			const id = req.query?.id || req.body?.id;
+			if (!id) return res.status(400).json({ error: "Missing id" });
 			// Null out post_id on linked polls (preserve votes + poll data), then delete post + comments + reactions
-			await Promise.all([
+			const [
+				{ error: e1 },
+				{ data: removed, error: e2 },
+				{ error: e3 },
+				{ error: e4 },
+			] = await Promise.all([
 				supabase.from("polls").update({ post_id: null }).eq("post_id", id),
-				supabase.from("posts").delete().eq("id", id),
+				supabase.from("posts").delete().eq("id", id).select("id"),
 				supabase.from("comments").delete().eq("post_id", id),
 				supabase.from("reactions").delete().eq("target_id", id),
 			]);
+			const firstErr = e1 || e2 || e3 || e4;
+			if (firstErr) throw firstErr;
+			// Prove the delete landed: an unparsed/missing id used to no-op and
+			// still return ok:true, so the row "came back" on reload.
+			if (!removed || removed.length === 0)
+				return res.status(404).json({ error: "Post not found" });
 			await auditLog("admin", "hard_delete_post", id);
-			cacheClear("^postsfeed");
+			feedSWR.invalidate();
+			invalidateCounts(); // cascade-deleted reactions/comments leave the cache
 			return res.status(200).json({ ok: true });
 		}
 

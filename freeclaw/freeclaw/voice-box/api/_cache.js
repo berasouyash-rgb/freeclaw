@@ -180,6 +180,7 @@ export function staleWhileRevalidate(fn, options = {}) {
 		ttl = DEFAULT_TTL,
 		staleTtl = ttl * 5, // Serve stale for 5x the normal TTL
 		keyPrefix = fn.name || "swr",
+		maxEntries = 300, // Bound memory when keys are unbounded (e.g. user queries)
 	} = options;
 
 	const _swrCache = new Map();
@@ -187,11 +188,29 @@ export function staleWhileRevalidate(fn, options = {}) {
 	// additional requests must reuse the SAME background fetch instead of
 	// firing one DB query per request (thundering herd during the stale window).
 	const _inflightRevalidate = new Map(); // cacheKey → Promise<fresh>
+	// In-flight COLD-MISS dedup: a cold key (first request after boot, or after
+	// the stale window lapsed) is the worst case for a herd — every concurrent
+	// request sees no entry and would fire its own identical DB query. Measured
+	// at 1000 readers: 84 x `/api/polls` 500s at 28.8s because the bare feed
+	// key was cold and ~1000 callers each opened a query. Coalescing turns that
+	// herd into exactly one fetch that every caller awaits.
+	const _inflightFetch = new Map(); // cacheKey → Promise<fresh>
 
-	return async function swrFn(...args) {
+	async function swrFn(...args) {
 		const cacheKey = `${keyPrefix}:${JSON.stringify(args).slice(0, 200)}`;
 		const entry = _swrCache.get(cacheKey);
 		const now = Date.now();
+
+		// Memory bound: if the key space is unbounded (e.g. arbitrary search
+		// queries), evict the OLDEST entries (Map preserves insertion order) once
+		// we exceed maxEntries so warm serverless instances cannot grow forever.
+		if (!entry && _swrCache.size >= maxEntries) {
+			let toEvict = Math.floor(maxEntries * 0.2);
+			for (const k of _swrCache.keys()) {
+				_swrCache.delete(k);
+				if (--toEvict <= 0) break;
+			}
+		}
 
 		// Fresh cache hit
 		if (entry && entry.expiresAt > now) {
@@ -219,16 +238,50 @@ export function staleWhileRevalidate(fn, options = {}) {
 			return entry.value;
 		}
 
-		// Cache miss or fully expired — must fetch
-		const result = await fn(...args);
-		_swrCache.set(cacheKey, {
-			value: result,
-			expiresAt: now + ttl,
-			staleExpiresAt: now + staleTtl,
-		});
+		// Cache miss or fully expired — must fetch. Coalesce the herd: only the
+		// first caller runs `fn`; every concurrent caller for the same key awaits
+		// that same promise. A rejection is shared (all callers see the real
+		// error) and the entry is cleared so the next request retries cleanly.
+		const existingFetch = _inflightFetch.get(cacheKey);
+		if (existingFetch) return existingFetch;
 
-		return result;
+		const fetchPromise = fn(...args)
+			.then((result) => {
+				const settledAt = Date.now();
+				_swrCache.set(cacheKey, {
+					value: result,
+					expiresAt: settledAt + ttl,
+					staleExpiresAt: settledAt + staleTtl,
+				});
+				return result;
+			})
+			.catch((err) => {
+				if (entry && entry.value) {
+					logger.warn("cache", "stale_fallback_on_error", { key: cacheKey, error: err?.message || String(err) });
+					return entry.value;
+				}
+				throw err;
+			})
+			.finally(() => {
+				_inflightFetch.delete(cacheKey);
+			});
+
+		_inflightFetch.set(cacheKey, fetchPromise);
+		return fetchPromise;
+	}
+
+	// Invalidate every entry this wrapper holds. Write paths must call this so
+	// new/changed data shows immediately — the old cacheClear("^postsfeed")
+	// only touched the cacheMem store, NOT this closure's _swrCache, so feed
+	// rows served via staleWhileRevalidate could stay hidden for the whole
+	// stale window (up to staleTtl) after a write.
+	swrFn.invalidate = () => {
+		_swrCache.clear();
+		_inflightRevalidate.clear();
+		_inflightFetch.clear();
 	};
+
+	return swrFn;
 }
 
 // ─── Cleanup ────────────────────────────────────────────────────

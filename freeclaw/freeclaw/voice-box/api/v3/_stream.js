@@ -24,7 +24,7 @@ import {
 	buildToolSystemPrompt,
 	getToolsForRole,
 	executeTool as registryExecuteTool,
-} from "../_tool-registry.js";
+} from "../_agent-tool-registry.js";
 
 // â”€â”€â”€ Constants â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const MAX_TOOL_ITERATIONS = 3;
@@ -79,7 +79,7 @@ export default async function handler(req, res) {
 
 		// Initialize SSE writer if streaming
 		if (stream) {
-			writer = createSSEWriter(res);
+			writer = createSSEWriter(res, req);
 			stopHeartbeat = startHeartbeat(res, 15000);
 
 			// Send initial connection event

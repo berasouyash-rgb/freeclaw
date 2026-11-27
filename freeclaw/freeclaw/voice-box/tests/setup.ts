@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════
-// Voice Box Test Setup
+// Voice Flow Test Setup
 // ═══════════════════════════════════════════════════════════════════
 // Configures global test utilities, mocks for browser APIs,
 // and custom vitest matchers for all test files.
@@ -134,30 +134,61 @@ Object.defineProperty(window, "matchMedia", {
 });
 
 // ─── Mock IntersectionObserver ────────────────────────────────────
+// Constructable + capturable: production code calls `new
+// IntersectionObserver(cb)` (feed sentinel, infinite-scroll hook), and
+// tests fire the captured callback to simulate scrolling into view.
+class MockIntersectionObserver {
+	static instances: MockIntersectionObserver[] = [];
+	callback: IntersectionObserverCallback;
+	observe = vi.fn();
+	unobserve = vi.fn();
+	disconnect = vi.fn();
+	constructor(callback: IntersectionObserverCallback) {
+		this.callback = callback;
+		MockIntersectionObserver.instances.push(this);
+	}
+	static triggerIntersecting(isIntersecting = true) {
+		for (const inst of MockIntersectionObserver.instances) {
+			inst.callback(
+				[{ isIntersecting } as IntersectionObserverEntry],
+				inst as unknown as IntersectionObserver,
+			);
+		}
+	}
+	static clear() {
+		MockIntersectionObserver.instances = [];
+	}
+}
 Object.defineProperty(window, "IntersectionObserver", {
 	writable: true,
-	value: vi.fn().mockImplementation(() => ({
-		observe: vi.fn(),
-		unobserve: vi.fn(),
-		disconnect: vi.fn(),
-	})),
+	configurable: true,
+	value: MockIntersectionObserver,
+});
+
+afterEach(() => {
+	MockIntersectionObserver.clear();
 });
 
 // ─── Mock Speech Recognition ──────────────────────────────────────
 Object.defineProperty(window, "webkitSpeechRecognition", {
 	writable: true,
 	configurable: true,
-	value: vi.fn().mockImplementation(() => ({
-		lang: "",
-		continuous: false,
-		interimResults: false,
-		maxAlternatives: 1,
-		onresult: null,
-		onerror: null,
-		onend: null,
-		start: vi.fn(),
-		stop: vi.fn(),
-	})),
+	// A regular function is required: the hook calls `new SpeechRecognition()`,
+	// and a vi.fn with an arrow implementation is not constructible.
+	value: vi.fn().mockImplementation(function SpeechRecognitionMock() {
+		return {
+			lang: "",
+			continuous: false,
+			interimResults: false,
+			maxAlternatives: 1,
+			onresult: null,
+			onerror: null,
+			onend: null,
+			start: vi.fn(),
+			stop: vi.fn(),
+			abort: vi.fn(),
+		};
+	}),
 });
 
 // ─── Mock Speech Synthesis ────────────────────────────────────────

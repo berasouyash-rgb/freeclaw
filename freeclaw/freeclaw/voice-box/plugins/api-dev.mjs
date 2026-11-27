@@ -15,110 +15,17 @@
 // 404/405 contract, error wrapper) is already handled by api/index.js itself.
 // ═══════════════════════════════════════════════════════════════════════════
 
-import { existsSync, readFileSync } from "node:fs";
+import { watch } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-
-/** Load .env then .env.local into process.env (first-set wins, .env.local
- *  overrides .env). Mirrors how Vercel injects env vars for serverless
- *  functions so the API sees the same config locally. */
-function loadEnvFiles(root) {
-	for (const file of [".env", ".env.local"]) {
-		const p = join(root, file);
-		if (!existsSync(p)) continue;
-		let raw = "";
-		try {
-			raw = readFileSync(p, "utf8");
-		} catch {
-			continue;
-		}
-		for (const line of raw.split(/\r?\n/)) {
-			const t = line.trim();
-			if (!t || t.startsWith("#")) continue;
-			const eq = t.indexOf("=");
-			if (eq <= 0) continue;
-			const key = t.slice(0, eq).trim();
-			if (process.env[key] !== undefined) continue; // env.local wins over .env
-			let value = t.slice(eq + 1).trim();
-			// Strip matching quotes ("..." or '...')
-			if (
-				(value.startsWith('"') && value.endsWith('"')) ||
-				(value.startsWith("'") && value.endsWith("'"))
-			) {
-				value = value.slice(1, -1);
-			}
-			process.env[key] = value;
-		}
-	}
-}
-
-/** Vercel runtime shims applied to a Node http request/response pair.
- *  Consumes the raw request stream for non-GET methods and attaches a parsed
- *  `req.body` object, mirroring Vercel's pre-parsed body so api/index.js's
- *  parseBody() short-circuits instead of defaulting to {}. */
-async function shim(req, res) {
-	// req.query — Express-style search-params object (handlers read it directly)
-	if (!req.query) {
-		const u = new URL(req.url || "/", "http://localhost");
-		const q = {};
-		for (const key of u.searchParams.keys()) {
-			const all = u.searchParams.getAll(key);
-			q[key] = all.length > 1 ? all : all[0];
-		}
-		req.query = q;
-	}
-	// req.body — read the raw stream when the method carries a payload
-	if (
-		!req.body &&
-		req.method !== "GET" &&
-		req.method !== "HEAD" &&
-		req.method !== "OPTIONS"
-	) {
-		try {
-			const chunks = [];
-			for await (const chunk of req) chunks.push(chunk);
-			const raw = Buffer.concat(chunks).toString("utf8");
-			if (raw) {
-				try {
-					req.body = JSON.parse(raw);
-				} catch {
-					try {
-						req.body = Object.fromEntries(new URLSearchParams(raw));
-					} catch {
-						req.body = {};
-					}
-				}
-			} else {
-				req.body = {};
-			}
-		} catch {
-			req.body = {};
-		}
-	}
-	// res.status(code).json(obj) — chainable Express-style response helpers
-	if (!res.status) {
-		res.status = (code) => {
-			res.statusCode = code;
-			return res;
-		};
-	}
-	if (!res.json) {
-		res.json = (obj) => {
-			if (!res.getHeader("Content-Type")) {
-				res.setHeader("Content-Type", "application/json; charset=utf-8");
-			}
-			return res.end(JSON.stringify(obj));
-		};
-	}
-	return { req, res };
-}
+import { loadEnvFiles, shim } from "./vercel-shim.mjs";
 
 export function apiDev() {
 	let handler = null;
 	let loadError = null;
 
 	async function ensureHandler(root) {
-		if (handler || loadError) return;
+		if (handler) return;
 		loadEnvFiles(root);
 		try {
 			const mod = await import(
@@ -126,6 +33,7 @@ export function apiDev() {
 					`?api-dev=${Date.now()}`
 			);
 			handler = mod.default;
+			loadError = null;
 			console.log("[api-dev] Mounted api/index.js on /api/* (full-stack dev)");
 		} catch (err) {
 			loadError = err;
@@ -141,10 +49,27 @@ export function apiDev() {
 		apply: "serve", // dev-server only — never in build
 		async configureServer(server) {
 			await ensureHandler(server.config.root);
+			// The router used to be cached for the whole dev session, so a new
+			// endpoint added while the server was running returned 404 until
+			// someone restarted Vite. Invalidate on any api/ change instead.
+			try {
+				watch(join(server.config.root, "api"), { recursive: true }, () => {
+					handler = null;
+					loadError = null;
+					console.log("[api-dev] API files changed — router reloads on next request");
+				});
+			} catch {
+				/* platforms without recursive watch keep the old behaviour */
+			}
 			startDevPatrol();
-			server.middlewares.use((req, res, next) => {
-				const url = req.url || "";
-				if (!url.startsWith("/api/")) return next();
+			server.middlewares.use(async (req, res, next) => {
+				const rawUrl = req.url || "";
+				const pathname = rawUrl.split("?")[0];
+				if (pathname !== "/api" && !pathname.startsWith("/api/")) return next();
+
+				if (!handler) {
+					await ensureHandler(server.config.root);
+				}
 
 				if (!handler) {
 					res.statusCode = 500;

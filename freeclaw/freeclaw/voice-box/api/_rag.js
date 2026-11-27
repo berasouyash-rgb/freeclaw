@@ -186,7 +186,7 @@ export function buildRAGPrompt(query, retrievedContext) {
 		};
 	}
 
-	const systemPrompt = `You are a helpful assistant for Voice Box, a school communication platform.
+	const systemPrompt = `You are a helpful assistant for Voice Flow, a school communication platform.
 You have access to the following knowledge base entries that may be relevant to the user's question:
 
 ${context}

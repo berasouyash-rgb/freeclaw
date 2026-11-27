@@ -22,6 +22,15 @@ export default async function handler(req, res) {
 		const period = req.body?.period || req.query.period || "month";
 		let daysBack;
 		switch (period) {
+			case "7d":
+				// Dashboard widgets request "7d" explicitly — silently falling
+				// back to the 30-day default made "Reports this week" show a
+				// month of data (measured: period=7d returned days_back: 30).
+				daysBack = 7;
+				break;
+			case "30d":
+				daysBack = 30;
+				break;
 			case "week":
 				daysBack = 7;
 				break;

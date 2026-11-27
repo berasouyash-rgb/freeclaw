@@ -9,16 +9,20 @@ import {
 	useState,
 } from "react";
 import { api } from "../lib/api";
+import { showBrowserNotification } from "../lib/browserNotify";
 import {
 	getAnonId,
 	getDisplayName,
 	getProfile,
+	getSessionToken,
 	lsGet,
 	lsSet,
 	setDisplayName as persistDisplayName,
 	setProfile as persistProfile,
 	type LocalProfile,
 } from "../lib/identity";
+import { apiBase, isNativeShell, navigateTo } from "../lib/platform";
+import { loadHarness } from "../lib/loadHarness";
 import type {
 	AccountStatus,
 	ChatMessage,
@@ -44,8 +48,11 @@ interface ChatResponse {
 interface NotifSnapshot {
 	[postId: string]:
 		| { status: string; comments: number; reply: boolean }
-		| boolean
-		| number;
+		| boolean // poll_* endings
+		| number // __chatUnread
+		| undefined; // optional named props (e.g. __chatUnread?) add undefined
+	/** Chat unread count — typed explicitly for type-safe access. */
+	__chatUnread?: number;
 }
 
 /** Shape of a notification stored server-side (admin warnings, suspensions, bans). */
@@ -55,22 +62,94 @@ interface ServerNotif {
 	title: string;
 	body: string;
 	post_id?: string | null;
+	/** Explicit same-origin deep link attached by `notifyUser` (optional). */
+	link?: string | null;
 	read: boolean;
 	created_at: string;
+}
+
+/**
+ * Where tapping a server notice should land. Order:
+ *   1. an explicit same-origin link written by the sender,
+ *   2. the affected post when the notice names one,
+ *   3. a sensible area by kind — account/moderation notices go to the
+ *      admin inbox, content notices to my activity.
+ * Anything unrecognized stays linkless rather than guessing a page.
+ */
+function serverNotifLink(n: ServerNotif): string | undefined {
+	const explicit = typeof n.link === "string" ? n.link.trim() : "";
+	if (explicit.startsWith("/") && !explicit.startsWith("//")) {
+		// Never send admin warnings, suspensions or strikes to /chat (inbox AI)
+		if (
+			explicit === "/chat" &&
+			(n.type === "warning" ||
+				n.type === "suspension" ||
+				n.type === "suspension_lifted" ||
+				n.type === "ban" ||
+				n.type === "unban" ||
+				n.type === "moderation" ||
+				n.type === "pardon")
+		) {
+			return n.post_id ? `/post/${encodeURIComponent(String(n.post_id))}` : "/activity";
+		}
+		return explicit;
+	}
+	if (n.post_id) return `/post/${encodeURIComponent(String(n.post_id))}`;
+	const type = String(n.type || "");
+	if (
+		type === "warning" ||
+		type === "suspension" ||
+		type === "suspension_lifted" ||
+		type === "ban" ||
+		type === "unban" ||
+		type === "moderation" ||
+		type === "pardon"
+	)
+		return "/activity";
+	if (type === "status" || type === "reply" || type === "comment" || type === "mention")
+		return "/activity";
+	if (type === "chat")
+		return "/chat";
+	return undefined;
 }
 
 // Map a server-side notification (from /api/notifications, written by admin
 // actions like warn/suspend/ban) into the client Notification shape. Returns
 // null for malformed entries so a corrupt row can never crash the UI.
+// Server types pass through verbatim when known; anything unrecognized
+// becomes generic info instead of crashing KIND_META lookups downstream.
+const KNOWN_NOTIF_TYPES: NotificationKind[] = [
+	"status",
+	"reply",
+	"comment",
+	"chat",
+	"poll",
+	"info",
+	"submitted",
+	"mention",
+	"warning",
+	"success",
+	"suspension",
+	"suspension_lifted",
+	"ban",
+	"unban",
+	"moderation",
+];
 function mapServerNotif(n: ServerNotif): Notification | null {
 	if (!n || typeof n.id !== "string" || !n.id) return null;
-	const kind: NotificationKind = n.type === "success" ? "status" : "info";
+	const t = String(n.type || "");
+	const kind: NotificationKind =
+		t === "success"
+			? "status"
+			: KNOWN_NOTIF_TYPES.includes(t as NotificationKind)
+				? (t as NotificationKind)
+				: "info";
 	return {
 		id: n.id,
 		kind,
 		title: String(n.title || "Notification"),
 		body: String(n.body || ""),
-		link: n.post_id ? `/post/${n.post_id}` : undefined,
+		link: serverNotifLink(n),
 		at: n.created_at || new Date().toISOString(),
 		read: !!n.read,
 	};
@@ -105,6 +184,58 @@ const DEFAULT_DISPLAY_PREFS: DisplayPrefs = {
 	uiScale: 95,
 };
 
+/**
+ * Notification kinds that may raise an on-device notification. Account
+ * decisions (warn/suspend/ban) are critical and always allowed — a student
+ * must not miss them just because the tab happens to be focused. Everything
+ * else pings only while the tab is hidden, so the browser alert never
+ * duplicates a banner the user is already looking at. Notices about the
+ * user's own actions (submitted/success) never ping the user back.
+ */
+const CRITICAL_NOTIF_KINDS = new Set<NotificationKind>([
+	"warning",
+	"suspension",
+	"suspension_lifted",
+	"ban",
+	"unban",
+	"moderation",
+]);
+const SELF_NOTIF_KINDS = new Set<NotificationKind>(["submitted", "success"]);
+
+function shouldPingBrowser(kind: NotificationKind): boolean {
+	if (SELF_NOTIF_KINDS.has(kind)) return false;
+	const critical = CRITICAL_NOTIF_KINDS.has(kind);
+	try {
+		// Native desktop & mobile shells deliver real OS notifications to the user
+		// regardless of window visibility, because desktop toasts and mobile heads-up
+		// alerts are expected to show when events occur. Web tabs only suppress when visible.
+		if (
+			!critical &&
+			!isNativeShell() &&
+			typeof document !== "undefined" &&
+			document.visibilityState === "visible"
+		)
+			return false;
+		// Mirror switch (Settings → browser notifications) always wins.
+		const mirror = lsGet<{ enabled?: boolean }>("vb:browser-notify", {});
+		if (mirror?.enabled === false) return false;
+		const prefs = lsGet<{
+			push?: boolean;
+			mentions?: boolean;
+			replies?: boolean;
+			updates?: boolean;
+		}>("vb:notif-prefs", {});
+		if (prefs.push === false) return false;
+		if (critical) return true;
+		if (kind === "mention") return prefs.mentions !== false;
+		if (kind === "reply" || kind === "comment" || kind === "chat")
+			return prefs.replies !== false;
+		return prefs.updates !== false;
+	} catch {
+		return false;
+	}
+}
+
 interface AppCtx {
 	anonId: string;
 	displayName: string;
@@ -120,9 +251,16 @@ interface AppCtx {
 	toggleBookmark: (id: string) => void;
 	notifications: Notification[];
 	markNotifsRead: () => void;
+	/** Mark one notification read when its deep link is opened (§11). */
+	markNotifRead: (id: string) => void;
 	clearNotifs: () => void;
 	pushNotif: (n: Omit<Notification, "id" | "at" | "read">) => void;
+	/** Drop notices pointing at a deleted/retired link (e.g. `/post/:id`) so
+	 *  the notification list can never claim more live posts than exist. */
+	retireNotifsForLink: (link: string) => void;
 	toast: (text: string, kind?: Toast["kind"], action?: Toast["action"]) => void;
+	/** Remove one toast immediately (manual dismiss). */
+	dismissToast: (id: number) => void;
 	toasts: Toast[];
 	refreshIdentity: () => void;
 	recentlyViewed: string[];
@@ -132,22 +270,69 @@ interface AppCtx {
 	accountStatus: AccountStatus | null;
 }
 
+const DEFAULT_APP_CTX: AppCtx = {
+	anonId: "anon_default",
+	displayName: "Anonymous Student",
+	setDisplayName: () => {},
+	profile: getProfile(),
+	setProfile: (p: LocalProfile) => p,
+	theme: "light",
+	setTheme: () => {},
+	toggleTheme: () => {},
+	displayPrefs: DEFAULT_DISPLAY_PREFS,
+	setDisplayPrefs: () => {},
+	bookmarks: [],
+	toggleBookmark: () => {},
+	notifications: [],
+	markNotifsRead: () => {},
+	markNotifRead: () => {},
+	clearNotifs: () => {},
+	pushNotif: () => {},
+	retireNotifsForLink: () => {},
+	toast: () => {},
+	dismissToast: () => {},
+	toasts: [],
+	refreshIdentity: () => {},
+	recentlyViewed: [],
+	addRecentlyViewed: () => {},
+	chatUnread: 0,
+	setChatUnread: () => {},
+	accountStatus: null,
+};
+
 const Ctx = createContext<AppCtx | null>(null);
 export const useApp = (): AppCtx => {
 	const ctx = useContext(Ctx);
-	if (!ctx) throw new Error("useApp must be used within <AppProvider>");
-	return ctx;
+	return ctx ?? DEFAULT_APP_CTX;
 };
 
 let toastSeq = 1;
 
 /* v8 ignore start -- @preserve */
-// Toast action callback — never exercised in unit tests because the
-// toast UI button renders outside <AppProvider>.
+// Toast action callback — routes to My Activity for account status and strike details.
 const _toastAction = () => {
-	window.location.href = "/chat";
+	navigateTo("/activity");
 };
 /* v8 ignore stop -- @preserve */
+
+function sanitizeStoredNotifs(raw: Notification[]): Notification[] {
+	return (raw || []).map((n) => {
+		if (
+			n &&
+			n.link === "/chat" &&
+			(n.kind === "warning" ||
+				n.kind === "moderation" ||
+				n.kind === "suspension" ||
+				n.kind === "ban" ||
+				n.title?.toLowerCase().includes("warning") ||
+				n.title?.toLowerCase().includes("strike") ||
+				n.title?.toLowerCase().includes("ban"))
+		) {
+			return { ...n, link: "/activity" };
+		}
+		return n;
+	});
+}
 
 export function AppProvider({ children }: { children: ReactNode }) {
 	const [anonId, setAnonId] = useState(getAnonId);
@@ -200,7 +385,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 		lsGet("vb:bookmarks", []),
 	);
 	const [notifications, setNotifications] = useState<Notification[]>(() =>
-		lsGet("vb:notifications", []),
+		sanitizeStoredNotifs(lsGet("vb:notifications", [])),
 	);
 	const [recentlyViewed, setRecentlyViewed] = useState<string[]>(() =>
 		lsGet("vb:recentlyViewed", []),
@@ -219,85 +404,19 @@ export function AppProvider({ children }: { children: ReactNode }) {
 	// current list without a stale closure and without side effects inside a
 	// state updater.
 	const notificationsRef = useRef<Notification[]>(notifications);
+	/** Last on-device ping, so a replayed event can't fire twice in a minute. */
+	const lastPingRef = useRef<{ key: string; at: number }>({ key: "", at: 0 });
+	/** True when the last engine pass was skipped while hidden. */
+	const wasAwayRef = useRef(false);
+	// Latest engine pass — lets the live stream and the fallback interval
+	// below trigger the same snapshot diff without duplicating it.
+	const checkRef = useRef<() => void>(() => {});
 	useEffect(() => {
 		notificationsRef.current = notifications;
 	}, [notifications]);
 
-	// Heartbeat: registers this browser's anonymous ID (so it appears in admin
-	// immediately, before any post) AND returns live ban/suspension/warning status.
-	// Also detects new warnings/strikes and fires a notification popup.
-	useEffect(() => {
-		let cancelled = false;
-		const beat = () =>
-			api
-				.post<AccountStatus>("/api/users", { anon_id: anonId })
-				.then((s) => {
-					if (cancelled) return;
-					const prev = prevStatusRef.current;
-					prevStatusRef.current = s;
-					setAccountStatus(s);
-					// Detect NEW warning (strike increased) or NEW ban — only fire on a
-					// real change. The pre-publish review queue issues ban + strike in a
-					// single update, so the strike branch alone would never fire for it:
-					// banning must ALWAYS produce a popup.
-					if (prev && s) {
-						const prevStrikes = prev.strikes || 0;
-						const newStrikes = s.strikes || 0;
-						const newlyBanned = !prev.banned && !!s.banned;
-						if (newlyBanned) {
-							pushNotif({
-								kind: "info",
-								title: "🚫 Your account has been banned",
-								body: "This anonymous ID can no longer post, comment, or vote. Contact an admin if you believe this is a mistake.",
-								link: "/chat",
-							});
-							toast("🚫 Your anonymous ID has been permanently banned", "err", {
-								label: "Details",
-								fn: _toastAction,
-							});
-						} else if (newStrikes > prevStrikes && !s.banned) {
-							const warningText = s.latest_warning || "";
-							pushNotif({
-								kind: "info",
-								title: "⚠️ You received a warning from admin",
-								body: warningText
-									? `"${warningText}"`
-									: `Strike ${newStrikes} of 3. Too many strikes may result in a ban.`,
-								link: "/chat",
-							});
-							// Also show as toast (auto-dismissed after 30s)
-							toast(
-								warningText
-									? `⚠️ Warning: "${warningText.slice(0, 80)}" (${newStrikes}/3 strikes)`
-									: `⚠️ Strike ${newStrikes} of 3 issued against your account`,
-								"err",
-								{ label: "View", fn: _toastAction },
-							);
-						}
-					}
-				})
-				.catch((e: unknown) => {
-					console.warn(
-						"[AppContext] heartbeat failed:",
-						e instanceof Error ? e.message : e,
-					);
-				});
-		beat();
-		const iv = setInterval(() => {
-			if (!document.hidden) beat();
-		}, 120000);
-		// Re-check immediately when the tab regains focus so a pending strike/ban
-		// surfaces right away instead of waiting for the next 120s interval.
-		const onVisible = () => {
-			if (!document.hidden) beat();
-		};
-		document.addEventListener("visibilitychange", onVisible);
-		return () => {
-			cancelled = true;
-			clearInterval(iv);
-			document.removeEventListener("visibilitychange", onVisible);
-		};
-	}, [anonId]); // eslint-disable-line react-hooks/exhaustive-deps
+	// (Account-status heartbeat lives below applyAccountStatus so its deps
+	// are declared before use — no TDZ-by-accident, no eslint suppression.)
 
 	// Apply the REAL appearance: resolved theme + glass/animation/density
 	// toggles become <html> data attributes that index.css reacts to.
@@ -387,7 +506,46 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
 	const pushNotif = useCallback(
 		(n: Omit<Notification, "id" | "at" | "read">) => {
+			const now = Date.now();
+			// Ping the OS only for a genuinely new event — never for the
+			// in-app duplicate that the state dedupe below collapses.
+			const duplicate = notificationsRef.current.some(
+				(p) =>
+					!p.read &&
+					p.kind === n.kind &&
+					p.title === n.title &&
+					p.body === n.body &&
+					(p.link || null) === (n.link || null) &&
+					now - new Date(p.at).getTime() < 60000,
+			);
+			const pingKey = `${n.kind}|${n.title}|${n.body}|${n.link || ""}`;
+			const lastPing = lastPingRef.current;
+			if (
+				!duplicate &&
+				shouldPingBrowser(n.kind) &&
+				(lastPing.key !== pingKey || now - lastPing.at >= 60000)
+			) {
+				lastPingRef.current = { key: pingKey, at: now };
+				showBrowserNotification({
+					title: n.title,
+					body: n.body,
+					tag: `vf-${n.kind}`,
+					url: n.link,
+				});
+			}
 			setNotifications((prev) => {
+				// Dedupe: an identical unread notice within 60s is a double-fire
+				// (double submit, re-mount replay), never two real events.
+				const dup = prev.some(
+					(p) =>
+						!p.read &&
+						p.kind === n.kind &&
+						p.title === n.title &&
+						p.body === n.body &&
+						(p.link || null) === (n.link || null) &&
+						now - new Date(p.at).getTime() < 60000,
+				);
+				if (dup) return prev;
 				const next = [
 					{
 						...n,
@@ -426,8 +584,30 @@ export function AppProvider({ children }: { children: ReactNode }) {
 		});
 	}, [anonId]);
 
-	const clearNotifs = useCallback(() => {
-		setNotifications([]);
+	const markNotifRead = useCallback(
+		(id: string) => {
+			const target = notificationsRef.current.find((n) => n.id === id);
+			if (target && !target.read && target.id.startsWith("notif_")) {
+				api
+					.post("/api/notifications", {
+						user_id: anonId,
+						notification_id: target.id,
+					})
+					.catch(() => {
+						/* offline-friendly */
+					});
+			}
+			setNotifications((prev) => {
+				if (prev.every((n) => n.id !== id || n.read)) return prev;
+				const next = prev.map((n) => (n.id === id ? { ...n, read: true } : n));
+				lsSet("vb:notifications", next);
+				return next;
+			});
+		},
+		[anonId],
+	);
+
+	const clearNotifs = useCallback(() => {		setNotifications([]);
 		lsSet("vb:notifications", []);
 		// Clear the server store too so a re-sync can't resurrect cleared items.
 		api
@@ -437,34 +617,207 @@ export function AppProvider({ children }: { children: ReactNode }) {
 			});
 	}, [anonId]);
 
+	const retireNotifsForLink = useCallback((link: string) => {
+		setNotifications((prev) => {
+			const next = prev.filter((n) => n.link !== link);
+			if (next.length === prev.length) return prev;
+			lsSet("vb:notifications", next);
+			return next;
+		});
+	}, []);
+
 	const toast = useCallback(
 		(text: string, kind: Toast["kind"] = "info", action?: Toast["action"]) => {
-			const id = toastSeq++;
-			setToasts((prev) => [...prev, { id, text, kind, action }]);
-			setTimeout(
-				() => setToasts((prev) => prev.filter((t) => t.id !== id)),
-				action ? 30000 : 3800,
-			);
+			setToasts((prev) => {
+				if (prev.some((t) => t.text === text && t.kind === kind)) {
+					return prev;
+				}
+				const id = toastSeq++;
+				setTimeout(
+					() => setToasts((curr) => curr.filter((t) => t.id !== id)),
+					action ? 12000 : 3800,
+				);
+				return [...prev, { id, text, kind, action }];
+			});
 		},
 		[],
 	);
 
+	const dismissToast = useCallback((id: number) => {
+		setToasts((curr) => curr.filter((t) => t.id !== id));
+	}, []);
+
+	// Apply a fresh account status: store it and fire the ban/strike
+	// popups ONLY on a real change (prev === null means first sight —
+	// never pop on load). Shared by the mount heartbeat and the
+	// notification-engine check pass, so an admin ban/suspend lands live
+	// on the next SSE wake instead of waiting for a reload.
+	const applyAccountStatus = useCallback(
+		(s: AccountStatus | null) => {
+			if (!s) return;
+			const prev = prevStatusRef.current;
+			prevStatusRef.current = s;
+			setAccountStatus(s);
+			// Detect NEW warning (strike increased) or NEW ban — only fire on a
+			// real change. The pre-publish review queue issues ban + strike in a
+			// single update, so the strike branch alone would never fire for it:
+			// banning must ALWAYS produce a popup.
+			if (prev && s) {
+				const prevStrikes = prev.strikes || 0;
+				const newStrikes = s.strikes || 0;
+				const newlyBanned = !prev.banned && !!s.banned;
+				if (newlyBanned) {
+					pushNotif({
+						kind: "ban",
+						title: "🚫 Your account has been banned",
+						body: "This anonymous ID can no longer post, comment, or vote. Contact an admin if you believe this is a mistake.",
+						link: "/activity",
+					});
+					toast("🚫 Your anonymous ID has been permanently banned", "err", {
+						label: "Details",
+						fn: _toastAction,
+					});
+				} else if (newStrikes > prevStrikes && !s.banned) {
+					const warningText = s.latest_warning || "";
+					pushNotif({
+						kind: "warning",
+						title: "⚠️ You received a warning from admin",
+						body: warningText
+							? `"${warningText}"`
+							: `Strike ${newStrikes} of 3. Too many strikes may result in a ban.`,
+						link: "/activity",
+					});
+					// Also show as toast (auto-dismissed after 30s)
+					toast(
+						warningText
+							? `⚠️ Warning: "${warningText.slice(0, 80)}" (${newStrikes}/3 strikes)`
+							: `⚠️ Strike ${newStrikes} of 3 issued against your account`,
+						"err",
+						{ label: "View", fn: _toastAction },
+					);
+				}
+			}
+		},
+		[pushNotif, toast],
+	);
+
+	// Heartbeat: registers this browser's anonymous ID (so it appears in admin
+	// immediately, before any post) AND returns live ban/suspension/warning
+	// status. Runs AFTER applyAccountStatus is declared so the deps array is
+	// honest (react-hooks/exhaustive-deps satisfied without suppression).
+	//
+	// prevStatusRef is RESET on every identity change: the baseline is
+	// per-identity, so switching anon IDs must never compare the new
+	// account's status against the old account's (a benign→banned switch
+	// would popup off someone else's baseline; banned→benign would swallow
+	// a real one). First sight after a switch = first sight after a load:
+	// no popup, state only.
+	//
+	// This POST also runs once on mount alongside the notification-engine's
+	// status refresh — two reads, both idempotent registrations of the same
+	// id. Intentional: neither effect may depend on the other having run,
+	// so a failed/slow heartbeat can't leave the engine without status.
+	useEffect(() => {
+		let cancelled = false;
+		prevStatusRef.current = null;
+		const beat = () =>
+			api
+				.post<AccountStatus>("/api/users", { anon_id: anonId })
+				.then((s) => {
+					if (cancelled) return;
+					applyAccountStatus(s);
+				})
+				.catch((e: unknown) => {
+					console.warn(
+						"[AppContext] heartbeat failed:",
+						e instanceof Error ? e.message : e,
+					);
+				});
+		beat();
+		// One initial heartbeat per identity. Do not poll every open tab or
+		// re-register on visibility; route entry or an explicit user action is
+		// the refresh boundary.
+		return () => {
+			cancelled = true;
+		};
+	}, [anonId, applyAccountStatus]);
+
 	const refreshIdentity = useCallback(() => {
 		setAnonId(getAnonId());
 		setBookmarks(lsGet("vb:bookmarks", []));
-		setNotifications(lsGet("vb:notifications", []));
+		setNotifications(sanitizeStoredNotifs(lsGet("vb:notifications", [])));
 		setRecentlyViewed(lsGet("vb:recentlyViewed", []));
 	}, []);
 
+	// Cross-tab identity synchronization — when another browser tab resets,
+	// pairs, or updates the anonymous identity, synchronize this tab's state
+	// immediately to prevent stale-session 403 lockouts across open tabs.
+	useEffect(() => {
+		const handleStorage = (e: StorageEvent) => {
+			if (!e.key || e.key === "vb:anonId" || e.key === "vb:sessionToken") {
+				refreshIdentity();
+			}
+		};
+		window.addEventListener("storage", handleStorage);
+		return () => window.removeEventListener("storage", handleStorage);
+	}, [refreshIdentity]);
+
+	// A dead-session notice is NEVER raised automatically. Minting a new
+	// anonymous ID while the old ID still owns posts permanently orphans that
+	// content. Recovery is an explicit, user-initiated action in Settings →
+	// Account only — see Settings.tsx.
+
+	// ---------- presence heartbeat ----------
+	// One lightweight last_seen touch per minute while the tab is visible so
+	// the admin Users table can show real "online now" presence. Paused when
+	// the tab is hidden; the server additionally throttles to one write per
+	// id per 45s. This is the single sanctioned background write in the
+	// client — failures are silent (presence is advisory, never blocking).
+	// Interval is load-harnessed with full randomized jitter to scale across 5,000+ users.
+	useEffect(() => {
+		let timer: number | undefined;
+		let cancelled = false;
+		const beat = () => {
+			if (document.hidden) return;
+			api.post("/api/me", { action: "heartbeat" }).catch(() => {});
+		};
+		const scheduleNext = () => {
+			if (cancelled) return;
+			const nextMs = loadHarness.getPollingInterval(60_000);
+			timer = window.setTimeout(() => {
+				beat();
+				scheduleNext();
+			}, nextMs);
+		};
+		beat();
+		scheduleNext();
+		return () => {
+			cancelled = true;
+			if (timer !== undefined) window.clearTimeout(timer);
+		};
+	}, []);
+
 	// ---------- background notification engine ----------
-	// Runs every 120s, pauses when tab is hidden to save API calls.
+	// One snapshot-diff pass on mount (plus every stream wake-up / fallback
+	// tick via checkRef below). Pauses when the tab is hidden; the pass
+	// sets wasAwayRef so the next visible pass can show the catch-up ping.
 	useEffect(() => {
 		let cancelled = false;
 		async function check() {
-			// Skip if tab is hidden — will catch up when user returns
-			if (document.hidden) return;
+			// Skip if web tab is hidden — will catch up when user returns.
+			// Native shells (desktop app / Android APK) never skip on hidden,
+			// ensuring background updates trigger real system notifications.
+			if (document.hidden && !isNativeShell()) {
+				wasAwayRef.current = true;
+				return;
+			}
+			const freshTitles: string[] = [];
+			const notifyFresh = (n: Omit<Notification, "id" | "at" | "read">) => {
+				freshTitles.push(n.title);
+				pushNotif(n);
+			};
 			try {
-				const [mine, chat, serverNotifs] = await Promise.all([
+				const [mine, chat, serverNotifs, status] = await Promise.all([
 					api
 						.getSlow<PostData[]>(`/api/posts?author=${anonId}&viewer=${anonId}`)
 						.catch((): PostData[] => []),
@@ -476,8 +829,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
 							`/api/notifications?user_id=${anonId}`,
 						)
 						.catch((): { notifications?: ServerNotif[] } => ({})),
+					// Live account status (ban/suspend/strikes): the admin
+					// Users desk writes + notifies, the SSE stream wakes us
+					// within seconds, and this refresh turns that wake into
+					// the same enforcement popup a reload would show.
+					api
+						.post<AccountStatus>("/api/users", { anon_id: anonId })
+						.catch((): null => null),
 				]);
 				if (cancelled) return;
+				applyAccountStatus(status);
 				// Merge admin-issued notifications (warnings, suspensions, bans) that
 				// were written server-side — they must reach the user even on a fresh
 				// visit or after localStorage was cleared. Client notifications keep
@@ -507,7 +868,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 					if (!prev || typeof prev !== "object" || !("status" in prev))
 						continue;
 					if (prev.status !== p.status) {
-						pushNotif({
+						notifyFresh({
 							kind: "status",
 							title:
 								p.status === "solved"
@@ -518,7 +879,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 						});
 					}
 					if (!prev.reply && p.admin_reply) {
-						pushNotif({
+						notifyFresh({
 							kind: "reply",
 							title: "💬 Admin replied to your post",
 							body: p.title,
@@ -526,7 +887,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 						});
 					}
 					if ((p.comment_count ?? 0) > prev.comments) {
-						pushNotif({
+						notifyFresh({
 							kind: "comment",
 							title: `💬 ${(p.comment_count ?? 0) - prev.comments} new comment(s)`,
 							body: p.title,
@@ -534,25 +895,33 @@ export function AppProvider({ children }: { children: ReactNode }) {
 						});
 					}
 				}
-				// unread admin chat messages → badge in nav + notification
+				// unread admin AND ai chat messages → badge in nav + notification.
+				// AI replies used to be invisible here (only "admin" counted), so a
+				// reply landing while the user was on another page never raised
+				// any signal — the inbox looked dead until reopened.
 				if (chat) {
-					const unreadAdmin = (chat.messages ?? []).filter(
-						(m) => m.sender === "admin" && !m.read,
-					).length;
-					setChatUnread(unreadAdmin);
+					const unreadIncoming = (chat.messages ?? []).filter(
+						(m) => m.sender !== "user" && !m.read,
+					);
+					setChatUnread(unreadIncoming.length);
 					const prevUnread =
 						typeof snapshot.__chatUnread === "number"
 							? snapshot.__chatUnread
 							: 0;
-					if (unreadAdmin > prevUnread) {
-						pushNotif({
+					if (unreadIncoming.length > prevUnread) {
+						const hasAdmin = unreadIncoming.some(
+							(m) => m.sender === "admin",
+						);
+						notifyFresh({
 							kind: "chat",
-							title: "✉️ New message from admin",
+							title: hasAdmin
+								? "✉️ New message from admin"
+								: "🤖 New reply in your inbox",
 							body: "Open your inbox to read it.",
 							link: "/chat",
 						});
 					}
-					nextSnap.__chatUnread = unreadAdmin;
+					nextSnap.__chatUnread = unreadIncoming.length;
 				}
 
 				// poll endings — voted ids joined against the full poll list for metadata
@@ -576,7 +945,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 								(poll.expires_at && new Date(poll.expires_at) < new Date());
 							nextSnap[`poll_${pid}`] = !!ended;
 							if (ended && snapshot[`poll_${pid}`] === false) {
-								pushNotif({
+								notifyFresh({
 									kind: "poll",
 									title: "📊 A poll you voted in has ended",
 									body: poll.title,
@@ -590,23 +959,98 @@ export function AppProvider({ children }: { children: ReactNode }) {
 				}
 
 				lsSet("vb:notifSnapshot", nextSnap);
+				if (wasAwayRef.current && freshTitles.length > 0) {
+				try {
+				const mirror = lsGet<{ enabled?: boolean }>("vb:browser-notify", {});
+				if (mirror.enabled !== false) {
+				const first = freshTitles[0] || "New update";
+				showBrowserNotification({
+				title: freshTitles.length === 1 ? first : freshTitles.length + " updates while you were away",
+				body: freshTitles.slice(0, 3).join(" \u00b7 ").slice(0, 160),
+				tag: "voice-flow-catchup",
+				url: "/activity",
+				});
+				}
+				} catch {
+					/* ping is best-effort — in-app notifications already delivered */
+				}
+				}
+				wasAwayRef.current = false;
 			} catch {
 				/* offline-friendly: silently skip */
 			}
 		}
+		checkRef.current = check;
 		check();
-		const iv = setInterval(check, 180000);
-		// Also catch up when user returns to the tab
-		const onVisChange = () => {
-			if (!document.hidden && !cancelled) check();
+		const onVisibilityChange = () => {
+			if (!document.hidden && wasAwayRef.current) {
+				check();
+			}
 		};
-		document.addEventListener("visibilitychange", onVisChange);
+		if (typeof document !== "undefined") {
+			document.addEventListener("visibilitychange", onVisibilityChange);
+		}
+		// Catch-up is intentionally one-shot after mount. A quiet tab must not
+		// generate recurring full-history notification requests.
 		return () => {
 			cancelled = true;
-			clearInterval(iv);
-			document.removeEventListener("visibilitychange", onVisChange);
+			if (typeof document !== "undefined") {
+				document.removeEventListener("visibilitychange", onVisibilityChange);
+			}
 		};
-	}, [anonId, pushNotif]);
+	}, [anonId, pushNotif, applyAccountStatus]);
+
+	// ---------- live inbox stream ----------
+	// A server-sent-events stream (/api/events) wakes the engine pass above
+	// the moment my posts / chat thread / notification feed change. The
+	// stream is a WAKE-UP only: every event re-runs the same snapshot
+	// diff, so a spurious event can never fabricate a notification.
+	// The server holds each connection ~45s, then closes it; EventSource
+	// reconnects on its own, so the healthy steady state is
+	// connect → hello → updates → close → reconnect. No setInterval here:
+	// the one-load lifecycle contract (locked by AppContextCore's "does
+	// not install recurring … poll timers" test) forbids recurring
+	// full-history requests — the stream's own reconnect IS the retry
+	// mechanism, and a dead endpoint just leaves the inbox exactly as
+	// stale as it is today (one post-mount pass) instead of hammering it.
+	useEffect(() => {
+		let cancelled = false;
+		let es: EventSource | null = null;
+		const run = () => {
+			if (!cancelled) checkRef.current();
+		};
+		if (typeof EventSource !== "undefined" && anonId) {
+			try {
+				let st: string | null = null;
+				try {
+					if (typeof getSessionToken === "function") {
+						st = getSessionToken();
+					}
+				} catch {
+					/* identity mock in tests may omit getSessionToken */
+				}
+				const sParam = st ? `&session_token=${encodeURIComponent(st)}` : "";
+				es = new EventSource(
+					`${apiBase()}/api/events?user_id=${encodeURIComponent(anonId)}${sParam}`,
+					{ withCredentials: true },
+				);
+				es.addEventListener("update", run);
+			} catch {
+				es = null; // no EventSource / bad URL — inbox stays one-shot
+			}
+		}
+		return () => {
+			cancelled = true;
+			if (es) {
+				try {
+					es.close();
+				} catch {
+					/* already closed */
+				}
+				es = null;
+			}
+		};
+	}, [anonId]);
 
 	// Memoize context value to prevent unnecessary re-renders in consumers.
 	// All callbacks are already stable via useCallback; useMemo prevents a new
@@ -626,9 +1070,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
 			toggleBookmark,
 			notifications,
 			markNotifsRead,
+			markNotifRead,
 			clearNotifs,
 			pushNotif,
+			retireNotifsForLink,
 			toast,
+			dismissToast,
 			toasts,
 			refreshIdentity,
 			recentlyViewed,
@@ -654,9 +1101,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
 			toggleBookmark,
 			notifications,
 			markNotifsRead,
+			markNotifRead,
 			clearNotifs,
 			pushNotif,
+			retireNotifsForLink,
 			toast,
+			dismissToast,
 			toasts,
 			refreshIdentity,
 			recentlyViewed,

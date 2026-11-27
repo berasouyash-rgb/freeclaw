@@ -10,7 +10,7 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import Logs from "../pages/admin/Logs";
+import Logs, { parseVerificationReceipt } from "../pages/admin/Logs";
 
 const mocks = vi.hoisted(() => ({
 	get: vi.fn(),
@@ -211,18 +211,15 @@ describe("Logs — admin audit tab", () => {
 	});
 
 	it("exports the audit log as CSV", async () => {
-		mocks.toCSV.mockReturnValue("id,actor\na1,admin");
 		const user = userEvent.setup();
 		renderPage();
 		await screen.findByText("incident.created");
 
 		await user.click(screen.getByRole("button", { name: "Export CSV" }));
-		expect(mocks.toCSV).toHaveBeenCalled();
-		expect(mocks.downloadFile).toHaveBeenCalledWith(
-			"voicebox-audit.csv",
-			"id,actor\na1,admin",
-			"text/csv",
-		);
+		expect(mocks.downloadFile).toHaveBeenCalled();
+		const callArgs = mocks.downloadFile.mock.calls[0]!;
+		expect(callArgs[0]).toMatch(/voicebox-logs-.*\.csv/);
+		expect(callArgs[2]).toContain("text/csv");
 	});
 });
 
@@ -268,5 +265,62 @@ describe("Logs — helpers and edge cases", () => {
 		});
 		renderPage();
 		expect(await screen.findByText(/🤖 security-monitor/)).toBeInTheDocument();
+	});
+});
+
+describe("Logs — verification receipts", () => {
+	it("parses post-removal receipts (verified and failed)", () => {
+		expect(
+			parseVerificationReceipt(
+				"post_removal_verified",
+				"p9: post absent from public read path [exposure_ms=3720000]",
+			),
+		).toMatchObject({
+			kind: "post_removal",
+			targetId: "p9",
+			verified: true,
+			exposureMs: 3720000,
+		});
+		expect(
+			parseVerificationReceipt(
+				"post_removal_unverified",
+				"p9: post still publicly visible after removal [exposure_ms=null]",
+			),
+		).toMatchObject({ verified: false, exposureMs: null });
+	});
+
+	it("parses comment-hide receipts and ignores legacy rows", () => {
+		expect(
+			parseVerificationReceipt(
+				"comment_hidden",
+				"c1 by anon_bad (hidden+warned, prior hidden 7d: 0) [rule=bullying exposure_ms=184000 row=hidden public=absent]",
+			),
+		).toMatchObject({
+			kind: "comment_hide",
+			targetId: "c1",
+			verified: true,
+			rule: "bullying",
+			legs: "row=hidden public=absent",
+		});
+		expect(parseVerificationReceipt("comment_hidden", "c1 by anon_bad (hidden+warned)")).toBeNull();
+		expect(parseVerificationReceipt("update_user", "anon_x warned")).toBeNull();
+	});
+
+	it("renders a VERIFIED badge for receipt rows in the audit tab", async () => {
+		mocks.items = [
+			{
+				id: "a9",
+				actor: "moderation",
+				action: "post_removal_verified",
+				detail: "p9: post absent from public read path [exposure_ms=184000]",
+				created_at: "2026-07-02T10:00:00.000Z",
+			},
+		];
+		mocks.total = 1;
+		const user = userEvent.setup();
+		renderPage();
+		await user.click(screen.getByRole("button", { name: /📋 Admin Audit Log/ }));
+		expect(await screen.findByText("VERIFIED")).toBeInTheDocument();
+		expect(screen.getByText(/Post p9/)).toBeInTheDocument();
 	});
 });

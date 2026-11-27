@@ -1,0 +1,62 @@
+rules_version = '2';
+
+// ─── VoiceFlow standby replica rules ──────────────────────────────
+//
+// Scope: this Firestore project (`voicelflow`) holds a REPLICA of the
+// VoiceFlow Supabase tables. It is written exclusively by the server-side
+// replicator using the Firebase Admin SDK, which bypasses these rules.
+//
+// Clients never talk to Firestore directly in normal operation: every client
+// (web, APK, EXE, admin) calls the shared backend gateway at `/api`, which is
+// the only component holding credentials. These rules exist so that a direct
+// read of the standby can never expose MORE than the Supabase anonymous
+// allowlist already exposes. They are a mirror, not a new surface.
+//
+// The Supabase posture being mirrored (verified 2026-11-07 against
+// kfesjnidtejyldytdwfl.supabase.co with the public anon key):
+//   • readable: posts, comments, polls
+//   • everything else: 401/403/404
+//   • writes: none (RLS hardened by api/migrations/005_rls_hardening.sql)
+//
+// Collection naming must match api/_backend/adapters/firebase-adapter.js:
+//   voiceflow_{table}  →  document id = the table's primary key value
+//
+// Deliberate limitations, stated plainly:
+//   • Firestore rules cannot restrict individual FIELDS. Field-level parity
+//     with the Supabase anon projection is therefore impossible here, which
+//     is precisely why only the three already-public collections are opened.
+//   • Rules cannot perform joins, so cross-school isolation on these three
+//     collections relies on them being genuinely public in Supabase too.
+//     If Supabase ever narrows them to per-school reads, this block MUST be
+//     narrowed in the same change or the standby becomes the weaker path.
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ── Public realtime allowlist (mirrors Supabase anon grants) ──
+    // Soft-deleted rows are never readable, matching the `deleted boolean`
+    // filter the API applies before returning content.
+    match /voiceflow_posts/{docId} {
+      allow read: if resource.data.deleted != true;
+      allow write: if false;
+    }
+
+    match /voiceflow_comments/{docId} {
+      allow read: if resource.data.deleted != true;
+      allow write: if false;
+    }
+
+    match /voiceflow_polls/{docId} {
+      allow read: if resource.data.deleted != true;
+      allow write: if false;
+    }
+
+    // ── Everything else: server-only ──
+    // Explicit deny is redundant with Firestore's default-deny, but it is
+    // stated so that adding a collection above can never silently widen
+    // access to a table that was not deliberately published.
+    match /{collection}/{docId} {
+      allow read, write: if false;
+    }
+  }
+}

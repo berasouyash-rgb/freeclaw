@@ -1,0 +1,51 @@
+{
+  "loop": "voicebox-qa-repair",
+  "mode": "safe",
+  "pattern": "sequential-servo",
+  "created": "2026-09-24",
+  "iteration": 11,
+  "maxIterations": 12,
+  "maxRetriesPerArea": 3,
+  "currentArea": "5-reports-approval-wording",
+  "integrityWarning": "Working tree is being edited by another session (frontend count 1397->1412 without this loop). Iteration 3-4 evidence held: timeouts and the build OOM were isolated to contention, not regression. Count attribution remains unreliable while two writers share the tree.",
+  "golden": {
+    "frontendIts": 1408,
+    "apiIts": 1329,
+    "testFiles": 223,
+    "note": "G4 boundary: counts may only go UP. Loop-authored: api 1311->1329 (+18). Frontend count also moves from the concurrent writer."
+  },
+  "baselineSuite": {
+    "typecheck": 0,
+    "eslint": 0,
+    "testApi": 0,
+    "testFrontend": 0,
+    "build": 0,
+    "verifiedAt": "2026-09-24T13:35Z"
+  },
+  "humanGates": {
+    "commit": "HUMAN",
+    "push": "HUMAN",
+    "deploy": "HUMAN",
+    "deleteTest": "FORBIDDEN",
+    "rotateNvidiaKey": "HUMAN"
+  },
+  "areas": [
+    { "id": 1, "name": "silent-failure-sweep", "state": "DONE", "retries": 0, "fixed": 5, "open": 0, "note": "BUG-011/012/013/014/015 fixed. 12 remaining scanner hits triaged: 11 false positives (setThreadState already retries+rethrows; one is a SELECT dedup probe), 0 real." },
+    { "id": 2, "name": "admin-feed-bulk-delete", "state": "DONE", "bugs": 5 },
+    { "id": 3, "name": "polls-crud-vote-integrity", "state": "DONE", "bugs": 1 },
+    { "id": 4, "name": "authorization-boundary", "state": "DONE", "retries": 0, "fixed": 1, "open": 0, "verified": 4, "note": "BUG-016 CRITICAL fixed. V-001 branch-ordering sweep clean (74 handlers). V-002 appeals sound. V-003 all 7 untested gates proven at runtime. V-004 chat impersonation impossible. 46 authz tests added." },
+    { "id": 5, "name": "reports-approval-wording", "state": "IN_PROGRESS", "retries": 0, "fixed": 2, "open": 0, "note": "BUG-017: bulk reports.resolve wrote 'solved' (post vocabulary) not 'resolved'. BUG-018: bulk users.status 'suspended' with no date wrote suspended_until=null, LIFTING existing suspensions; unknown status was an empty-patch no-op reported as processed. Both fixed with gated vocabularies." },
+    { "id": 6, "name": "form-contracts", "state": "TODO", "retries": 0 },
+    { "id": 7, "name": "realtime-cache-coherence", "state": "DONE", "bugs": 4 },
+    { "id": 8, "name": "notification-appeal-lifecycle", "state": "TODO", "retries": 0 },
+    { "id": 9, "name": "search-filter-pagination", "state": "TODO", "retries": 0 },
+    { "id": 10, "name": "input-validation-injection", "state": "TODO", "retries": 0 },
+    { "id": 11, "name": "accessibility-contracts", "state": "TODO", "retries": 0 },
+    { "id": 12, "name": "dead-mislabeled-buttons", "state": "PARTIAL", "retries": 0 }
+  ],
+  "bugs": { "open": 0, "fixed": 22, "blocked": 0, "verifiedClean": 11 },
+  "typecheckBlockedBy": null,
+  "concurrentWriter": "Iteration 9: another session deleted the AI admin surfaces + their tests (AI Quality, AI Failures, Model Performance, Safety Intel) — coherent with the 'remove the ai agents' request. Suite re-ran green (86 files/1413). Frontend count 1432->1413 is theirs, not a loop regression. useDashboardLayout.ts + DashboardBuilder.tsx deletions do NOT obviously belong to that change and may be unintentional.",
+  "criticalFound": ["BUG-016 unauthenticated admin-session revocation (_admin.js revoke_all_sessions)"],
+  "stopReason": null
+}

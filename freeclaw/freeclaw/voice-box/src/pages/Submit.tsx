@@ -1,4 +1,4 @@
-﻿import {
+import {
 	AlertTriangle,
 	BarChart3,
 	CheckCircle2,
@@ -8,8 +8,6 @@
 	Lightbulb,
 	Lock,
 	Megaphone,
-	Mic,
-	MicOff,
 	Pencil,
 	Save,
 	Send,
@@ -17,30 +15,36 @@
 	ShieldCheck,
 	Sparkles,
 	X,
-	Zap,
 } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router";
-import { fireConfetti } from "../components/Confetti";
+import { celebrate } from "../lib/joy";
+import RelevanceNote from "../components/RelevanceNote";
+import AppealPanel, { type AppealSurface } from "../components/AppealPanel";
 import { useApp } from "../contexts/AppContext";
 import { useCategories } from "../hooks/useCategories";
 import { api } from "../lib/api";
+import { tablistKeyDown } from "../lib/tablist";
+import { downscaleImage } from "../lib/image";
 import { checkCooldown, lsGet, lsSet, stampCooldown } from "../lib/identity";
+import { checkContentSlang, validateSchoolProblem } from "../lib/schoolIssueAI";
+import { triggerHaptic } from "../lib/haptics";
 import {
-	getModerationSummary,
-	isBlocked,
+	isBlockedByServer,
 	type ModerationResult,
 	moderateContent,
+	normalizePrePubResult,
+	type PrePubCheckKey,
+	PREPUB_CHECK_KEYS,
+	type PrePubResult,
+	submitBlockMessage,
 } from "../lib/moderation";
-import {
-	type SpeechSession,
-	speechSupported,
-	startDictation,
-} from "../lib/speech";
+
 import { CAT_EMOJI, sanitize } from "../lib/utils";
 import type { PostData, PostType } from "../types";
 
 const DRAFT_KEY = "vb:drafts";
+
 
 interface Draft {
 	title?: string;
@@ -65,28 +69,61 @@ interface PollSuggest {
 	ptype?: string | null;
 	note?: string | null;
 }
-interface PrePubResult {
-	decision: string;
-	reason: string;
-	risk_score: number;
-	review_id?: string;
-	checks?: {
-		privacy: { pass: boolean; issues: string[] };
-		safety: { pass: boolean; issues: string[] };
-		spam: { pass: boolean; issues: string[] };
-		quality: { pass: boolean; issues: string[] };
-	};
-	analysis?: {
-		priority: string;
-		department: string;
-		summary: string;
-		estimated_resolution_time: string;
-		llm_analyzed: boolean;
-	};
+
+const KEYWORD_CATEGORIES: Record<string, string[]> = {
+	Facilities: ["washroom", "toilet", "bathroom", "tap", "leak", "water", "plumbing", "pipe", "ac", "air conditioner", "fan", "light", "bulb", "bench", "desk", "elevator", "lift", "door", "window", "generator", "electricity"],
+	Food: ["canteen", "cafeteria", "lunch", "mess", "food", "snack", "meal", "stale", "dinner", "breakfast", "hygiene", "cook", "water cooler", "tiffin"],
+	Academics: ["class", "lecture", "professor", "teacher", "exam", "syllabus", "attendance", "grade", "marks", "assignment", "lab", "course", "schedule", "timetable"],
+	Hostel: ["hostel", "room", "warden", "curfew", "roommate", "bed", "mess", "dorm", "hot water"],
+	Safety: ["ragging", "bully", "harass", "threat", "unsafe", "dark", "security", "guard", "cctv", "fight", "stolen", "theft"],
+	Transport: ["bus", "van", "transport", "driver", "route", "parking", "auto", "shuttle"],
+};
+
+function ProgressDonut({ current, max, id }: { current: number; max: number; id?: string }) {
+	const pct = Math.min(100, Math.round((current / max) * 100));
+	const radius = 6;
+	const circumference = 2 * Math.PI * radius;
+	const strokeDashoffset = circumference - (pct / 100) * circumference;
+	const color = pct >= 100 ? "var(--vb-bad)" : pct >= 85 ? "var(--vb-warn)" : "var(--vb-accent)";
+	return (
+		<span id={id} className="inline-flex items-center gap-1.5 text-[10px] text-ink3 ml-auto">
+			<svg width="16" height="16" className="transform -rotate-90 shrink-0" aria-hidden="true">
+				<circle
+					cx="8"
+					cy="8"
+					r={radius}
+					stroke="currentColor"
+					strokeWidth="2"
+					fill="transparent"
+					className="text-border opacity-30"
+				/>
+				<circle
+					cx="8"
+					cy="8"
+					r={radius}
+					stroke={color}
+					strokeWidth="2"
+					strokeDasharray={circumference}
+					strokeDashoffset={strokeDashoffset}
+					strokeLinecap="round"
+					fill="transparent"
+					className="transition-all duration-300"
+				/>
+			</svg>
+			<span className={pct >= 100 ? "text-bad font-bold" : pct >= 85 ? "text-warn font-semibold" : ""}>
+				{current}/{max}
+			</span>
+		</span>
+	);
 }
+/**
+ * The pre-publish verdict type and its normalizer live together in
+ * ../lib/moderation. This page only ever renders a NORMALIZED verdict, so the
+ * shape it reads and the shape the boundary guarantees cannot drift apart.
+ */
 
 export default function Submit() {
-	const { anonId, toast, pushNotif, accountStatus } = useApp();
+	const { anonId, toast, pushNotif, accountStatus, displayName, profile } = useApp();
 	const restricted = !!(accountStatus?.banned || accountStatus?.suspended);
 	const nav = useNavigate();
 	const [params] = useSearchParams();
@@ -102,7 +139,6 @@ export default function Submit() {
 	const [desc, setDesc] = useState("");
 	const [category, setCategory] = useState("Academics");
 	const categories = useCategories();
-	const [priority, setPriority] = useState("medium");
 	const [tags, setTags] = useState("");
 	/** Private post → visible only to admins/moderators (and you) */
 	const [isPrivate, setIsPrivate] = useState(false);
@@ -113,7 +149,42 @@ export default function Submit() {
 	} | null>(null);
 	const [preview, setPreview] = useState(false);
 	const [busy, setBusy] = useState(false);
-	const [draftSaved, setDraftSaved] = useState(false);
+	const [success, setSuccess] = useState(false);
+
+	const detectedCategory = useMemo(() => {
+		const text = `${title} ${desc}`.toLowerCase();
+		for (const [cat, keywords] of Object.entries(KEYWORD_CATEGORIES)) {
+			if (keywords.some((kw) => text.includes(kw))) {
+				return cat;
+			}
+		}
+		return null;
+	}, [title, desc]);
+	/**
+	 * Draft autosave status. "saved" is only ever set when the durable store
+	 * actually accepted the write — a full or blocked storage reports "failed"
+	 * instead of pretending the words are safe.
+	 */
+	const [draftState, setDraftState] = useState<"idle" | "saved" | "failed">(
+		"idle",
+	);
+	/**
+	 * Two-tap draft discard arming. Drafts are the author's own unsubmitted
+	 * words (local only, never evidence), and an abandoned draft restores
+	 * forever with no other way to clear it. One tap arms, the second
+	 * discards — a single tap must never lose work. Published, held, or
+	 * reported content is NOT covered here: those deletes stay admin-only
+	 * (see tests/api/evidence-delete-lock.test.ts).
+	 */
+	const [discardArmed, setDiscardArmed] = useState(false);
+	// Recourse: when safety blocks the write (client pre-gate or server 403),
+	// offer a human appeal carrying the exact blocked text.
+	const [blockedAppeal, setBlockedAppeal] = useState<{
+		surface: AppealSurface;
+		title: string;
+		body: string;
+		context?: { ptype?: string; options?: string[]; category?: string };
+	} | null>(null);
 	// Inline validation errors
 	const [titleError, setTitleError] = useState("");
 	const [descError, setDescError] = useState("");
@@ -125,28 +196,40 @@ export default function Submit() {
 	const [expiry, setExpiry] = useState("");
 	const [linkPost, setLinkPost] = useState("");
 	const [linkablePosts, setLinkablePosts] = useState<PostData[]>([]);
+	const [attachPoll, setAttachPoll] = useState(false);
+	const [attachQuestion, setAttachQuestion] = useState("");
+	const [attachOptions, setAttachOptions] = useState<string[]>(["", ""]);
 
-	// Load open problems for the "link poll to complaint" selector
+	// Load the author's open problems AND suggestions for the poll link selector
 	useEffect(() => {
 		if (type !== "poll") return;
-		api
-			.get<PostData[]>("/api/posts?type=problem")
-			.then((all) =>
-				setLinkablePosts(
-					all
-						.filter((p) => !["solved", "archived"].includes(p.status))
-						.slice(0, 50),
-				),
-			)
+		Promise.all([
+			api.get<PostData[]>(`/api/posts?type=problem&viewer=${encodeURIComponent(anonId)}`).catch((): PostData[] => []),
+			api.get<PostData[]>(`/api/posts?type=suggestion&viewer=${encodeURIComponent(anonId)}`).catch((): PostData[] => []),
+		])				.then(([problems, suggestions]) =>
+					setLinkablePosts(
+						[...problems, ...suggestions]
+							.filter((p) =>
+								!["solved", "archived"].includes(p.status) &&
+								p.author_id === anonId,
+						)
+							.filter((p, i, arr) => arr.findIndex((q) => q.id === p.id) === i)
+							.slice(0, 50),
+					),
+				)
 			.catch((e: unknown) => {
 				console.warn(
 					"[Submit] Failed to load linkable posts:",
 					e instanceof Error ? e.message : e,
 				);
 			});
-	}, [type]);
+	}, [type, anonId]);
 	const fileRef = useRef<HTMLInputElement>(null);
 	const restoredRef = useRef(false);
+	/** Synchronous double-submit guard (ref, not state): two fast clicks run
+	 *  before React re-renders `busy`, so state alone can't stop a second
+	 *  concurrent publish — which creates twin posts + twin notifications. */
+	const submitBusyRef = useRef(false);
 	const [duplicates, setDuplicates] = useState<PostData[]>([]);
 	const allPostsRef = useRef<PostData[] | null>(null);
 	/** Real-time AI suggestions (category + tags + priority + improved title) */
@@ -158,13 +241,67 @@ export default function Submit() {
 	const pollSuggestSeq = useRef(0);
 	const pollSuggestBusy = useRef(false);
 
-	/** Content moderation state — live checks as user types */
-	const [moderation, setModeration] = useState<ModerationResult | null>(null);
+	/**
+	 * Content moderation state — live checks as user types.
+	 *
+	 * The verdict is stored WITH the text it was computed for. A verdict is a
+	 * claim about one exact string, so applying it to whatever is on screen
+	 * invents facts: deleting a flagged word used to keep "Fix issues first"
+	 * and the appeal panel alive (for a debounce + a round-trip) over text that
+	 * was already clean, and typing on after a clean verdict kept "No issues
+	 * found by the safety check" over text no check had ever seen.
+	 * `moderation` — derived below, next to `liveText` — is null unless the
+	 * verdict describes the current text. Unknown, never a stale claim.
+	 */
+	const [modVerdict, setModVerdict] = useState<{
+		text: string;
+		result: ModerationResult;
+	} | null>(null);
+	/**
+	 * True while a check is in flight. The UI must NOT render
+	 * "Content looks good — no issues detected" while this is true: the old
+	 * code ran a client-side word list, which had no notion of "Dhansiri,
+	 * I will hate you" and so congratulated a student on publishing a
+	 * targeted threat. Silence pending a verdict is honest; a false green
+	 * checkmark is not.
+	 */
+	const [modChecking, setModChecking] = useState(false);
 	const modSeq = useRef(0);
+
+	/**
+	 * Model verdict for the live check — the LLM is ALWAYS in the loop.
+	 *
+	 * The fast pass above answers from deterministic rules in milliseconds;
+	 * the model needs a provider round trip (seconds). Its verdict is
+	 * stored WITH the exact text AND surface it was computed for, mirrored
+	 * in a ref so the effect below can skip re-judging without taking the
+	 * verdict into its deps (a failed attempt leaves no verdict, so
+	 * returning to that text retries once — transient outages recover
+	 * instead of sticking on "couldn't run").
+	 */
+	const [aiVerdict, setAiVerdict] = useState<{
+		text: string;
+		surface: string;
+		result: ModerationResult;
+	} | null>(null);
+	const [aiChecking, setAiChecking] = useState(false);
+	const aiSeq = useRef(0);
+	const aiVerdictRef = useRef<{
+		text: string;
+		surface: string;
+		result: ModerationResult;
+	} | null>(null);
 
 	/** Pre-publish AI review result */
 	const [prePubResult, setPrePubResult] = useState<PrePubResult | null>(null);
 	const [prePubBusy, setPrePubBusy] = useState(false);
+	const isPrePubBlocked = useMemo(() => {
+		return Boolean(
+			prePubResult &&
+			(prePubResult.decision === "high_risk" ||
+				Boolean(prePubResult.checks?.privacy && !prePubResult.checks.privacy.pass))
+		);
+	}, [prePubResult]);
 
 	// Smart poll AI suggestions — fires only on the poll tab, debounced while typing
 	useEffect(() => {
@@ -250,71 +387,432 @@ export default function Submit() {
 		}
 	}, [desc, touched.desc, type]);
 
-	// Live moderation checks on title + description
+	// Every text field the author can type into. The live check used to send
+	// only `title + desc`, so PII typed into a poll option (or an attached
+	// poll's question/options) never reached the endpoint and the user got
+	// zero real-time feedback — the privacy flag simply never appeared until
+	// submit. One memo feeds both the live check and the pre-send gate so
+	// they can never disagree about what was checked.
+	const liveText = useMemo(() => {
+		const parts = [title, desc];
+		if (type === "poll") parts.push(...options);
+		if (attachPoll) parts.push(attachQuestion, ...attachOptions);
+		return parts
+			.map((p) => String(p || "").trim())
+			.filter(Boolean)
+			.join("\n");
+	}, [title, desc, type, options, attachPoll, attachQuestion, attachOptions]);
+
+	/**
+	 * The model verdict — present ONLY while it describes the text on
+	 * screen AND the surface it was judged for. A verdict is a claim about
+	 * one exact string on one write path: polls publish through "direct"
+	 * (no review queue) while posts go "queued", and the policy maps them
+	 * differently. Applying a queued verdict to a poll draft (or vice
+	 * versa) invents facts the judge never stated.
+	 */
+	const aiSurface = type === "poll" ? "direct" : "queued";
+	const aiReview =
+		aiVerdict && aiVerdict.text === liveText && aiVerdict.surface === aiSurface
+			? aiVerdict.result
+			: null;
+	/**
+	 * The live verdict — present ONLY while it describes the text on screen.
+	 * Anything else is "not checked yet", which every consumer below already
+	 * knows how to render: silence, with the local scan standing in as the
+	 * pre-send backstop. See the state comment above for the bugs this closes.
+	 *
+	 * The model verdict wins when it matches: `evaluateContentDeep` runs
+	 * the deterministic scan as its base, so it is a strict superset of the
+	 * fast verdict — preferring it can only add flags, never drop them, and
+	 * a late fast response can never knock it out.
+	 */
+	const moderation =
+		aiReview ??
+		(modVerdict && modVerdict.text === liveText ? modVerdict.result : null);
+	/**
+	 * Render-safe flag list. `moderation` comes from the network and may be a
+	 * partial/mocked shape without `flags` — every direct `moderation.flags`
+	 * access below crashed the entire page (empty render, no error UI) the
+	 * moment one such response arrived. A missing list means "no flags", never
+	 * an exception.
+	 */
+	const modFlags = moderation?.flags ?? [];
+
+	/**
+	 * Distress lock: a genuine cry for help must never reach the public
+	 * feed. Driven ONLY by the server verdict for the current text —
+	 * `supportNeeded` (model-read distress) or relevance route "support"
+	 * (deterministic plea) — never derived on the client, so the preview
+	 * and the write-path enforcement cannot disagree. Scoped to posts:
+	 * polls have no private mode to lock. Editing the text drops the
+	 * stale verdict and frees the toggle; the server enforces
+	 * private+review on write regardless.
+	 */
+	const supportLock =
+		type !== "poll" &&
+		moderation != null &&
+		(moderation.supportNeeded === true ||
+			moderation.relevance?.route === "support");
 	useEffect(() => {
-		const text = `${title} ${desc}`.trim();
+		if (supportLock) setIsPrivate(true);
+	}, [supportLock]);
+
+	/**
+	 * Length gate shared by the checking line and the banner below. Short
+	 * stubs get no live feedback at all — a spinner that resolves into
+	 * nothing is a flash, and feedback that appears only past this length
+	 * would pop the layout on the keystroke that crosses it (the slot
+	 * reserves height only past the same gate, so the two can never
+	 * disagree about whether the slot is active).
+	 */
+	const feedbackLengthOk =
+		title.length > 10 || desc.length > 10 || liveText.trim().length > 10;
+	/**
+	 * A check is scheduled but no request is in flight yet: the text
+	 * changed inside the debounce window. Rendering nothing here blanks
+	 * the slot on EVERY keystroke (verdicts are text-keyed, so the old one
+	 * just died) — blank-then-flash per pause is the typing glitch. A
+	 * check genuinely is pending, so saying so is honest, and it keeps one
+	 * stable row in the slot until a verdict lands.
+	 */
+	const stalePending =
+		!moderation && !modChecking && !aiChecking && feedbackLengthOk;
+
+	/**
+	 * Advisory relevance verdict for the current text, or null when the check
+	 * has not run or has failed. Null must never render as a positive claim.
+	 */
+	const relevance = moderation?.relevance ?? null;
+
+	/**
+	 * A pre-publish verdict describes the exact text it reviewed. Once the
+	 * author rewrites that text, the panel's risk score and its reason are
+	 * claims about words that no longer exist — drop it rather than keep
+	 * asserting them.
+	 */
+	useEffect(() => {
+		setPrePubResult(null);
+	}, [liveText]);
+
+	/**
+	 * The checks the advisory verdict actually reported, in canonical order,
+	 * carrying their display labels. An absent check is omitted — a check that
+	 * never ran is not a pass — so the render below never indexes a missing
+	 * entry (which used to throw and unmount the page).
+	 */
+	const prePubCheckRows = useMemo(() => {
+		const checks = prePubResult?.checks;
+		if (!checks) return [];
+		const labels: Record<PrePubCheckKey, string> = {
+			privacy: "Personal info",
+			safety: "Safety",
+			spam: "Spam",
+			quality: "Quality",
+		};
+		return PREPUB_CHECK_KEYS.flatMap((key) => {
+			const check = checks[key];
+			return check ? [{ key, label: labels[key], check }] : [];
+		});
+	}, [prePubResult]);
+
+	// Live moderation on all author text.
+	//
+	// This calls the SERVER (`/api/moderate`), which runs the full pipeline:
+	// deterministic keyword gates PLUS the contextual classifier that resolves
+	// the target of hostile language. The old client-side `moderateContent()`
+	// was a bare word list, which is exactly why "Dhansiri, I will hate you"
+	// showed as clean.
+	//
+	// The server call is deterministic-only (~0-14ms measured, no provider
+	// round-trip), so awaiting it costs nothing perceptible.
+	useEffect(() => {
+		const text = liveText;
 		if (text.length < 3) {
-			setModeration(null);
+			setModVerdict(null);
+			setModChecking(false);
 			return;
 		}
 		const seq = ++modSeq.current;
+		let cancelled = false;
 		const t = setTimeout(() => {
-			if (seq === modSeq.current) {
-				setModeration(moderateContent(text));
-			}
-		}, 200); // fast debounce for instant feel
-		return () => clearTimeout(t);
-	}, [title, desc]);
+			setModChecking(true);
+			api
+				.post<ModerationResult & { checked?: boolean; serverBlocked?: boolean }>(
+					"/api/moderate",
+					// Polls publish through the "direct" surface (no review
+					// queue); previewing them as "queued" understated blocking.
+					{ text, surface: type === "poll" ? "direct" : "queued" },
+				)
+				.then((r) => {
+					// Ignore a response for text the user has already typed past.
+					if (cancelled || seq !== modSeq.current) return;
+					// A failed check must never render as a pass.
+					if (r?.checked === false) {
+						setModVerdict(null);
+						return;
+					}
+					// A response without a flags array is unusable (test mock,
+					// proxy, older server). Fall back to the local scan for the
+					// exact text that was checked — crashing the page or
+					// silently reporting clean are both worse.
+					if (!r || !Array.isArray(r.flags)) {
+						setModVerdict({ text, result: moderateContent(text) });
+						return;
+					}
+					setModVerdict({ text, result: r });
+				})
+				.catch(() => {
+					if (cancelled || seq !== modSeq.current) return;
+					// Deliberately null, not an empty result: the UI shows
+					// "could not check" rather than "no issues found".
+					setModVerdict(null);
+				})
+				.finally(() => {
+					if (cancelled || seq !== modSeq.current) return;
+					setModChecking(false);
+				});
+		}, 250);
+		return () => {
+			cancelled = true;
+			clearTimeout(t);
+		};
+	}, [liveText, type]);
 
-	/** Optimized dictation: continuous, live interim text, vocabulary correction */
-	const [dictating, setDictating] = useState(false);
-	const [interim, setInterim] = useState("");
-	const sessionRef = useRef<SpeechSession | null>(null);
-
-	const toggleDictation = () => {
-		if (dictating) {
-			sessionRef.current?.stop();
+	// Model pass — the LLM is ALWAYS in the loop on the live check.
+	//
+	// The fast pass above runs the deterministic scan on a 250ms debounce;
+	// this runs the write-path pipeline WITH the model judge (`aiJudge`,
+	// same policy the publish gate enforces) after a 1200ms settle, via
+	// `postSlow` — typing never waits on it. The verdict is stored with the
+	// exact text + surface it judged; `moderation` (derived above) prefers
+	// it when it describes the current draft.
+	//
+	// Failure honesty: an unusable response (network/429/`checked:false`/
+	// missing flags) is NOT a verdict — it clears to null so the UI falls
+	// back to "quick checks", never green. Only `aiChecked:true` (the
+	// server reporting the model actually judged the text) may paint the
+	// "AI reviewed" banner.
+	useEffect(() => {
+		const text = liveText;
+		const surface = type === "poll" ? "direct" : "queued";
+		if (text.trim().length < 10) {
+			aiVerdictRef.current = null;
+			setAiVerdict(null);
+			setAiChecking(false);
 			return;
 		}
-		const session = startDictation({
-			onInterim: setInterim,
-			onFinal: (chunk) => {
-				setDesc((d) =>
-					(d + (d && !d.endsWith(" ") ? " " : "") + chunk).slice(0, 500),
-				);
-				setInterim("");
-			},
-			onEnd: () => {
-				setDictating(false);
-				setInterim("");
-			},
-			onError: (msg) => {
-				toast(msg, "err");
-				setDictating(false);
-				setInterim("");
-			},
-		});
-		if (session) {
-			sessionRef.current = session;
-			setDictating(true);
-			toast('Listening… say "full stop" or "comma" for punctuation', "info");
+		// Never re-judge text the model already judged for this surface.
+		if (
+			aiVerdictRef.current?.text === text &&
+			aiVerdictRef.current?.surface === surface
+		) {
+			setAiChecking(false);
+			return;
 		}
+		const seq = ++aiSeq.current;
+		let cancelled = false;
+		const t = setTimeout(() => {
+			setAiChecking(true);
+			api
+				.postSlow<ModerationResult & { checked?: boolean; serverBlocked?: boolean }>(
+					"/api/moderate",
+					{
+						text,
+						surface,
+						aiJudge: true,
+						// One merged verdict (safety gate + model analysis), the same
+						// function `/api/pre-publish` runs on publish. Without this the
+						// page showed two independent reviews that could disagree.
+						fullReview: true,
+						contentType: type === "poll" ? "poll" : "post",
+						title,
+						description: desc,
+						category,
+						author_id: anonId,
+						visibility: isPrivate ? "private" : "public",
+					},
+				)
+				.then((r) => {
+					// Ignore a response for text the user has already typed past.
+					if (cancelled || seq !== aiSeq.current) return;
+					// A failed or unusable check must never render as a pass,
+					// and must never overwrite the fast verdict with nothing.
+					if (!r || r.checked === false || !Array.isArray(r.flags)) {
+						aiVerdictRef.current = null;
+						setAiVerdict(null);
+						return;
+					}
+					const verdict = { text, surface, result: r };
+					aiVerdictRef.current = verdict;
+					setAiVerdict(verdict);
+					// Feed the SAME merged verdict into the single review panel.
+					// The panel and the publish gate therefore describe one review,
+					// not two that can contradict each other.
+					if (r.review) setPrePubResult(normalizePrePubResult(r.review));
+				})
+				.catch(() => {
+					if (cancelled || seq !== aiSeq.current) return;
+					// Deliberately null, not an empty result: the UI shows
+					// "could not check" rather than "no issues found".
+					aiVerdictRef.current = null;
+					setAiVerdict(null);
+				})
+				.finally(() => {
+					if (cancelled || seq !== aiSeq.current) return;
+					setAiChecking(false);
+				});			}, 1200);
+		return () => {
+			cancelled = true;
+			clearTimeout(t);
+		};
+	}, [liveText, type, title, desc, category, isPrivate, anonId]);
+
+	const [voiceBusy, setVoiceBusy] = useState(false);
+	const [voiceDraft, setVoiceDraft] = useState<{
+		title: string;
+		description: string;
+		category: string;
+		tags: string[];
+		priority: string;
+		details: string[];
+	} | null>(null);
+
+
+
+
+
+
+	/** Send the typed text to the AI: ramble in, formal complaint draft out */
+	const runStructure = async (
+		task: "structure_complaint",
+		tooShortHint: string,
+	) => {
+		const spoken = [title.trim(), desc.trim()].filter(Boolean).join(". ");
+		if (spoken.length < 8) {
+			toast(tooShortHint, "err");
+			return;
+		}
+		if (!navigator.onLine) {
+			toast("You're offline — the AI needs a connection. Your words are saved above.", "err");
+			return;
+		}
+		setVoiceBusy(true);
+		setVoiceDraft(null);
+		try {
+			const r = await api.postSlow<{
+				engine?: string;
+				draft: {
+					title: string;
+					description: string;
+					category: string;
+					tags: string[];
+					priority: string;
+					details: string[];
+				} | null;
+			}>(`/api/assist`, { task, text: spoken });
+			if (r.draft) {
+				setVoiceDraft(r.draft);
+				toast(
+					r.engine === "local"
+						? "Ready — review and apply"
+						: "AI drafted your complaint — review and apply",
+					"ok",
+				);
+			} else {
+				// 200 with no draft = the AI service is down or overloaded —
+				// say so plainly instead of blaming the user's words.
+				toast("AI is busy right now — your words are safe above, tap again in a moment", "err");
+			}
+		} catch (e: unknown) {
+			const msg = e instanceof Error ? e.message : "";
+			toast(
+				/network|fetch|failed|timeout|connection|offline/i.test(msg)
+					? "Connection failed — your words are saved above, try again when online"
+					: "AI is busy right now — your words are safe above, tap again in a moment",
+				"err",
+			);
+		}
+		setVoiceBusy(false);
 	};
 
-	useEffect(() => () => sessionRef.current?.stop(), []);
+	/** Type-mode button: rambling paragraph → the same structured draft */
+	const structureText = () =>
+		runStructure(
+			"structure_complaint",
+			"Write a little more first — one full sentence is enough",
+		);
 
-	/** Duplicate detection: word-overlap similarity against open posts in the same category */
+	/** The structured-draft card for the typed Transform.
+	 *  Details are display-only extracted facts (dates, places) — Apply
+	 *  fills title/description/category/tags for final review + publish. */
+	const renderDraftCard = () => {
+		if (!voiceDraft) return null;
+		return (
+			<div className="mt-3 rounded-xl bg-surface border border-accent/30 p-3 vb-rise">
+				<p className="text-[10px] font-bold uppercase tracking-wider text-accent mb-1.5">
+					AI draft — error-free and structured
+				</p>
+				<p className="text-sm font-semibold text-ink">
+					{voiceDraft.title}
+				</p>
+				<p className="text-xs text-ink2 mt-1 leading-relaxed">
+					{voiceDraft.description}
+				</p>
+				{(voiceDraft.details || []).length > 0 && (
+					<p className="text-[10px] text-ink3 mt-1.5">
+						📎 {(voiceDraft.details || []).join(" · ")}
+					</p>
+				)}
+				<div className="flex flex-wrap items-center gap-1.5 mt-2">
+					<span className="chip !text-[10px]">
+						{CAT_EMOJI[voiceDraft.category]} {voiceDraft.category}
+					</span>
+					{voiceDraft.tags.map((t) => (
+						<span key={t} className="chip !text-[10px]">
+							#{t}
+						</span>
+					))}
+				</div>
+				<button
+					type="button"
+					onClick={applyVoiceDraft}
+					className="btn btn-primary w-full mt-2.5 !py-2.5"
+				>
+					<Send size={14} /> Use this — review & publish
+				</button>
+			</div>
+		);
+	};
+
+	const applyVoiceDraft = () => {
+		if (!voiceDraft) return;
+		setTitle(voiceDraft.title.slice(0, 120));
+		setDesc(voiceDraft.description.slice(0, 500));
+		setCategory(voiceDraft.category);
+		if (voiceDraft.tags.length)
+			setTags((prev) =>
+				prev ? `${prev}, ${voiceDraft.tags.join(", ")}` : voiceDraft.tags.join(", "),
+			);
+		setVoiceDraft(null);
+		// The form stays up for final review + publish.
+
+		toast("Complaint filled in — review and publish", "ok");
+	};
+
+	/** Duplicate detection: title-weighted similarity against open posts in the same category */
 	const checkDuplicates = useCallback(
 		async (titleText: string, descText: string, category: string) => {
-			const words = (t: string) =>
+			const extractWords = (t: string) =>
 				new Set(
 					t
 						.toLowerCase()
 						.split(/\W+/)
 						.filter((w) => w.length > 3),
 				);
-			const mine = words(titleText + " " + descText);
-			if (mine.size < 2) {
+			const myTitleWords = extractWords(titleText);
+			const myFullWords = extractWords(titleText + " " + descText);
+			if (myTitleWords.size < 2 && myFullWords.size < 3) {
 				setDuplicates([]);
 				return;
 			}
@@ -322,22 +820,40 @@ export default function Submit() {
 				if (!allPostsRef.current)
 					allPostsRef.current = await api.get<PostData[]>("/api/posts");
 				const matches = (allPostsRef.current || [])
-					.filter(
-						(p) =>
-							p.category === category &&
-							!["solved", "archived"].includes(p.status),
-					)
+					.filter((p) => !["solved", "archived"].includes(p.status))
 					.map((p) => {
-						const theirs = words(p.title + " " + p.description);
-						const overlap = [...mine].filter((w) => theirs.has(w)).length;
+						const sameCategory = category === "All" || p.category === category;
+						const theirTitleWords = extractWords(p.title);
+						const theirFullWords = extractWords(p.title + " " + p.description);
+
+						// Title similarity (resilient to switching only the description)
+						const titleOverlap = [...myTitleWords].filter((w) => theirTitleWords.has(w)).length;
+						const titleScore = myTitleWords.size > 0 && theirTitleWords.size > 0
+							? titleOverlap / Math.min(myTitleWords.size, theirTitleWords.size)
+							: 0;
+
+						// Full text similarity
+						const fullOverlap = [...myFullWords].filter((w) => theirFullWords.has(w)).length;
+						const fullScore = myFullWords.size > 0 && theirFullWords.size > 0
+							? fullOverlap / Math.max(3, Math.min(myFullWords.size, theirFullWords.size))
+							: 0;
+
+						// In a different category, only strong title matches (>= 0.70) count to prevent cross-category false positives
+						if (!sameCategory && titleScore < 0.70) {
+							return { post: p, score: 0 };
+						}
+
+						// Combined intelligence score: strong title match (>=0.5) OR full text match (>=0.38)
+						const baseScore = Math.max(titleScore * 1.2, fullScore, titleScore * 0.7 + fullScore * 0.5);
+						const score = sameCategory ? baseScore : titleScore;
 						return {
 							post: p,
-							score: overlap / Math.max(3, Math.min(mine.size, theirs.size)),
+							score,
 						};
 					})
-					.filter((m) => m.score >= 0.45)
+					.filter((m) => m.score >= 0.38)
 					.sort((a, b) => b.score - a.score)
-					.slice(0, 2);
+					.slice(0, 3);
 				setDuplicates(matches.map((m) => m.post));
 			} catch {
 				/* non-blocking */
@@ -364,53 +880,102 @@ export default function Submit() {
 			setTitle(d.title || "");
 			setDesc(d.desc || "");
 			setCategory(d.category || "Academics");
-			setPriority(d.priority || "medium");
 			setTags(d.tags || "");
 			setType(d.type || initialType);
+			// A restored draft means unfinished typing.
+
 			toast("Draft restored", "info");
 		}
 	}, [initialType, toast]);
 
+	const [draftSlangAlert, setDraftSlangAlert] = useState<string | null>(null);
+	const problemValidation = useMemo(
+		() => validateSchoolProblem(title, desc),
+		[title, desc],
+	);
+
 	// autosave draft (debounced)
+	const draftNoteTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+	useEffect(
+		() => () => {
+			if (draftNoteTimer.current) clearTimeout(draftNoteTimer.current);
+		},
+		[],
+	);
 	useEffect(() => {
 		const t = setTimeout(() => {
 			if (title || desc) {
-				lsSet(DRAFT_KEY, {
+				const slangCheck = checkContentSlang(`${title} ${desc}`, true);
+				if (slangCheck.hasSlang) {
+					setDraftSlangAlert(slangCheck.message || "Slang detected in draft.");
+				} else {
+					setDraftSlangAlert(null);
+				}
+				const durable = lsSet(DRAFT_KEY, {
 					title,
 					desc,
 					category,
-					priority,
 					tags,
 					type,
 					savedAt: new Date().toISOString(),
 				});
-				setDraftSaved(true);
-				setTimeout(() => setDraftSaved(false), 1600);
+				setDraftState(durable ? "saved" : "failed");
+				if (draftNoteTimer.current) clearTimeout(draftNoteTimer.current);
+				draftNoteTimer.current = setTimeout(
+					() => setDraftState("idle"),
+					durable ? 1600 : 6000,
+				);
+			} else {
+				setDraftSlangAlert(null);
 			}
 		}, 900);
 		return () => clearTimeout(t);
-	}, [title, desc, category, priority, tags, type]);
+	}, [title, desc, category, tags, type]);
+
+	/**
+	 * The draft holds typed content only (title/desc/tags) — structural
+	 * choices (category, type, poll options) are prefs, not data, and stay.
+	 * Storage is cleared first so a remount can never resurrect the words.
+	 */
+	const hasDraftContent =
+		title.trim() !== "" || desc.trim() !== "" || tags.trim() !== "";
+	const discardDraft = () => {
+		lsSet(DRAFT_KEY, null);
+		setTitle("");
+		setDesc("");
+		setTags("");
+		setDiscardArmed(false);
+		toast("Draft discarded", "info");
+	};
 
 	const pickImage = (f: File) => {
 		if (f.size > 3 * 1024 * 1024) {
 			toast("Image must be under 3 MB", "err");
 			return;
 		}
-		const reader = new FileReader();
-		reader.onload = () => {
-			const result = reader.result as string;
+		// Downscale before upload: a 3 MB phone photo becomes ~4 MB of base64
+		// (server cap is 4 MB) and bills full-size storage + egress forever.
+		// Re-encoded to a 1280px JPEG client-side — silent upgrade, preview
+		// shows the exact bytes that will upload. Falls back to the original
+		// file on old browsers (GIF/SVG always pass through untouched).
+		void downscaleImage(f).then((d) => {
+			if (!d.base64) {
+				toast("Couldn't read that image — try another file", "err");
+				return;
+			}
 			setImage({
-				preview: result,
-				base64: result.split(",")[1] ?? "",
-				type: f.type,
+				preview: d.dataUrl,
+				base64: d.base64,
+				type: d.type,
 			});
-		};
-		reader.readAsDataURL(f);
+		});
 	};
 
 	const submit = async () => {
 		// Mark fields as touched to show inline errors
 		setTouched({ title: true, desc: true });
+		// Capture before the poll early-return narrows `type`.
+		const isPollSubmit = type === "poll";
 
 		const cd = checkCooldown("post", 20);
 		if (cd) {
@@ -418,18 +983,53 @@ export default function Submit() {
 			return;
 		}
 
-		// Check moderation before allowing submission
-		const fullText = `${title} ${desc}`.trim();
-		const mod = moderateContent(fullText);
-		if (isBlocked(mod)) {
-			toast("Content blocked: " + getModerationSummary(mod), "err");
+		// Pre-send gate: saves a doomed round-trip only. The SERVER is
+		// authoritative and re-runs the full pipeline on write.
+		//
+		// Two sources, because neither is sufficient alone:
+		//  - `serverBlocked` is the real verdict from /api/moderate, which
+		//    includes the contextual classifier. This is what catches
+		//    "Dhansiri, I will hate you".
+		//  - the local word list is a synchronous backstop for the instant
+		//    after a keystroke, before the debounce has answered.
+		// Same text the live check evaluated — never a narrower slice, or the
+		// gate and the panel disagree (PII in a poll option blocked at submit
+		// with no prior warning, or vice versa).
+		const fullText = liveText;
+		const mod: ModerationResult = moderation ?? moderateContent(fullText);
+		const blockedByServer =
+			moderation?.serverBlocked === true || isBlockedByServer(mod);
+		if (blockedByServer) {
+			toast(submitBlockMessage(mod, type === "poll" ? "poll" : "post"), "err");
+			setBlockedAppeal(
+				type === "poll"
+					? {
+							surface: "poll",
+							title: sanitize(title, 140),
+							body: options.map((o) => sanitize(o, 60)).filter(Boolean).join("\n"),
+							context: { ptype: pollType, options: options.map((o) => sanitize(o, 60)).filter(Boolean) },
+						}
+					: {
+							surface: "post",
+							title: sanitize(title, 120),
+							body: sanitize(desc, 500),
+							context: { category },
+						},
+			);
 			return;
 		}
+		setBlockedAppeal(null);
 
+		// Double-fire guard: runs synchronously on click, before any await,
+		// so a second click can never start a concurrent publish.
+		if (submitBusyRef.current) return;
+		submitBusyRef.current = true;
+		try {
 		if (type === "poll") {
 			if (title.trim().length < 5) {
 				toast("Poll question must be at least 5 characters", "err");
-				return;
+				submitBusyRef.current = false;
+			return;
 			}
 			const opts =
 				pollType === "yesno"
@@ -437,12 +1037,13 @@ export default function Submit() {
 					: options.map((o) => sanitize(o, 60)).filter(Boolean);
 			if (pollType !== "yesno" && opts.length < 2) {
 				toast("Add at least 2 options", "err");
-				return;
+				submitBusyRef.current = false;
+			return;
 			}
 			setBusy(true);
 			try {
-				await api.post("/api/polls", {
-					title: sanitize(moderateContent(title).maskedText, 140),
+				await api.postLong("/api/polls", {
+					title: sanitize(title, 140),
 					ptype: pollType,
 					options: opts,
 					author_id: anonId,
@@ -451,11 +1052,20 @@ export default function Submit() {
 				});
 				stampCooldown("post");
 				lsSet(DRAFT_KEY, null);
-				fireConfetti();
+				celebrate("poll_publish");
 				toast("Poll published anonymously", "ok");
 				nav("/polls");
 			} catch (e: unknown) {
-				toast(e instanceof Error ? e.message : "Publish failed", "err");
+				const msg = e instanceof Error ? e.message : "Publish failed";
+				toast(msg, "err");
+				if (/safety guidelines|personal information|previously removed/i.test(msg)) {
+					setBlockedAppeal({
+						surface: "poll",
+						title: sanitize(title, 140),
+						body: opts.join("\n"),
+						context: { ptype: pollType, options: opts },
+					});
+				}
 			}
 			setBusy(false);
 			return;
@@ -463,38 +1073,62 @@ export default function Submit() {
 
 		if (title.trim().length < 5) {
 			toast("Title must be at least 5 characters", "err");
+			submitBusyRef.current = false;
 			return;
 		}
 		if (desc.trim().length < 10) {
 			toast("Description must be at least 10 characters", "err");
+			submitBusyRef.current = false;
 			return;
 		}
 
+		const attachOpts = attachOptions.map((o) => sanitize(o, 60)).filter(Boolean);
+		if (attachPoll) {
+			if (attachQuestion.trim().length < 5) {
+				toast("Poll question must be at least 5 characters", "err");
+				submitBusyRef.current = false;
+				return;
+			}
+			if (attachOpts.length < 2) {
+				toast("Add at least 2 poll options", "err");
+				submitBusyRef.current = false;
+				return;
+			}
+		}
 		setBusy(true);
 		setPrePubResult(null);
 		try {
-			// Step 1: Call server-side pre-publish AI agent for moderation
+			// Step 1: Ask the advisory server-side pre-publish agent for a
+			// quality/safety signal. The POST route below remains authoritative.
 			setPrePubBusy(true);
 			let prePub: PrePubResult | null = null;
 			let holdForReview = false; // true → post is queued for admin review instead of publishing
 			try {
-				prePub = await api.post<PrePubResult>("/api/pre-publish", {
+				prePub = normalizePrePubResult(
+				// The advisory verdict is untrusted network input: normalize it
+				// at the boundary so no later render can index a missing field.
+				await api.postLong<unknown>("/api/pre-publish", {
 					content_type: type,
 					title: sanitize(title, 140),
 					description: sanitize(desc, 500),
 					category,
 					author_id: anonId,
-				});
+					visibility: isPrivate ? "private" : "public",
+				}),
+			);
 			} catch (ppErr) {
-				// Moderation service unavailable — never silently publish. Queue for
-				// admin review so a bad/AI-generated post can't slip through.
+				// The advisory AI check is best-effort. The /api/posts handler is
+				// the authoritative safety boundary and runs deterministic PII,
+				// violence, profanity and weak-signal checks on every write. A
+				// timed-out advisory request must not turn an otherwise valid
+				// complaint into an invisible pending_review post (and must not
+				// be replayed by the offline queue).
 				console.warn(
-					"[Submit] pre-publish check failed, queuing for review:",
+					"[Submit] pre-publish advisory check unavailable; server gate will validate:",
 					ppErr,
 				);
-				holdForReview = true;
 				toast(
-					"Moderation is temporarily unavailable — your post will be reviewed before going public.",
+					"Moderation check is taking longer than usual — your post will still be checked when submitted.",
 					"info",
 				);
 			}
@@ -503,19 +1137,20 @@ export default function Submit() {
 			// Step 2: Handle pre-publish decision
 			if (prePub) {
 				setPrePubResult(prePub);
-				// PII (address/phone/email) is always blocked — never allow a leak to publish
+				// PII (address/phone/email) is blocked on public posts — private posts allow contacts
 				const privacyFailed =
-					prePub.checks?.privacy && !prePub.checks.privacy.pass;
-				if (prePub.decision === "high_risk" || privacyFailed) {
+					!isPrivate && prePub.checks?.privacy && !prePub.checks.privacy.pass;
+				if ((prePub.decision === "high_risk" && !isPrivate) || privacyFailed) {
 					toast(
 						`Content held for review: ${prePub.reason || "Personal information detected — remove addresses, phone numbers, or emails"}.`,
 						"err",
 					);
 					setBusy(false);
+					submitBusyRef.current = false;
 					return;
 				}
-				if (prePub.decision === "revision") {
-					// 'revision' content is NOT safe to publish immediately — queue it for
+				if (prePub.decision === "revision" && !isPrivate) {
+					// 'revision' content is NOT safe to publish immediately in public — queue it for
 					// admin review so the "reviewed before going public" promise holds.
 					holdForReview = true;
 					toast(
@@ -530,21 +1165,21 @@ export default function Submit() {
 			if (image) {
 				image_url = await api.uploadImage(image.base64, image.type, anonId);
 			}
-			// Mask profanity in the title and description SEPARATELY. Masking the
-			// combined `${title} ${desc}` text and re-deriving both fields from it
-			// leaks the title into the description and pollutes titles with
-			// description words (title = first 20 words of combined text).
-			const maskedTitle = sanitize(moderateContent(title).maskedText, 120);
-			const maskedDesc = sanitize(moderateContent(desc).maskedText, 500);
-			const post = await api.post<{ id: string; title?: string }>(
+			// Send RAW sanitized fields — the server masks at insert (_posts.js
+			// masks profanity on the way into the DB). Masking here would feed
+			// masked text to the pre-publish gate, blinding it to the real
+			// content, and would show the user text they never typed.
+			const post = await api.postLong<{ id: string; title?: string; status?: string; deduped?: boolean }>(
 				"/api/posts",
 				{
 					type,
-					title: maskedTitle,
-					description: maskedDesc,
+					title: sanitize(title, 120),
+					description: sanitize(desc, 500),
 					category,
-					priority,
 					author_id: anonId,
+					author_name: displayName ? displayName.trim() : undefined,
+					author_photo: profile?.photo || undefined,
+					author_avatar: profile?.avatar || undefined,
 					image_url,
 					tags: tags
 						.split(",")
@@ -557,26 +1192,652 @@ export default function Submit() {
 			);
 			stampCooldown("post");
 			lsSet(DRAFT_KEY, null);
+			// Server truth wins: a spam-held or deduped-held post reports
+			// pending_review even when the client pre-gate saw nothing wrong.
+			const held = holdForReview || post.status === "pending_review";
 			pushNotif({
 				kind: "submitted",
-				title: holdForReview
+				title: held
 					? "Your post is under review"
 					: "Your post is live",
 				body: post.title ?? title,
 				link: `/post/${post.id}`,
 			});
-			fireConfetti();
-			toast(
-				holdForReview
-					? "Submitted — a moderator will review it before it goes public"
-					: "Submitted anonymously",
-				"ok",
-			);
+			// Celebration only for actually-published posts — a held post is
+			// not live, and confetti would teach users that review == posted.
+			if (!held) celebrate("publish");
+			if (post.deduped) {
+				toast("Already published — opened your existing post", "ok");
+			} else {
+				toast(
+					held
+						? "Submitted — a moderator will review it before it goes public"
+						: "Submitted anonymously",
+					"ok",
+				);
+			}
+						if (attachPoll && post.deduped) {
+				// The post API matched this submission to a complaint the
+				// author ALREADY published. Attaching a poll here would put a
+				// second poll on someone else's (or an earlier) post — the
+				// reported "two polls on the same post" bug. This submission
+				// created no new post, so it owns no new poll.
+				toast(
+					"That complaint was already posted — opened it without adding a second poll.",
+					"info",
+				);
+			} else if (attachPoll && !held) {
+				try {
+					await api.postLong("/api/polls", {
+						title: sanitize(attachQuestion, 140),
+						ptype: "single",
+						options: attachOpts,
+						post_id: post.id,
+					});
+					toast("Post and poll published", "ok");
+				} catch (e: unknown) {
+					toast(`Post published, but the poll failed: ${e instanceof Error ? e.message : "Publish failed"}. You can add it later from the post page.`, "err");
+				}
+			} else if (attachPoll && held) {
+				toast("Post held for review — add the poll after it's approved.", "info");
+			}
+			setSuccess(true);
+			triggerHaptic("medium");
 			nav(type === "suggestion" ? "/suggestions" : `/post/${post.id}`);
 		} catch (e: unknown) {
-			toast(e instanceof Error ? e.message : "Publish failed", "err");
+			const msg = e instanceof Error ? e.message : "Publish failed";
+			toast(msg, "err");
+			// Safety 403s (blocked / repost-fingerprint) get the same recourse
+			// as the client pre-gate — any other failure does not.
+			if (/safety guidelines|personal information|previously removed/i.test(msg)) {
+				setBlockedAppeal({
+					surface: isPollSubmit ? "poll" : "post",
+					title: sanitize(title, 140),
+					body: sanitize(desc, 500),
+					context:
+						isPollSubmit
+							? { ptype: pollType, options: options.map((o) => sanitize(o, 60)).filter(Boolean) }
+							: { category },
+				});
+			}
+		} finally {
+			if (!success) setBusy(false);
 		}
-		setBusy(false);
+	} finally {
+		if (!success) submitBusyRef.current = false;
+	}
+};
+
+	/**
+	 * AI suggestions (category / tags / better title) — rendered INSIDE the
+	 * single review card when prePubResult is present, or as a live helper
+	 * panel during draft typing.
+	 */
+	const renderAiSuggestions = (inCard = true) => {
+		if (!aiSuggest?.category) return null;
+		return (
+			<div
+				className={
+					inCard
+						? "mt-3 pt-3 border-t border-border"
+						: "rounded-xl p-3.5 vb-rise mt-3"
+				}
+				style={
+					inCard
+						? undefined
+						: {
+								background: "var(--vb-accent-soft)",
+								border: "1px solid rgba(86,82,214,0.2)",
+							}
+				}
+			>
+				<p className="text-[10px] font-bold uppercase tracking-wider text-accent mb-2 flex items-center gap-1.5">
+					<Sparkles size={12} /> AI suggestions · updating live
+				</p>
+				<div className="flex flex-wrap gap-1.5">
+					{aiSuggest.category !== category ? (
+						<button
+							type="button"
+							className="chip cursor-pointer !bg-surface hover:!border-accent transition-all"
+							onClick={() => {
+								setCategory(aiSuggest.category);
+								toast(`Category → ${aiSuggest.category}`, "ok");
+							}}
+						>
+							{CAT_EMOJI[aiSuggest.category]} {aiSuggest.category} ·{" "}
+							{Math.round((aiSuggest.confidence || 0) * 100)}%{" "}
+							<span className="text-accent font-bold">apply</span>
+						</button>
+					) : (
+						<span
+							className="chip !border-transparent"
+							style={{
+								background: "rgba(22,160,106,0.12)",
+								color: "var(--vb-good)",
+							}}
+						>
+							<CheckCircle2 size={11} /> {CAT_EMOJI[category]} {category}
+						</span>
+					)}
+
+					{(aiSuggest.tags || [])
+						.filter(
+							(t: string) => !tags.toLowerCase().includes(t.toLowerCase()),
+						)
+						.slice(0, 3)
+						.map((t: string) => (
+							<button
+								key={t}
+								type="button"
+								className="chip cursor-pointer !bg-surface hover:!border-accent transition-all"
+								onClick={() => setTags((prev) => (prev ? `${prev}, ${t}` : t))}
+							>
+								#{t} <span className="text-accent font-bold">+</span>
+							</button>
+						))}
+				</div>
+				{aiSuggest.improved_title &&
+					aiSuggest.improved_title.toLowerCase() !== title.toLowerCase() && (
+						<button
+							type="button"
+							className="w-full text-left text-xs mt-2 px-2.5 py-2 rounded-lg bg-surface border border-border hover:border-accent transition-all flex items-center gap-2"
+							onClick={() => setTitle(aiSuggest.improved_title!.slice(0, 120))}
+						>
+							<Pencil size={12} className="text-accent shrink-0" />{" "}
+							Better title: <b>"{aiSuggest.improved_title}"</b>{" "}
+							<span className="text-accent font-bold ml-auto">use</span>
+						</button>
+					)}
+			</div>
+		);
+	};
+
+	/**
+	 * Live moderation feedback, shared by every submission type.
+	 *
+	 * This used to live only inside the non-poll branch, so a poll author whose
+	 * wording tripped the gate saw a disabled "Fix issues first" button with no
+	 * on-screen explanation of what was wrong. `liveText` already covers the poll
+	 * question + options, so the verdict is valid here too — it just was not
+	 * rendered. One definition, called from both branches, so the two can never
+	 * drift apart.
+	 */
+	const renderLiveModerationFeedback = () => {
+		const liveBlocked = Boolean(moderation && isBlockedByServer(moderation));
+		// A model verdict only counts when the server says the model actually
+		// judged this text (`llm_analyzed`). When every provider lane is down
+		// the endpoint answers from its emergency regex fallback, which cannot
+		// see a threat — that is not an AI pass and must never be painted green.
+		const aiVerified = prePubResult?.analysis?.llm_analyzed === true;
+		const decisionRecognised = ["safe", "revision", "high_risk"].includes(
+			prePubResult?.decision ?? "",
+		);
+
+		/**
+		 * ONE verdict for ONE card.
+		 *
+		 * The deterministic scan (`/api/moderate`) and the pre-publish AI pass are
+		 * two readings of the same draft. Rendered as separate panels they could
+		 * contradict each other — the screenshot that prompted this fix showed
+		 * "Threats are not allowed here" in the content review directly above a
+		 * green "AI review — safe to publish", because the fallback pass scored
+		 * 0/100 without ever looking for threats.
+		 *
+		 * So the panel reports the WORST level either signal supports, and only
+		 * calls a pass "verified" when the model really ran.
+		 */
+		const panelState: "blocked" | "attention" | "verified" | "quick" | "unknown" =
+			liveBlocked || isPrePubBlocked
+				? "blocked"
+				: modFlags.length > 0 || prePubResult?.decision === "revision"
+					? "attention"
+					: prePubResult
+						? decisionRecognised
+							? aiVerified
+								? "verified"
+								: "quick"
+							: "unknown"
+						: aiReview?.aiChecked === true
+							? "verified"
+							: "quick";
+
+		// Circular Gauge SVG helper (sweeps neutral indigo → emerald → amber/red)
+		const renderCircularGauge = (
+			status: "safe" | "warn" | "blocked" | "checking" | "neutral",
+			_score = 100,
+		) => {
+			const radius = 13;
+			const circ = 2 * Math.PI * radius; // ~81.68
+			const pct =
+				status === "blocked"
+					? 100
+					: status === "warn"
+						? 65
+						: status === "safe"
+							? 100
+							: status === "checking"
+								? 40
+								: 15;
+			const strokeOffset = circ - (pct / 100) * circ;
+			const color =
+				status === "blocked"
+					? "var(--vb-bad, #ef4444)"
+					: status === "warn"
+						? "var(--vb-warn, #f59e0b)"
+						: status === "safe"
+							? "var(--vb-good, #10b981)"
+							: "var(--vb-accent, #6366f1)";
+
+			return (
+				<div className="relative w-8 h-8 shrink-0 flex items-center justify-center">
+					<svg className="w-8 h-8 -rotate-90 transform" viewBox="0 0 32 32">
+						<circle
+							cx="16"
+							cy="16"
+							r={radius}
+							className="text-border/30"
+							strokeWidth="3"
+							stroke="currentColor"
+							fill="none"
+						/>
+						<circle
+							cx="16"
+							cy="16"
+							r={radius}
+							stroke={color}
+							strokeWidth="3"
+							strokeDasharray={circ}
+							strokeDashoffset={strokeOffset}
+							strokeLinecap="round"
+							fill="none"
+							className={`transition-all duration-700 ease-out ${status === "checking" ? "animate-pulse" : ""}`}
+						/>
+					</svg>
+					<div className="absolute inset-0 flex items-center justify-center">
+						{status === "blocked" ? (
+							<X size={11} className="text-bad" />
+						) : status === "warn" ? (
+							<AlertTriangle size={11} className="text-warn" />
+						) : status === "safe" ? (
+							<CheckCircle2 size={11} className="text-good" />
+						) : status === "checking" ? (
+							<Sparkles size={10} className="text-accent animate-spin" />
+						) : (
+							<ShieldCheck size={11} className="text-ink3" />
+						)}
+					</div>
+				</div>
+			);
+		};
+
+		return (
+			<div
+				data-testid="live-mod-slot"
+				style={feedbackLengthOk || modFlags.length > 0 || prePubResult ? { minHeight: 76 } : undefined}
+			>
+				{/* Advisory: does this read as an actionable school problem? */}
+				<RelevanceNote
+					relevance={relevance}
+					text={liveText}
+					checking={modChecking}
+					hasSafetyFlags={modFlags.length > 0}
+					safetyPending={aiChecking}
+				/>
+
+				{/* 1. If prePubResult is present, render the full pre-publish analysis in this slot */}
+				{prePubResult ? (
+					<div
+						data-testid="unified-review"
+						className={`rounded-xl p-4 vb-rise ${
+							panelState === "blocked"
+								? "moderation-blocked"
+								: panelState === "attention"
+									? "moderation-warn"
+									: "moderation-info"
+						}`}
+					>
+						<div className="flex items-center justify-between mb-3">
+							<div className="flex items-center gap-2.5">
+								{renderCircularGauge(
+									panelState === "blocked"
+										? "blocked"
+										: panelState === "attention"
+											? "warn"
+											: panelState === "verified"
+												? "safe"
+												: "neutral",
+									prePubResult.risk_score,
+								)}
+								<p className="text-[10px] font-bold uppercase tracking-wider flex items-center gap-1.5">
+									{panelState === "blocked" ? (
+										<>
+											<ShieldAlert size={12} /> AI review — blocked
+										</>
+									) : panelState === "attention" ? (
+										<>
+											<AlertTriangle size={12} /> AI review — needs attention
+										</>
+									) : panelState === "verified" ? (
+										<>
+											<ShieldCheck size={12} /> AI review — safe to publish
+										</>
+									) : panelState === "quick" ? (
+										<>
+											<ShieldCheck size={12} /> AI review — quick checks only
+										</>
+									) : (
+										<>
+											<AlertTriangle size={12} /> AI review — could not confirm
+										</>
+									)}
+								</p>
+							</div>
+							{/* Provenance, stated plainly. "Regex fallback analysis" told the
+							    author nothing; what matters is whether a model actually read
+							    the draft or only the deterministic scan ran. */}
+							<span
+								data-testid="review-provenance"
+								className="text-[9px] font-mono px-1.5 py-0.5 rounded"
+								style={{
+									background: aiVerified
+										? "rgba(86,82,214,0.15)"
+										: "rgba(120,130,150,0.15)",
+									color: aiVerified ? "var(--vb-accent)" : "var(--vb-ink3)",
+								}}
+							>
+								{aiVerified
+									? prePubResult.analysis?.estimated_resolution_time
+										? `AI-verified · ~${prePubResult.analysis.estimated_resolution_time}`
+										: "AI-verified"
+									: "deterministic checks only"}
+							</span>
+						</div>
+
+						{/* Risk score bar */}
+						<div className="mb-3">
+							<div className="flex items-center justify-between mb-1">
+								<span className="text-[11px] font-semibold text-ink2">
+									Risk score
+								</span>
+								<span
+									className={`text-[11px] font-bold ${
+										panelState === "blocked"
+											? "text-bad"
+											: panelState === "attention"
+												? "text-warn"
+												: "text-good"
+									}`}
+								>
+									{prePubResult.risk_score}/100
+								</span>
+							</div>
+							<div
+								className="w-full h-1.5 rounded-full overflow-hidden"
+								style={{ background: "var(--vb-border)" }}
+							>
+								<div
+									className={`h-full rounded-full transition-all duration-700 ${
+										panelState === "blocked"
+											? "bg-bad"
+											: panelState === "attention"
+												? "bg-warn"
+												: "bg-good"
+									}`}
+									style={{
+										width: `${Math.min(100, prePubResult.risk_score)}%`,
+									}}
+								/>
+							</div>
+						</div>
+
+						{/* Check results grid */}
+						{prePubCheckRows.length > 0 && (
+							<div className="grid grid-cols-2 gap-2 mb-3">
+								{prePubCheckRows.map(({ key, label, check }) => (
+									<div
+										key={key}
+										className="flex items-center gap-1.5 text-[11px]"
+									>
+										{check.pass ? (
+											<span className="text-good">
+												<CheckCircle2 size={11} />
+											</span>
+										) : (
+											<span className="text-bad">
+												<X size={11} />
+											</span>
+										)}
+										<span
+											className={
+												check.pass ? "text-ink3" : "text-ink2 font-semibold"
+											}
+										>
+											{label}
+										</span>
+										{check.issues.length > 0 && (
+											<span className="text-[9px] text-bad font-mono">
+												({check.issues.length})
+											</span>
+										)}
+									</div>
+								))}
+							</div>
+						)}
+
+						{/* What the live content review caught. These flags used to live in a
+						    second card, which is how the page could show a threat and a green
+						    pass at the same time — the same panel must carry both. */}
+						{modFlags.length > 0 && (
+							<ul
+								data-testid="review-flags"
+								className="space-y-1 mb-3"
+							>
+								{modFlags.map((flag, i) => (
+									<li
+										key={`${flag.category ?? "flag"}-${i}`}
+										className="flex items-start gap-2 text-xs"
+									>
+										<span
+											className={`shrink-0 mt-0.5 ${
+												flag.severity === "critical" ||
+												flag.severity === "high"
+													? "text-bad"
+													: "text-warn"
+											}`}
+										>
+											{flag.severity === "critical" ||
+											flag.severity === "high" ? (
+												<X size={12} />
+											) : (
+												<AlertTriangle size={12} />
+											)}
+										</span>
+										<span className="text-ink2">{flag.message}</span>
+									</li>
+								))}
+							</ul>
+						)}
+
+						{/* AI reason */}
+						<p className="text-[11px] text-ink2 leading-relaxed">
+							{prePubResult.reason}
+						</p>
+
+						{renderAiSuggestions()}
+
+						{/* Action hint & Dismiss button */}
+						{isPrePubBlocked && (
+							<>
+								<p className="text-[11px] mt-2 font-semibold text-bad">
+									Not submitted — remove personal info and try again.
+									Your draft is preserved above.
+								</p>
+								<button
+									type="button"
+									onClick={() => setPrePubResult(null)}
+									className="mt-2 text-[11px] font-semibold text-ink3 hover:text-accent"
+								>
+									Dismiss
+								</button>
+							</>
+						)}
+						{panelState === "attention" && (
+							<p className="text-[11px] mt-2 text-warn">
+								AI flagged something — you can still submit, but it will be
+								reviewed before going public.
+							</p>
+						)}
+						{/* A green "ready to publish" is only allowed when a model actually
+						    verified the draft. The regex fallback scores 0/100 because it
+						    never looks for threats, so its pass is reported as a quick
+						    check — never as an AI clearance. */}
+						{panelState === "verified" && (
+							<p className="text-[11px] mt-2 text-good">
+								All checks passed — ready to publish.
+							</p>
+						)}
+						{panelState === "quick" && (
+							<p className="text-[11px] mt-2 text-ink3">
+								Quick checks passed. The AI review runs when you publish.
+							</p>
+						)}
+					</div>
+				) : (
+					/* 2. Live checking / typing mode: unified card */
+					<>
+						{/* Flags render INSIDE the one review card when a full review
+						    exists — this standalone block is only the fast,
+						    gate-only state before that lands. */}
+						{!prePubResult && moderation && modFlags.length > 0 && (
+							<div
+								className={`rounded-xl p-3.5 vb-rise ${isBlockedByServer(moderation) ? "moderation-blocked" : moderation.overallSeverity === "high" ? "moderation-danger" : moderation.overallSeverity === "medium" ? "moderation-warn" : "moderation-info"}`}
+							>
+								<div className="flex items-center gap-2.5 mb-2">
+									{renderCircularGauge(
+										isBlockedByServer(moderation) ? "blocked" : "warn",
+									)}
+									<p className="text-[10px] font-bold uppercase tracking-wider flex items-center gap-1.5">
+										{isBlockedByServer(moderation) ? (
+											<>
+												<ShieldAlert size={12} /> Content blocked
+											</>
+										) : (
+											<>
+												<AlertTriangle size={12} /> AI review — needs attention
+											</>
+										)}
+									</p>
+								</div>
+								<div className="space-y-1.5 pl-10">
+									{modFlags.map((flag, i) => (
+										<div key={i} className="flex items-start gap-2 text-xs">
+											<span
+												className={`shrink-0 mt-0.5 ${
+													flag.severity === "critical" || flag.severity === "high"
+														? "text-bad"
+														: flag.severity === "medium"
+															? "text-warn"
+															: "text-ink3"
+												}`}
+											>
+												{flag.severity === "critical" ||
+												flag.severity === "high" ? (
+													<X size={12} />
+												) : (
+													<AlertTriangle size={12} />
+												)}
+											</span>
+											<span className="text-ink2">{flag.message}</span>
+										</div>
+									))}
+								</div>
+								{isBlockedByServer(moderation) && (
+									<p
+										className="text-[11px] mt-2 font-semibold pl-10"
+										style={{ color: "var(--vb-bad)" }}
+									>
+										Please remove the flagged content to continue. Repeated
+										violations may result in a temporary suspension.
+									</p>
+								)}
+								{!isBlockedByServer(moderation) &&
+									moderation.overallSeverity !== "none" && (
+										<p className="text-[11px] mt-2 text-ink3 pl-10">
+											Your content will be reviewed before publishing. Please
+											ensure all feedback is constructive and respectful.
+										</p>
+									)}
+							</div>
+						)}
+
+						{/* Spinner while checking */}
+						{(modChecking || aiChecking || stalePending) &&
+							feedbackLengthOk &&
+							modFlags.length === 0 && (
+								<div className="flex items-center gap-2.5 rounded-lg px-3 py-2 text-xs text-ink3 vb-rise">
+									{renderCircularGauge("checking")}
+									<span>
+										{modChecking
+											? "Checking content against the safety policy…"
+											: aiChecking
+												? "The AI is reviewing your draft…"
+												: "Reviewing latest changes…"}
+									</span>
+								</div>
+							)}
+
+						{/* Quick-check status line. Suppressed while the merged review
+						    card is on screen, which states the same verdict with the
+						    score and checks attached — two green claims is the
+						    duplication this replaces. */}
+						{!prePubResult &&
+							moderation &&
+							!modChecking &&
+							modFlags.length === 0 &&
+							feedbackLengthOk &&
+							(aiReview?.aiChecked === true ? (
+								<div
+									className="flex items-center gap-2.5 rounded-lg px-3 py-2 text-xs vb-rise"
+									style={{
+										background: "rgba(22,160,106,0.08)",
+										border: "1px solid rgba(22,160,106,0.2)",
+									}}
+								>
+									{renderCircularGauge("safe")}
+									<div className="flex flex-col">
+										<span
+											className="font-semibold text-xs"
+											style={{ color: "var(--vb-good)" }}
+										>
+											AI review — safe to publish
+										</span>
+										<span style={{ color: "var(--vb-good)" }}>
+											No issues found — the AI reviewed your draft
+										</span>
+									</div>
+								</div>
+							) : (
+								<div
+									className="flex items-center gap-2.5 rounded-lg px-3 py-2 text-xs text-ink3 vb-rise"
+									style={{
+										background: "rgba(120,130,150,0.08)",
+										border: "1px solid rgba(120,130,150,0.25)",
+									}}
+								>
+									{renderCircularGauge("neutral")}
+									<span>
+										{aiReview
+											? "The AI check couldn't run — full review still runs when you publish"
+											: "Quick checks passed — final AI review runs when you publish"}
+									</span>
+								</div>
+							))}
+
+						{renderAiSuggestions(false)}
+					</>
+				)}
+			</div>
+		);
 	};
 
 	const TABS = [
@@ -609,6 +1870,7 @@ export default function Submit() {
 			<div
 				className="flex gap-2 mb-5"
 				role="tablist"
+				onKeyDown={tablistKeyDown}
 				aria-label="Content type selection"
 			>
 				{TABS.map(({ key, label, icon: Icon }) => (
@@ -616,8 +1878,7 @@ export default function Submit() {
 						key={key}
 						role="tab"
 						aria-selected={type === key}
-						onClick={() => setType(key)}
-						className={`btn flex-1 ${type === key ? "btn-primary" : "btn-ghost"}`}
+						onClick={() => setType(key)}						className={`btn flex-1 ${type === key ? "btn-primary" : "btn-ghost"}`}
 					>
 						<Icon size={15} /> {label}
 					</button>
@@ -635,7 +1896,7 @@ export default function Submit() {
 					</label>
 					<input
 						id="f-title"
-						className={`input ${titleError ? "moderation-flag" : ""} ${moderation?.flags.some((f) => f.category === "profanity" || f.category === "hate_speech") ? "moderation-flag" : moderation && moderation.flags.length === 0 && title.length > 10 ? "moderation-ok" : ""}`}
+						className={`input ${titleError ? "moderation-flag" : ""} ${modFlags.some((f) => f.category === "profanity" || f.category === "hate_speech" || f.category === "privacy") ? "moderation-flag" : moderation && modFlags.length === 0 && title.length > 10 ? "moderation-ok" : ""}`}
 						placeholder={
 							type === "poll"
 								? "Should the library stay open until 8pm?"
@@ -651,18 +1912,57 @@ export default function Submit() {
 						aria-describedby="f-title-help"
 						aria-invalid={!!titleError}
 					/>
-					{titleError && (
-						<p className="text-[11px] text-bad mt-1 font-medium flex items-center gap-1">
-							<AlertTriangle size={11} /> {titleError}
-						</p>
-					)}
-					<p
-						id="f-title-help"
-						className="text-[10px] text-ink3 mt-1 text-right"
-					>
-						{title.length}/{type === "poll" ? 140 : 120}
-					</p>
+					<div className="flex justify-between items-center mt-1">
+						{titleError ? (
+							<p className="text-[11px] text-bad font-medium flex items-center gap-1">
+								<AlertTriangle size={11} /> {titleError}
+							</p>
+						) : (
+							<span />
+						)}
+						<ProgressDonut
+							id="f-title-help"
+							current={title.length}
+							max={type === "poll" ? 140 : 120}
+						/>
+					</div>
 				</div>
+
+				{/* ── Draft Slang Warning ── */}
+				{draftSlangAlert && (
+					<div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-700 dark:text-amber-400 text-xs flex items-start gap-2 vb-pop">
+						<AlertTriangle size={15} className="shrink-0 mt-0.5" />
+						<div>
+							<p className="font-bold">Draft Respect Policy Notice</p>
+							<p className="mt-0.5 text-[11px] leading-relaxed">{draftSlangAlert}</p>
+						</div>
+					</div>
+				)}
+
+				{/* ── Real School Problem Validation Badge & Guidance ── */}
+				{title.trim().length >= 5 && (
+					<div className={`p-3 rounded-xl border text-xs flex items-start gap-2.5 transition-all duration-200 ${problemValidation.badge.bgClass} ${problemValidation.badge.borderClass}`}>
+						<span className="text-base shrink-0">{problemValidation.badge.emoji}</span>
+						<div className="min-w-0 flex-1">
+							<div className="flex items-center gap-1.5 flex-wrap">
+								<span className={`font-bold ${problemValidation.badge.colorClass}`}>
+									{problemValidation.badge.text}
+								</span>
+								<span className="text-[10px] font-mono px-1.5 py-0.2 rounded-full bg-surface3 border border-border text-ink3">
+									AI Context Check
+								</span>
+							</div>
+							<p className="text-[11px] text-ink2 mt-1 leading-relaxed">
+								{problemValidation.summary}
+							</p>
+							{problemValidation.guidance && (
+								<p className="text-[11px] text-accent mt-1 leading-relaxed bg-accent/5 p-2 rounded-lg">
+									💡 {problemValidation.guidance}
+								</p>
+							)}
+						</div>
+					</div>
+				)}
 
 				{type === "poll" ? (
 					<>
@@ -812,7 +2112,7 @@ export default function Submit() {
 								className="text-xs font-semibold text-ink2 block mb-1.5"
 								htmlFor="f-link"
 							>
-								Link to a complaint (optional)
+								Link to one of your posts (optional)
 							</label>
 							<select
 								id="f-link"
@@ -832,25 +2132,51 @@ export default function Submit() {
 								gauge community opinion.
 							</p>
 						</div>
-						<div>
-							<label
-								className="text-xs font-semibold text-ink2 block mb-1.5"
-								htmlFor="f-expiry"
-							>
-								Expiration date (optional)
-							</label>
-							<input
-								id="f-expiry"
-								type="datetime-local"
-								className="input"
-								value={expiry}
-								onChange={(e) => setExpiry(e.target.value)}
-								min={new Date().toISOString().slice(0, 16)}
-							/>
-						</div>
+						<div>								<label
+									className="text-xs font-semibold text-ink2 block mb-1.5"
+									htmlFor="f-expiry"
+								>
+									Expiration date (optional)
+								</label>
+								<div className="flex flex-wrap gap-1.5 mb-2">
+									{[
+										{ label: "1 hour", ms: 3600000 },
+										{ label: "24 hours", ms: 86400000 },
+										{ label: "7 days", ms: 604800000 },
+										{ label: "30 days", ms: 2592000000 },
+									].map((p) => (
+										<button
+											key={p.ms}
+											type="button"
+											onClick={() => {
+												const d = new Date(Date.now() + p.ms);
+												setExpiry(d.toISOString().slice(0, 16));
+											}}
+											className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold border transition-all ${
+												expiry === new Date(Date.now() + p.ms).toISOString().slice(0, 16)
+													? "border-accent bg-accent-soft text-accent"
+													: "border-border text-ink3 hover:border-accent/50"
+											}`}
+										>
+											{p.label}
+										</button>
+									))}
+								</div>
+								<input
+									id="f-expiry"
+									type="datetime-local"
+									className="input"
+									value={expiry}
+									onChange={(e) => setExpiry(e.target.value)}									min={new Date().toISOString().slice(0, 16)}
+								/>
+							</div>
+						{renderLiveModerationFeedback()}
 					</>
 				) : (
 					<>
+
+
+							<>
 						<div>
 							<div className="flex items-center justify-between mb-1.5">
 								<label
@@ -859,42 +2185,12 @@ export default function Submit() {
 								>
 									Description <span className="text-bad">*</span>
 								</label>
-								{speechSupported && (
-									<button
-										type="button"
-										onClick={toggleDictation}
-										aria-pressed={dictating}
-										className={`flex items-center gap-1 text-[11px] font-semibold px-2 py-1 rounded-lg transition-all ${dictating ? "text-white vb-pop" : "text-accent bg-accent-soft hover:brightness-95"}`}
-										style={
-											dictating
-												? {
-														background: "var(--vb-bad)",
-														animation: "vb-pulse 1.2s ease-in-out infinite",
-													}
-												: undefined
-										}
-									>
-										{dictating ? (
-											<>
-												<MicOff size={12} /> Stop dictating
-											</>
-										) : (
-											<>
-												<Mic size={12} /> Speak instead
-											</>
-										)}
-									</button>
-								)}
 							</div>
 							<div className="relative">
 								<textarea
 									id="f-desc"
-									className={`input min-h-32 resize-y ${descError ? "moderation-flag" : ""} ${dictating ? "!border-bad" : moderation?.flags.some((f) => f.category === "profanity" || f.category === "hate_speech" || f.category === "dangerous") ? "moderation-flag" : moderation && moderation.flags.length === 0 && desc.length > 10 ? "moderation-ok" : ""}`}
-									placeholder={
-										dictating
-											? "Listening… speak clearly"
-											: "Describe the issue clearly. What happened? Where? How often? (max 500 characters)"
-									}
+									className={`input min-h-32 resize-y ${descError ? "moderation-flag" : ""} modFlags.some((f) => f.category === "profanity" || f.category === "hate_speech" || f.category === "privacy" || f.category === "dangerous") ? "moderation-flag" : moderation && modFlags.length === 0 && desc.length > 10 ? "moderation-ok" : ""}`}
+									placeholder="Describe the issue clearly. What happened? Where? How often? (max 500 characters)"
 									value={desc}
 									onChange={(e) => setDesc(e.target.value.slice(0, 500))}
 									onBlur={() => setTouched((t) => ({ ...t, desc: true }))}
@@ -903,123 +2199,37 @@ export default function Submit() {
 									aria-describedby="f-desc-help"
 									aria-invalid={!!descError}
 								/>
-								{dictating && interim && (
-									<div
-										className="absolute bottom-2 left-2 right-2 flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs vb-rise"
-										style={{
-											background: "rgba(220,75,75,0.08)",
-											border: "1px solid rgba(220,75,75,0.25)",
-										}}
-										aria-live="polite"
-									>
-										<span
-											className="w-2 h-2 rounded-full bg-bad shrink-0"
-											style={{ animation: "vb-pulse 1s ease-in-out infinite" }}
-											aria-hidden
-										/>
-										<span className="text-ink2 truncate italic">{interim}</span>
-									</div>
-								)}
 							</div>
-							<div className="flex justify-between mt-1">
-								{dictating ? (
-									<p className="text-[10px] text-bad font-semibold">
-										Recording — say "full stop", "comma" or "new line" for
-										punctuation
-									</p>
-								) : descError ? (
+							<div className="flex justify-between items-center mt-1">
+								{descError ? (
 									<p className="text-[11px] text-bad font-medium flex items-center gap-1">
 										<AlertTriangle size={11} /> {descError}
 									</p>
 								) : (
 									<span />
 								)}
-								<p
+								<ProgressDonut
 									id="f-desc-help"
-									className={`text-[10px] ${desc.length > 450 ? "text-warn font-semibold" : "text-ink3"}`}
-								>
-									{desc.length}/500
-								</p>
+									current={desc.length}
+									max={500}
+								/>
 							</div>
+							{(type === "problem" || type === "suggestion") && (
+								<button
+									type="button"
+									onClick={structureText}
+									disabled={voiceBusy || desc.trim().length < 8}
+									className="btn btn-ghost w-full mt-2 !py-2.5 disabled:opacity-50"
+								>
+									<Sparkles size={15} />{" "}
+									{voiceBusy ? "Writing your complaint…" : "Turn into complaint"}
+								</button>
+							)}
+							{renderDraftCard()}
 						</div>
 
-						{/* Live content moderation feedback */}
-						{moderation && moderation.flags.length > 0 && (
-							<div
-								className={`rounded-xl p-3.5 vb-rise ${isBlocked(moderation) ? "moderation-blocked" : moderation.overallSeverity === "high" ? "moderation-danger" : moderation.overallSeverity === "medium" ? "moderation-warn" : "moderation-info"}`}
-							>
-								<p className="text-[10px] font-bold uppercase tracking-wider mb-2 flex items-center gap-1.5">
-									{isBlocked(moderation) ? (
-										<>
-											<ShieldAlert size={12} /> Content blocked
-										</>
-									) : (
-										<>
-											<ShieldCheck size={12} /> Content review
-										</>
-									)}
-								</p>
-								<div className="space-y-1.5">
-									{moderation.flags.map((flag, i) => (
-										<div key={i} className="flex items-start gap-2 text-xs">
-											<span
-												className={`shrink-0 mt-0.5 ${
-													flag.severity === "critical"
-														? "text-bad"
-														: flag.severity === "high"
-															? "text-bad"
-															: flag.severity === "medium"
-																? "text-warn"
-																: "text-ink3"
-												}`}
-											>
-												{flag.severity === "critical" ||
-												flag.severity === "high" ? (
-													<X size={12} />
-												) : flag.severity === "medium" ? (
-													<AlertTriangle size={12} />
-												) : (
-													<AlertTriangle size={12} />
-												)}
-											</span>
-											<span className="text-ink2">{flag.message}</span>
-										</div>
-									))}
-								</div>
-								{isBlocked(moderation) && (
-									<p
-										className="text-[11px] mt-2 font-semibold"
-										style={{ color: "var(--vb-bad)" }}
-									>
-										Please remove the flagged content to continue. Repeated
-										violations may result in a temporary suspension.
-									</p>
-								)}
-								{!isBlocked(moderation) &&
-									moderation.overallSeverity !== "none" && (
-										<p className="text-[11px] mt-2 text-ink3">
-											Your content will be reviewed before publishing. Please
-											ensure all feedback is constructive and respectful.
-										</p>
-									)}
-							</div>
-						)}
-						{moderation &&
-							moderation.flags.length === 0 &&
-							(title.length > 10 || desc.length > 10) && (
-								<div
-									className="flex items-center gap-2 rounded-lg px-3 py-2 text-xs vb-rise"
-									style={{
-										background: "rgba(22,160,106,0.08)",
-										border: "1px solid rgba(22,160,106,0.2)",
-									}}
-								>
-									<ShieldCheck size={13} style={{ color: "var(--vb-good)" }} />
-									<span style={{ color: "var(--vb-good)" }}>
-										Content looks good — no issues detected
-									</span>
-								</div>
-							)}
+						{/* Live content moderation feedback — shared across all submission types */}
+						{renderLiveModerationFeedback()}
 
 						{/* Pre-publish AI review panel — shows after server-side AI analysis */}
 						{prePubBusy && (
@@ -1051,291 +2261,77 @@ export default function Submit() {
 								</p>
 							</div>
 						)}
-						{prePubResult && (
-							<div
-								className={`rounded-xl p-4 vb-rise ${
-									prePubResult.decision === "high_risk"
-										? "moderation-blocked"
-										: prePubResult.decision === "revision"
-											? "moderation-warn"
-											: "moderation-info"
-								}`}
-							>
-								<div className="flex items-center justify-between mb-3">
-									<p className="text-[10px] font-bold uppercase tracking-wider flex items-center gap-1.5">
-										{prePubResult.decision === "high_risk" ? (
-											<>
-												<ShieldAlert size={12} /> AI review — blocked
-											</>
-										) : prePubResult.decision === "revision" ? (
-											<>
-												<AlertTriangle size={12} /> AI review — needs attention
-											</>
-										) : (
-											<>
-												<ShieldCheck size={12} /> AI review — safe to publish
-											</>
-										)}
-									</p>
-									{prePubResult.analysis?.llm_analyzed && (
-										<span
-											className="text-[9px] font-mono px-1.5 py-0.5 rounded"
-											style={{
-												background: "rgba(86,82,214,0.15)",
-												color: "var(--vb-accent)",
-											}}
-										>
-											{prePubResult.analysis.estimated_resolution_time
-												? `~${prePubResult.analysis.estimated_resolution_time}`
-												: "analyzed"}
-										</span>
-									)}
-								</div>
-
-								{/* Risk score bar */}
-								<div className="mb-3">
-									<div className="flex items-center justify-between mb-1">
-										<span className="text-[11px] font-semibold text-ink2">
-											Risk score
-										</span>
-										<span
-											className={`text-[11px] font-bold ${
-												prePubResult.risk_score >= 70
-													? "text-bad"
-													: prePubResult.risk_score >= 30
-														? "text-warn"
-														: "text-good"
-											}`}
-										>
-											{prePubResult.risk_score}/100
-										</span>
-									</div>
-									<div
-										className="w-full h-1.5 rounded-full overflow-hidden"
-										style={{ background: "var(--vb-border)" }}
-									>
-										<div
-											className={`h-full rounded-full transition-all duration-700 ${
-												prePubResult.risk_score >= 70
-													? "bg-bad"
-													: prePubResult.risk_score >= 30
-														? "bg-warn"
-														: "bg-good"
-											}`}
-											style={{
-												width: `${Math.min(100, prePubResult.risk_score)}%`,
-											}}
-										/>
-									</div>
-								</div>
-
-								{/* Check results grid */}
-								{prePubResult.checks && (
-									<div className="grid grid-cols-2 gap-2 mb-3">
-										{(
-											[
-												[
-													"privacy",
-													"Personal info",
-													prePubResult.checks.privacy,
-												],
-												["safety", "Safety", prePubResult.checks.safety],
-												["spam", "Spam", prePubResult.checks.spam],
-												["quality", "Quality", prePubResult.checks.quality],
-											] as const
-										).map(([key, label, check]) => (
-											<div
-												key={key}
-												className="flex items-center gap-1.5 text-[11px]"
-											>
-												{check.pass ? (
-													<span className="text-good">
-														<CheckCircle2 size={11} />
-													</span>
-												) : (
-													<span className="text-bad">
-														<X size={11} />
-													</span>
-												)}
-												<span
-													className={
-														check.pass ? "text-ink3" : "text-ink2 font-semibold"
-													}
-												>
-													{label}
-												</span>
-												{check.issues.length > 0 && (
-													<span className="text-[9px] text-bad font-mono">
-														({check.issues.length})
-													</span>
-												)}
-											</div>
-										))}
-									</div>
-								)}
-
-								{/* AI reason */}
-								<p className="text-[11px] text-ink2 leading-relaxed">
-									{prePubResult.reason}
-								</p>
-
-								{/* Action hint */}
-								{prePubResult.decision === "high_risk" && (
-									<p className="text-[11px] mt-2 font-semibold text-bad">
-										Content held for admin review. You can edit and try again
-										with different wording.
-									</p>
-								)}
-								{prePubResult.decision === "revision" && (
-									<p className="text-[11px] mt-2 text-warn">
-										AI flagged something — you can still submit, but it will be
-										reviewed before going public.
-									</p>
-								)}
-								{prePubResult.decision === "safe" && (
-									<p className="text-[11px] mt-2 text-good">
-										All checks passed — ready to publish.
-									</p>
-								)}
-							</div>
-						)}
-
-						{/* Live AI suggestions: category, priority, tags, improved title */}
-						{aiSuggest?.category && (
-							<div
-								className="rounded-xl p-3.5 vb-rise"
-								style={{
-									background: "var(--vb-accent-soft)",
-									border: "1px solid rgba(86,82,214,0.2)",
-								}}
-							>
-								<p className="text-[10px] font-bold uppercase tracking-wider text-accent mb-2 flex items-center gap-1.5">
-									<Sparkles size={12} /> AI suggestions · updating live
-								</p>
-								<div className="flex flex-wrap gap-1.5">
-									{aiSuggest.category !== category ? (
-										<button
-											type="button"
-											className="chip cursor-pointer !bg-surface hover:!border-accent transition-all"
-											onClick={() => {
-												setCategory(aiSuggest.category);
-												toast(`Category → ${aiSuggest.category}`, "ok");
-											}}
-										>
-											{CAT_EMOJI[aiSuggest.category]} {aiSuggest.category} ·{" "}
-											{Math.round((aiSuggest.confidence || 0) * 100)}%{" "}
-											<span className="text-accent font-bold">apply</span>
-										</button>
-									) : (
-										<span
-											className="chip !border-transparent"
-											style={{
-												background: "rgba(22,160,106,0.12)",
-												color: "var(--vb-good)",
-											}}
-										>
-											<CheckCircle2 size={11} /> {CAT_EMOJI[category]}{" "}
-											{category}
-										</span>
-									)}
-									{aiSuggest.priority && aiSuggest.priority !== priority && (
-										<button
-											type="button"
-											className="chip cursor-pointer !bg-surface hover:!border-accent transition-all capitalize"
-											onClick={() =>
-												setPriority(aiSuggest.priority ?? "medium")
-											}
-										>
-											<Zap size={11} /> {aiSuggest.priority} priority{" "}
-											<span className="text-accent font-bold">apply</span>
-										</button>
-									)}
-									{(aiSuggest.tags || [])
-										.filter(
-											(t: string) =>
-												!tags.toLowerCase().includes(t.toLowerCase()),
-										)
-										.slice(0, 3)
-										.map((t: string) => (
-											<button
-												key={t}
-												type="button"
-												className="chip cursor-pointer !bg-surface hover:!border-accent transition-all"
-												onClick={() =>
-													setTags((prev) => (prev ? `${prev}, ${t}` : t))
-												}
-											>
-												#{t} <span className="text-accent font-bold">+</span>
-											</button>
-										))}
-								</div>
-								{aiSuggest.improved_title &&
-									aiSuggest.improved_title.toLowerCase() !==
-										title.toLowerCase() && (
-										<button
-											type="button"
-											className="w-full text-left text-xs mt-2 px-2.5 py-2 rounded-lg bg-surface border border-border hover:border-accent transition-all flex items-center gap-2"
-											onClick={() =>
-												setTitle(aiSuggest.improved_title!.slice(0, 120))
-											}
-										>
-											<Pencil size={12} className="text-accent shrink-0" />{" "}
-											Better title: <b>"{aiSuggest.improved_title}"</b>{" "}
-											<span className="text-accent font-bold ml-auto">use</span>
-										</button>
-									)}
-							</div>
-						)}
-						<div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-							<div>
+						<div className="space-y-2">
+							<div className="flex items-center justify-between">
 								<label
-									className="text-xs font-semibold text-ink2 block mb-1.5"
+									className="text-xs font-semibold text-ink2 block"
 									htmlFor="f-cat"
 								>
 									Category
 								</label>
-								<select
-									id="f-cat"
-									className="input"
-									value={category}
-									onChange={(e) => setCategory(e.target.value)}
-								>
-									{categories.map((c) => (
-										<option key={c} value={c}>
+								{detectedCategory && (
+									<span className="text-[10px] text-accent flex items-center gap-1 font-medium animate-pulse">
+										<Sparkles size={11} /> Suggested from description
+									</span>
+								)}
+							</div>
+							<div className="flex flex-wrap gap-1.5" role="group" aria-label="Quick category selector">
+								{categories.map((c) => {
+									const isDetected = detectedCategory === c && category !== c;
+									const isSelected = category === c;
+									return (
+										<button
+											key={c}
+											type="button"
+											onClick={() => {
+												setCategory(c);
+												triggerHaptic("light");
+											}}
+											className={`chip !text-xs transition-all flex items-center gap-1 cursor-pointer ${
+												isSelected
+													? "border-accent bg-accent/15 text-accent font-semibold shadow-sm"
+													: isDetected
+														? "border-accent text-accent animate-pulse bg-accent/5 font-semibold"
+														: "border-border hover:border-accent/40"
+											}`}
+										>
 											{CAT_EMOJI[c]} {c}
-										</option>
-									))}
-								</select>
+											{isDetected && <Sparkles size={10} className="text-accent" />}
+										</button>
+									);
+								})}
 							</div>
-							<div>
-								<label
-									className="text-xs font-semibold text-ink2 block mb-1.5"
-									htmlFor="f-prio"
-								>
-									Priority
-								</label>
-								<select
-									id="f-prio"
-									className="input"
-									value={priority}
-									onChange={(e) => setPriority(e.target.value)}
-								>
-									<option value="low">Low</option>
-									<option value="medium">Medium</option>
-									<option value="high">High</option>
-									<option value="critical">Critical</option>
-								</select>
-							</div>
+							<select
+								id="f-cat"
+								className="input text-xs"
+								value={category}
+								onChange={(e) => setCategory(e.target.value)}
+							>
+								{categories.map((c) => (
+									<option key={c} value={c}>
+										{CAT_EMOJI[c]} {c}
+									</option>
+								))}
+							</select>
 						</div>
 						{/* Private visibility — admins/moderators + you only */}
 						<button
 							type="button"
 							role="switch"
 							aria-checked={isPrivate}
-							onClick={() => setIsPrivate((v) => !v)}
+							onClick={() => {
+								setIsPrivate((v) => !v);
+								triggerHaptic("medium");
+							}}
+							disabled={supportLock}
+							title={
+								supportLock
+									? "Locked to private — this reads like you need support"
+									: "Private post"
+							}
 							className={`w-full flex items-center gap-3 rounded-xl px-3.5 py-3 text-left transition-all border ${
 								isPrivate
-									? "border-accent/40 bg-accent-soft/60"
+									? "border-accent bg-accent/10 shadow-sm"
 									: "border-border bg-surface hover:border-accent/30"
 							}`}
 						>
@@ -1347,15 +2343,30 @@ export default function Submit() {
 									className={`h-4 w-4 rounded-full bg-white shadow transition-transform ${isPrivate ? "translate-x-4" : "translate-x-0.5"}`}
 								/>
 							</span>
-							<span className="min-w-0">
+							<span className="min-w-0 flex-1">
 								<span className="flex items-center gap-1.5 text-xs font-semibold text-ink">
-									<Lock size={12} className={isPrivate ? "text-accent" : "text-ink3"} />
-									Private post
+									<Lock
+										size={13}
+										className={`transition-all duration-300 ${
+											isPrivate
+												? "text-accent scale-110 rotate-0"
+												: "text-ink3 -rotate-12"
+										}`}
+									/>
+									Private post (Direct to Administration)
 								</span>
 								<span className="block text-[10px] text-ink3 mt-0.5">
-									Only you, admins and moderators can read this. Hidden from the
-									public feed.
+									{isPrivate
+										? "🔒 Direct to school administration only — no public listing. Contacts & details allowed."
+										: "Only you, admins and moderators can read this. Hidden from the public feed."}
 								</span>
+								{supportLock && (
+									<span className="block text-[10px] mt-0.5 font-semibold text-accent">
+										Locked to private — this reads like you need support, so
+										only you and the support team see it. It stays out of the
+										public feed.
+									</span>
+								)}
 							</span>
 						</button>
 						<div>
@@ -1412,8 +2423,83 @@ export default function Submit() {
 								}
 							/>
 						</div>
+							</>
 					</>
 				)}
+
+				{type !== "poll" && (
+					<div className="rounded-xl border border-border p-4 space-y-3">
+						<button
+							type="button"
+							onClick={() => setAttachPoll((v) => !v)}
+							aria-expanded={attachPoll}
+							className="flex items-center gap-2 text-xs font-semibold text-ink2 hover:text-ink transition-colors"
+						>
+							<BarChart3 size={14} className="text-accent" />
+							{attachPoll ? "Poll attached — tap to remove" : "Attach a poll (optional)"}
+						</button>
+						{attachPoll && (
+							<>
+								<div>
+									<label className="text-xs font-semibold text-ink2 block mb-1.5" htmlFor="f-attach-q">
+										Poll question
+									</label>
+									<input
+										id="f-attach-q"
+										className="input"
+										placeholder="What should we ask?"
+										value={attachQuestion}
+										onChange={(e) => setAttachQuestion(e.target.value)}
+										maxLength={140}
+									/>
+								</div>
+								<div>
+									<span className="text-xs font-semibold text-ink2 block mb-1.5">
+										Options (2–10)
+									</span>
+									<div className="space-y-2">
+										{attachOptions.map((o, i) => (
+											<div key={i} className="flex gap-2">
+												<input
+													className="input"
+													placeholder={`Option ${i + 1}`}
+													aria-label={`Attach poll option ${i + 1}`}
+													value={o}
+													maxLength={60}
+													onChange={(e) =>
+														setAttachOptions((prev) => prev.map((x, j) => (j === i ? e.target.value : x)),
+											)
+												}
+											/>
+												{attachOptions.length > 2 && (
+													<button
+														className="btn btn-ghost !p-2.5"
+														onClick={() => setAttachOptions((prev) => prev.filter((_, j) => j !== i))}
+														aria-label="Remove option"
+													>
+														<X size={14} />
+													</button>
+												)}
+											</div>
+										))}
+									</div>
+									{attachOptions.length < 10 && (
+										<button
+											className="btn btn-ghost !text-xs mt-2"
+											onClick={() => setAttachOptions((prev) => [...prev, ""])}
+										>
+											+ Add option
+										</button>
+									)}
+								</div>
+								<p className="text-[10px] text-ink3">
+									Created together with your post and linked to it.
+								</p>
+							</>
+						)}
+					</div>
+				)}
+
 
 				{/* Duplicate warning — similar open posts in this category */}
 				{type !== "poll" && duplicates.length > 0 && (
@@ -1437,7 +2523,8 @@ export default function Submit() {
 							>
 								{d.title}{" "}
 								<span className="text-[11px] text-ink3">
-									· {d.status.replace("_", " ")} · {d.reactions?.support || 0}{" "}
+									· <span className="font-semibold text-accent">{d.category}</span> · {(d.status || "open").replace("_", " ")} ·{" "}
+								{d.reactions?.support || 0}{" "}
 									supports
 								</span>
 							</Link>
@@ -1456,7 +2543,6 @@ export default function Submit() {
 						</p>
 						<div className="flex gap-2 mb-1.5">
 							<span className="chip">{category}</span>
-							<span className="chip capitalize">{priority}</span>
 						</div>
 						<h3 className="font-display font-semibold">
 							{title || "Your title"}
@@ -1478,36 +2564,73 @@ export default function Submit() {
 						</button>
 					)}
 					<span
-						className={`text-[11px] text-ink3 flex items-center gap-1 transition-opacity duration-300 ${draftSaved ? "opacity-100" : "opacity-0"}`}
+						role="status"
+						aria-live="polite"
+						aria-atomic="true"
+						className={`text-[11px] flex items-center gap-1 transition-opacity duration-300 ${
+							draftState === "failed" ? "text-bad" : "text-ink3"
+						} ${draftState === "idle" ? "opacity-0" : "opacity-100"}`}
 					>
-						<Save size={11} /> Draft saved
+						{draftState === "failed" ? (
+							<>
+								<AlertTriangle size={11} /> Draft not saved — storage is full
+								or blocked, keep this tab open
+							</>
+						) : draftState === "saved" ? (
+							<>
+								<span className="inline-block w-1.5 h-1.5 rounded-full bg-good animate-ping mr-0.5" />
+								<Save size={11} /> Draft saved <span className="text-[10px] text-ink3 font-normal">(locally)</span>
+							</>
+						) : null}
 					</span>
+					{hasDraftContent && (
+						<button
+							type="button"
+							className="btn btn-ghost !text-[11px] text-ink3 hover:text-bad"
+							onClick={() =>
+								discardArmed ? discardDraft() : setDiscardArmed(true)
+							}
+							aria-label={
+								discardArmed ? "Confirm discard draft" : "Discard draft"
+							}
+						>
+							{discardArmed ? "Tap again to discard" : "Discard draft"}
+						</button>
+					)}
 					<button
-						className={`btn btn-primary ml-auto ${busy ? "btn-loading" : ""}`}
+						className={`btn btn-primary ml-auto transition-all duration-300 ${busy ? "btn-loading" : ""} ${success ? "!bg-good !border-good !text-white" : ""}`}
 						onClick={submit}
 						disabled={
 							busy ||
+							success ||
 							restricted ||
 							prePubBusy ||
-							(moderation ? isBlocked(moderation) : false)
+							(!isPrivate && isPrePubBlocked) ||
+							(!isPrivate && moderation ? isBlockedByServer(moderation) : false)
 						}
 						aria-label={
-							busy
-								? "Publishing your submission"
-								: prePubBusy
-									? "Running AI content check"
-									: moderation && isBlocked(moderation)
-										? "Content has issues that must be fixed first"
-										: "Publish anonymously"
+							success
+								? "Submitted successfully"
+								: busy
+									? "Publishing your submission"
+									: prePubBusy
+										? "Running AI content check"
+										: !isPrivate && moderation && isBlockedByServer(moderation)
+											? "Content has issues that must be fixed first"
+											: "Publish anonymously"
 						}
 					>
-						{prePubBusy ? (
+						{success ? (
+							<>
+								<CheckCircle2 size={15} className="text-white animate-bounce" /> Sent!
+							</>
+						) : prePubBusy ? (
 							<>
 								<Sparkles size={15} /> AI checking…
 							</>
 						) : busy ? (
 							"Publishing…"
-						) : moderation && isBlocked(moderation) ? (
+						) : !isPrivate && moderation && isBlockedByServer(moderation) ? (
 							<>
 								<ShieldAlert size={15} /> Fix issues first
 							</>
@@ -1518,6 +2641,29 @@ export default function Submit() {
 						)}
 					</button>
 				</div>
+
+				{blockedAppeal ? (
+					<AppealPanel
+						surface={blockedAppeal.surface}
+						title={blockedAppeal.title}
+						body={blockedAppeal.body}
+						context={blockedAppeal.context}
+						onFiled={() => setBlockedAppeal(null)}
+					/>
+				) : (
+					moderation && isBlockedByServer(moderation) && (
+						<AppealPanel
+							surface={type === "poll" ? "poll" : "post"}
+							title={sanitize(title, 140)}
+							body={sanitize(desc, 500)}
+							context={
+								type === "poll"
+									? { ptype: pollType, options: options.map((o) => sanitize(o, 60)).filter(Boolean) }
+									: { category }
+							}
+						/>
+					)
+				)}
 
 				<p className="text-[11px] text-ink3 flex items-start gap-1.5 pt-1">
 					<AlertTriangle size={12} className="mt-0.5 shrink-0" />

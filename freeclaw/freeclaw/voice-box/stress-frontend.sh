@@ -9,7 +9,9 @@ FAILS=/tmp/stress-fails.log
 : > "$OUT"
 : > "$FAILS"
 for i in $(seq 1 "$N"); do
-  RUN_OUT=$(npx vitest run --reporter=dot 2>&1)
+  # Route through the launcher so the transform cache stays inside the
+  # workspace instead of a shared temp dir that can be swept mid-run.
+  RUN_OUT=$(node ./scripts/vitest-run.mjs run --reporter=dot 2>&1)
   EXIT=$?
   {
     echo "=== RUN $i/$N $(date +%T) ==="

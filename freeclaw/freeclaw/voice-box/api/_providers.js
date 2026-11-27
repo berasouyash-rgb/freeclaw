@@ -3,6 +3,7 @@
 // is_default provider goes FIRST in chain, then priority order.
 
 import { auditLog, cors, isAdmin } from "./_auth.js";
+import { logger } from "./_observability.js";
 import supabase from "./_db-client.js";
 import { sanitizeError } from "./_error.js";
 import { maskPII } from "./_moderation.js";
@@ -14,16 +15,30 @@ function openaiCompat(name, baseUrl, defaultModel, envKey) {
 		defaultModel,
 		baseUrl: baseUrl.endsWith("/") ? baseUrl + "chat/completions" : baseUrl,
 		buildHeaders: (key) => ({
-			Authorization: `Bearer ${key}`,
+			Authorization: `Bearer ${String(key || "").replace(/["']/g, "").trim()}`,
 			"Content-Type": "application/json",
 		}),
-		buildBody: (model, messages) => ({
-			model,
-			max_tokens: 2048,
-			temperature: 0.2,
-			messages,
-		}),
+		// `options.tools` turns on native function calling. Without it the
+		// body is unchanged, so every existing caller keeps its exact wire
+		// format.
+		buildBody: (model, messages, options = {}) => {
+			const body = {
+				model,
+				max_tokens: 2048,
+				temperature: 0.2,
+				messages,
+			};
+			if (Array.isArray(options?.tools) && options.tools.length) {
+				body.tools = options.tools;
+				body.tool_choice = options.toolChoice || "auto";
+			}
+			return body;
+		},
 		parseResponse: (data) => data?.choices?.[0]?.message?.content,
+		parseToolCalls: (data) => {
+			const calls = data?.choices?.[0]?.message?.tool_calls;
+			return Array.isArray(calls) ? calls : [];
+		},
 		envKey,
 		compat: "openai",
 	};
@@ -58,7 +73,9 @@ function anthropicCompat(name, baseUrl, defaultModel, envKey) {
 
 // ─── Provider Registry (50+) ──────────────────────────────────────
 // Categories: major, chinese, cloud, inference, self-hosted, custom
-const PROVIDER_DEFS = {
+// Exported so the real-import pin (tests/api/provider-models-pinning.test.ts)
+// can assert no probed-dead model id survives as a default.
+export const PROVIDER_DEFS = {
 	// ── Major ──────────────────────────────────────────────────────
 	openai: openaiCompat(
 		"OpenAI",
@@ -83,7 +100,9 @@ const PROVIDER_DEFS = {
 	groq: openaiCompat(
 		"Groq",
 		"https://api.groq.com/openai/v1/",
-		"llama-3.3-70b-versatile",
+		// llama-3.3-70b-versatile returns 404 (does not exist) — probed
+		// 2026-10-12. openai/gpt-oss-120b returned 200 with the app key.
+		"openai/gpt-oss-120b",
 		"GROQ_API_KEY",
 	),
 	deepseek: openaiCompat(
@@ -102,7 +121,12 @@ const PROVIDER_DEFS = {
 		...openaiCompat(
 			"NVIDIA NIM",
 			"https://integrate.api.nvidia.com/v1/",
-			"nvidia/nemotron-3-ultra-550b-a55b",
+			// Ultra 550B is the strongest NIM model but its shared free worker
+			// answers 503 "Service temporarily overloaded" often enough that a
+			// default pointed there fails most first calls. Bolt E4B answers in
+			// ~700ms on the same key (probed 2026-11-15), so it is the default;
+			// Ultra stays in the fast-lane hedge list as the quality fallback.
+			"nvidia/nemotron-3.5-bolt-e4b",
 			"NVIDIA_API_KEY",
 		),
 		// The free-tier shared worker is frequently congested (503/timeout);
@@ -113,15 +137,18 @@ const PROVIDER_DEFS = {
 		// cap (not the default) is what governs.
 		timeout: 30000,
 		// Ultra is a REASONING model — enable thinking so every agent call
-		// gets real analysis (measured: 6.8s @ budget 4096, 10.7s @ 8192).
-		// 16k output budget matches the NIM reference client config.
+		// gets real analysis. 16k output budget matches the NIM reference
+		// client config. Do NOT add reasoning_budget: the runner rejects it
+		// with "thinking_token_budget is not yet supported by the V2 model
+		// runner" (HTTP 400) on EVERY call — measured live, this single field
+		// broke the default provider outright, while enable_thinking alone
+		// answered in ~1.1s.
 		buildBody: (model, messages) => ({
 			model,
 			max_tokens: 16384,
 			temperature: 1,
 			top_p: 0.95,
 			chat_template_kwargs: { enable_thinking: true },
-			reasoning_budget: 4096,
 			messages,
 		}),
 	},
@@ -663,6 +690,7 @@ async function getProviders() {
 
 async function saveProviders(providers) {
 	_providersCache = { at: 0, value: null }; // invalidate cache first
+	invalidateChainCache();
 	invalidateLLMStatus(); // LLM availability may change now — never serve a stale degraded/fine verdict
 	const { data } = await supabase
 		.from("settings")
@@ -700,7 +728,7 @@ function maskKey(key) {
 let _llmStatusCache = { at: 0, usable: null };
 const LLM_STATUS_TTL = 30000; // 30s TTL (keys can be added in admin)
 
-/** True when at least one provider has a usable key (DB or env). */
+/** True when at least one provider has a usable key (DB or env) or public frontier fallback is ready. */
 export async function hasUsableLLM() {
 	const now = Date.now();
 	if (
@@ -710,8 +738,13 @@ export async function hasUsableLLM() {
 		return _llmStatusCache.usable;
 	try {
 		const chain = await buildChain();
-		const nimUsable = NIM_FALLBACK_CHAIN.some((p) => p.key && p.baseUrl);
-		_llmStatusCache = { at: now, usable: chain.length > 0 || nimUsable };
+		const nimUsable = getNimFallbackChain().some(
+			(p) => p.key && p.baseUrl && isApprovedFreeModel(p.id, p.model),
+		);
+		// Also check self-hosted providers via env vars (ollama, lmstudio)
+		const ollamaUsable = !!process.env.OLLAMA_HOST;
+		const lmstudioUsable = !!process.env.LMSTUDIO_HOST;
+		_llmStatusCache = { at: now, usable: chain.length > 0 || nimUsable || ollamaUsable || lmstudioUsable };
 	} catch {
 		_llmStatusCache = { at: now, usable: false };
 	}
@@ -736,8 +769,8 @@ function isOnCooldown(id) {
 	const until = _cooldowns.get(id);
 	return !!until && until > Date.now();
 }
-function markCooldown(id) {
-	_cooldowns.set(id, Date.now() + COOLDOWN_MS);
+function markCooldown(id, ms = COOLDOWN_MS) {
+	_cooldowns.set(id, Date.now() + ms);
 }
 function clearCooldown(id) {
 	_cooldowns.delete(id);
@@ -755,19 +788,79 @@ export async function getDefaultProviderId() {
 	return sorted[0]?.[0] || null;
 }
 
+// FIX #19: Cache provider chain 60s to avoid DB hit per LLM call
+let _chainCache = null;
+let _chainExpiry = 0;
+const CHAIN_TTL_MS = 60_000;
+export function invalidateChainCache() { _chainCache = null; _chainExpiry = 0; }
+
+// ─── Free-model-only policy ──────────────────────────────────────
+// VoiceFlow is not allowed to spend money at an LLM provider. The chain
+// therefore excludes every provider without a documented free tier and
+// refuses paid model variants of free-tier providers (OpenRouter's ":free"
+// suffix is the only free family there). Administrators can approve another
+// genuinely free provider without a code change via AI_FREE_PROVIDERS, but
+// there is deliberately no switch that re-enables paid providers.
+export const FREE_PROVIDER_IDS = new Set([
+	"gemini",
+	"groq",
+	"cerebras",
+	"mistral",
+	"nvidia",
+	"cloudflare_ai",
+	"ollama",
+	"lmstudio",
+	"openrouter",
+]);
+const EXTRA_FREE_PROVIDERS = new Set(
+	(process.env.AI_FREE_PROVIDERS || "")
+		.split(",")
+		.map((s) => s.trim().toLowerCase())
+		.filter(Boolean),
+);
+
+export const FREE_POLICY = Object.freeze({
+	freeOnly: true,
+	providers: [...new Set([...FREE_PROVIDER_IDS, ...EXTRA_FREE_PROVIDERS])],
+});
+
+export function isApprovedFreeProvider(id) {
+	const key = String(id || "").toLowerCase();
+	if (!key) return false;
+	if (FREE_PROVIDER_IDS.has(key) || EXTRA_FREE_PROVIDERS.has(key)) return true;
+	// NIM fallback ids are "<vendor>-<model>" (e.g. groq-gpt-oss).
+	return /^(groq|nvidia|cerebras|gemini|mistral)-/.test(key);
+}
+
+export function isApprovedFreeModel(id, model) {
+	if (!isApprovedFreeProvider(id)) return false;
+	const m = String(model || "").toLowerCase();
+	// OpenRouter serves both paid and :free variants from one endpoint.
+	if (String(id).toLowerCase() === "openrouter") return m.includes(":free");
+	return true;
+}
+
 // ─── Build failover chain ─────────────────────────────────────────
 export async function buildChain() {
+	const now = Date.now();
+	if (_chainCache && _chainExpiry > now) return _chainCache;
 	const db = await getProviders();
 	const chain = [];
 	let defaultId = null;
 	for (const [id, cfg] of Object.entries(db)) {
 		if (cfg.is_default && cfg.enabled && cfg.key) {
+			if (!isApprovedFreeModel(id, cfg.model || PROVIDER_DEFS[id]?.defaultModel)) continue;
 			defaultId = id;
 			break;
 		}
 	}
 	const dbEntries = Object.entries(db)
-		.filter(([id, cfg]) => cfg.enabled && cfg.key)
+		.filter(
+			([id, cfg]) =>
+				cfg.enabled &&
+				cfg.key &&
+				isApprovedFreeModel(id, cfg.model || PROVIDER_DEFS[id]?.defaultModel),
+		)
 		.sort((a, b) => (a[1].priority || 99) - (b[1].priority || 99));
 	if (defaultId && PROVIDER_DEFS[defaultId]) {
 		const cfg = db[defaultId];
@@ -794,8 +887,11 @@ export async function buildChain() {
 	for (const [id, def] of Object.entries(PROVIDER_DEFS)) {
 		if (dbIds.has(id)) continue;
 		const key = process.env[def.envKey];
-		if (key) chain.push({ id, ...def, key, model: def.defaultModel });
+		if (key && isApprovedFreeModel(id, def.defaultModel))
+			chain.push({ id, ...def, key, model: def.defaultModel });
 	}
+	_chainCache = chain;
+	_chainExpiry = Date.now() + CHAIN_TTL_MS;
 	return chain;
 }
 
@@ -827,6 +923,11 @@ export async function getProviderConfig(id) {
 // NIM requests so bursts serialize instead of saturating the shared worker.
 const NIM_MAX_CONCURRENCY = 1; // Free-tier NIM worker handles ~1 inference at a time. >1 saturates it: ultra times out (30s) and every call degrades to the llama fallback. Patrols run agents sequentially anyway, so serializing costs nothing and each ultra call gets the whole worker (measured 2.5–10s solo).
 const NIM_MAX_QUEUE = 8; // beyond this, new calls fail fast instead of queueing
+// Interactive (user-waiting) calls get their own, larger queue and jump ahead
+// of background agent work. Without this the workforce's patrol backlog filled
+// the queue and real users were told "worker saturated" — voice drafts and the
+// inbox fell back to heuristics while agents consumed the shared worker.
+const NIM_HIGH_QUEUE_MAX = 24;
 let nimActive = 0;
 const nimQueue = [];
 function isNimProvider(provider) {
@@ -837,29 +938,58 @@ function isNimProvider(provider) {
 	);
 }
 const NIM_QUEUE_WAIT_MS = 20000; // max time a call may park waiting for a slot
-function acquireNimSlot() {
+/**
+ * @param {"low"|"high"} priority
+ * @param {number} [waitMs] Caller's remaining wall budget. A request-path
+ *   caller must never park longer than it is willing to wait: an abandoned
+ *   lane that keeps its queue entry after the HTTP handler has already
+ *   timed out will take the single NIM slot and stall the *next* user's
+ *   write behind a call nobody is waiting for. Clamped to NIM_QUEUE_WAIT_MS.
+ */
+function acquireNimSlot(priority = "low", waitMs = NIM_QUEUE_WAIT_MS) {
 	if (nimActive < NIM_MAX_CONCURRENCY) {
 		nimActive++;
 		return Promise.resolve(true);
 	}
+	const high = priority === "high";
 	// Overload guard: deep queue = worker congestion. Fail fast (caller skips)
 	// rather than parking a request indefinitely — preserves the fail-fast
-	// behavior the whole redesign targets.
-	if (nimQueue.length >= NIM_MAX_QUEUE) return Promise.resolve(false);
+	// behavior the whole redesign targets. Interactive calls may queue past the
+	// background cap so a person waiting on a draft is never refused because a
+	// patrol filled the backlog.
+	if (
+		high
+			? nimQueue.length >= NIM_HIGH_QUEUE_MAX
+			: nimQueue.length >= NIM_MAX_QUEUE
+	)
+		return Promise.resolve(false);
 	return new Promise((resolve) => {
-		const entry = () => resolve(true);
+		let settled = false;
+		const finish = (ok) => {
+			if (settled) return;
+			settled = true;
+			resolve(ok);
+		};
 		// A queued call must never wait forever (e.g. a streaming chat holding
 		// the single slot while a patrol needs it) — bail out after a bounded
-		// wait so the caller's failover chain can move on.
+		// wait so the caller's failover chain can move on. The bound is the
+		// caller's own budget when it passed one.
+		const parkMs = Math.max(
+			150,
+			Math.min(Number.isFinite(waitMs) ? waitMs : NIM_QUEUE_WAIT_MS, NIM_QUEUE_WAIT_MS),
+		);
 		const timer = setTimeout(() => {
 			const i = nimQueue.indexOf(entry);
 			if (i >= 0) nimQueue.splice(i, 1);
-			resolve(false);
-		}, NIM_QUEUE_WAIT_MS);
-		nimQueue.push(() => {
+			finish(false);
+		}, parkMs);
+		const entry = () => {
 			clearTimeout(timer);
-			entry();
-		});
+			finish(true);
+		};
+		// High priority jumps ahead of already-queued background work.
+		if (high) nimQueue.unshift(entry);
+		else nimQueue.push(entry);
 	});
 }
 function releaseNimSlot() {
@@ -871,10 +1001,10 @@ function releaseNimSlot() {
 	}
 }
 
-async function callProvider(provider, messages, timeoutMs) {
+async function callProvider(provider, messages, timeoutMs, priority = "low", queueWaitMs = 0, options = {}) {
 	const nimSlot = isNimProvider(provider);
 	if (nimSlot) {
-		const ok = await acquireNimSlot();
+		const ok = await acquireNimSlot(priority, queueWaitMs || NIM_QUEUE_WAIT_MS);
 		if (!ok)
 			return {
 				ok: false,
@@ -882,13 +1012,13 @@ async function callProvider(provider, messages, timeoutMs) {
 			};
 	}
 	try {
-		return await callProviderInner(provider, messages, timeoutMs);
+		return await callProviderInner(provider, messages, timeoutMs, options);
 	} finally {
 		if (nimSlot) releaseNimSlot();
 	}
 }
 
-async function callProviderInner(provider, messages, timeoutMs) {
+async function callProviderInner(provider, messages, timeoutMs, options = {}) {
 	if (!provider.baseUrl)
 		return {
 			ok: false,
@@ -921,6 +1051,10 @@ async function callProviderInner(provider, messages, timeoutMs) {
 		// the failover chain moves on.
 		let resp = null;
 		let lastErr = "";
+		// Native function calling is opt-in. If a provider rejects the
+		// `tools` field with a 400 we retry once WITHOUT tools so the turn
+		// still works on OpenAI-compatible endpoints that have not caught up.
+		let bodyOptions = options || {};
 		// SHARED total budget across all attempts: the whole provider call
 		// (retries included) must finish within `effective` ms. Refreshing the
 		// abort timer per attempt previously multiplied the budget by the
@@ -943,9 +1077,32 @@ async function callProviderInner(provider, messages, timeoutMs) {
 				resp = await fetch(provider.baseUrl, {
 					method: "POST",
 					headers: provider.buildHeaders(provider.key),
-					body: JSON.stringify(provider.buildBody(provider.model, safeMessages)),
+					body: JSON.stringify(
+						provider.buildBody(provider.model, safeMessages, bodyOptions),
+					),
 					signal: controller.signal,
 				});
+				if (!resp.ok && resp.status === 400 && bodyOptions?.tools?.length) {
+					const errText = await resp.text().catch(() => "");
+					if (/tool|function/i.test(errText)) {
+						console.warn(
+							`[LLM] ${provider.id} rejected native tool calling — retrying without tools`,
+						);
+						bodyOptions = {
+							...bodyOptions,
+							tools: undefined,
+							toolChoice: undefined,
+						};
+						resp = null;
+						lastErr = "provider rejected native tool calling";
+						continue;
+					}
+					return {
+						ok: false,
+						status: 400,
+						error: `HTTP 400: ${errText.slice(0, 200)}`,
+					};
+				}
 				if (resp.ok || (resp.status !== 429 && resp.status !== 503)) break;
 				lastErr = `HTTP ${resp.status}`;
 				console.warn(
@@ -974,8 +1131,21 @@ async function callProviderInner(provider, messages, timeoutMs) {
 		}
 		const data = await resp.json();
 		const text = provider.parseResponse(data);
-		if (!text) return { ok: false, error: "Empty response from provider" };
-		return { ok: true, text, provider: provider.id, model: provider.model };
+		// A native function-calling turn answers with `tool_calls` and an
+		// EMPTY content — that is a valid answer, not an empty response.
+		const toolCalls =
+			typeof provider.parseToolCalls === "function"
+				? provider.parseToolCalls(data) || []
+				: [];
+		if (!text && !toolCalls.length)
+			return { ok: false, error: "Empty response from provider" };
+		return {
+			ok: true,
+			text: text || "",
+			toolCalls,
+			provider: provider.id,
+			model: provider.model,
+		};
 	} catch (e) {
 		return {
 			ok: false,
@@ -989,119 +1159,442 @@ async function callProviderInner(provider, messages, timeoutMs) {
 // ─── Hardcoded NIM fallback chain ────────────────────────────────
 // Used when DB-stored provider chain is empty (no keys configured).
 // These keys are user-provided and specific to this deployment.
-const NIM_FALLBACK_CHAIN = [
-	// Tier 1: Llama 3.1 8B -- always-available, ultra-fast congestion escape hatch
-	{
-		id: "nvidia-llama-8b",
-		name: "Llama 3.1 8B Fast",
-		defaultModel: "meta/llama-3.1-8b-instruct",
-		baseUrl: "https://integrate.api.nvidia.com/v1/chat/completions",
-		model: "meta/llama-3.1-8b-instruct",
-		key: process.env.NVIDIA_API_KEY || "",
-		buildHeaders: (key) => ({
-			Authorization: `Bearer ${key}`,
-			"Content-Type": "application/json",
-		}),
-		buildBody: (model, messages) => ({
-			model,
-			max_tokens: 4096,
-			temperature: 0.2,
-			messages,
-		}),
-		parseResponse: (data) => data?.choices?.[0]?.message?.content,
-		timeout: 12000,
-	},
-	// Tier 2: Nemotron Nano 30B -- very fast emergency fallback
-	{
-		id: "nvidia-nemotron-nano",
-		name: "NVIDIA Nemotron Nano 30B",
-		defaultModel: "nvidia/nemotron-3-nano-30b-a3b",
-		baseUrl: "https://integrate.api.nvidia.com/v1/chat/completions",
-		model: "nvidia/nemotron-3-nano-30b-a3b",
-		key: process.env.NVIDIA_API_KEY || "",
-		buildHeaders: (key) => ({
-			Authorization: `Bearer ${key}`,
-			"Content-Type": "application/json",
-		}),
-		buildBody: (model, messages) => ({
-			model,
-			max_tokens: 2048,
-			temperature: 0.2,
-			messages,
-		}),
-		parseResponse: (data) => data?.choices?.[0]?.message?.content,
-		timeout: 12000,
-	},
-	// Tier 3: Llama 3.3 Nemotron Super 49B -- high quality, fast when its worker is free
-	{
-		id: "nvidia-nemotron-super-49b",
-		name: "NVIDIA Llama 3.3 Nemotron Super 49B",
-		defaultModel: "nvidia/llama-3.3-nemotron-super-49b-v1.5",
-		baseUrl: "https://integrate.api.nvidia.com/v1/chat/completions",
-		model: "nvidia/llama-3.3-nemotron-super-49b-v1.5",
-		key: process.env.NVIDIA_API_KEY || "",
-		buildHeaders: (key) => ({
-			Authorization: `Bearer ${key}`,
-			"Content-Type": "application/json",
-		}),
-		buildBody: (model, messages) => ({
-			model,
-			max_tokens: 4096,
-			temperature: 0.3,
-			top_p: 0.9,
-			messages,
-		}),
-		parseResponse: (data) => data?.choices?.[0]?.message?.content,
-		timeout: 8000,
-	},
-	// Tier 4: Nemotron 3 Ultra 550B -- flagship quality, often congested on free tier
-	{
-		id: "nvidia-nemotron-ultra",
-		name: "NVIDIA Nemotron 3 Ultra 550B",
-		defaultModel: "nvidia/nemotron-3-ultra-550b-a55b",
-		baseUrl: "https://integrate.api.nvidia.com/v1/chat/completions",
-		model: "nvidia/nemotron-3-ultra-550b-a55b",
-		key: process.env.NVIDIA_API_KEY || "",
-		buildHeaders: (key) => ({
-			Authorization: `Bearer ${key}`,
-			"Content-Type": "application/json",
-		}),
-		buildBody: (model, messages) => ({
-			model,
-			max_tokens: 4096,
-			temperature: 0.3,
-			top_p: 0.9,
-			messages,
-		}),
-		parseResponse: (data) => data?.choices?.[0]?.message?.content,
-		timeout: 9000,
-	},
-	// Tier 5: Nemotron 3 Super 120B -- strong reasoning, may need higher access tier (kept last)
-	{
-		id: "nvidia-nemotron-super",
-		name: "NVIDIA Nemotron 3 Super 120B",
-		defaultModel: "nvidia/nemotron-3-super-120b-a12b",
-		baseUrl: "https://integrate.api.nvidia.com/v1/chat/completions",
-		model: "nvidia/nemotron-3-super-120b-a12b",
-		key: process.env.NVIDIA_API_KEY || "",
-		buildHeaders: (key) => ({
-			Authorization: `Bearer ${key}`,
-			"Content-Type": "application/json",
-		}),
-		buildBody: (model, messages) => ({
-			model,
-			max_tokens: 4096,
-			temperature: 0.3,
-			top_p: 0.9,
-			messages,
-		}),
-		parseResponse: (data) => data?.choices?.[0]?.message?.content,
-		timeout: 8000,
-	},
+// Keys are read at RUNTIME via getNimFallbackChain() so tests can set env vars.
+function getNimFallbackChain() {
+	const chain = [];
+	if (process.env.GROQ_API_KEY) {
+		chain.push({
+			id: "groq-gpt-oss",
+			name: "Groq GPT-OSS 120B",
+			defaultModel: "openai/gpt-oss-120b",
+			baseUrl: "https://api.groq.com/openai/v1/chat/completions",
+			model: "openai/gpt-oss-120b",
+			key: process.env.GROQ_API_KEY,
+			buildHeaders: (key) => ({
+				Authorization: `Bearer ${key}`,
+				"Content-Type": "application/json",
+			}),
+			buildBody: (model, messages) => ({
+				model,
+				max_tokens: 2048,
+				temperature: 0.2,
+				messages,
+			}),
+			parseResponse: (data) => stripThinking(data?.choices?.[0]?.message?.content),
+			timeout: 7000,
+		});
+	}
+	return [
+		...chain,
+		// Tier 1: Nemotron 3.5 Bolt E4B — sub-second responder (~500ms) with 200 OK on active NVIDIA key
+		{
+			id: "nvidia-nemotron-bolt",
+			name: "NVIDIA Nemotron 3.5 Bolt",
+			defaultModel: "nvidia/nemotron-3.5-bolt-e4b",
+			baseUrl: "https://integrate.api.nvidia.com/v1/chat/completions",
+			model: "nvidia/nemotron-3.5-bolt-e4b",
+			key: process.env.NVIDIA_API_KEY || "",
+			buildHeaders: (key) => ({
+				Authorization: `Bearer ${String(key || "").replace(/["']/g, "").trim()}`,
+				"Content-Type": "application/json",
+			}),
+			buildBody: (model, messages) => ({
+				model,
+				max_tokens: 2048,
+				temperature: 0.2,
+				messages,
+			}),
+			parseResponse: (data) => stripThinking(data?.choices?.[0]?.message?.content),
+			timeout: 6000,
+		},
+		// Tier 2: Nemotron 3 Ultra 550B — sub-second responder (~549ms) with 200 OK on active NVIDIA key
+		{
+			id: "nvidia-nemotron-ultra",
+			name: "NVIDIA Nemotron 3 Ultra 550B",
+			defaultModel: "nvidia/nemotron-3-ultra-550b-a55b",
+			baseUrl: "https://integrate.api.nvidia.com/v1/chat/completions",
+			model: "nvidia/nemotron-3-ultra-550b-a55b",
+			key: process.env.NVIDIA_API_KEY || "",
+			buildHeaders: (key) => ({
+				Authorization: `Bearer ${String(key || "").replace(/["']/g, "").trim()}`,
+				"Content-Type": "application/json",
+			}),
+			buildBody: (model, messages) => ({
+				model,
+				max_tokens: 4096,
+				temperature: 0.3,
+				top_p: 0.9,
+				messages,
+			}),
+			parseResponse: (data) => stripThinking(data?.choices?.[0]?.message?.content),
+			timeout: 9000,
+		},
+	];
+}
+
+	// ─── Direct fast NVIDIA lane ───────────────────────────────────
+// Models that can answer small structured JSON tasks, in hedging order.
+// Live probe 2026-09-26 on this key: super-120B answers in ~2.5s, ultra-550B
+// in ~4s, nano-omni-30B 503s (ResourceExhausted), gpt-oss-20B hangs past 20s,
+// nano-3-30B 404s (retired — removed from this file entirely). Racing the
+// live tiers — each starting a little later — turns a stall into whichever
+// tier answers first, typically 1-4s. A hanging racer just loses, so gpt-oss
+// keeps the last slot; nano-omni is out (fast-failing adds no wins).
+// Model-only change: the retired super-120B id (404 "Function not found for
+// account" on this key, probed 2026-11-15) is gone. Bolt answers in ~700ms and
+// Ultra remains as the quality hedge when its worker is not congested.
+const NVIDIA_FAST_MODELS = [
+	"nvidia/nemotron-3.5-bolt-e4b",
+	"nvidia/nemotron-3-ultra-550b-a55b",
 ];
 
-// ─── Failover chain call ─────────────────────────────────────────
-export async function callLLMChain(system, user, extraMessages = []) {
+export function stripThinking(text) {
+	if (!text || typeof text !== "string") return "";
+	return text.replace(/<think>[\s\S]*?<\/think>\s*/gi, "").trim();
+}
+
+/** One bounded attempt against a single Groq model. Rejects on any failure. */
+function groqFastOnce(key, model, system, user, timeoutMs) {
+	const cleanKey = String(key || "").replace(/["']/g, "").trim();
+	const ctrl = new AbortController();
+	const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+	return fetch("https://api.groq.com/openai/v1/chat/completions", {
+		method: "POST",
+		headers: {
+			Authorization: `Bearer ${cleanKey}`,
+			"Content-Type": "application/json",
+		},
+		body: JSON.stringify({
+			model,
+			max_tokens: 1024,
+			temperature: 0.2,
+			messages: [
+				{ role: "system", content: system },
+				{ role: "user", content: user },
+			],
+		}),
+		signal: ctrl.signal,
+	})
+		.then(async (res) => {
+			if (!res.ok) throw new Error(`http ${res.status}`);
+			const data = await res.json().catch(() => null);
+			const text = data?.choices?.[0]?.message?.content;
+			if (!text) throw new Error("empty response");
+			return stripThinking(text);
+		})
+		.finally(() => clearTimeout(timer));
+}
+
+/** One bounded attempt against a single NVIDIA model. Rejects on any failure. */
+function nvidiaFastOnce(key, model, system, user, timeoutMs) {
+	const cleanKey = String(key || "").replace(/["']/g, "").trim();
+	const ctrl = new AbortController();
+	const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+	return fetch("https://integrate.api.nvidia.com/v1/chat/completions", {
+		method: "POST",
+		headers: {
+			Authorization: `Bearer ${cleanKey}`,
+			"Content-Type": "application/json",
+		},
+		body: JSON.stringify({
+			model,
+			max_tokens: 1024,
+			temperature: 0.2,
+			messages: [
+				{ role: "system", content: system },
+				{ role: "user", content: user },
+			],
+		}),
+		signal: ctrl.signal,
+	})
+		.then(async (res) => {
+			if (!res.ok) throw new Error(`http ${res.status}`);
+			const data = await res.json().catch(() => null);
+			const text = data?.choices?.[0]?.message?.content;
+			if (!text) throw new Error("empty response");
+			return stripThinking(text);
+		})
+		.finally(() => clearTimeout(timer));
+}
+
+// ─── Fast-lane concurrency guard ─────────────────────────────────
+// One free-tier key saturates after a handful of simultaneous calls: the
+// provider answers the first few and 429s the rest. Previously every 429'd
+// caller re-tried the lane, so a burst burned the full budget before
+// degrading. Cap the in-flight count and let extra callers degrade
+// straight to the deterministic floor instead of queueing behind 429s.
+const FAST_MAX_INFLIGHT = 6;
+// A saturated queue is not worth blocking a user's write for: waiting 2s
+// behind a wall of 429s then degrading anyway is the worst of both worlds.
+// A short wait smooths micro-bursts; beyond that, degrade now.
+const FAST_QUEUE_WAIT_MS = 400;
+const FAST_COOLDOWN_MS = 5000;
+let _fastInFlight = 0;
+const _fastWaiters = [];
+
+function _acquireFastSlot(waitMs) {
+	if (_fastInFlight < FAST_MAX_INFLIGHT) {
+		_fastInFlight++;
+		return Promise.resolve(true);
+	}
+	return new Promise((resolve) => {
+		const entry = { done: false, timer: null, resolve };
+		entry.timer = setTimeout(() => {
+			if (entry.done) return;
+			entry.done = true;
+			const i = _fastWaiters.indexOf(entry);
+			if (i >= 0) _fastWaiters.splice(i, 1);
+			resolve(false);
+		}, waitMs);
+		_fastWaiters.push(entry);
+	});
+}
+
+function _releaseFastSlot() {
+	if (_fastInFlight > 0) _fastInFlight--;
+	while (_fastWaiters.length) {
+		const next = _fastWaiters.shift();
+		if (next.done) continue;
+		next.done = true;
+		clearTimeout(next.timer);
+		_fastInFlight++;
+		next.resolve(true);
+		return;
+	}
+}
+
+// ─── Public frontier liveness ────────────────────────────────────
+// The zero-auth frontier endpoint is unreliable on this network: it has
+// answered 402 (quota) and, later, stalled until the abort fired. It is a
+// best-effort last resort, NOT something a user's write should block on, so
+// it gets a short budget and a three-strike breaker rather than a retry on
+// every single request.
+const FRONTIER_DEAD_MS = 60_000;
+const FRONTIER_TRANSIENT_MS = 15_000;
+const FRONTIER_BUDGET_MS = 6000;
+const FRONTIER_MIN_BUDGET_MS = 300;
+const FRONTIER_MAX_FAIL_STREAK = 3;
+let _frontierDeadUntil = 0;
+let _frontierFailStreak = 0;
+
+function frontierKnownDead() {
+	return _frontierDeadUntil > Date.now();
+}
+
+function _recordFrontierFailure(hard) {
+	_frontierFailStreak++;
+	if (hard || _frontierFailStreak >= FRONTIER_MAX_FAIL_STREAK) {
+		_frontierDeadUntil = Date.now() + FRONTIER_DEAD_MS;
+		_frontierFailStreak = 0;
+	} else {
+		_frontierDeadUntil = Date.now() + FRONTIER_TRANSIENT_MS;
+	}
+}
+
+/** Racing the live tiers; each starting a little later. Resolves null on total failure.
+ *
+ *  The caller's budget is a CONTRACT, not a hint. analyzeContext hands this
+ *  lane as little as 800ms while it races a 3s floor, and pre-publish caps it
+ *  at 5s — so the old `Math.max(3500, …)` floor here (and the 2500ms per-slice
+ *  floor below) made this function block for up to 4s no matter what it was
+ *  asked for. The caller had already given up while these sockets were still
+ *  open and the fast slot was still held. Budget below is spent, never
+ *  exceeded; attempts that cannot fit a meaningful slice are skipped outright.
+ */
+async function _raceFastLane({ groqKey, nvidiaKey, system, user, timeoutMs }) {
+	const asked = Number(timeoutMs);
+	// 300ms is the smallest slice worth opening a socket for; 14000 matches
+	// the largest caller (12s) plus headroom.
+	const budget = Math.min(Math.max(300, Number.isFinite(asked) ? Math.round(asked) : 3500), 14000);
+	const attempts = [];
+
+	if (groqKey) {
+		attempts.push(
+			groqFastOnce(groqKey, "openai/gpt-oss-120b", system, user, budget).then(
+				(text) => ({ provider: "groq", model: "openai/gpt-oss-120b", text }),
+				() => null,
+			),
+		);
+	}
+
+	if (nvidiaKey) {
+		const stagger = [0, 600, 1500];
+		const models = [NVIDIA_FAST_MODELS[0], NVIDIA_FAST_MODELS[1]].filter(Boolean);
+		models.forEach((model, i) => {
+			const delay = stagger[i] ?? i * 900;
+			// No room for this tier inside the caller's wall — starting it would
+			// only leave a socket open past the deadline.
+			if (delay + 300 > budget) return;
+			const start = () => {
+				const slice = budget - delay;
+				return nvidiaFastOnce(nvidiaKey, model, system, user, slice).then(
+					(text) => ({ provider: "nvidia", model, text }),
+					() => null,
+				);
+			};
+			attempts.push(
+				new Promise((resolve) => {
+					if (delay === 0) resolve(start());
+					else setTimeout(() => resolve(start()), delay);
+				}),
+			);
+		});
+	}
+
+	if (!attempts.length) return null;
+
+	return new Promise((resolve) => {
+		let settled = false;
+		let done = 0;
+		// Every attempt is told to abort by `budget`, so a small grace is all
+		// that is needed for rejections to propagate. Overshooting here is what
+		// used to push a 3s caller past 4s.
+		const timer = setTimeout(() => {
+			if (settled) return;
+			settled = true;
+			resolve(null);
+		}, budget + 250);
+		for (const p of attempts) {
+			p.then((r) => {
+				done++;
+				if (settled) return;
+				if (r && r.text && r.text.length > 5) {
+					settled = true;
+					clearTimeout(timer);
+					resolve(r);
+				} else if (done === attempts.length) {
+					settled = true;
+					clearTimeout(timer);
+					resolve(null);
+				}
+			});
+		}
+	});
+}
+
+/**
+ * Fast hedging lane (Groq + NVIDIA + Public Frontier fallback).
+ * Starts the fastest model immediately and hedges against alternatives.
+ * NEVER throws — returns null when no model answered, so the caller can
+ * degrade to its deterministic floor without misreporting model usage.
+ */
+export async function callNvidiaFast(system, user, timeoutMs = 12000) {
+	const groqKey = (process.env.GROQ_API_KEY || "").replace(/["']/g, "").trim();
+	const nvidiaKey = (process.env.NVIDIA_API_KEY || "").replace(/["']/g, "").trim();
+	const lane = "fast-lane";
+
+	// One deadline for everything below: the slot wait, the race, and the
+	// frontier fallback. Previously the race floored itself at 3.5s and the
+	// frontier then opened a FRESH 1.2s call, so a caller that asked for 3s
+	// could be held ~5.2s while it had already degraded — pinning a saturated
+	// tier for a request nobody was listening to any more.
+	const asked = Number(timeoutMs);
+	const deadline = Date.now() + (Number.isFinite(asked) ? Math.max(0, asked) : 12000);
+	const left = () => deadline - Date.now();
+	const remaining = () => Math.max(0, left());
+
+	let winner = null;
+	const hasKeys = !!(groqKey || nvidiaKey);
+
+	if (hasKeys && !isOnCooldown(lane)) {
+		const gotSlot = await _acquireFastSlot(Math.min(FAST_QUEUE_WAIT_MS, remaining()));
+		if (gotSlot) {
+			try {
+				// Recompute: the wait just spent part of the caller's wall.
+				winner = remaining() > 0
+					? await _raceFastLane({ groqKey, nvidiaKey, system, user, timeoutMs: remaining() })
+					: null;
+			} finally {
+				_releaseFastSlot();
+			}
+			if (!winner) markCooldown(lane, FAST_COOLDOWN_MS);
+		} else {
+			// Saturated. Do not queue behind a wall of 429s — degrade now.
+			markCooldown(lane, FAST_COOLDOWN_MS);
+		}
+	}
+
+	// Last resort gets whatever is actually left, never a fresh budget. Below
+	// the floor a request cannot produce an answer, so skip it rather than
+	// burn the tail of the deadline for certain nothing.
+	const frontierBudget = Math.min(FRONTIER_BUDGET_MS, remaining());
+	if (!winner && frontierBudget >= FRONTIER_MIN_BUDGET_MS && !frontierKnownDead()) {
+		const pub = await callPublicFrontierLLM(
+			[
+				{ role: "system", content: system },
+				{ role: "user", content: user },
+			],
+			frontierBudget,
+		);
+		if (pub?.text) {
+			return { provider: pub.provider, model: pub.model, text: pub.text };
+		}
+	}
+
+	return winner;
+}
+
+	// ─── Failover chain call ─────────────────────────────────────────
+
+/**
+ * Public Frontier Model Fallback (Zero-Auth OpenAI/Mistral via Pollinations AI)
+ * Provides high-intelligence frontier model inference when configured keys are exhausted,
+ * cooling down, or absent. Ensures 5000+ users never experience interrupted AI.
+ */
+export async function callPublicFrontierLLM(messages, timeoutMs = 12000) {
+	if (frontierKnownDead()) return null;
+	const candidateModels = ["openai", "gpt-oss", "openai-fast"];
+	for (const modelName of candidateModels) {
+		try {
+			const controller = new AbortController();
+			const perModelTimeout = Math.min(timeoutMs, 8000);
+			const timer = setTimeout(() => controller.abort(), perModelTimeout);
+			const res = await fetch("https://text.pollinations.ai/", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({
+					messages: messages.map((m) => ({
+						role: m.role || "user",
+						content: String(m.content || ""),
+					})),
+					model: modelName,
+					seed: 42,
+				}),
+				signal: controller.signal,
+			});
+			clearTimeout(timer);
+			if (!res.ok) {
+				const hard = res.status === 402 || res.status === 401 || res.status === 403;
+				if (hard) _recordFrontierFailure(true);
+				continue;
+			}
+			const raw = await res.text();
+			const text = stripThinking(raw);
+			if (text && text.trim().length > 0) {
+				_frontierFailStreak = 0;
+				return {
+					ok: true,
+					provider: "frontier-public",
+					model: modelName === "openai" ? "openai-gpt4o" : `public-${modelName}`,
+					text: text.trim(),
+				};
+			}
+		} catch (err) {
+			console.warn(`[LLM] Public frontier model ${modelName} call failed:`, err.message);
+		}
+	}
+	_recordFrontierFailure(false);
+	return null;
+}
+
+export async function callLLMChain(
+	system,
+	user,
+	extraMessages = [],
+	priority = "low",
+	budgetMs = 0,
+	options = {},
+) {
 	const messages = [
 		{ role: "system", content: system },
 		...extraMessages,
@@ -1118,17 +1611,60 @@ export async function callLLMChain(system, user, extraMessages = []) {
 		};
 	}
 
-	// 1. Try DB-configured providers first (skip recently-failed ones)
+	// A caller on a request path passes a wall budget. Without one this walks
+	// every provider serially, so one saturated free tier burns the caller's
+	// whole timeout budget before the deterministic floor is reached. With a
+	// budget the walk stops as soon as the wall is hit and reports "no answer"
+	// honestly instead of a timeout.
+	const deadline = budgetMs > 0 ? Date.now() + budgetMs : 0;
+	const timeLeft = () => (deadline ? deadline - Date.now() : Number.POSITIVE_INFINITY);
+	const withinBudget = () => timeLeft() > 0;
+	// A NIM slot park is charged to the caller's budget, not to the process:
+	// queueing 20s behind a single-slot worker to then be abandoned by the
+	// HTTP wall is how one slow review used to stall the next user's write.
+	const nimQueueWait = () =>
+		deadline ? Math.min(NIM_QUEUE_WAIT_MS, Math.max(0, timeLeft())) : NIM_QUEUE_WAIT_MS;
+	const bounded = (promise) => {
+		if (!deadline) return promise.catch(() => null);
+		const left = timeLeft();
+		if (left <= 0) return Promise.resolve(null);
+		return Promise.race([
+			promise.catch(() => null),
+			new Promise((resolve) => setTimeout(() => resolve(null), left)),
+		]);
+	};
+
+	// 1. Try DB-configured providers first.
+	//    ONLY fresh (not-cooling-down) providers are attempted. The old
+	//    `freshChain.length > 0 ? freshChain : chain` fallback re-walked the
+	//    ENTIRE dead list the moment every provider was cooling down, so a
+	//    single upstream outage turned every caller into a full serial timeout
+	//    sweep — a cron tick with dozens of agents never finished inside the
+	//    60s function limit and was killed mid-run. Cooldowns are time-based
+	//    (COOLDOWN_MS), so recovery still happens automatically on the first
+	//    call after they expire; fast-failing here loses nothing but the storm.
 	const chain = await buildChain();
 	const freshChain = chain.filter((p) => !isOnCooldown(p.id));
-	for (const provider of freshChain.length > 0 ? freshChain : chain) {
-		const result = await callProvider(provider, messages);
+	for (const provider of freshChain) {
+		if (!withinBudget()) break;
+		const result = await bounded(
+			callProvider(provider, messages, undefined, priority, nimQueueWait(), options),
+		);
+		if (!result) break;
 		if (result.ok) {
 			clearCooldown(provider.id);
+			// `ok` is part of the public contract: callers that validate a
+			// chain result (api/_ai.js `callLLMJson` among them) MUST be able
+			// to tell a real answer from "no answer, degrade honestly".
+			// Without it every successful call looked like a failure and the
+			// admin AI features silently served heuristic output while the
+			// provider had actually answered.
 			return {
+				ok: true,
 				provider: result.provider,
 				model: result.model,
 				text: result.text,
+				toolCalls: result.toolCalls || [],
 			};
 		}
 		markCooldown(provider.id);
@@ -1137,29 +1673,65 @@ export async function callLLMChain(system, user, extraMessages = []) {
 
 	// 2. Hardcoded NIM fallback (skip recently-failed ones)
 	if (chain.length === 0) {
-		console.log("[LLM] No DB providers configured — using NIM fallback chain");
+		logger.info("llm", "No DB providers configured — using NIM fallback chain");
 	}
-	const freshNim = NIM_FALLBACK_CHAIN.filter((p) => !isOnCooldown(p.id));
-	for (const provider of freshNim.length > 0 ? freshNim : NIM_FALLBACK_CHAIN) {
-		const result = await callProvider(provider, messages);
+	const freshNim = getNimFallbackChain().filter(
+		(p) => !isOnCooldown(p.id) && isApprovedFreeModel(p.id, p.model),
+	);
+	for (const provider of freshNim) {
+		if (!withinBudget()) break;
+		const result = await bounded(
+			callProvider(provider, messages, undefined, priority, nimQueueWait(), options),
+		);
+		if (!result) break;
 		if (result.ok) {
 			clearCooldown(provider.id);
-			console.log(
-				`[LLM] NIM fallback ${provider.id} succeeded (${provider.model})`,
-			);
+			logger.info("llm", `NIM fallback succeeded`, { provider: provider.id, model: provider.model });
 			return {
+				ok: true,
 				provider: provider.id,
 				model: provider.model,
 				text: result.text,
+				toolCalls: result.toolCalls || [],
 			};
 		}
 		markCooldown(provider.id);
 		console.warn(`[LLM] NIM fallback ${provider.id} failed:`, result.error);
 	}
 
-	console.error(
-		"[LLM] ALL providers failed — returning null (built-in fallback will be used)",
-	);
+	// Distinguish the two very different outcomes so operators can tell a
+	// fleet-wide outage (expected during congestion: fast-fail, not pageable)
+	// from "we actually tried every fresh provider and all of them failed".
+	// 3. Frontier Public Failover (OpenAI / Mistral zero-auth public model)
+	// Guarantees continuous, high-intelligence availability for 5,000+ concurrent users
+	const frontierRes = withinBudget()
+		? await callPublicFrontierLLM(
+				messages,
+				deadline
+					? Math.max(300, Math.min(timeLeft(), FRONTIER_BUDGET_MS))
+					: 12000,
+			)
+		: null;
+	if (frontierRes && frontierRes.ok && frontierRes.text) {
+		logger.info("llm", "Frontier public failover succeeded", { model: frontierRes.model });
+		return {
+			ok: true,
+			provider: frontierRes.provider,
+			model: frontierRes.model,
+			text: frontierRes.text,
+		};
+	}
+
+	if (chain.length + getNimFallbackChain().length > 0 && freshChain.length === 0 && freshNim.length === 0) {
+		logger.warn(
+			"llm",
+			"All providers cooling down after failures — falling back to deterministic local intelligence",
+		);
+	} else {
+		console.warn(
+			"[LLM] All remote providers exhausted — falling back to deterministic local intelligence",
+		);
+	}
 	return null;
 }
 
@@ -1189,7 +1761,9 @@ export async function callProviderStream(
 		// Build chain: DB providers first, then NIM fallback
 		const dbChain = await buildChain();
 		for (const p of dbChain) providers.push(p);
-		for (const p of NIM_FALLBACK_CHAIN) providers.push(p);
+		for (const p of getNimFallbackChain()) {
+			if (isApprovedFreeModel(p.id, p.model)) providers.push(p);
+		}
 
 		// Skip recently-failed providers so we don't re-hang on them
 		const candidates = providers.filter((p) => !isOnCooldown(p.id));
@@ -1277,9 +1851,7 @@ export async function callProviderStream(
 				if (fullText) {
 					clearCooldown(provider.id);
 					if (onDone) onDone();
-					console.log(
-						`[LLM-STREAM] ${provider.id} succeeded (${fullText.length} chars)`,
-					);
+					logger.info("llm", `Stream succeeded`, { provider: provider.id, chars: fullText.length });
 					return {
 						ok: true,
 						text: fullText,
@@ -1328,17 +1900,26 @@ export default async function handler(req, res) {
 		}
 
 		if (req.method === "GET" && action === "list") {
+			// FIX #7: Provider config (incl. masked keys) is admin-only — was public
+			if (!(await isAdmin(req))) return res.status(403).json({ error: "Admin only" });
 			const db = await getProviders();
 			const filterCategory = req.query.category || null;
 			const filterEnabledOnly =
 				req.query.enabled_only === "true" || req.query.enabled_only === "1";
-			const result = {};
-			for (const [id, def] of Object.entries(PROVIDER_DEFS)) {
+			// FIX #35: Pagination/filtering to avoid ~15KB payload — support limit/offset/category/enabled_only
+			const hasPagination = req.query.limit !== undefined || req.query.offset !== undefined;
+			const limit = Math.min(parseInt(req.query.limit) || 50, 50);
+			const offset = Math.max(parseInt(req.query.offset) || 0, 0);
+			const entries = Object.entries(PROVIDER_DEFS).filter(([id, def]) => {
 				const cfg = db[id] || {};
-				// FIX-L3: filter by category if provided
-				if (filterCategory && def.category !== filterCategory) continue;
-				// FIX-L3: filter to enabled-only if requested
-				if (filterEnabledOnly && !cfg.enabled) continue;
+				if (filterCategory && def.category !== filterCategory) return false;
+				if (filterEnabledOnly && !cfg.enabled) return false;
+				return true;
+			});
+			const paged = hasPagination ? entries.slice(offset, offset + limit) : entries;
+			const result = {};
+			for (const [id, def] of paged) {
+				const cfg = db[id] || {};
 				result[id] = {
 					id,
 					name: def.name,
@@ -1359,6 +1940,7 @@ export default async function handler(req, res) {
 					category: def.category || "other",
 				};
 			}
+			if (hasPagination) return res.status(200).json({ providers: result, total: entries.length, limit, offset });
 			return res.status(200).json(result);
 		}
 
@@ -1385,7 +1967,8 @@ export default async function handler(req, res) {
 		}
 
 		if (action === "update_provider") {
-			const { provider: pid, config } = b;
+			const { provider: pid } = b;
+			const config = b.config || {};
 			if (!pid || !PROVIDER_DEFS[pid])
 				return res.status(400).json({ error: "Invalid provider" });
 			const db = await getProviders();

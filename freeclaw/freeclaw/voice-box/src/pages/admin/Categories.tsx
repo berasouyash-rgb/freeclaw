@@ -75,13 +75,15 @@ export default function Categories() {
 	return (
 		<div>
 			<div className="flex items-center justify-between mb-4">
-				<h1 className="font-display font-bold text-xl">Categories</h1>
+				<h1 className="font-display font-bold text-xl tracking-tight">
+					<span className="vb-gradient-text">Categories</span>
+				</h1>
 				<span className="text-xs text-ink3">{cats.length} active</span>
 			</div>
 
 			<div className="flex gap-2 mb-4">
 				<input
-					className="input flex-1 !py-2 text-sm"
+					className="input flex-1 min-w-0 !py-2 text-sm"
 					placeholder="Category name…"
 					value={name}
 					onChange={(e) => setName(e.target.value)}
@@ -117,9 +119,9 @@ export default function Categories() {
 				</div>
 			) : (
 				<div className="grid grid-cols-2 md:grid-cols-3 gap-2">
-					{cats.map((c) => (
+					{cats.map((c, i) => (
 						<div
-							key={c}
+							key={`${c}-${i}`}
 							className="card !p-3 flex items-center justify-between gap-2"
 						>
 							<span className="text-sm font-medium truncate">

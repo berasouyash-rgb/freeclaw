@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="600" viewBox="0 0 1600 600">
+<title>Distant landscape</title>
+
+<path d="M0 410 Q180 330 360 405 Q550 325 730 405 Q940 315 1120 400 Q1360 320 1600 395 L1600 600 L0 600Z" fill="#dff4ff"/>
+<path d="M0 440 Q250 370 480 440 T960 430 T1600 425" fill="none" stroke="#9ddcff" stroke-width="3"/>
+<g fill="none" stroke="#b5e5ff" stroke-width="2" opacity=".9">
+ <path d="M70 405 l22 -25 22 25 M1450 405 l24 -28 24 28"/>
+</g>
+
+</svg>

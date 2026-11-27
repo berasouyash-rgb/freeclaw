@@ -124,12 +124,14 @@ describe("AILoader", () => {
 // ─── LoadingSpinner (motive loader) ──────────────────────────────────
 
 describe("LoadingSpinner", () => {
-	it("renders brand lockup: ring, halo, wordmark, tagline, and status text", () => {
+	it("renders brand lockup: mesh, ring, halo, wordmark, tagline, and status text", () => {
 		render(<LoadingSpinner text="Loading conversation…" motiveOff />);
 		expect(screen.getByRole("status")).toBeInTheDocument();
+		expect(document.querySelector(".vb-motive-mesh")).toBeInTheDocument();
+		expect(document.querySelectorAll(".vb-mesh-orb").length).toBe(3);
 		expect(document.querySelector(".vb-loading-ring")).toBeInTheDocument();
 		expect(document.querySelector(".vb-loading-halo")).toBeInTheDocument();
-		expect(screen.getByText("Voice Box")).toBeInTheDocument();
+		expect(screen.getByText("Voice Flow")).toBeInTheDocument();
 		expect(screen.getByText("Your Voice Matters")).toBeInTheDocument();
 		expect(screen.getByText("Loading conversation…")).toBeInTheDocument();
 		// motive line is suppressed when opted out
@@ -184,6 +186,39 @@ describe("LoadingSpinner", () => {
 // ─── Confetti ────────────────────────────────────────────────────────
 
 describe("Confetti", () => {
+	it("does not create a canvas when the user prefers reduced motion", () => {
+		// stubGlobal is restored by the afterEach `vi.unstubAllGlobals()` below;
+		// matchMedia is a non-configurable window property, so spyOn leaks.
+		vi.stubGlobal(
+			"matchMedia",
+			vi.fn((query: string) => ({
+				matches: query.includes("prefers-reduced-motion"),
+				media: query,
+				onchange: null,
+				addListener: vi.fn(),
+				removeListener: vi.fn(),
+				addEventListener: vi.fn(),
+				removeEventListener: vi.fn(),
+				dispatchEvent: vi.fn(),
+			})),
+		);
+		fireConfetti();
+		expect(document.querySelector("canvas")).not.toBeInTheDocument();
+	});
+
+	it("supports a small burst for everyday wins", () => {
+		vi.spyOn(Math, "random").mockReturnValue(0.5);
+		fireConfetti("small");
+		expect(document.querySelector("canvas")).toBeInTheDocument();
+		let guard = 0;
+		while (frames.length && guard < 120) {
+			const cb = frames.shift();
+			cb?.(Date.now());
+			guard++;
+		}
+		expect(ctxMock.fill).toHaveBeenCalled();
+	});
+
 	it("fireConfetti appends a fixed full-screen canvas and draws particles", () => {
 		vi.spyOn(Math, "random").mockReturnValue(0.5);
 		fireConfetti();
@@ -398,10 +433,13 @@ describe("Trend", () => {
 		).toBeInTheDocument();
 	});
 
-	it("handles previous <= 0 as 100% when current is positive", () => {
+	it("handles previous <= 0 with the honest absolute delta, not a fake percent", () => {
+		// A percent change from a zero base is undefined (infinite), so the
+		// badge must NOT render "100%" — it shows the real absolute delta and
+		// the accessible name omits the misleading percentage.
 		render(<Trend current={42} previous={0} />);
-		expect(screen.getByText("100%")).toBeInTheDocument();
-		expect(screen.getByLabelText("Trend up 100 percent")).toBeInTheDocument();
+		expect(screen.getByText("+42")).toBeInTheDocument();
+		expect(screen.getByLabelText("Trend up")).toBeInTheDocument();
 	});
 
 	it("shows a flat badge when both values are zero", () => {
@@ -489,6 +527,18 @@ describe("TypingIndicator", () => {
 	it("passes through a custom className", () => {
 		const { container } = render(<TypingIndicator className="my-typing" />);
 		expect(container.firstElementChild).toHaveClass("my-typing");
+	});
+
+	it("announces itself as a live status region in every variant", () => {
+		for (const variant of ["default", "preview", "minimal"] as const) {
+			const { unmount } = render(
+				<TypingIndicator variant={variant} label="Working…" />,
+			);
+			// role=status carries implicit aria-live=polite — screen readers
+			// announce "AI is responding" state changes in every chat surface.
+			expect(screen.getByRole("status")).toBeInTheDocument();
+			unmount();
+		}
 	});
 });
 

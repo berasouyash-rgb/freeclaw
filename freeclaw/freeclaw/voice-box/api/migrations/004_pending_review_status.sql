@@ -1,4 +1,4 @@
--- Voice Box — Add pending_review to posts status constraint
+-- Voice Flow — Add pending_review to posts status constraint
 -- ----------------------------------------------------------------------------
 -- The app routes AI-moderated / flagged submissions through a review hold:
 -- api/_posts.js POST sets status = 'pending_review' when needsReview is true or
@@ -13,8 +13,11 @@
 --
 -- Idempotent: DROP IF EXISTS + ADD makes it safe to run more than once.
 
-ALTER TABLE posts DROP CONSTRAINT IF EXISTS posts_status_check;
+DO $$
+BEGIN
+  ALTER TABLE posts DROP CONSTRAINT IF EXISTS posts_status_check;
 
-ALTER TABLE posts ADD CONSTRAINT posts_status_check CHECK (
-  status IN ('reported', 'verified', 'in_progress', 'waiting', 'solved', 'archived', 'pending_review')
-);
+  ALTER TABLE posts ADD CONSTRAINT posts_status_check CHECK (
+    status IN ('reported', 'verified', 'in_progress', 'waiting', 'solved', 'archived', 'pending_review')
+  );
+END $$;

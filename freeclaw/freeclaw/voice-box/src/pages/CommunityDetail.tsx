@@ -1,14 +1,17 @@
 // ─── Community Detail — one group's discussion feed ──────────────
-import { useCallback, useEffect, useState } from "react";
-import { Link, useParams } from "react-router";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Link, useNavigate, useParams } from "react-router";
 import {
+	AlertTriangle,
 	ArrowLeft,
 	BarChart3,
 	CheckCircle2,
 	Flag,
 	Heart,
+	ImagePlus,
 	MessageSquare,
 	Plus,
+	RefreshCw,
 	Send,
 	ThumbsUp,
 	Trash2,
@@ -16,7 +19,9 @@ import {
 	X,
 } from "lucide-react";
 import { useApp } from "../contexts/AppContext";
-import { api, hasAdminSession } from "../lib/api";
+import { api, hasAdminSession, isNotFound } from "../lib/api";
+import { downscaleImage } from "../lib/image";
+import { triggerHaptic } from "../lib/haptics";
 
 interface CommunityPollOption {
 	id: string;
@@ -38,6 +43,7 @@ interface CommunityPost {
 	anon_id: string;
 	author: string;
 	text: string;
+	image_url?: string | null;
 	created_at: string;
 	reactions: Record<string, string[]>;
 	reaction_counts: Record<string, number>;
@@ -56,6 +62,8 @@ interface CommunityDetailData {
 	hidden: boolean;
 	member_count: number;
 	post_count: number;
+	/** Members seen in the last 5 minutes. null = presence unknown. */
+	online_count: number | null;
 	members: string[];
 	is_member: boolean;
 	is_creator: boolean;
@@ -81,40 +89,104 @@ function timeAgoShort(iso: string): string {
 
 export default function CommunityDetail() {
 	const { slug = "" } = useParams<{ slug: string }>();
+	const navigate = useNavigate();
 	const { anonId, toast, displayName } = useApp();
 	const isAdmin = hasAdminSession();
 	const [data, setData] = useState<CommunityDetailData | null>(null);
 	const [notFound, setNotFound] = useState(false);
+	/** Non-404 load failure — a different fact from "this community is gone". */
+	const [loadError, setLoadError] = useState("");
 	const [busy, setBusy] = useState(false);
 	const [draft, setDraft] = useState("");
+	// In-flight dedupe keys for fire-and-forget actions (vote/react/comment/
+	// report have no per-button busy state — see handlers below).
+	const inflightRef = useRef<Set<string>>(new Set());
 	const [commentDrafts, setCommentDrafts] = useState<Record<string, string>>({});
 	const [openComments, setOpenComments] = useState<Record<string, boolean>>({});
 	const [pollOpen, setPollOpen] = useState(false);
 	const [pollQuestion, setPollQuestion] = useState("");
 	const [pollOptions, setPollOptions] = useState(["", ""]);
+	const [postImage, setPostImage] = useState<{ preview: string; base64: string; type: string } | null>(null);
+	const fileInputRef = useRef<HTMLInputElement>(null);
 
-	const load = useCallback(async () => {
+	const load = useCallback(async (quiet = false) => {
 		try {
 			const r = await api.get<CommunityDetailData>(
 				`/api/communities?action=get&slug=${encodeURIComponent(slug)}&anon_id=${anonId}`,
 			);
 			setData(r);
 			setNotFound(false);
-		} catch {
-			setNotFound(true);
+			setLoadError("");
+		} catch (e: unknown) {
+			// Only a 404 means the community actually does not exist. Anything
+			// else (429, timeout, 500) is a failed request and must say so —
+			// otherwise a busy API tells users the group was deleted. A quiet
+			// background tick stays silent on those instead of flashing a
+			// banner every interval over a transient blip.
+			if (isNotFound(e)) {
+				setNotFound(true);
+				setLoadError("");
+				return;
+			}
+			if (!quiet)
+				setLoadError(
+					e instanceof Error ? e.message : "Failed to load community",
+				);
 		}
 	}, [slug, anonId]);
 
 	useEffect(() => {
 		void load();
-		const iv = setInterval(() => void load(), 25000);
-		const onVis = () => !document.hidden && void load();
-		document.addEventListener("visibilitychange", onVis);
+	}, [load]);
+
+	// ── Visible-only quiet tick (contract evolution 2026-10-05) ──
+	// The discussion feed owns no subscription (community tables are
+	// outside the anon realtime contract), so posts, reactions, comments,
+	// and poll votes from another device appeared only after a manual
+	// reload. Every 3s while mounted AND visible (plus on focus/return),
+	// quietly revalidate the whole thread: every mutation already reloads
+	// through load(), so there is no optimistic state a tick could
+	// clobber, and drafts live in separate state the tick never touches.
+	useEffect(() => {
+		const tick = () => {
+			if (
+				typeof document !== "undefined" &&
+				document.visibilityState === "hidden"
+			)
+				return;
+			void load(true);
+		};
+		const id = window.setInterval(tick, 3_000);
+		window.addEventListener("focus", tick);
+		document.addEventListener("visibilitychange", tick);
 		return () => {
-			clearInterval(iv);
-			document.removeEventListener("visibilitychange", onVis);
+			window.clearInterval(id);
+			window.removeEventListener("focus", tick);
+			document.removeEventListener("visibilitychange", tick);
 		};
 	}, [load]);
+
+	const onSelectImage = (e: React.ChangeEvent<HTMLInputElement>) => {
+		const f = e.target.files?.[0];
+		if (!f) return;
+		if (f.size > 3 * 1024 * 1024) {
+			toast("Image must be under 3 MB", "err");
+			return;
+		}
+		void downscaleImage(f).then((d) => {
+			if (!d.base64) {
+				toast("Couldn't read that image — try another file", "err");
+				return;
+			}
+			setPostImage({
+				preview: d.dataUrl,
+				base64: d.base64,
+				type: d.type,
+			});
+			triggerHaptic("light");
+		});
+		e.target.value = "";
+	};
 
 	const joinLeave = async () => {
 		if (!data) return;
@@ -125,6 +197,7 @@ export default function CommunityDetail() {
 				slug: data.slug,
 				anon_id: anonId,
 			});
+			triggerHaptic("medium");
 			toast(data.is_member ? "Left community" : "Joined community", "ok");
 			await load();
 		} catch (e: unknown) {
@@ -150,20 +223,27 @@ export default function CommunityDetail() {
 		}
 		setBusy(true);
 		try {
+			let imageUrl: string | undefined = undefined;
+			if (postImage) {
+				imageUrl = await api.uploadImage(postImage.base64, postImage.type, anonId);
+			}
 			await api.post("/api/communities", {
 				action: "post",
 				slug: data.slug,
 				anon_id: anonId,
 				author: displayName,
 				text,
+				image_url: imageUrl,
 				poll: pollOpen
 					? { question: pollQuestion.trim(), options }
 					: undefined,
 			});
 			setDraft("");
+			setPostImage(null);
 			setPollOpen(false);
 			setPollQuestion("");
 			setPollOptions(["", ""]);
+			triggerHaptic("medium");
 			await load();
 		} catch (e: unknown) {
 			toast(e instanceof Error ? e.message : "Failed to post", "err");
@@ -174,6 +254,17 @@ export default function CommunityDetail() {
 
 	const vote = async (postId: string, optionId: string) => {
 		if (!data) return;
+		if (!data.is_member) {
+			triggerHaptic("warning");
+			toast("Join this community to vote in polls!", "err");
+			return;
+		}
+		// Collapse rapid double-clicks into one request (no busy UI state
+		// here — the key includes the option so changing your vote fast
+		// still goes through, while an identical in-flight vote is dropped).
+		const key = `vote:${postId}:${optionId}`;
+		if (inflightRef.current.has(key)) return;
+		inflightRef.current.add(key);
 		try {
 			await api.post("/api/communities", {
 				action: "vote",
@@ -182,9 +273,12 @@ export default function CommunityDetail() {
 				option_id: optionId,
 				anon_id: anonId,
 			});
+			triggerHaptic("light");
 			await load();
 		} catch (e: unknown) {
 			toast(e instanceof Error ? e.message : "Failed to vote", "err");
+		} finally {
+			inflightRef.current.delete(key);
 		}
 	};
 
@@ -228,6 +322,15 @@ export default function CommunityDetail() {
 
 	const react = async (postId: string, kind: string) => {
 		if (!data) return;
+		if (!data.is_member) {
+			triggerHaptic("warning");
+			toast("Join this community to react to posts!", "err");
+			return;
+		}
+		// Toggle + double-click without this guard flips on then off.
+		const key = `react:${postId}:${kind}`;
+		if (inflightRef.current.has(key)) return;
+		inflightRef.current.add(key);
 		try {
 			await api.post("/api/communities", {
 				action: "react",
@@ -236,16 +339,29 @@ export default function CommunityDetail() {
 				anon_id: anonId,
 				kind,
 			});
+			triggerHaptic("light");
 			await load();
 		} catch (e: unknown) {
 			toast(e instanceof Error ? e.message : "Failed", "err");
+		} finally {
+			inflightRef.current.delete(key);
 		}
 	};
 
 	const comment = async (postId: string) => {
 		if (!data) return;
+		if (!data.is_member) {
+			triggerHaptic("warning");
+			toast("Join this community to comment on posts!", "err");
+			return;
+		}
 		const text = (commentDrafts[postId] || "").trim();
 		if (!text) return;
+		// Key includes the text: an identical double-submit collapses, but
+		// a genuinely new message typed fast still sends.
+		const key = `comment:${postId}:${text}`;
+		if (inflightRef.current.has(key)) return;
+		inflightRef.current.add(key);
 		try {
 			await api.post("/api/communities", {
 				action: "comment",
@@ -256,15 +372,21 @@ export default function CommunityDetail() {
 				text,
 			});
 			setCommentDrafts((d) => ({ ...d, [postId]: "" }));
+			triggerHaptic("light");
 			await load();
 		} catch (e: unknown) {
 			toast(e instanceof Error ? e.message : "Failed", "err");
+		} finally {
+			inflightRef.current.delete(key);
 		}
 	};
 
 	const report = async (postId: string | null) => {
 		if (!data) return;
 		const reason = postId ? "Inappropriate community post" : "Inappropriate community";
+		const key = `report:${postId ?? "community"}`;
+		if (inflightRef.current.has(key)) return;
+		inflightRef.current.add(key);
 		try {
 			await api.post("/api/communities", {
 				action: "report",
@@ -276,6 +398,8 @@ export default function CommunityDetail() {
 			toast("Reported — moderators will review it", "ok");
 		} catch (e: unknown) {
 			toast(e instanceof Error ? e.message : "Failed to report", "err");
+		} finally {
+			inflightRef.current.delete(key);
 		}
 	};
 
@@ -286,7 +410,7 @@ export default function CommunityDetail() {
 			await api.post("/api/communities", { action: "admin", slug: data.slug, op });
 			toast(op === "delete" ? "Community deleted" : op === "hide" ? "Community hidden" : "Community restored", "ok");
 			if (op === "delete") {
-				window.location.href = "/communities";
+				navigate("/communities");
 				return;
 			}
 			await load();
@@ -308,6 +432,34 @@ export default function CommunityDetail() {
 				<Link to="/communities" className="btn btn-primary !text-sm">
 					<ArrowLeft size={15} /> Back to communities
 				</Link>
+			</div>
+		);
+	}
+
+	if (loadError && !data) {
+		return (
+			<div className="max-w-3xl mx-auto px-4 py-16 text-center vb-page-enter">
+				<div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-warn/10 text-warn mb-4">
+					<AlertTriangle size={26} />
+				</div>
+				<h1 className="font-display font-bold text-xl">
+					Couldn't load this community
+				</h1>
+				<p className="text-sm text-ink3 mt-2 mb-5 max-w-sm mx-auto">
+					{loadError} — the community itself is still here, so this is
+					worth retrying.
+				</p>
+				<div className="flex flex-wrap items-center justify-center gap-2">
+					<button
+						className="btn btn-primary !text-sm"
+						onClick={() => void load()}
+					>
+						<RefreshCw size={14} /> Retry
+					</button>
+					<Link to="/communities" className="btn btn-ghost !text-sm">
+						<ArrowLeft size={15} /> Back to communities
+					</Link>
+				</div>
 			</div>
 		);
 	}
@@ -347,17 +499,40 @@ export default function CommunityDetail() {
 						<p className="text-sm text-ink2 mt-0.5">
 							{data.description || "No description yet."}
 						</p>
-						<div className="flex items-center gap-3 text-[11px] text-ink3 mt-2">
+						<div className="flex items-center gap-3 text-[11px] text-ink3 mt-2 flex-wrap">
 							<span className="inline-flex items-center gap-1">
-								<Users size={11} /> {data.member_count} members
+								<Users size={11} /> {data.member_count} {data.member_count === 1 ? "member" : "members"}
 							</span>
+							{/* Real presence from the users_meta heartbeat — never a
+							    derived fraction of the member count. Unknown stays silent. */}
+							{typeof data.online_count === "number" && (
+								<span
+									className={`inline-flex items-center gap-1.5 font-medium ${data.online_count > 0 ? "text-good" : "text-ink3"}`}
+									title="Members active in the last 5 minutes"
+								>
+									<span
+										className={`w-1.5 h-1.5 rounded-full ${data.online_count > 0 ? "bg-good animate-pulse" : "bg-ink3/50"}`}
+									/>
+									{data.online_count > 0
+										? `${data.online_count} live now`
+										: "no one else live now"}
+								</span>
+							)}
 							<span className="inline-flex items-center gap-1">
-								<MessageSquare size={11} /> {data.post_count} posts
+								<MessageSquare size={11} /> {data.post_count} {data.post_count === 1 ? "post" : "posts"}
 							</span>
 							<span>Created {timeAgoShort(data.created_at)}</span>
 						</div>
 					</div>
 					<div className="flex items-center gap-2 flex-shrink-0">
+						<button
+							className="btn btn-ghost !text-sm !py-2"
+							onClick={() => void load()}
+							aria-label="Refresh community"
+							title="Refresh community"
+						>
+							<RefreshCw size={14} /> Refresh
+						</button>
 						{!data.is_member ? (
 							<button className="btn btn-primary !text-sm !py-2" disabled={busy} onClick={() => void joinLeave()}>
 								<Plus size={15} /> Join
@@ -466,13 +641,53 @@ export default function CommunityDetail() {
 							)}
 						</div>
 					)}
+					{/* Image preview */}
+					{postImage && (
+						<div className="relative mt-2.5 inline-block rounded-xl overflow-hidden border border-border bg-surface2/40 group">
+							<img
+								src={postImage.preview}
+								alt="Selected image preview"
+								className="h-28 max-w-xs object-cover rounded-xl"
+							/>
+							<button
+								type="button"
+								onClick={() => {
+									setPostImage(null);
+									triggerHaptic("light");
+								}}
+								className="absolute top-1.5 right-1.5 p-1 rounded-full bg-surface1/90 hover:bg-surface1 text-ink shadow-sm transition-all"
+								aria-label="Remove image"
+								title="Remove image"
+							>
+								<X size={14} />
+							</button>
+						</div>
+					)}
+					<input
+						ref={fileInputRef}
+						type="file"
+						accept="image/png,image/jpeg,image/webp,image/gif"
+						className="hidden"
+						onChange={onSelectImage}
+					/>
 					<div className="flex items-center justify-between gap-2 mt-2">
-						<button
-							className={`btn !text-xs !py-2 !px-3 ${pollOpen ? "btn-primary" : "btn-ghost"}`}
-							onClick={() => setPollOpen((v) => !v)}
-						>
-							<BarChart3 size={13} /> Poll
-						</button>
+						<div className="flex items-center gap-1.5">
+							<button
+								type="button"
+								className={`btn !text-xs !py-2 !px-3 ${pollOpen ? "btn-primary" : "btn-ghost"}`}
+								onClick={() => setPollOpen((v) => !v)}
+							>
+								<BarChart3 size={13} /> Poll
+							</button>
+							<button
+								type="button"
+								className={`btn !text-xs !py-2 !px-3 ${postImage ? "btn-primary" : "btn-ghost"}`}
+								onClick={() => fileInputRef.current?.click()}
+								title="Attach image"
+							>
+								<ImagePlus size={13} /> Photo
+							</button>
+						</div>
 						<button
 							className="btn btn-primary !text-xs !py-2 !px-4"
 							disabled={busy || !draft.trim()}
@@ -522,6 +737,22 @@ export default function CommunityDetail() {
 								{p.text}
 							</p>
 
+							{p.image_url && (
+								<div className="mt-2.5 rounded-xl overflow-hidden border border-border bg-surface2/30 max-w-lg">
+									<img
+										src={p.image_url}
+										alt="Attached image"
+										className="w-full max-h-80 object-cover rounded-xl cursor-pointer hover:opacity-95 transition-opacity"
+										loading="lazy"
+										onClick={() => {
+											if (typeof window !== "undefined" && p.image_url) {
+												window.open(p.image_url, "_blank", "noopener,noreferrer");
+											}
+										}}
+									/>
+								</div>
+							)}
+
 							{/* Attached poll */}
 							{p.poll && (
 								<div className="mt-3 p-3.5 rounded-xl border border-border bg-surface2/50">
@@ -538,9 +769,8 @@ export default function CommunityDetail() {
 											const mine = p.poll!.my_vote === o.id;
 											return (
 												<button
-													key={o.id}
-													onClick={() => void vote(p.id, o.id)}
-													disabled={!!p.poll!.my_vote}
+													key={o.id}														onClick={() => void vote(p.id, o.id)}
+														disabled={!!p.poll!.my_vote || !data.is_member}
 													className={`relative w-full text-left px-3 py-2 rounded-lg border text-xs transition-all overflow-hidden ${
 														mine
 															? "border-accent bg-accent/10 text-ink"
@@ -564,9 +794,12 @@ export default function CommunityDetail() {
 										})}
 									</div>
 									<p className="text-[10px] text-ink3 mt-2">
-										{p.poll.my_vote
-											? `${p.poll.total_votes} vote${p.poll.total_votes === 1 ? "" : "s"} — tap an option to change your vote`
-											: `${p.poll.total_votes} vote${p.poll.total_votes === 1 ? "" : "s"} — tap to vote`}
+										{p.poll.total_votes} vote{p.poll.total_votes === 1 ? "" : "s"}{" — "}
+										{data.is_member
+											? p.poll.my_vote
+												? "tap an option to change your vote"
+												: "tap to vote"
+											: "join this community to vote"}
 									</p>
 								</div>
 							)}
@@ -601,11 +834,14 @@ export default function CommunityDetail() {
 										<button
 											key={kind}
 											onClick={() => void react(p.id, kind)}
-											title={label}
+											title={data.is_member ? label : "Join this community to react"}
+											aria-disabled={!data.is_member}
 											className={`inline-flex items-center gap-1 text-[11px] px-2.5 py-1 rounded-full border transition-all ${
 												active
 													? "border-accent bg-accent/10 text-accent"
-													: "border-border text-ink3 hover:border-accent/40 hover:text-ink2"
+													: data.is_member
+														? "border-border text-ink3 hover:border-accent/40 hover:text-ink2"
+														: "border-dashed border-border/70 text-ink3/60 cursor-not-allowed"
 											}`}
 										>
 											<Icon size={12} />
@@ -624,6 +860,12 @@ export default function CommunityDetail() {
 								</button>
 							</div>
 
+							{!data.is_member && (
+								<p className="text-[10px] text-ink3 mt-2">
+									Join this community to react, comment, and vote.
+								</p>
+							)}
+
 							{openComments[p.id] && (
 								<div className="mt-3 pt-3 border-t border-border space-y-2">
 									{p.comments.map((c) => (
@@ -639,9 +881,10 @@ export default function CommunityDetail() {
 									))}
 									<div className="flex gap-2">
 										<input
-											className="input !py-1.5 !text-xs flex-1"
-											placeholder="Reply…"
+											className="input !py-1.5 !text-xs flex-1 disabled:opacity-60"
+											placeholder={data.is_member ? "Reply…" : "Join this community to reply…"}
 											value={commentDrafts[p.id] || ""}
+											disabled={!data.is_member}
 											onChange={(e) =>
 												setCommentDrafts((d) => ({ ...d, [p.id]: e.target.value }))
 											}
@@ -652,7 +895,7 @@ export default function CommunityDetail() {
 										/>
 										<button
 											className="btn btn-primary !text-xs !py-1.5 !px-3"
-											disabled={!(commentDrafts[p.id] || "").trim()}
+											disabled={!data.is_member || !(commentDrafts[p.id] || "").trim()}
 											onClick={() => void comment(p.id)}
 										>
 											Send

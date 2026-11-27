@@ -1,5 +1,7 @@
 // Agent Executions API — serves real execution data to the dashboard
 // Self-healing: uses runner functions that fall back to settings table
+import { ALL_AGENTS } from "./_agent-definitions.js";
+import { auditRoster, buildScorecard } from "./_agent-behaviours.js";
 import { cors, isAdmin } from "./_auth.js";
 import { sanitizeError } from "./_error.js";
 import {
@@ -39,6 +41,29 @@ export default async function handler(req, res) {
 			return res.status(200).json(stats);
 		}
 
+		// ── Agent scorecard — HEALTH vs real IMPACT ───────────────────
+		// "Healthy" only means the process ran; it says nothing about value.
+		// This action reports the two separately, and lists the agents whose
+		// capabilities route them to no behaviour at all (they cannot change
+		// anything, so their executions must not be read as productive work).
+		if (action === "scorecard") {
+			const limit = Math.min(parseInt(req.query.limit) || 1000, 5000);
+			const executions = await getRecentExecutions(null, limit);
+			const scorecard = buildScorecard(ALL_AGENTS, executions, {
+				failureRateThreshold: 0.25,
+			});
+			return res.status(200).json({
+				...scorecard,
+				roster_audit: auditRoster(ALL_AGENTS),
+				executions_sampled: executions.length,
+			});
+		}
+
+		// Roster audit only — how many agents can actually do work.
+		if (action === "roster") {
+			return res.status(200).json(auditRoster(ALL_AGENTS));
+		}
+
 		// Get single execution detail
 		if (action === "get") {
 			const id = req.query.id;
@@ -51,7 +76,10 @@ export default async function handler(req, res) {
 
 		return res
 			.status(400)
-			.json({ error: "Unknown action. Actions: list, activity, stats, get" });
+			.json({
+				error:
+					"Unknown action. Actions: list, activity, stats, scorecard, roster, get",
+			});
 	} catch (err) {
 		return sanitizeError(res, err, "agent-executions");
 	}

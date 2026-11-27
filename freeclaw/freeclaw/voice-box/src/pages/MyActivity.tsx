@@ -1,23 +1,39 @@
-﻿import {
+import {
+	AlertCircle,
 	AlertTriangle,
 	BarChart3,
 	Bell,
 	Bookmark,
+	ChevronRight,
+	Clock,
 	Download,
+	ExternalLink,
 	Eye,
 	FileText,
 	MessageCircle,
-	PlayCircle,		Save,
-		Trash2,
-		UserCircle2,
-	} from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+	MessageSquare,
+	PlayCircle,
+	RefreshCcw,
+	Save,
+	Scale,
+	Settings as SettingsIcon,
+	ShieldAlert,
+	Sparkles,
+	Trash2,
+	UserCircle2,
+	X,
+} from "lucide-react";
+import { type ReactNode, useCallback, useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router";
 import { resetTutorial } from "../components/Tutorial";
 import { ConfirmDialog } from "../components/ui";
-import { useApp } from "../contexts/AppContext";
-import { api } from "../lib/api";	import { anonCreatedAt, lsGet } from "../lib/identity";
+import { useApp, type Notification } from "../contexts/AppContext";
+import { api } from "../lib/api";
+import { anonCreatedAt, lsGet } from "../lib/identity";
+import { triggerHaptic } from "../lib/haptics";
+import { useRealtime } from "../lib/useRealtime";
 import { downloadFile, safeStringify, timeAgo } from "../lib/utils";
+import { SERVER_PII_COPY } from "../lib/privacyCopy";
 import type {
 	CommentData,
 	PollData,
@@ -34,7 +50,141 @@ type Tab =
 	| "bookmarks"
 	| "drafts"
 	| "notifications"
-	| "viewed";
+	| "viewed"
+	| "appeals"
+	| "reports";
+
+interface UserReport {
+	id: string;
+	target_id?: string;
+	target_type?: string;
+	reason?: string;
+	title?: string;
+	status: string;
+	created_at: string;
+	updated_at?: string;
+}
+
+interface AppealRow {
+	id: string;
+	surface: string;
+	title: string;
+	body: string;
+	status: string;
+	review_note?: string;
+	created_at: string;
+	published?: { kind: string; id: string };
+}
+
+type ActivitySection =
+	| "posts"
+	| "polls"
+	| "comments"
+	| "votes"
+	| "bookmarks"
+	| "appeals"
+	| "reports";
+
+type SectionStatus = "loading" | "ready" | "error";
+
+const ACTIVITY_SECTIONS: ActivitySection[] = [
+	"posts",
+	"polls",
+	"comments",
+	"votes",
+	"bookmarks",
+	"appeals",
+	"reports",
+];
+
+function SectionBoundary({
+	status,
+	error,
+	hasData,
+	label,
+	lastUpdatedAt,
+	onRetry,
+	children,
+}: {
+	status: SectionStatus;
+	error?: string;
+	hasData: boolean;
+	label: string;
+	lastUpdatedAt?: number;
+	onRetry: () => void;
+	children: ReactNode;
+}) {
+	if (status === "loading" && !hasData) {
+		return (
+			<div className="space-y-3" aria-busy="true" aria-label={`Loading ${label}`}>
+				{[1, 2, 3].map((i) => (
+					<div key={i} className="skeleton h-20" />
+				))}
+			</div>
+		);
+	}
+
+	if (status === "error" && !hasData) {
+		return (
+			<div
+				role="alert"
+				className="card border-warn/30 bg-warn/[0.06] p-4 flex flex-col sm:flex-row sm:items-center gap-3"
+			>
+				<AlertTriangle size={18} className="text-warn shrink-0" />
+				<div className="min-w-0 flex-1">
+					<p className="text-sm font-semibold text-ink2">
+						Couldn&apos;t load {label}
+					</p>
+					<p className="text-xs text-ink3 mt-0.5">
+						Your last successful {label} are preserved. {error}
+					</p>
+				</div>
+				<button
+					type="button"
+					className="btn btn-soft !text-xs shrink-0"
+					onClick={onRetry}
+					aria-label={`Retry ${label}`}
+				>
+					<RefreshCcw size={13} /> Retry
+				</button>
+			</div>
+		);
+	}
+
+	return (
+		<>
+			{status === "error" && (
+				<div
+					role="status"
+					className="card border-warn/30 bg-warn/[0.06] p-3 mb-3 flex flex-wrap items-center justify-between gap-2"
+				>
+					<p className="text-xs text-ink2">
+						Showing the last successful {label}. {error}
+					</p>
+					<button
+						type="button"
+						className="btn btn-soft !text-xs"
+						onClick={onRetry}
+						aria-label={`Retry ${label}`}
+					>
+						<RefreshCcw size={12} /> Retry
+					</button>
+				</div>
+			)}
+			{status === "loading" && hasData && (
+				<p role="status" className="text-[11px] text-ink3 mb-2">
+					Refreshing {label.toLowerCase()}…
+				</p>
+			)}
+			{lastUpdatedAt && status === "ready" && (
+				<p className="text-[11px] text-ink3 mb-2">
+					Updated {timeAgo(new Date(lastUpdatedAt).toISOString())}
+				</p>
+			)}
+			{children}
+		</>
+	);
+}
 
 export default function MyActivity() {
 	const {
@@ -45,55 +195,220 @@ export default function MyActivity() {
 		notifications,
 		bookmarks,
 		recentlyViewed,
+		retireNotifsForLink,
+		accountStatus,
 	} = useApp();
 	const nav = useNavigate();
 	const [tab, setTab] = useState<Tab>("posts");
+	const [selectedNotif, setSelectedNotif] = useState<Notification | null>(null);
 	const [posts, setPosts] = useState<PostData[]>([]);
 	const [myPolls, setMyPolls] = useState<PollData[]>([]);
 	const [comments, setComments] = useState<CommentData[]>([]);
 	const [reactions, setReactions] = useState<ReactionEntry[]>([]);
 	const [pollVotes, setPollVotes] = useState<PollVote[]>([]);
 	const [bookmarkPosts, setBookmarkPosts] = useState<PostData[]>([]);
-	const [loading, setLoading] = useState(true);
+	const [viewedPosts, setViewedPosts] = useState<PostData[]>([]);
+	const [appeals, setAppeals] = useState<AppealRow[]>([]);
+	const [reports, setReports] = useState<UserReport[]>([]);
+	const [sectionStatus, setSectionStatus] = useState<
+		Record<ActivitySection, SectionStatus>
+	>({
+		posts: "loading",
+		polls: "loading",
+		comments: "loading",
+		votes: "loading",
+		bookmarks: "loading",
+		appeals: "loading",
+		reports: "loading",
+	});
+	const [sectionErrors, setSectionErrors] = useState<
+		Partial<Record<ActivitySection, string>>
+	>({});
+	const [sectionUpdatedAt, setSectionUpdatedAt] = useState<
+		Partial<Record<ActivitySection, number>>
+	>({});
 	const [exporting, setExporting] = useState(false);
 	const [dialog, setDialog] = useState<{
 		kind: "deletePost" | "deletePoll";
 		payload?: string;
 	} | null>(null);
 
-	const load = useCallback(async () => {
-		setLoading(true);
-		try {
-			const [myPosts, myComments, myReactions, myVotes, allPolls] =
-				await Promise.all([
-					api.get<PostData[]>(`/api/posts?author=${anonId}&viewer=${anonId}`),
-					api.get<CommentData[]>(
-						`/api/comments?author=${anonId}&viewer=${anonId}`,
+	const errorMessage = (error: unknown, fallback: string) =>
+		error instanceof Error ? error.message : fallback;
+
+	const loadSection = useCallback(
+		async (
+			section: ActivitySection,
+			bookmarkIds: string[] = [],
+			quiet = false,
+		) => {
+			// Quiet (realtime/background) refreshes keep the last-known content
+			// on screen: no skeleton flip, no error clearing on the way in, and
+			// a transient failure leaves the section as-is instead of replacing
+			// good data with an error state. Explicit loads report normally.
+			if (!quiet) {
+				setSectionStatus((current) => ({
+					...current,
+					[section]: "loading",
+				}));
+				setSectionErrors((current) => {
+					const next = { ...current };
+					delete next[section];
+					return next;
+				});
+			}
+
+			try {
+				switch (section) {
+					case "posts": {
+						const result = await api.get<PostData[]>(
+							`/api/posts?author=${anonId}&viewer=${anonId}`,
+						);
+						setPosts(Array.isArray(result) ? result : []);
+						break;
+					}
+					case "comments": {
+						const result = await api.get<CommentData[]>(
+							`/api/comments?author=${anonId}&viewer=${anonId}`,
+						);
+						setComments(
+							(Array.isArray(result) ? result : []).filter((comment) => !comment.deleted),
+						);
+						break;
+					}
+					case "votes": {
+						const [reactionResult, voteResult] = await Promise.all([
+							api.get<ReactionEntry[]>(`/api/reactions?author=${anonId}`),
+							api.get<PollVote[]>(`/api/polls?voter=${anonId}`),
+						]);
+						setReactions(Array.isArray(reactionResult) ? reactionResult : []);
+						setPollVotes(Array.isArray(voteResult) ? voteResult : []);
+						break;
+					}
+					case "polls": {
+						const [pollResult, voteResult] = await Promise.all([
+							api.get<PollData[]>(`/api/polls?viewer=${anonId}`),
+							api.get<PollVote[]>(`/api/polls?voter=${anonId}`),
+						]);
+						setMyPolls(
+							(Array.isArray(pollResult) ? pollResult : []).filter(
+								(poll) => poll.is_mine && !poll.deleted,
+							),
+						);
+						setPollVotes(Array.isArray(voteResult) ? voteResult : []);
+						break;
+					}
+					case "bookmarks": {
+						if (!bookmarkIds.length) {
+							setBookmarkPosts([]);
+							break;
+						}
+						const result = await api.get<PostData[]>(
+							`/api/posts?ids=${bookmarkIds.join(",")}`,
+						);
+						setBookmarkPosts(Array.isArray(result) ? result : []);
+						break;
+					}
+					case "appeals": {
+						const result = await api.get<AppealRow[] | { items?: AppealRow[] }>(
+							`/api/appeals`,
+						);
+						setAppeals(
+							Array.isArray(result) ? result : (result.items ?? []),
+						);
+						break;
+					}
+					case "reports": {
+						const result = await api.get<UserReport[] | { items?: UserReport[] }>(
+							`/api/reports?author=${anonId}`,
+						);
+						const items = Array.isArray(result) ? result : (result?.items ?? []);
+						setReports(items);
+						break;
+					}
+				}
+				setSectionUpdatedAt((current) => ({
+					...current,
+					[section]: Date.now(),
+				}));
+				setSectionStatus((current) => ({ ...current, [section]: "ready" }));
+			} catch (error: unknown) {
+				// Quiet refresh failures are logged for diagnosis but must not
+				// replace a last-known-good section with an error state.
+				if (quiet) {
+					if (typeof console !== "undefined")
+						console.warn(
+							`[MyActivity] quiet refresh failed for "${section}"`,
+							error instanceof Error ? error.message : error,
+						);
+					return;
+				}
+				setSectionStatus((current) => ({ ...current, [section]: "error" }));
+				setSectionErrors((current) => ({
+					...current,
+					[section]: errorMessage(
+						error,
+						`The ${section} service did not respond.`,
 					),
-					api.get<ReactionEntry[]>(`/api/reactions?author=${anonId}`),
-					api.get<PollVote[]>(`/api/polls?voter=${anonId}`),
-					api.get<PollData[]>(`/api/polls?viewer=${anonId}`),
-				]);
-			setPosts(myPosts);
-			setMyPolls(allPolls.filter((p) => p.is_mine && !p.deleted));
-			setComments(myComments.filter((c) => !c.deleted));
-			setReactions(myReactions);
-			setPollVotes(myVotes);
-			if (bookmarks.length) {
-				const bp = await api.get<PostData[]>(
-					`/api/posts?ids=${bookmarks.join(",")}`,
-				);
-				setBookmarkPosts(bp);
-			} else setBookmarkPosts([]);
-		} catch {
-			/* offline ok */
-		}
-		setLoading(false);
-	}, [anonId, bookmarks]);
+				}));
+			}
+		},
+		[anonId],
+	);
+
+	const loadAll = useCallback(async (quiet = false) => {
+		await Promise.all(
+			ACTIVITY_SECTIONS.filter((section) => section !== "bookmarks").map((section) =>
+				loadSection(section, [], quiet),
+			),
+		);
+	}, [loadSection]);
 
 	useEffect(() => {
-		load();
-	}, [load]);
+		void loadAll();
+	}, [loadAll]);
+
+	// ── Realtime: my posts/comments/polls change elsewhere (status flips,
+	// new comments on my post, poll closures) — refresh silently so the
+	// sections stay current without skeleton-flashing the whole page.
+	// Debounced 2s so a burst coalesces into one refresh. `reports` is outside
+	// the anon realtime publication — subscribing to it silently never delivers
+	// and breaks the documented contract, so keep this list exactly in-contract.
+	useRealtime(["posts", "comments", "polls"], () => void loadAll(true), 2_000);
+
+	const bookmarkKey = bookmarks.join(",");
+
+	useEffect(() => {
+		void loadSection(
+			"bookmarks",
+			bookmarkKey ? bookmarkKey.split(",").filter(Boolean) : [],
+		);
+	}, [bookmarkKey, loadSection]);
+
+	// Recently-viewed holds bare ids. Resolve them to real posts so the tab
+	// reads like every other section here. Best-effort: if the lookup fails or
+	// a post has since been removed, the entry still renders as a raw link
+	// rather than disappearing from the user's history.
+	const viewedKey = recentlyViewed.join(",");
+
+	useEffect(() => {
+		if (!viewedKey) {
+			setViewedPosts([]);
+			return;
+		}
+		let cancelled = false;
+		api
+			.get<PostData[]>(`/api/posts?ids=${viewedKey}`)
+			.then((result) => {
+				if (!cancelled) setViewedPosts(Array.isArray(result) ? result : []);
+			})
+			.catch(() => {
+				/* titles are an enhancement — ids still render below */
+			});
+		return () => {
+			cancelled = true;
+		};
+	}, [viewedKey]);
 
 	const deletePoll = async (id: string) => {
 		try {
@@ -107,7 +422,7 @@ export default function MyActivity() {
 						author_id: anonId,
 						deleted: false,
 					});
-					load();
+					void loadSection("polls");
 					toast("Poll restored", "ok");
 				},
 			});
@@ -120,6 +435,9 @@ export default function MyActivity() {
 		try {
 			await api.put("/api/posts", { id, author_id: anonId, deleted: true });
 			setPosts((p) => p.filter((x) => x.id !== id));
+			// Retire its "live" notice too — otherwise notifications keep
+			// claiming posts that no longer exist.
+			retireNotifsForLink(`/post/${id}`);
 			toast("Deleted", "info", {
 				label: "Undo (30s)",
 				fn: async () => {
@@ -128,7 +446,7 @@ export default function MyActivity() {
 						author_id: anonId,
 						deleted: false,
 					});
-					load();
+					void loadSection("posts");
 					toast("Restored", "ok");
 				},
 			});
@@ -234,7 +552,50 @@ export default function MyActivity() {
 			icon: Eye,
 			count: recentlyViewed.length,
 		},
+		{
+			key: "appeals",
+			label: "My appeals",
+			icon: Scale,
+			count: appeals.length,
+		},
+		{
+			key: "reports",
+			label: "Reports & Inbox",
+			icon: AlertCircle,
+			count: reports.length,
+		},
 	];
+
+	const sectionHasData = (section: ActivitySection) => {
+		switch (section) {
+			case "posts":
+				return posts.length > 0;
+			case "polls":
+				return myPolls.length > 0;
+			case "comments":
+				return comments.length > 0;
+			case "votes":
+				return reactions.length > 0 || pollVotes.length > 0;
+			case "bookmarks":
+				return bookmarkPosts.length > 0;
+			case "appeals":
+				return appeals.length > 0;
+			case "reports":
+				return reports.length > 0;
+		}
+	};
+
+	const hasAnyActivityData = ACTIVITY_SECTIONS.some(sectionHasData);
+	const sectionsRequiringData = ACTIVITY_SECTIONS.filter(
+		(section) => section !== "bookmarks" || bookmarks.length > 0,
+	);
+	const allSectionsUnavailable =
+		!hasAnyActivityData &&
+		sectionsRequiringData.every((section) => sectionStatus[section] === "error");
+
+	const retrySection = (section: ActivitySection) => {
+		void loadSection(section, section === "bookmarks" ? bookmarks : []);
+	};
 
 	return (
 		<div className="max-w-3xl mx-auto">
@@ -268,7 +629,10 @@ export default function MyActivity() {
 				<div className="flex flex-wrap gap-2 mt-4">
 					<button
 						className="btn btn-ghost !text-xs"
-						onClick={exportData}
+						onClick={() => {
+							triggerHaptic("selection");
+							void exportData();
+						}}
 						disabled={exporting}
 					>
 						<Download size={13} /> {exporting ? "Exporting…" : "Export my data"}
@@ -276,23 +640,51 @@ export default function MyActivity() {
 					<button
 						className="btn btn-ghost !text-xs"
 						onClick={() => {
+							triggerHaptic("selection");
 							resetTutorial();
 							nav("/");
 						}}
 					>
 						<PlayCircle size={13} /> Replay tutorial
 					</button>						<Link
-							to="/settings"
-							className="btn btn-ghost !text-xs"
-						>
-							<UserCircle2 size={13} /> Edit profile
-						</Link>
+						to="/settings"
+						className="btn btn-ghost !text-xs flex items-center gap-1.5"
+						title="Open platform settings & preferences"
+					>
+						<SettingsIcon size={13} /> Edit profile & Settings
+					</Link>
 					</div>
 				<p className="text-[11px] text-ink3 mt-3 flex items-start gap-1.5">
-					<AlertTriangle size={11} className="mt-0.5 shrink-0" /> Your ID lives
-					only in this browser. Voice Box never stores names, emails, phone
-					numbers, IPs, or device fingerprints.
+					<AlertTriangle size={11} className="mt-0.5 shrink-0" /> {SERVER_PII_COPY}
 				</p>
+			</div>
+
+			{/* Personal Impact Card */}
+			<div className="card p-4 sm:p-5 mb-5 bg-gradient-to-r from-accent/5 to-surface2 border-border/80">
+				<div className="flex items-center justify-between mb-3">
+					<h2 className="text-xs font-bold uppercase tracking-wider text-accent flex items-center gap-1.5">
+						<Sparkles size={14} /> Your Voice Impact
+					</h2>
+					<span className="text-[11px] text-ink3 font-medium">Anonymous & Protected</span>
+				</div>
+				<div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+					<div className="p-2.5 rounded-xl bg-surface/70 border border-border/50 text-center">
+						<div className="text-lg font-bold text-ink">{posts.length}</div>
+						<div className="text-[10px] text-ink3 mt-0.5">Issues Raised</div>
+					</div>
+					<div className="p-2.5 rounded-xl bg-surface/70 border border-border/50 text-center">
+						<div className="text-lg font-bold text-accent">{posts.filter((p) => p.status === "solved" || p.admin_reply).length}</div>
+						<div className="text-[10px] text-ink3 mt-0.5">Admin Resolutions</div>
+					</div>
+					<div className="p-2.5 rounded-xl bg-surface/70 border border-border/50 text-center">
+						<div className="text-lg font-bold text-ink">{pollVotes.length}</div>
+						<div className="text-[10px] text-ink3 mt-0.5">Poll Votes Cast</div>
+					</div>
+					<div className="p-2.5 rounded-xl bg-surface/70 border border-border/50 text-center">
+						<div className="text-lg font-bold text-ink">{comments.length + reactions.length}</div>
+						<div className="text-[10px] text-ink3 mt-0.5">Community Actions</div>
+					</div>
+				</div>
 			</div>
 
 			{/* Tabs */}
@@ -300,7 +692,10 @@ export default function MyActivity() {
 				{TABS.map(({ key, label, icon: Icon, count }) => (
 					<button
 						key={key}
-						onClick={() => setTab(key)}
+						onClick={() => {
+							triggerHaptic("selection");
+							setTab(key);
+						}}
 						className={`btn !py-1.5 !px-3 !text-xs shrink-0 ${tab === key ? "btn-primary" : "btn-ghost"}`}
 					>
 						<Icon size={13} /> {label}{" "}
@@ -309,16 +704,68 @@ export default function MyActivity() {
 				))}
 			</div>
 
-			{loading && (
-				<div className="space-y-3">
-					{[1, 2, 3].map((i) => (
-						<div key={i} className="skeleton h-20" />
-					))}
+			{allSectionsUnavailable && (
+				<div
+					role="alert"
+					className="card border-warn/30 bg-warn/[0.06] p-4 mb-4 flex flex-col sm:flex-row sm:items-center gap-3"
+				>
+					<AlertTriangle size={18} className="text-warn shrink-0" />
+					<div className="min-w-0 flex-1">
+						<p className="text-sm font-semibold text-ink2">
+							Couldn&apos;t load your activity
+						</p>
+						<p className="text-xs text-ink3 mt-0.5">
+							Your posts may still be here — the last successful lists are preserved. Try again when the activity service responds.
+						</p>
+					</div>
+					<button
+						type="button"
+						className="btn btn-soft !text-xs shrink-0"
+						onClick={() => void loadAll()}
+						aria-label="Try again — retry posts and activity"
+					>
+						<RefreshCcw size={13} /> Try again
+					</button>
 				</div>
 			)}
 
-			{!loading && tab === "posts" && (
-				<div className="space-y-2.5">
+			{!allSectionsUnavailable && tab === "posts" && (
+				<SectionBoundary
+					status={sectionStatus.posts}
+					error={sectionErrors.posts}
+					hasData={sectionHasData("posts")}
+					label="posts"
+					lastUpdatedAt={sectionUpdatedAt.posts}
+					onRetry={() => retrySection("posts")}
+				>
+					<div className="space-y-2.5">
+					{posts.length === 0 && reports.length > 0 && (
+						<div className="card border-accent/30 bg-accent/[0.06] p-4 mb-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3 animate-in fade-in">
+							<div className="flex items-center gap-2.5">
+								<span className="w-8 h-8 rounded-lg bg-accent/15 text-accent grid place-items-center shrink-0">
+									<AlertCircle size={16} />
+								</span>
+								<div>
+									<p className="text-xs font-semibold text-ink">
+										{reports.length} report{reports.length > 1 ? "s" : ""} / inbox complaint{reports.length > 1 ? "s" : ""} in process
+									</p>
+									<p className="text-[11px] text-ink3 mt-0.5">
+										Complaints filed through the Anonymous Inbox are tracked in the Reports tab, separate from public feed posts.
+									</p>
+								</div>
+							</div>
+							<button
+								type="button"
+								onClick={() => {
+									triggerHaptic("selection");
+									setTab("reports");
+								}}
+								className="btn btn-primary !text-xs shrink-0 self-start sm:self-auto"
+							>
+								View Reports ({reports.length})
+							</button>
+						</div>
+					)}
 					{posts.length === 0 && (
 						<Empty text="You haven't posted anything yet." />
 					)}
@@ -334,6 +781,11 @@ export default function MyActivity() {
 								<p className="text-xs text-ink3">
 									{p.type} · {p.category} · {p.status.replace("_", " ")} ·{" "}
 									{timeAgo(p.created_at)}
+									{p.hidden && (
+										<span className="ml-1 rounded-full bg-warn/15 px-1.5 py-0.5 font-semibold text-warn">
+											Hidden by moderators
+										</span>
+									)}
 								</p>
 							</div>
 							<button
@@ -345,11 +797,20 @@ export default function MyActivity() {
 							</button>
 						</div>
 					))}
-				</div>
+					</div>
+				</SectionBoundary>
 			)}
 
-			{!loading && tab === "polls" && (
-				<div className="space-y-2.5">
+			{!allSectionsUnavailable && tab === "polls" && (
+				<SectionBoundary
+					status={sectionStatus.polls}
+					error={sectionErrors.polls}
+					hasData={sectionHasData("polls")}
+					label="polls"
+					lastUpdatedAt={sectionUpdatedAt.polls}
+					onRetry={() => retrySection("polls")}
+				>
+					<div className="space-y-2.5">
 					{myPolls.length === 0 && (
 						<Empty text="You haven't created any polls yet." />
 					)}
@@ -378,11 +839,20 @@ export default function MyActivity() {
 							</button>
 						</div>
 					))}
-				</div>
+					</div>
+				</SectionBoundary>
 			)}
 
-			{!loading && tab === "comments" && (
-				<div className="space-y-2.5">
+			{!allSectionsUnavailable && tab === "comments" && (
+				<SectionBoundary
+					status={sectionStatus.comments}
+					error={sectionErrors.comments}
+					hasData={sectionHasData("comments")}
+					label="comments"
+					lastUpdatedAt={sectionUpdatedAt.comments}
+					onRetry={() => retrySection("comments")}
+				>
+					<div className="space-y-2.5">
 					{comments.length === 0 && <Empty text="No comments yet." />}
 					{comments.map((c) => (
 						<div key={c.id} className="card p-3.5">
@@ -400,11 +870,20 @@ export default function MyActivity() {
 							</div>
 						</div>
 					))}
-				</div>
+					</div>
+				</SectionBoundary>
 			)}
 
-			{!loading && tab === "votes" && (
-				<div className="space-y-2.5">
+			{!allSectionsUnavailable && tab === "votes" && (
+				<SectionBoundary
+					status={sectionStatus.votes}
+					error={sectionErrors.votes}
+					hasData={sectionHasData("votes")}
+					label="votes"
+					lastUpdatedAt={sectionUpdatedAt.votes}
+					onRetry={() => retrySection("votes")}
+				>
+					<div className="space-y-2.5">
 					{reactions.length + pollVotes.length === 0 && (
 						<Empty text="No votes or reactions yet." />
 					)}
@@ -430,11 +909,20 @@ export default function MyActivity() {
 							</span>
 						</div>
 					))}
-				</div>
+					</div>
+				</SectionBoundary>
 			)}
 
-			{!loading && tab === "bookmarks" && (
-				<div className="space-y-2.5">
+			{!allSectionsUnavailable && tab === "bookmarks" && (
+				<SectionBoundary
+					status={sectionStatus.bookmarks}
+					error={sectionErrors.bookmarks}
+					hasData={sectionHasData("bookmarks")}
+					label="bookmarks"
+					lastUpdatedAt={sectionUpdatedAt.bookmarks}
+					onRetry={() => retrySection("bookmarks")}
+				>
+					<div className="space-y-2.5">
 					{bookmarkPosts.length === 0 && (
 						<Empty text="No bookmarks yet — tap the bookmark icon on any post." />
 					)}
@@ -450,11 +938,11 @@ export default function MyActivity() {
 							</p>
 						</Link>
 					))}
-				</div>
+					</div>
+				</SectionBoundary>
 			)}
 
-			{!loading &&
-				tab === "drafts" &&
+			{tab === "drafts" &&
 				(draft?.title || draft?.desc ? (
 					<div className="card p-4">
 						<p className="font-semibold text-sm">
@@ -475,49 +963,250 @@ export default function MyActivity() {
 					<Empty text="No drafts. Drafts autosave while you write." />
 				))}
 
-			{!loading && tab === "notifications" && (
-				<div className="space-y-2">
+			{tab === "notifications" && (
+				<div className="space-y-2.5">
 					{notifications.length === 0 && <Empty text="No notifications yet." />}
-					{notifications.map((n) => (
-						<div key={n.id} className="card p-3.5">
-							<p className="text-sm font-medium">{n.title}</p>
-							<p className="text-xs text-ink3">
-								{n.body} · {timeAgo(n.at)}
-							</p>
-							{n.link && (
-								<Link
-									to={n.link}
-									className="text-xs text-accent font-semibold hover:underline"
-								>
-									Open →
-								</Link>
-							)}
-						</div>
-					))}
+					{notifications.map((n) => {
+						const isWarning =
+							n.kind === "warning" ||
+							n.kind === "moderation" ||
+							n.kind === "suspension" ||
+							n.kind === "ban" ||
+							n.title.toLowerCase().includes("warning") ||
+							n.title.toLowerCase().includes("strike") ||
+							n.title.toLowerCase().includes("ban") ||
+							n.title.toLowerCase().includes("moderation");
+						// Never let an admin notice or warning redirect to /chat
+						const safeLink =
+							n.link && !n.link.startsWith("/chat") ? n.link : null;
+
+						return (
+							<div
+								key={n.id}
+								onClick={() => setSelectedNotif(n)}
+								className="card card-hover p-4 cursor-pointer transition-all space-y-2.5"
+							>
+								<div className="flex items-start justify-between gap-3">
+									<div className="flex items-center gap-2.5 min-w-0">
+										<span
+											className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${
+												isWarning
+													? "bg-amber-500/10 text-amber-500"
+													: "bg-accent/10 text-accent"
+											}`}
+										>
+											{isWarning ? <ShieldAlert size={16} /> : <Bell size={16} />}
+										</span>
+										<div className="min-w-0">
+											<p className="text-sm font-semibold text-ink">
+												{n.title}
+											</p>
+											<p className="text-xs text-ink3 mt-0.5">
+												{n.body} · {timeAgo(n.at)}
+											</p>
+										</div>
+									</div>
+									<div className="flex items-center gap-2 shrink-0">
+										{safeLink ? (
+											<Link
+												to={safeLink}
+												onClick={(e) => e.stopPropagation()}
+												className="text-xs text-accent font-semibold hover:underline"
+											>
+												Open →
+											</Link>
+										) : (
+											<span className="text-xs text-accent font-semibold hover:underline flex items-center gap-0.5">
+												View details <ChevronRight size={13} />
+											</span>
+										)}
+									</div>
+								</div>
+							</div>
+						);
+					})}
 				</div>
 			)}
 
-			{!loading && tab === "viewed" && (
+			{tab === "viewed" && (
 				<div className="space-y-2">
 					{recentlyViewed.length === 0 && (
 						<Empty text="Nothing viewed recently." />
 					)}
-					{recentlyViewed.map((id) => (
-						<Link
-							key={id}
-							to={`/post/${id}`}
-							className="card card-hover p-3 block text-sm font-mono text-ink2 hover:text-accent"
-						>
-							{id}
-						</Link>
-					))}
+					{recentlyViewed.map((id) => {
+						const resolved = viewedPosts.find((p) => p.id === id);
+						return (
+							<Link
+								key={id}
+								to={`/post/${id}`}
+								className={
+									resolved
+										? "card card-hover p-3.5 block"
+										: "card card-hover p-3 block text-sm font-mono text-ink2 hover:text-accent"
+								}
+							>
+								{resolved ? (
+									<>
+										<p className="font-semibold text-sm line-clamp-1">
+											{resolved.title}
+										</p>
+										<p className="text-xs text-ink3">
+											{resolved.category} · {timeAgo(resolved.created_at)}
+										</p>
+									</>
+								) : (
+									id
+								)}
+							</Link>
+						);
+					})}
 				</div>
+			)}
+
+			{!allSectionsUnavailable && tab === "appeals" && (
+				<SectionBoundary
+					status={sectionStatus.appeals}
+					error={sectionErrors.appeals}
+					hasData={sectionHasData("appeals")}
+					label="appeals"
+					lastUpdatedAt={sectionUpdatedAt.appeals}
+					onRetry={() => retrySection("appeals")}
+				>
+					<div className="space-y-2">
+					{appeals.length === 0 && (
+						<Empty text="No appeals yet. If safety blocks a post, comment, or poll, you can appeal for human review." />
+					)}
+					{appeals.map((a) => (
+						<div key={a.id} className="card p-3.5">
+							<p className="text-sm font-medium">
+								{a.title || a.body.slice(0, 60)}{" "}
+								<span className="text-xs text-ink3">({a.surface})</span>
+							</p>
+							<p className="text-xs text-ink3">
+								{a.status === "open" && "Under review — a moderator will decide."}
+								{a.status === "upheld" && "Reviewed — the block stands. Rephrase and resubmit."}
+								{a.status === "overturned" && "Approved — your content is live."}{" "}
+								· {timeAgo(a.created_at)}
+							</p>
+							{a.review_note && (
+								<p className="text-xs text-ink2">Moderator note: {a.review_note}</p>
+							)}
+							{a.status === "overturned" && a.published?.kind === "post" && (
+								<Link
+									to={`/post/${a.published.id}`}
+									className="text-xs text-accent font-semibold hover:underline"
+								>
+									View published post →
+								</Link>
+							)}
+						</div>
+					))}
+					</div>
+				</SectionBoundary>
+			)}
+
+			{!allSectionsUnavailable && tab === "reports" && (
+				<SectionBoundary
+					status={sectionStatus.reports}
+					error={sectionErrors.reports}
+					hasData={sectionHasData("reports")}
+					label="reports"
+					lastUpdatedAt={sectionUpdatedAt.reports}
+					onRetry={() => retrySection("reports")}
+				>
+					<div className="space-y-2.5">
+						{reports.length === 0 && (
+							<div className="text-center py-10 card p-6">
+								<div className="vb-empty-icon mx-auto mb-2">
+									<AlertCircle size={22} />
+								</div>
+								<p className="font-display font-semibold text-sm">No reports on file</p>
+								<p className="text-xs text-ink3 mt-1 max-w-sm mx-auto">
+									You haven&apos;t filed any complaints or reports. When you share issues with the Anonymous Inbox or report inappropriate content, you can track their status here.
+								</p>
+								<Link
+									to="/chat"
+									onClick={() => triggerHaptic("light")}
+									className="btn btn-primary !text-xs mt-4 inline-flex items-center gap-1.5"
+								>
+									<MessageSquare size={13} /> Open Anonymous Inbox
+								</Link>
+							</div>
+						)}
+						{reports.map((r) => {
+							const isInProcess =
+								r.status === "open" ||
+								r.status === "pending" ||
+								r.status === "in_process" ||
+								r.status === "investigating" ||
+								r.status === "reported";
+							const isResolved =
+								r.status === "resolved" ||
+								r.status === "closed" ||
+								r.status === "addressed";
+							return (
+								<div key={r.id} className="card p-4 space-y-2">
+									<div className="flex items-start justify-between gap-3">
+										<div className="min-w-0">
+											<div className="flex items-center gap-2 flex-wrap mb-1">
+												<span
+													className={`chip text-[10px] font-semibold uppercase tracking-wider ${
+														r.target_type === "inbox"
+															? "bg-accent/15 text-accent border-accent/20"
+															: "bg-surface2 text-ink2 border-border"
+													}`}
+												>
+													{r.target_type === "inbox" ? "Inbox Issue" : `Report: ${r.target_type || "Content"}`}
+												</span>
+												<span
+													className={`chip text-[10px] font-semibold ${
+														isInProcess
+															? "bg-amber-500/15 text-amber-600 dark:text-amber-400 border-amber-500/20"
+															: isResolved
+																? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border-emerald-500/20"
+																: "bg-surface2 text-ink3 border-border"
+													}`}
+												>
+													{isInProcess
+														? "⏳ In Process / Under Review"
+														: isResolved
+															? "✅ Resolved"
+															: r.status}
+												</span>
+											</div>
+											<p className="text-sm font-medium text-ink leading-relaxed">
+												{r.reason || r.title || "Report filed"}
+											</p>
+											<p className="text-xs text-ink3 mt-1">
+												Filed {timeAgo(r.created_at)} · ID:{" "}
+												<code className="font-mono text-[10px]">
+													{r.id.slice(0, 12)}
+												</code>
+											</p>
+										</div>
+										{r.target_type === "inbox" && (
+											<Link
+												to="/chat"
+												onClick={() => triggerHaptic("light")}
+												className="btn btn-ghost !text-xs shrink-0 flex items-center gap-1"
+											>
+												<MessageSquare size={13} /> Chat →
+											</Link>
+										)}
+									</div>
+								</div>
+							);
+						})}
+					</div>
+				</SectionBoundary>
 			)}
 
 			<ConfirmDialog
 				open={dialog?.kind === "deletePoll"}
 				onClose={() => setDialog(null)}
-				onConfirm={() => dialog?.payload && deletePoll(dialog.payload)}
+				onConfirm={() =>
+					dialog?.payload ? deletePoll(dialog.payload) : undefined
+				}
 				title="Delete this poll?"
 				message="Your poll and its results will be removed. You can undo within 30 seconds."
 				confirmLabel="Delete poll"
@@ -526,12 +1215,118 @@ export default function MyActivity() {
 			<ConfirmDialog
 				open={dialog?.kind === "deletePost"}
 				onClose={() => setDialog(null)}
-				onConfirm={() => dialog?.payload && deletePost(dialog.payload)}
+				onConfirm={() =>
+					dialog?.payload ? deletePost(dialog.payload) : undefined
+				}
 				title="Delete this post?"
 				message="Your post will be removed from the feed. You can undo within 30 seconds using the toast at the bottom of the screen."
 				confirmLabel="Delete"
 				danger
-			/>		</div>
+			/>
+
+			{/* Visual Problem Explanation Modal */}
+			{selectedNotif && (
+				<div
+					className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in duration-200"
+					role="dialog"
+					aria-modal="true"
+					aria-labelledby="activity-notif-title"
+				>
+					<div className="bg-white dark:bg-[#14141c] text-slate-900 dark:text-white border border-slate-200 dark:border-white/10 rounded-2xl max-w-lg w-full p-6 shadow-2xl space-y-5 animate-in zoom-in-95 duration-200 relative overflow-hidden">
+						{/* Close button */}
+						<button
+							onClick={() => setSelectedNotif(null)}
+							className="absolute top-4 right-4 p-1.5 rounded-full text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-white/10 transition-colors cursor-pointer"
+							aria-label="Close details"
+						>
+							<X size={18} />
+						</button>
+
+						{/* Badge & Type Header */}
+						<div className="flex items-center gap-3">
+							<div
+								className={`w-11 h-11 rounded-xl flex items-center justify-center shrink-0 ${
+									selectedNotif.kind === "warning" ||
+									selectedNotif.kind === "suspension" ||
+									selectedNotif.kind === "ban" ||
+									selectedNotif.title.toLowerCase().includes("warning") ||
+									selectedNotif.title.toLowerCase().includes("strike")
+										? "bg-amber-500/10 text-amber-500"
+										: "bg-accent/10 text-accent"
+								}`}
+							>
+								{selectedNotif.kind === "warning" ||
+								selectedNotif.kind === "suspension" ||
+								selectedNotif.kind === "ban" ||
+								selectedNotif.title.toLowerCase().includes("warning") ||
+								selectedNotif.title.toLowerCase().includes("strike") ? (
+									<ShieldAlert size={22} />
+								) : (
+									<Bell size={22} />
+								)}
+							</div>
+							<div className="min-w-0 pr-6">
+								<span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+									Official Administrative Notice
+								</span>
+								<h2 id="activity-notif-title" className="text-base font-bold text-slate-900 dark:text-white leading-tight mt-0.5">
+									{selectedNotif.title}
+								</h2>
+							</div>
+						</div>
+
+						{/* Timestamp & Metadata */}
+						<div className="flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400 pb-1 border-b border-slate-200/80 dark:border-white/10">
+							<Clock size={13} />
+							<span>{new Date(selectedNotif.at).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })}</span>
+							<span>•</span>
+							<span>{timeAgo(selectedNotif.at)}</span>
+						</div>
+
+						{/* Detailed Problem Explanation Box */}
+						<div className="space-y-3">
+							<div className="p-4 rounded-xl bg-slate-100/90 dark:bg-white/[0.05] border border-slate-200 dark:border-white/10 space-y-2">
+								<p className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+									Notice Reason & Explanation
+								</p>
+								<p className="text-sm font-medium text-slate-800 dark:text-slate-200 leading-relaxed whitespace-pre-wrap select-text">
+									{selectedNotif.body}
+								</p>
+							</div>
+
+							{/* School policy & strike standing */}
+							<div className="p-3.5 rounded-xl bg-amber-500/10 border border-amber-500/20 text-xs text-amber-900 dark:text-amber-200 space-y-1.5">
+								<p className="font-semibold flex items-center gap-1.5">
+									<AlertCircle size={14} /> School Moderation Notice
+								</p>
+								<p className="leading-relaxed opacity-90">
+									This official notice was issued by campus administration regarding content standards. Your anonymous ID remains fully protected. Current account standing: {accountStatus?.strikes || 0} strike(s).
+								</p>
+							</div>
+						</div>
+
+						{/* Action Buttons */}
+						<div className="flex flex-wrap items-center justify-end gap-2.5 pt-2 border-t border-slate-200/80 dark:border-white/10">
+							{selectedNotif.link && selectedNotif.link.startsWith("/post/") && (
+								<Link
+									to={selectedNotif.link}
+									onClick={() => setSelectedNotif(null)}
+									className="btn btn-primary !text-xs !py-2 !px-4 flex items-center gap-1.5"
+								>
+									<ExternalLink size={14} /> View Affected Post
+								</Link>
+							)}
+							<button
+								onClick={() => setSelectedNotif(null)}
+								className="btn btn-ghost !text-xs !py-2 !px-4 cursor-pointer text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-white/10"
+							>
+								Close
+							</button>
+						</div>
+					</div>
+				</div>
+			)}
+		</div>
 	);
 }
 

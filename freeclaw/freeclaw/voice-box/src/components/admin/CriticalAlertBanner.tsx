@@ -128,7 +128,7 @@ export function CriticalAlertBanner({
 				<div className="flex flex-col gap-2 shrink-0">
 					<button
 						type="button"
-						className="btn btn-primary !bg-red-500 !border-red-500 hover:!bg-red-400 !text-white !text-xs"
+						className="btn btn-primary btn-bloom-danger !bg-red-500 !border-red-500 hover:!bg-red-400 !text-white !text-xs"
 						onClick={() => onAcknowledge?.(a.id)}
 					>
 						Acknowledge
@@ -138,7 +138,7 @@ export function CriticalAlertBanner({
 						className="btn btn-ghost !text-red-200 !text-xs"
 						onClick={onOpenWorkforce}
 					>
-						Open console <ArrowUpRight size={12} />
+						View work <ArrowUpRight size={12} />
 					</button>
 				</div>
 			</div>

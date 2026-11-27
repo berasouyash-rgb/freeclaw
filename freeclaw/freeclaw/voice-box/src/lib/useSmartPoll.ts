@@ -47,6 +47,11 @@ export function useSmartPoll(
 	const mountedRef = useRef(true);
 	const hiddenRef = useRef(false);
 	const runningRef = useRef(false);
+	// Refs for props that the mount effect needs without being in its deps
+	const intervalMsRef = useRef(intervalMs);
+	intervalMsRef.current = intervalMs;
+	const immediateRef = useRef(immediate);
+	immediateRef.current = immediate;
 
 	fetcherRef.current = fetcher;
 
@@ -94,6 +99,11 @@ export function useSmartPoll(
 	}, [intervalMs, maxIntervalMs, backoffFactor, clearTimer, onIntervalChange]);
 
 	const forceRefresh = useCallback(async () => {
+		// Coalesce: a fetch already in flight covers this refresh. Without
+		// this, a realtime burst landing mid-poll fired a second overlapping
+		// fetch, and whichever response arrived LAST won — a slow stale
+		// response could overwrite newer state until the next tick.
+		if (runningRef.current) return;
 		clearTimer();
 		runningRef.current = true;
 		setIsPolling(true);

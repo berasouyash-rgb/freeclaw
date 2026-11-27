@@ -1,9 +1,10 @@
 // Image upload to Supabase Storage (anonymous, size-capped)
 // FALLBACK: If Supabase Storage fails, returns a data-URL so images always work.
 
-import { checkUser, clean, cors, rateLimited, rateLimitResponse } from "./_auth.js";
+import { auditLog, checkUser, clean, cors, isAdmin, rateLimited, rateLimitResponse, verifyCallerIdentity } from "./_auth.js";
 import supabase from "./_db-client.js";
 import { sanitizeError } from "./_error.js";
+import { screenImage } from "./_image-safety.js";
 
 export const config = { api: { bodyParser: { sizeLimit: "4mb" } } };
 
@@ -33,6 +34,75 @@ function matchesImageMagic(buffer, contentType) {
 	return false;
 }
 
+/** Deep inspection for executable code, webshells, script injection, and polyglots. */
+function containsMaliciousPayload(buffer) {
+	if (buffer.length >= 2 && buffer[0] === 0x4d && buffer[1] === 0x5a) return "executable_pe";
+	if (buffer.length >= 4 && buffer[0] === 0x7f && buffer[1] === 0x45 && buffer[2] === 0x4c && buffer[3] === 0x46) return "executable_elf";
+
+	const str = buffer.toString("latin1");
+	const lower = str.toLowerCase();
+
+	const MALICIOUS_PATTERNS = [
+		/<\?php/i,
+		/<\?=/i,
+		/<script\b/i,
+		/javascript\s*:/i,
+		/<html\b/i,
+		/<svg\b/i,
+		/<!doctype\s+html/i,
+		/<!entity\s+/i,
+		/\bonerror\s*=/i,
+		/\bonload\s*=/i,
+		/\bdocument\.cookie\b/i,
+		/\bwindow\.location\b/i,
+		/\beval\s*\(/i,
+		/\bbase64_decode\s*\(/i,
+		/\bsystem\s*\(/i,
+		/\bshell_exec\s*\(/i,
+		/\bpassthru\s*\(/i,
+		/<%[\s\S]*%>/i,
+		/<jsp:/i,
+		/powershell(\.exe)?\b/i,
+		/cmd(\.exe)?\s+\/c/i,
+	];
+
+	for (const pattern of MALICIOUS_PATTERNS) {
+		if (pattern.test(lower)) {
+			return pattern.source;
+		}
+	}
+	return null;
+}
+
+/** Check image text chunks, metadata, and captions for inappropriate/NSFW content */
+function checkImageAppropriateness(buffer, meta = {}) {
+	// 1. Check user-supplied metadata fields (caption, filename, altText)
+	const userTexts = [meta.caption, meta.altText, meta.filename, meta.title]
+		.filter(Boolean)
+		.join(" ")
+		.toLowerCase();
+
+	// 2. Extract printable strings from buffer (EXIF tags, PNG tEXt chunks, comments)
+	const str = buffer.toString("latin1");
+	const printable = str.replace(/[^\x20-\x7E]/g, " ").toLowerCase();
+	const combined = `${userTexts} ${printable}`;
+
+	const INAPPROPRIATE_PATTERNS = [
+		/\b(?:porn|nsfw|xxx|nude|nudes|nudity|striptease|hentai|erotic|gore|snuff)\b/i,
+		/\b(?:kill\s+your\s*self|kys|i\s+will\s+kill\s+you|hang\s+your\s*self)\b/i,
+		/\b(?:i\s+will\s+not\s+leave\s+you|watch\s+your\s+back|tujhe\s+chhodunga\s+nahi|dekh\s+lunga)\b/i,
+		/\b(?:nigger|faggot|chink|kike|retard)\b/i,
+		/\b(?:post\s+your\s+nudes|leak\s+your\s+nudes)\b/i,
+	];
+
+	for (const pattern of INAPPROPRIATE_PATTERNS) {
+		if (pattern.test(combined)) {
+			return pattern.source;
+		}
+	}
+	return null;
+}
+
 export default async function handler(req, res) {
 	cors(res, req);
 	if (req.method === "OPTIONS") return res.status(204).end();
@@ -40,8 +110,21 @@ export default async function handler(req, res) {
 		return res.status(405).json({ error: "Method not allowed" });
 
 	try {
-		const { fileBase64, contentType, author_id } = req.body || {};
-		const gate = await checkUser(clean(author_id, 40));
+		const { fileBase64, contentType } = req.body || {};
+		// H6: Trust session / x-anon-id over body for uploads
+		const headerId = clean(req.headers["x-anon-id"] || "", 40);
+		const admin = await isAdmin(req);
+		const author_id = headerId || (admin ? "ADMIN" : "");
+		if (!author_id) {
+			return res.status(403).json({ error: "Missing session identity (x-anon-id header)" });
+		}
+		if (!admin) {
+			const caller = await verifyCallerIdentity(req, res, author_id);
+			if (!caller.ok) {
+				return res.status(caller.status || 403).json({ error: caller.error, code: caller.code });
+			}
+		}
+		const gate = await checkUser(author_id);
 		if (!gate.ok) return res.status(403).json({ error: gate.error });
 		if (!fileBase64) return res.status(400).json({ error: "No file" });
 		if (!/^image\/(png|jpe?g|gif|webp)$/.test(contentType || "")) {
@@ -63,6 +146,72 @@ export default async function handler(req, res) {
 			return res
 				.status(400)
 				.json({ error: "File content does not match its declared image type." });
+		}
+
+		// Deep malware and polyglot scan: reject files containing executable or script payloads
+		const threat = containsMaliciousPayload(buffer);
+		if (threat) {
+			try {
+				await auditLog(
+					"security",
+					"malicious_upload_blocked",
+					`${clean(author_id, 40)}: detected ${threat}`,
+				);
+			} catch {
+				/* best effort audit */
+			}
+			return res.status(400).json({
+				error: "Security violation: Malicious or executable content detected in file.",
+				code: "MALICIOUS_FILE_BLOCKED",
+			});
+		}
+
+		// Appropriate image check: reject files with inappropriate or abusive metadata / text chunks
+		const inappropriate = checkImageAppropriateness(buffer, req.body || {});
+		if (inappropriate) {
+			try {
+				await auditLog(
+					"moderation",
+					"inappropriate_image_blocked",
+					`${clean(author_id, 40)}: detected ${inappropriate}`,
+				);
+			} catch {
+				/* best effort audit */
+			}
+			return res.status(400).json({
+				error: "Image rejected: Content or metadata violates school safety policy. Only appropriate school-related images are permitted.",
+				code: "INAPPROPRIATE_IMAGE",
+			});
+		}
+
+		// PIXEL-level safety: metadata and magic bytes cannot see what the image
+		// shows. The vision classifier runs BEFORE storage, so a refused image
+		// is never uploaded at all (and therefore can never be linked from a
+		// post, community message, or chat).
+		const vision = await screenImage(buffer, contentType);
+		if (vision.safe === false) {
+			try {
+				await auditLog(
+					"moderation",
+					"image_policy_blocked",
+					`${clean(author_id, 40)}: ${vision.categories.join(",") || "policy"} — ${vision.reason}`,
+				);
+			} catch {
+				/* best effort audit */
+			}
+			return res.status(400).json({
+				error: `Image rejected: ${vision.reason || "it appears to break the school safety policy"}. Only school-appropriate images can be posted.`,
+				code: "INAPPROPRIATE_IMAGE",
+				categories: vision.categories,
+			});
+		}
+		if (vision.safe !== true) {
+			// Fail closed: an unreviewed image must not become public content.
+			console.error("[upload] image review unavailable:", vision.reason);
+			return res.status(503).json({
+				error: "Image safety review is temporarily unavailable — please try again in a moment. Your image was not posted.",
+				code: "IMAGE_REVIEW_UNAVAILABLE",
+			});
 		}
 
 		// Try each available bucket
@@ -88,24 +237,11 @@ export default async function handler(req, res) {
 			}
 		}
 
-		// FALLBACK: All storage buckets failed — return data URL so the image still works
-		console.warn("All storage buckets failed — falling back to data URL");
-		const dataUrl = `data:${contentType || "image/png"};base64,${fileBase64}`;
-		return res.status(200).json({ url: dataUrl, storage: "fallback-data-url" });
+		// FIX #14: Storage unavailable — reject instead of data-URL fallback (blows up DB storage)
+		console.error("All storage buckets failed — rejecting upload (no data-URL fallback)");
+		return res.status(503).json({ error: "Image storage is temporarily unavailable. Please try again shortly.", code: "STORAGE_UNAVAILABLE" });
 	} catch (err) {
 		console.error("upload API error:", err);
-		// Last-resort fallback: return data URL
-		try {
-			const { fileBase64: fb64, contentType: ct } = req.body || {};
-			if (fb64) {
-				const dataUrl = `data:${ct || "image/png"};base64,${fb64}`;
-				return res
-					.status(200)
-					.json({ url: dataUrl, storage: "fallback-data-url" });
-			}
-		} catch {
-			console.error("[upload] Last-resort data URL fallback also failed");
-		}
 		return sanitizeError(res, err, "upload");
 	}
 }

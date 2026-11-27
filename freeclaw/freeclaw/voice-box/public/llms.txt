@@ -1,0 +1,34 @@
+# Voice Flow
+
+> Voice Flow is an anonymous school feedback platform. Students report
+> problems, share ideas, and vote in polls with no names, no emails, and no
+> tracking — and every report is tracked publicly from Reported to Solved.
+
+Voice Flow lets students share anonymous feedback and report school issues
+without revealing who they are. Posts move through a visible pipeline
+(Reported → Verified → In Progress → Waiting → Solved), school staff moderate
+and resolve them, and the whole school can see what actually changed. Each
+student's only identifier is a random ID generated in their own browser —
+there is no account, no email, and no IP logging against posts.
+
+## Product
+
+- [About](https://voice-box-psi.vercel.app/about): What Voice Flow is and how anonymity works
+- [Frequently asked questions](https://voice-box-psi.vercel.app/faq): Anonymity, moderation, deleting posts, polls
+- [Solving board](https://voice-box-psi.vercel.app/board): Issues moving through the fix pipeline
+- [Polls](https://voice-box-psi.vercel.app/polls): School-wide polls with live results
+- [Suggestions](https://voice-box-psi.vercel.app/suggestions): Ideas the school can vote on
+- [Download](https://voice-box-psi.vercel.app/download): Android APK and Windows desktop app
+
+## Legal & support
+
+- [Contact](https://voice-box-psi.vercel.app/contact)
+- [Terms of Service](https://voice-box-psi.vercel.app/terms)
+- [Privacy Policy](https://voice-box-psi.vercel.app/privacy)
+- [Accessibility](https://voice-box-psi.vercel.app/accessibility)
+- [System status](https://voice-box-psi.vercel.app/status)
+- [Changelog](https://voice-box-psi.vercel.app/changelog)
+
+## Optional
+
+- [Sitemap](https://voice-box-psi.vercel.app/sitemap.xml)

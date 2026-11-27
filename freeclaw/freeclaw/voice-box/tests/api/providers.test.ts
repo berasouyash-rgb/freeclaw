@@ -41,7 +41,7 @@ const PROVIDER_DEFS = {
 	},
 	groq: {
 		name: "Groq",
-		defaultModel: "llama-3.3-70b-versatile",
+		defaultModel: "openai/gpt-oss-120b",
 		baseUrl: "https://api.groq.com/openai/v1/chat/completions",
 		buildHeaders: (key: string) => ({
 			Authorization: `Bearer ${key}`,

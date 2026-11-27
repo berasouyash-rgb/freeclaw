@@ -6,6 +6,7 @@
 import { isTestArtifact } from "./_artifact-filter.js";
 import { auditLog, cors, isAdmin } from "./_auth.js";
 import supabase from "./_db-client.js";
+import { readLivePosts } from "./_live-posts.js";
 
 /** Tokenize text into meaningful words (min 3 chars, lowercase) */
 function tokenize(text) {
@@ -83,24 +84,46 @@ async function findDuplicatesForPost(postId) {
 }
 
 /** Find all duplicate clusters across the entire platform */
-async function findAllDuplicateClusters() {
-	const { data: posts } = await supabase
-		.from("posts")
-		.select("id, title, description, category, status, priority, created_at")
-		.eq("deleted", false)
-		.order("created_at", { ascending: false })
-		.limit(300);
+export async function findAllDuplicateClusters() {
+	// Dual-backend read: prefer the direct Supabase table, but a
+	// serverless-context run that cannot reach it falls back to the app's
+	// own live-posts feed rather than failing the whole scan.
+	let posts = [];
+	try {
+		const { data, error } = await supabase
+			.from("posts")
+			.select("id, title, description, category, status, priority, created_at")
+			.eq("deleted", false)
+			.order("created_at", { ascending: false })
+			.limit(300);
+		if (error) throw error;
+		posts = data || [];
+	} catch {
+		const fetched = await readLivePosts({
+			columns: "id, title, description, category, status, priority, created_at",
+			limit: 300,
+		});
+		posts = fetched.posts;
+	}
 	// Full-site zero-fuzz: drop artifact posts so they never form clusters
 	const cleanPosts = (posts || []).filter((p) => !isTestArtifact(p.title));
 
 	if (cleanPosts.length < 2) return [];
 
-	// Enrich with comment counts from separate table
+	// Enrich with comment counts from a separate table. Server-sourced posts
+	// have no comment-enrichment path, so a failed/absent query degrades to
+	// zero counts instead of aborting the cluster scan.
 	const postIds = cleanPosts.map((p) => p.id);
-	const { data: allComments } = await supabase
-		.from("comments")
-		.select("post_id")
-		.in("post_id", postIds.length ? postIds : ["_"]);
+	let allComments = [];
+	try {
+		const { data } = await supabase
+			.from("comments")
+			.select("post_id")
+			.in("post_id", postIds.length ? postIds : ["_"]);
+		allComments = data || [];
+	} catch {
+		allComments = [];
+	}
 	const cMap = {};
 	(allComments || []).forEach((c) => {
 		cMap[c.post_id] = (cMap[c.post_id] || 0) + 1;

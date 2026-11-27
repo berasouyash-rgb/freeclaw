@@ -6,7 +6,7 @@
 // API (NVIDIA NIM and any other provider) — on both the batch and streaming
 // paths.
 
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // ─── Mock supabase (settings query → no DB-configured providers) ──────────
 const { supabaseMock } = vi.hoisted(() => {
@@ -130,6 +130,18 @@ describe("maskPII unit behavior", () => {
 });
 
 describe("outbound masking through the real provider layer", () => {
+	// Hermetic key: the provider fast-guard (hasUsableLLM) needs at least one
+	// usable key or both paths return DEGRADED without ever POSTing. The local
+	// dev machine happened to have a machine-level key, so these passed
+	// locally and failed on keyless CI runners. A dummy key keeps the test
+	// on the real NIM request path (fetch is mocked — no network) on every
+	// machine. vi.stubEnv restores the ambient env after each test.
+	beforeEach(() => {
+		vi.stubEnv("NVIDIA_API_KEY", "test-key-for-masking-assertions");
+	});
+	afterEach(() => {
+		vi.unstubAllEnvs();
+	});
 	it("callLLMChain scrubs PII from the body sent to NIM (batch path)", async () => {
 		mockFetch.mockResolvedValue(jsonResponse("sure"));
 

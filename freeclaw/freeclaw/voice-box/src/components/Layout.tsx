@@ -1,9 +1,15 @@
-﻿import {
+import {
+	Accessibility,
+	Info,
+	LifeBuoy,
+	Rocket,
 	Activity,
+	ArrowDownToLine,
 	BarChart3,
 	Bell,
 	Bookmark,
 	CheckCheck,
+	Code2,
 	HelpCircle,
 	Home,
 	KanbanSquare,
@@ -13,7 +19,9 @@
 	MessageSquare,
 	Moon,
 	PlusCircle,
+	Scale,
 	Search,
+	Settings as SettingsIcon,
 	ShieldCheck,
 	Sun,		Trash2,
 		Trophy,
@@ -22,23 +30,57 @@
 		WifiOff,
 		X,
 	} from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, NavLink, Outlet, useLocation, useNavigate } from "react-router";
 import { useApp } from "../contexts/AppContext";
+import { useFocusTrap } from "../hooks/useFocusTrap";
+import { prefetchRouteForPath } from "../lib/routeChunks";
 import { api } from "../lib/api";
+import {
+	checkForAppUpdate,
+	maybeNotifyAppUpdate,
+	snoozeUpdate,
+	type AppUpdate,
+} from "../lib/appUpdate";
 import { lsGet, lsSet } from "../lib/identity";
 import { flushQueue, queuedCount } from "../lib/offline";
 import { timeAgo } from "../lib/utils";
 import CommandPalette from "./CommandPalette";
 import Tutorial from "./Tutorial";
+import InstallPrompt from "./InstallPrompt";
+import { CurvedMobileNav } from "./CurvedMobileNav";
+import { SiteFooter } from "./SiteFooter";
+import BackToTop from "./BackToTop";
+import KeyboardShortcutsModal from "./KeyboardShortcutsModal";
+import UpdateDialog from "./UpdateDialog";
+import VoiceLogo from "./VoiceLogo";
+import { isNativeShell } from "../lib/platform";
 
-const NAV = [
+const NAV_CORE = [
 	{ to: "/", label: "Feed", icon: Home, tour: "" },
-	{ to: "/search", label: "Search", icon: Search, tour: "" },
-	{ to: "/insights", label: "Insights", icon: Activity, tour: "" },
 	{ to: "/submit", label: "Submit", icon: PlusCircle, tour: "" },
-	{ to: "/suggestions", label: "Suggestions", icon: Lightbulb, tour: "" },
 	{ to: "/polls", label: "Polls", icon: BarChart3, tour: "nav-polls" },
+	{ to: "/communities", label: "Communities", icon: Users, tour: "" },
+	{ to: "/search", label: "Search", icon: Search, tour: "" },
+	{ to: "/chat", label: "Inbox", icon: MessageSquare, tour: "" },
+	{
+		to: "/activity",
+		label: "My Activity",
+		icon: UserCircle2,
+		tour: "nav-activity",
+	},
+	{
+		to: "/settings",
+		label: "Settings",
+		icon: SettingsIcon,
+		tour: "nav-settings",
+	},
+];
+/** Low-traffic pages stay reachable but leave the primary nav: every extra
+ *  item costs scan time on every page view for zero school-day value. */
+const NAV_MORE = [
+	{ to: "/insights", label: "Insights", icon: Activity, tour: "" },
+	{ to: "/suggestions", label: "Suggestions", icon: Lightbulb, tour: "" },
 	{
 		to: "/leaderboard",
 		label: "Leaderboard",
@@ -51,18 +93,85 @@ const NAV = [
 		icon: KanbanSquare,
 		tour: "nav-board",
 	},
-	{ to: "/chat", label: "Inbox", icon: MessageSquare, tour: "" },
-	{
-		to: "/activity",
-		label: "My Activity",
-		icon: UserCircle2,
-		tour: "nav-activity",
-	},
 	{ to: "/saved", label: "Saved", icon: Bookmark, tour: "" },
-	{ to: "/communities", label: "Communities", icon: Users, tour: "" },
 	{ to: "/privacy", label: "Privacy", icon: ShieldCheck, tour: "nav-privacy" },
 	{ to: "/faq", label: "FAQ", icon: HelpCircle, tour: "" },
+	// Terms and Accessibility were fully written and routed, but nothing in
+	// the app ever linked to them — a Terms of Use that cannot be reached is
+	// not a Terms of Use, and that is exactly the legal exposure it was
+	// written to prevent. Both render in the desktop "More" list and the
+	// mobile More sheet, so they are reachable from every screen.
+	{ to: "/terms", label: "Terms", icon: Scale, tour: "" },
+	{
+		to: "/accessibility",
+		label: "Accessibility",
+		icon: Accessibility,
+		tour: "",
+	},
+	{ to: "/download", label: "Get the app", icon: ArrowDownToLine, tour: "" },
+	{ to: "/about", label: "About Us", icon: Info, tour: "" },
+	{ to: "/developer", label: "Developer Studio", icon: Code2, tour: "" },
+	{ to: "/contact", label: "Contact Us", icon: LifeBuoy, tour: "" },
+	{ to: "/status", label: "System Status", icon: Activity, tour: "" },
+	{ to: "/changelog", label: "Changelog", icon: Rocket, tour: "" },
 ];
+/** Full nav (core + more) for anything that needs the complete list. */
+export const NAV_ALL = [...NAV_CORE, ...NAV_MORE];
+
+/**
+ * "Get the app" reads wrong inside the APK/EXE: offering to download the
+ * binary you are currently running looks like a bug, and the only way to
+ * follow it would be to copy the link out to a browser by hand.
+ *
+ * The entry is therefore kept but RENAMED, not removed. Hiding it lived
+ * through a build-and-install cycle as "the download option is missing from
+ * the app" — a user in the APK has no way to know the other platforms exist.
+ * As "Other platforms" it points at the same /download page, which already
+ * excludes the platform the user is on and lists only the real installers
+ * for the devices they are not holding. Nothing self-referential, nothing to
+ * copy-paste: every link it can offer downloads a genuine native build for a
+ * different device.
+ */
+export const NAV_MORE_VISIBLE = isNativeShell()
+	? NAV_MORE.map((n) =>
+			n.to === "/download" ? { ...n, label: "Other platforms" } : n,
+		)
+	: NAV_MORE;
+/** Bottom-bar tabs. Everything else lives in the More sheet — add a page
+ *  to NAV_CORE/NAV_MORE and it appears on mobile automatically. */
+const MOBILE_PRIMARY = new Set(["/", "/search", "/submit", "/chat", "/activity"]);
+
+/** Announcement dismissal is a per-banner 24h snooze (not a global mute).
+ *  Dismissing banner A stores {at: A.at}; banner B (different `at`) still
+ *  shows, and A returns after 24h. Legacy plain-`at` values (pre-snooze)
+ *  keep working as permanent dismissals of that banner. */
+const SNOOZE_KEY = "vb:dismissedAnnouncement";
+const SNOOZE_MS = 24 * 3600 * 1000;
+function isBannerDismissed(at: string): boolean {
+	// lsGet JSON-parses: it returns quoted-legacy ("at") and the snooze
+	// object, but yields "" for RAW legacy values (no quotes) — those are
+	// compared against the raw slot below instead of being forgotten.
+	const parsed = lsGet<string | { at?: string; until?: number }>(
+		SNOOZE_KEY,
+		"",
+	);
+	if (typeof parsed === "string" && parsed === at) return true;
+	if (
+		parsed &&
+		typeof parsed === "object" &&
+		parsed.at === at &&
+		typeof parsed.until === "number" &&
+		Date.now() < parsed.until
+	)
+		return true;
+	try {
+		const raw = window.localStorage.getItem(SNOOZE_KEY) ?? "";
+		if (raw === at) return true; // raw pre-snooze dismissal
+	} catch {
+		/* locked-down storage — parsed check above already ran */
+	}
+	return false;
+}
 
 export default function Layout() {
 	const {
@@ -71,15 +180,16 @@ export default function Layout() {
 		notifications,
 		markNotifsRead,
 		clearNotifs,
-		toasts,
 		anonId,
 		displayName,
 		profile,
 		chatUnread,
 		accountStatus,
+		toast,
 	} = useApp();
 	const [notifOpen, setNotifOpen] = useState(false);
 	const [mobileOpen, setMobileOpen] = useState(false);
+	const [moreOpen, setMoreOpen] = useState(false);
 	const [announcement, setAnnouncement] = useState<{
 		kind?: string;
 		text: string;
@@ -87,6 +197,11 @@ export default function Layout() {
 	} | null>(null);
 	const [offline, setOffline] = useState(!navigator.onLine);
 	const [queued, setQueued] = useState(queuedCount());
+	const [appUpdate, setAppUpdate] = useState<AppUpdate | null>(null);
+	const mobileDrawerRef = useRef<HTMLDivElement>(null);
+	useFocusTrap(mobileDrawerRef, { active: mobileOpen, onEscape: () => setMobileOpen(false) });
+	const moreSheetRef = useRef<HTMLDivElement>(null);
+	useFocusTrap(moreSheetRef, { active: moreOpen, onEscape: () => setMoreOpen(false) });
 
 	// offline detection + queued-action flush on reconnect
 	useEffect(() => {
@@ -112,12 +227,88 @@ export default function Layout() {
 		};
 	}, []);
 
+	// Notification popover: Escape and a click outside close it, like every
+	// other popover in the app. Without this the panel could only be closed by
+	// clicking the bell again — on mobile the panel covers the page beneath it.
+	useEffect(() => {
+		if (!notifOpen) return;
+		const onKey = (e: KeyboardEvent) => {
+			if (e.key === "Escape") setNotifOpen(false);
+		};
+		const onPointerDown = (e: MouseEvent | TouchEvent) => {
+			const target = e.target as HTMLElement | null;
+			if (target?.closest("[data-notif-root]")) return;
+			setNotifOpen(false);
+		};
+		document.addEventListener("keydown", onKey);
+		document.addEventListener("mousedown", onPointerDown);
+		document.addEventListener("touchstart", onPointerDown, { passive: true });
+		return () => {
+			document.removeEventListener("keydown", onKey);
+			document.removeEventListener("mousedown", onPointerDown);
+			document.removeEventListener("touchstart", onPointerDown);
+		};
+	}, [notifOpen]);
+
+	// Admin live popup — useAdminStream dispatches this for every coalesced
+	// admin event. A toast (not a page reload) is the "mobile notification"
+	// equivalent inside the console; the device notification fires from the
+	// stream hook itself so it also reaches a backgrounded tab.
+	useEffect(() => {
+		const onAdminActivity = (e: Event) => {
+			const detail = (e as CustomEvent).detail as
+				| { title?: string; url?: string }
+				| undefined;
+			const title = detail?.title || "New admin activity";
+			toast(title, "info");
+		};
+		window.addEventListener("vb:admin-activity", onAdminActivity);
+		return () => window.removeEventListener("vb:admin-activity", onAdminActivity);
+	}, [toast]);
+
+	// Global Keyboard Shortcuts Help modal ('?' key)
+	const [shortcutsOpen, setShortcutsOpen] = useState(false);
+	useEffect(() => {
+		const onKey = (e: KeyboardEvent) => {
+			if (
+				e.key === "?" &&
+				!e.ctrlKey &&
+				!e.metaKey &&
+				!e.altKey &&
+				!(
+					e.target instanceof HTMLInputElement ||
+					e.target instanceof HTMLTextAreaElement ||
+					(e.target instanceof HTMLElement && e.target.isContentEditable)
+				)
+			) {
+				e.preventDefault();
+				setShortcutsOpen((o) => !o);
+			}
+		};
+		window.addEventListener("keydown", onKey);
+		return () => window.removeEventListener("keydown", onKey);
+	}, []);
+
+	// Native-shell app update: ask /api/version at most daily (the checker
+	// enforces web-exclusion, daily cache, and snooze itself). Deferred a
+	// few seconds so the prompt never fights first paint. A device
+	// notification goes out too when the app isn't in front of the user.
+	useEffect(() => {
+		const t = setTimeout(() => {
+			void checkForAppUpdate().then((found) => {
+				if (!found) return;
+				setAppUpdate(found);
+				maybeNotifyAppUpdate(found);
+			});
+		}, 4000);
+		return () => clearTimeout(t);
+	}, []);
+
 	useEffect(() => {
 		api
 			.get<{ kind?: string; text: string; at: string }>("/api/announcement")
 			.then((a) => {
-				if (a && lsGet("vb:dismissedAnnouncement", "") !== a.at)
-					setAnnouncement(a);
+				if (a && !isBannerDismissed(a.at)) setAnnouncement(a);
 			})
 			.catch((e: unknown) => {
 				console.warn(
@@ -133,6 +324,9 @@ export default function Layout() {
 	useEffect(() => {
 		setMobileOpen(false);
 		setNotifOpen(false);
+		setMoreOpen(false);
+		// Smooth scroll to top on route change — prevents stale scroll position
+		window.scrollTo({ top: 0, behavior: "instant" });
 	}, [loc.pathname]);
 
 	// keyboard shortcuts
@@ -157,11 +351,13 @@ export default function Layout() {
 
 	const sidebar = (
 		<nav className="flex flex-col gap-1" aria-label="Main navigation">
-			{NAV.map(({ to, label, icon: Icon, tour }) => (
+			{NAV_CORE.map(({ to, label, icon: Icon, tour }) => (
 				<NavLink
 					key={to}
 					to={to}
 					end={to === "/"}
+					onMouseEnter={() => prefetchRouteForPath(to)}
+					onFocus={() => prefetchRouteForPath(to)}
 					{...(tour ? { "data-tour": tour } : {})}
 					className={({ isActive }) =>
 						`flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-medium transition-all ${isActive ? "bg-accent-soft text-accent" : "text-ink2 hover:bg-surface2 hover:text-ink"}`
@@ -176,8 +372,70 @@ export default function Layout() {
 					)}
 				</NavLink>
 			))}
+			<details className="mt-1 rounded-xl">
+				<summary className="flex cursor-pointer items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-medium text-ink2 hover:bg-surface2 hover:text-ink">
+					<Menu size={18} strokeWidth={2.2} aria-hidden />
+					More
+				</summary>
+				<div className="flex flex-col gap-1 pt-1">
+					{NAV_MORE_VISIBLE.map(({ to, label, icon: Icon, tour }) => (
+						<NavLink
+							key={to}
+							to={to}
+							end={to === "/"}
+							onMouseEnter={() => prefetchRouteForPath(to)}
+							onFocus={() => prefetchRouteForPath(to)}
+							{...(tour ? { "data-tour": tour } : {})}
+							className={({ isActive }) =>
+								`flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-medium transition-all ${isActive ? "bg-accent-soft text-accent" : "text-ink2 hover:bg-surface2 hover:text-ink"}`
+							}
+						>
+							<Icon size={18} strokeWidth={2.2} aria-hidden />
+							{label}
+						</NavLink>
+					))}
+				</div>
+			</details>
 		</nav>
 	);
+
+	// Banned IDs are blocked from browsing as well as writing (the
+	// server already rejects their writes). Suspended IDs keep browsing.
+	if (
+		accountStatus?.banned ||
+		accountStatus?.restriction_level === "full_ban"
+	) {
+		const fullBan = accountStatus?.restriction_level === "full_ban";
+		return (
+			<div className="min-h-dvh grid place-items-center px-4 bg-bg">
+				<div className="card w-full max-w-sm p-8 text-center vb-rise" role="alert">
+					<div className="text-4xl mb-3" aria-hidden>
+						🚫
+					</div>
+					<h1 className="font-display font-bold text-xl">
+						{fullBan ? "Access restricted" : "Banned from Voice Flow"}
+					</h1>
+					<p className="text-sm text-ink2 mt-2 leading-relaxed">
+						{fullBan
+							? "This anonymous ID is under a full restriction. Browsing, posting, commenting, and voting are all disabled for it."
+							: "This anonymous ID was permanently banned for breaking community rules. Browsing, posting, commenting, and voting are all disabled for it."}
+					</p>
+					{fullBan && accountStatus?.restriction_reason && (
+						<p className="text-xs text-ink3 mt-2">
+							Reason: {accountStatus.restriction_reason}
+						</p>
+					)}
+					<p className="text-xs text-ink3 mt-3 leading-relaxed">
+						If you believe this is a mistake, contact us — an admin can
+						lift the ban from the Users panel.
+					</p>
+					<Link to="/contact" className="btn btn-primary w-full mt-5 !text-sm">
+						Contact support
+					</Link>
+				</div>
+			</div>
+		);
+	}
 
 	return (
 		<div className="min-h-screen flex">
@@ -191,16 +449,16 @@ export default function Layout() {
 				<Link
 					to="/"
 					className="flex items-center gap-2.5 px-2 mb-8"
-					aria-label="Voice Box home"
+					aria-label="Voice Flow home"
 				>
-					<span className="w-9 h-9 rounded-xl bg-accent grid place-items-center text-white shadow-lg shadow-accent/30">
-						<Megaphone size={18} />
-					</span>
+					<VoiceLogo size={36} className="shadow-lg shadow-accent/30 rounded-xl" />
 					<span className="font-display font-bold text-lg tracking-tight">
-						Voice Box
+						Voice Flow
 					</span>
 				</Link>
-				{sidebar}
+				<div className="flex-1 min-h-0 overflow-y-auto" data-testid="sidebar-scroll">
+					{sidebar}
+				</div>
 				<div className="mt-auto pt-6 border-t border-border">
 					<div className="text-[11px] text-ink3 px-2 leading-relaxed">
 						<div className="flex items-center gap-2 mb-2">
@@ -250,9 +508,11 @@ export default function Layout() {
 			{/* Mobile drawer */}
 			{mobileOpen && (
 				<div
+					ref={mobileDrawerRef}
 					className="fixed inset-0 z-50 lg:hidden"
 					role="dialog"
 					aria-modal="true"
+					aria-label="Navigation menu"
 				>
 					<div
 						className="absolute inset-0 mobile-overlay-enter"
@@ -260,9 +520,9 @@ export default function Layout() {
 						onClick={() => setMobileOpen(false)}
 						aria-hidden
 					/>
-					<div className="absolute left-0 top-0 bottom-0 w-72 bg-surface p-5 pt-[max(1.25rem,env(safe-area-inset-top))] pb-[max(1.25rem,env(safe-area-inset-bottom))] mobile-drawer-enter">
+					<div className="absolute left-0 top-0 bottom-0 w-72 bg-surface p-5 pt-[max(1.25rem,env(safe-area-inset-top))] pb-[max(1.25rem,env(safe-area-inset-bottom))] mobile-drawer-enter flex flex-col">
 						<div className="flex items-center justify-between mb-6">
-							<span className="font-display font-bold text-lg">Voice Box</span>
+							<span className="font-display font-bold text-lg">Voice Flow</span>
 							<button
 								className="btn btn-ghost !p-2"
 								onClick={() => setMobileOpen(false)}
@@ -271,8 +531,10 @@ export default function Layout() {
 								<X size={18} />
 							</button>
 						</div>
-						{sidebar}
-						<Link to="/admin" className="mt-6 inline-block text-xs text-ink3">
+						<div className="flex-1 min-h-0 overflow-y-auto" data-testid="sidebar-scroll">
+							{sidebar}
+						</div>
+						<Link to="/admin" className="mt-auto pt-6 inline-block text-xs text-ink3 shrink-0">
 							Admin →
 						</Link>
 					</div>
@@ -282,10 +544,9 @@ export default function Layout() {
 			<div className="flex-1 flex flex-col min-w-0">
 				{/* Topbar */}
 				<header
-					className="sticky top-0 z-40 border-b border-border pt-[env(safe-area-inset-top)]"
-					style={{ background: "var(--vb-bg)" }}
+					className="sticky top-0 z-40 border-b border-border/80 pt-[env(safe-area-inset-top)] bg-surface/85 backdrop-blur-md transition-colors duration-200"
 				>
-					<div className="flex items-center gap-3 px-4 sm:px-6 h-14">
+					<div className="flex items-center gap-3 px-4 sm:px-6 h-14" role="banner">
 						<button
 							className="lg:hidden btn btn-ghost !p-2"
 							onClick={() => setMobileOpen(true)}
@@ -297,12 +558,10 @@ export default function Layout() {
 							to="/"
 							className="lg:hidden flex items-center gap-2 font-display font-bold"
 						>
-							<span className="w-7 h-7 rounded-lg bg-accent grid place-items-center text-white">
-								<Megaphone size={14} />
-							</span>
-							Voice Box
+							<VoiceLogo size={28} className="rounded-lg" />
+							Voice Flow
 						</Link>
-						{/* School logo + badge — visible on desktop next to the megaphone icon, on mobile next to the brand */}
+						{/* School logo + badge — visible on desktop next to the brand icon, on mobile next to the brand */}
 						<span className="hidden lg:inline-flex items-center gap-2 text-[10px] font-semibold px-2.5 py-1 rounded-lg bg-accent/10 text-accent border border-accent/15 ml-1">
 							<svg
 								viewBox="0 0 24 24"
@@ -347,7 +606,7 @@ export default function Layout() {
 						</span>
 						<div className="ml-auto flex items-center gap-1.5">
 							<button
-								className="hidden md:flex items-center gap-2 text-xs text-ink3 border border-border rounded-xl px-3 py-2 hover:border-accent hover:text-accent transition-colors"
+								className="hidden md:flex items-center gap-2 text-xs text-ink3 bg-surface2/60 border border-border/80 rounded-xl px-3 py-1.5 hover:border-accent/40 hover:bg-surface2 hover:text-ink transition-all shadow-xs"
 								onClick={() =>
 									window.dispatchEvent(
 										new KeyboardEvent("keydown", { key: "k", metaKey: true }),
@@ -355,8 +614,8 @@ export default function Layout() {
 								}
 								aria-label="Open command palette"
 							>
-								<Search size={13} /> Search…{" "}
-								<kbd className="chip !text-[9px] !py-0">⌘K</kbd>
+								<Search size={13} className="text-ink3" /> Search…{" "}
+								<kbd className="chip !text-[9px] !py-0 !bg-surface3/70 !border-border/60" aria-label="Command K">⌘K</kbd>
 							</button>
 							<Link
 								to="/submit"
@@ -370,14 +629,30 @@ export default function Layout() {
 									setNotifOpen((o) => !o);
 								}}
 								aria-label={`Notifications, ${unread} unread`}
+								aria-expanded={notifOpen}
+								aria-haspopup="dialog"
+								aria-controls="notif-panel"
+								data-notif-root
 							>
 								<Bell size={17} />
 								{unread > 0 && (
-									<span className="absolute -top-0.5 -right-0.5 w-4.5 h-4.5 min-w-4 text-[9px] font-bold grid place-items-center bg-bad text-white rounded-full px-1">
-										{unread}
+									<span
+										key={unread}
+										className="absolute -top-0.5 -right-0.5 w-4.5 h-4.5 min-w-4 text-[9px] font-bold grid place-items-center bg-bad text-white rounded-full px-1 vb-pop"
+										aria-hidden
+									>
+										{unread > 99 ? "99+" : unread}
 									</span>
 								)}
 							</button>
+							<Link
+								to="/settings"
+								className="btn btn-ghost !p-2.5"
+								aria-label="Settings"
+								title="Settings"
+							>
+								<SettingsIcon size={17} />
+							</Link>
 							<button
 								className="btn btn-ghost !p-2.5"
 								onClick={toggleTheme}
@@ -391,9 +666,11 @@ export default function Layout() {
 					{/* Notification panel */}
 					{notifOpen && (
 						<div
+							id="notif-panel"
 							className="absolute right-4 top-[calc(3.5rem_+_env(safe-area-inset-top))] w-[min(92vw,380px)] card shadow-2xl p-3 vb-rise z-50"
 							role="region"
 							aria-label="Notifications"
+							data-notif-root
 						>
 							<div className="flex items-center justify-between px-2 pb-2 border-b border-border">
 								<span className="font-display font-semibold text-sm">
@@ -410,6 +687,7 @@ export default function Layout() {
 											className="btn btn-ghost !p-1.5 !text-xs"
 											onClick={markNotifsRead}
 											title="Mark all read"
+											aria-label="Mark all notifications read"
 										>
 											<CheckCheck size={14} />
 										</button>
@@ -419,6 +697,7 @@ export default function Layout() {
 											className="btn btn-ghost !p-1.5 !text-xs"
 											onClick={clearNotifs}
 											title="Clear all"
+											aria-label="Clear all notifications"
 										>
 											<Trash2 size={14} />
 										</button>
@@ -426,10 +705,10 @@ export default function Layout() {
 								</div>
 							</div>
 							<div className="max-h-80 overflow-y-auto">
-								{notifications.length === 0 && (
+									{notifications.length === 0 && (
 									<div className="text-center py-8">
 										<div className="vb-empty-icon mx-auto mb-2">
-											<Bell size={24} />
+											<Bell size={24} aria-hidden />
 										</div>
 										<p className="text-sm text-ink3">No notifications yet.</p>
 										<p className="text-xs text-ink3 mt-1">
@@ -474,21 +753,6 @@ export default function Layout() {
 					)}
 				</header>
 
-				{/* Ban / suspension banner — writes are blocked server-side; this makes it visible */}
-				{accountStatus?.banned && (
-					<div
-						className="flex items-center gap-2.5 px-4 sm:px-6 py-2.5 text-sm font-semibold"
-						style={{
-							background: "rgba(220,75,75,0.12)",
-							color: "#dc4b4b",
-							borderBottom: "1px solid rgba(220,75,75,0.25)",
-						}}
-						role="alert"
-					>
-						🚫 This anonymous ID has been permanently banned. You can browse,
-						but posting, commenting and voting are disabled.
-					</div>
-				)}
 				{!accountStatus?.banned && accountStatus?.suspended && (
 					<div
 						className="flex items-center gap-2.5 px-4 sm:px-6 py-2.5 text-sm font-semibold"
@@ -507,6 +771,42 @@ export default function Layout() {
 						. Browsing is allowed; posting and voting are paused.
 					</div>
 				)}
+				{!accountStatus?.banned &&
+					accountStatus?.restriction_level === "read_only" && (
+						<div
+							className="flex items-center gap-2.5 px-4 sm:px-6 py-2.5 text-sm font-semibold"
+							style={{
+								background: "rgba(217,138,11,0.12)",
+								color: "#d98a0b",
+								borderBottom: "1px solid rgba(217,138,11,0.25)",
+							}}
+							role="status"
+						>
+							✏️ Your account is read-only
+							{accountStatus.restriction_reason
+								? `: ${accountStatus.restriction_reason}`
+								: ""}
+							. You can browse, but posting, commenting and voting are paused.
+						</div>
+					)}
+				{!accountStatus?.banned &&
+					accountStatus?.restriction_level === "feed_blocked" && (
+						<div
+							className="flex items-center gap-2.5 px-4 sm:px-6 py-2.5 text-sm font-semibold"
+							style={{
+								background: "rgba(217,138,11,0.12)",
+								color: "#d98a0b",
+								borderBottom: "1px solid rgba(217,138,11,0.25)",
+							}}
+							role="status"
+						>
+							📵 Access to the main feed is restricted
+							{accountStatus.restriction_reason
+								? `: ${accountStatus.restriction_reason}`
+								: ""}
+							. Other areas of your account remain available.
+						</div>
+					)}
 				{offline && (
 					<div
 						className="flex items-center gap-2 px-4 sm:px-6 py-2 text-xs font-semibold border-b"
@@ -531,7 +831,11 @@ export default function Layout() {
 						<button
 							className="shrink-0 opacity-70 hover:opacity-100"
 							onClick={() => {
-								lsSet("vb:dismissedAnnouncement", announcement.at);
+								// lsSet stringifies — pass the object, not a string.
+								lsSet(SNOOZE_KEY, {
+									at: announcement.at,
+									until: Date.now() + SNOOZE_MS,
+								});
 								setAnnouncement(null);
 							}}
 							aria-label="Dismiss announcement"
@@ -546,46 +850,62 @@ export default function Layout() {
 					role="main"
 					aria-label="Main content"
 				>
+					<InstallPrompt />
 					<Outlet />
+					<SiteFooter />
 				</main>
 
-				{/* Mobile bottom nav — includes Inbox with unread badge */}
-				<nav
-					className="lg:hidden fixed bottom-0 inset-x-0 z-40 border-t border-border flex pb-[env(safe-area-inset-bottom)]"
-					style={{ background: "var(--vb-surface)" }}
-					aria-label="Mobile navigation"
-				>
-					{[NAV[0], NAV[1], NAV[2], NAV[3], NAV[6], NAV[7]].map((item) => {
-						if (!item) return null;
-						const { to, label, icon: Icon, tour } = item;
-						return (
-							<NavLink
-								key={to}
-								to={to}
-								end={to === "/"}
-								{...(tour ? { "data-tour": tour } : {})}
-								className={({ isActive }) =>
-									`relative flex-1 flex flex-col items-center gap-0.5 py-2.5 text-[9.5px] font-medium ${isActive ? "text-accent" : "text-ink3"}`
-								}
-								aria-label={label}
+				<BackToTop />
+				<KeyboardShortcutsModal open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
+
+				{/* Mobile bottom nav — Curved Floating Navigation Bar matching mobile app mockup */}
+				<CurvedMobileNav
+					chatUnread={chatUnread}
+					unreadAlerts={unread}
+					moreOpen={moreOpen}
+					onOpenMore={() => setMoreOpen(true)}
+				/>
+					{moreOpen && (
+						<div className="fixed inset-0 z-50 lg:hidden" role="dialog" aria-modal="true" aria-label="More pages">
+							<button
+							className="absolute inset-0 mobile-overlay-enter"
+							style={{ background: "rgba(0,0,0,0.5)" }}
+							onClick={() => setMoreOpen(false)}
+							aria-label="Close more pages"
+							/>
+							<div
+							ref={moreSheetRef}
+							className="absolute left-0 right-0 bottom-0 bg-surface rounded-t-3xl border-t border-border p-4 pt-3 pb-[max(1rem,env(safe-area-inset-bottom))] mobile-drawer-enter max-h-[70dvh] overflow-y-auto"
 							>
-								<span className="relative">
-									<Icon size={19} />
-									{to === "/chat" && chatUnread > 0 && (
-										<span className="absolute -top-1 -right-1.5 w-3.5 h-3.5 text-[8px] font-bold grid place-items-center bg-bad text-white rounded-full">
-											{chatUnread}
-										</span>
-									)}
-								</span>
-								{label === "My Activity"
-									? "Me"
-									: label === "Solving Board"
-										? "Board"
-										: label}
-							</NavLink>
-						);
-					})}
-				</nav>
+								<p className="text-center text-[11px] font-bold text-ink3 mb-1">More</p>
+								{[
+									{ to: "/notifications", label: "Alerts", icon: Bell, badge: unread },
+									...NAV_CORE.filter((n) => !MOBILE_PRIMARY.has(n.to)),
+									...NAV_MORE_VISIBLE,
+									{ to: "/admin", label: "Admin", icon: ShieldCheck },
+								].map(({ to, label, icon: Icon, badge }: { to: string; label: string; icon: typeof Bell; badge?: number }) => (
+									<NavLink
+									key={to}
+									to={to}
+									end={to === "/"}
+									onClick={() => setMoreOpen(false)}
+									onMouseEnter={() => prefetchRouteForPath(to)}
+									onFocus={() => prefetchRouteForPath(to)}
+									className="flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-ink2 hover:bg-surface2 hover:text-ink"
+									aria-label={typeof badge === "number" && badge > 0 ? `${label}, ${badge} unread` : label}
+									>
+										<Icon size={18} strokeWidth={2.2} aria-hidden />
+										{label}
+										{typeof badge === "number" && badge > 0 && (
+											<span className="ml-auto text-[10px] font-bold bg-bad text-white rounded-full px-1.5 py-0.5">
+												{badge > 99 ? "99+" : badge}
+											</span>
+										)}
+									</NavLink>
+								))}
+							</div>
+						</div>
+					)}
 			</div>
 
 			{/* First-visit interactive tutorial (users only — never on /admin) */}
@@ -593,29 +913,26 @@ export default function Layout() {
 
 			<CommandPalette />
 
-			{/* Toasts — container must never intercept clicks (pointer-events-none),
-          only the toast cards themselves are clickable */}
-			<div
-				className="fixed bottom-[calc(5rem_+_env(safe-area-inset-bottom))] lg:bottom-6 right-4 z-[60] flex flex-col gap-2 items-end pointer-events-none"
-				aria-live="polite"
-			>
-				{toasts.map((t) => (
-					<div
-						key={t.id}
-						className={`pointer-events-auto vb-rise card !rounded-xl shadow-xl px-4 py-3 text-sm font-medium flex items-center gap-3 max-w-sm ${t.kind === "err" ? "!border-bad/40 text-bad" : t.kind === "ok" ? "!border-good/40" : ""}`}
-					>
-						<span>{t.text}</span>
-						{t.action && (
-							<button
-								className="btn btn-soft !py-1 !px-2.5 !text-xs shrink-0"
-								onClick={t.action.fn}
-							>
-								{t.action.label}
-							</button>
-						)}
-					</div>
-				))}
-			</div>
+			{/* Native-shell app update prompt (APK + EXE only — the checker
+			returns null on web). Update now opens the fresh installer;
+			Later snoozes for 24h. */}
+			{appUpdate && (
+				<UpdateDialog
+					update={appUpdate}
+					onUpdate={() => {
+						window.open(appUpdate.url, "_blank", "noopener");
+						setAppUpdate(null);
+					}}
+					onLater={() => {
+						snoozeUpdate();
+						setAppUpdate(null);
+					}}
+				/>
+			)}
+
+			{/* Toasts render app-wide via <ToastHost /> (mounted in App.tsx) —
+			 * the old inline host left /admin/* with NO feedback because it never
+			 * mounts Layout. */}
 		</div>
 	);
 }

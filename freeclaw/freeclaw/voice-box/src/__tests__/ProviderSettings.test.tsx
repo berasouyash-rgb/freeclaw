@@ -9,7 +9,7 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import ProviderSettings from "../pages/admin/ProviderSettings";
+import ProviderSettings, { DEFAULT_MODELS } from "../pages/admin/ProviderSettings";
 
 const mocks = vi.hoisted(() => ({
 	toast: vi.fn(),
@@ -41,7 +41,7 @@ const PROVIDERS = {
 	nvidia: {
 		id: "nvidia",
 		name: "NVIDIA",
-		model: "meta/llama-3.1-70b-instruct",
+		model: "nvidia/nemotron-3-super-120b-a12b",
 		enabled: false,
 		priority: 2,
 		is_default: false,
@@ -336,5 +336,31 @@ describe("ProviderSettings — categories", () => {
 		// Two categories have 1/1 active (major + other) and inference has 0/1
 		expect(screen.getAllByText("1/1 active")).toHaveLength(2);
 		expect(screen.getByText("0/1 active")).toBeInTheDocument();
+	});
+});
+
+// ─── Pin: admin "suggested models" dropdown must never offer a dead id ─────
+// Live probes (2026-10-12, app keys) proved the ids below return 410/404/400.
+// The nvidia + groq suggestion lists were a graveyard (all entries dead) —
+// red-first: this fails before the repair, green after.
+describe("DEFAULT_MODELS — probed-dead model ids", () => {
+	const KNOWN_DEAD = [
+		"meta/llama-3.1-70b-instruct", // NVIDIA — HTTP 410 Gone (EOL 2026-08-26)
+		"meta/llama-3.1-405b-instruct", // NVIDIA — HTTP 404
+		"mistralai/mistral-large-2-instruct", // NVIDIA — HTTP 404
+		"google/gemma-2-27b-it", // NVIDIA — HTTP 404
+		"llama-3.3-70b-versatile", // Groq — HTTP 404 (does not exist)
+		"llama-3.1-8b-instant", // Groq — HTTP 404 (does not exist)
+		"mixtral-8x7b-32768", // Groq — HTTP 400 decommissioned
+	];
+
+	it("never suggests a probed-dead model id for any provider", () => {
+		const offenders: string[] = [];
+		for (const [provider, models] of Object.entries(DEFAULT_MODELS)) {
+			for (const model of models) {
+				if (KNOWN_DEAD.includes(model)) offenders.push(`${provider} -> ${model}`);
+			}
+		}
+		expect(offenders).toEqual([]);
 	});
 });
